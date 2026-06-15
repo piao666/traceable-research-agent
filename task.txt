@@ -289,8 +289,11 @@ Suggested checkpoint commit messages:
 
 Actual checkpoints:
 
-- Pending initial documentation checkpoint commit/push for `AGENTS.md`,
-  `task.txt`, and `.gitignore`.
+- 2026-06-15: initial documentation checkpoint pushed.
+  - Commit: `dbea431` (`chore: initialize project planning docs`)
+  - Files: `.gitignore`, `AGENTS.md`, `task.txt`
+  - Remote: `origin/main`
+  - Scope: constraints, reading notes, phase plan, task ledger, ignore rules.
 
 ## Open Issues / Risks
 
@@ -314,4 +317,3 @@ Recommended next Phase 1 start:
 4. Implement minimal `POST /api/tasks` to create a pending run row.
 5. Implement Tool Registry base and `GET /api/tools`.
 6. Run local smoke checks, update `task.txt`, then checkpoint commit and push.
-
