@@ -235,6 +235,7 @@ Evaluation requirements:
 Current phase: Phase 1 - Day 1-5.
 
 - [x] Confirm independent repository path.
+- [x] Phase 1 Step 1: project baseline check and task file confirmation.
 - [x] Clone empty independent GitHub repository.
 - [x] Read project constraints from root `AGENTS.md` and initial prompt.
 - [x] Read project planning `.docx`.
@@ -276,6 +277,42 @@ Current phase: Phase 1 - Day 1-5.
   outer `task.txt` is an earlier template and kept repository `task.txt` as the
   only active task log.
 
+2026-06-15 16:23:40 +08:00 - Phase 1 Step 1 baseline check:
+
+- Confirmed current working directory for project work:
+  `E:\BOSS\traceable-research-agent`.
+- Read repository-root `AGENTS.md`, `task.txt`, and `.gitignore`.
+- Confirmed the only active project constraint file is:
+  `E:\BOSS\traceable-research-agent\AGENTS.md`.
+- Confirmed the only active project task record file is:
+  `E:\BOSS\traceable-research-agent\task.txt`.
+- Confirmed backup-only outer files remain non-authoritative:
+  `E:\BOSS\AGENTS.md` and `E:\BOSS\task.txt`.
+- Git status check:
+  - Branch: `main`
+  - Tracking: `origin/main`
+  - Working tree before this `task.txt` update: clean
+  - Remote fetch/push:
+    `https://github.com/piao666/traceable-research-agent.git`
+  - Warning observed: `git status` reported it was unable to unlink
+    `.git/index.lock`; the lock file still existed after the check.
+- External reference paths checked:
+  - Planning document exists:
+    `E:\BOSS\Traceable_Research_Agent_独立项目规划与GPT_Researcher必读结果.docx`
+  - GPT Researcher read-only reference directory exists:
+    `E:\BOSS\_reference_gpt_researcher`
+- Current risks:
+  - A stale `.git/index.lock` may block `git add`, `git commit`, or `git push`
+    until it is removed. The attempted removal needed elevated filesystem
+    access and was rejected by the current environment.
+  - `git add task.txt` was attempted and failed because `.git/index.lock`
+    already exists, so commit and push could not be completed in this round.
+  - No Phase 1 business code has been created yet, by design for this step.
+- Next step:
+  - Phase 1 Step 2 should start project bootstrap only after the Git lock issue
+    is cleared: create minimal Python project files and dependency baseline,
+    then proceed toward FastAPI `/health`.
+
 ## Commands Run
 
 - `Get-ChildItem -Force`
@@ -295,12 +332,32 @@ Current phase: Phase 1 - Day 1-5.
 - `Get-Content -Raw 'E:\BOSS\task.txt'`
 - `Get-Content -Raw 'E:\BOSS\traceable-research-agent\task.txt'`
 - `git -C 'E:\BOSS\traceable-research-agent' status --short --branch`
+- `Get-Location`
+- `Get-Content -Raw -LiteralPath 'AGENTS.md'`
+- `Get-Content -Raw -LiteralPath 'task.txt'`
+- `Get-Content -Raw -LiteralPath '.gitignore'`
+- `git status --short --branch`
+- `git remote -v`
+- `Test-Path -LiteralPath 'E:\BOSS\Traceable_Research_Agent_独立项目规划与GPT_Researcher必读结果.docx'`
+- `Test-Path -LiteralPath 'E:\BOSS\_reference_gpt_researcher'`
+- `Get-ChildItem -Force -Name`
+- `Test-Path -LiteralPath 'E:\BOSS\traceable-research-agent\.git\index.lock'`
+- `Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'`
+- `git add task.txt` failed because `.git/index.lock` already exists.
+- `git --no-optional-locks status --short --branch`
+- `git --no-optional-locks diff -- task.txt`
 
 ## Test / Smoke Results
 
 - No application tests or smoke checks yet. This round intentionally avoided
   core feature implementation.
 - Repository initialization and document/source reading completed.
+- Phase 1 Step 1 baseline checks completed:
+  - Working directory confirmed.
+  - Active constraint/task files confirmed.
+  - Planning document and GPT Researcher reference directory confirmed.
+  - Git remote confirmed.
+  - No FastAPI, database, Agent, or Tool Registry code was created.
 
 ## Git Checkpoints
 
@@ -325,6 +382,11 @@ Actual checkpoints:
   initial FastAPI/database/tool registry skeleton.
 - A first normal `git clone` left a temporary Git lock due local permissions;
   it was cleaned before writing project files.
+- Phase 1 Step 1 found another stale `.git/index.lock` after `git status`.
+  Elevated removal was attempted but rejected by the current environment, so the
+  next commit may be blocked until the lock is cleared.
+- Checkpoint commit for this documentation update is pending because
+  `git add task.txt` failed on the stale Git lock.
 - GPT Researcher is large and should remain a reference only; avoid copying
   source structure blindly.
 - MCP should remain late-stage and optional to avoid blocking the MVP.
@@ -333,9 +395,9 @@ Actual checkpoints:
 
 ## Next Actions
 
-Recommended next Phase 1 start:
+Recommended next Phase 1 start after the Git lock is cleared:
 
-1. Create minimal Python project structure and dependencies.
+1. Phase 1 Step 2: create minimal Python project structure and dependencies.
 2. Add FastAPI app with `GET /health`.
 3. Add SQLAlchemy database setup and `agent_runs` / `tool_traces` models.
 4. Implement minimal `POST /api/tasks` to create a pending run row.
