@@ -6,6 +6,19 @@
 - GitHub repo: `https://github.com/piao666/traceable-research-agent`
 - Project planning document: `E:\BOSS\Traceable_Research_Agent_独立项目规划与GPT_Researcher必读结果.docx`
 - GPT Researcher read-only reference: `E:\BOSS\_reference_gpt_researcher`
+- Active constraint file: `E:\BOSS\traceable-research-agent\AGENTS.md`
+- Active task log: `E:\BOSS\traceable-research-agent\task.txt`
+- Backup-only files: `E:\BOSS\AGENTS.md` and `E:\BOSS\task.txt`
+
+## Source of Truth Note
+
+As of 2026-06-15, only the repository-root `AGENTS.md` and `task.txt` are active
+for this project. The outer `E:\BOSS\AGENTS.md` and `E:\BOSS\task.txt` were
+compared and treated as backups. Effective constraints from the outer
+`AGENTS.md` were merged into this repository's `AGENTS.md`. The outer
+`task.txt` was an earlier template; the repository `task.txt` remains the
+authoritative log because it contains the actual reading records, commit
+history, and current Phase 1 state.
 
 ## Original GPT Researcher Reading Notes
 
@@ -256,6 +269,12 @@ Current phase: Phase 1 - Day 1-5.
   checklist, command log, risks, and next actions template.
 - Added `.gitignore` to prevent committing secrets, local DBs, caches, generated
   reports, and build artifacts.
+- Compared outer backup files with repository-root files. Merged the more
+  complete outer `AGENTS.md` constraints into repository `AGENTS.md`, including
+  source-of-truth rules, directory layout, API behavior, SQL table definitions,
+  agent flow, quality gates, coding style, and definition of done. Confirmed
+  outer `task.txt` is an earlier template and kept repository `task.txt` as the
+  only active task log.
 
 ## Commands Run
 
@@ -271,6 +290,11 @@ Current phase: Phase 1 - Day 1-5.
 - `git clone --depth 1 https://github.com/assafelovic/gpt-researcher.git 'E:\BOSS\_reference_gpt_researcher'`
 - `rg --files 'E:\BOSS\_reference_gpt_researcher' ...`
 - `Get-Content` / `Select-String` reads for GPT Researcher files.
+- `Get-Content -Raw 'E:\BOSS\AGENTS.md'`
+- `Get-Content -Raw 'E:\BOSS\traceable-research-agent\AGENTS.md'`
+- `Get-Content -Raw 'E:\BOSS\task.txt'`
+- `Get-Content -Raw 'E:\BOSS\traceable-research-agent\task.txt'`
+- `git -C 'E:\BOSS\traceable-research-agent' status --short --branch`
 
 ## Test / Smoke Results
 
