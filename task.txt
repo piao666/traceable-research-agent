@@ -247,7 +247,7 @@ Current phase: Phase 1 - Day 1-5.
 - [x] Bootstrap Day1-3 FastAPI mock skeleton.
 - [x] Implement `/health`.
 - [x] Implement mock `POST /api/tasks` and `GET /api/tasks/{run_id}`.
-- [x] Implement mock `GET /api/tools`.
+- [x] Implement initial mock `GET /api/tools`.
 - [x] Implement mock `GET /api/reports/{run_id}`.
 - [x] Create `docs/gpt_researcher_reading_notes.md`.
 - [x] Add SQLite + SQLAlchemy database foundation.
@@ -649,18 +649,6 @@ Actual checkpoints:
 
 ## Open Issues / Risks
 
-- The independent repo started empty, so Phase 1 implementation still needs the
-  initial FastAPI/database/tool registry skeleton.
-- A first normal `git clone` left a temporary Git lock due local permissions;
-  it was cleaned before writing project files.
-- Phase 1 Step 1 found another stale `.git/index.lock` after `git status`.
-  Elevated removal was attempted but rejected by the current environment, so the
-  next commit may be blocked until the lock is cleared.
-- Checkpoint commit for this documentation update is pending because
-  `git add task.txt` failed on the stale Git lock.
-- The previous long-running Uvicorn attempt used `--reload`, which left a
-  service process after the user interrupted the turn. The process was located
-  by command line and stopped before the final Day1-3 verification.
 - GPT Researcher is large and should remain a reference only; avoid copying
   source structure blindly.
 - MCP should remain late-stage and optional to avoid blocking the MVP.
