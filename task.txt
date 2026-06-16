@@ -244,10 +244,14 @@ Current phase: Phase 1 - Day 1-5.
 - [x] Read GPT Researcher key files and summarize conclusions.
 - [x] Create repository `AGENTS.md`.
 - [x] Create repository `task.txt`.
-- [ ] Bootstrap FastAPI skeleton.
-- [ ] Implement `/health`.
+- [x] Bootstrap Day1-3 FastAPI mock skeleton.
+- [x] Implement `/health`.
+- [x] Implement mock `POST /api/tasks` and `GET /api/tasks/{run_id}`.
+- [x] Implement mock `GET /api/tools`.
+- [x] Implement mock `GET /api/reports/{run_id}`.
+- [x] Create `docs/gpt_researcher_reading_notes.md`.
 - [ ] Add SQLite + SQLAlchemy models.
-- [ ] Implement minimal task creation.
+- [ ] Implement database-backed task creation.
 - [ ] Implement Tool Registry base and `/api/tools`.
 - [ ] Run Phase 1 smoke checks.
 - [ ] Phase 1 checkpoint commit and push after skeleton work.
@@ -313,6 +317,78 @@ Current phase: Phase 1 - Day 1-5.
     is cleared: create minimal Python project files and dependency baseline,
     then proceed toward FastAPI `/health`.
 
+2026-06-16 15:43:52 +08:00 - Phase 1 Day1-3 combined task:
+
+- Re-read the active repository constraints from `AGENTS.md` and confirmed this
+  remains an independent repository at `E:\BOSS\traceable-research-agent`.
+- Re-read GPT Researcher reference files in read-only mode:
+  - `README.md`
+  - `main.py`
+  - `backend/server/app.py`
+  - `gpt_researcher/agent.py`
+  - `gpt_researcher/skills/researcher.py`
+  - `gpt_researcher/skills/writer.py`
+  - `gpt_researcher/document/document.py`
+  - `gpt_researcher/mcp/README.md`
+  - `gpt_researcher/mcp/client.py`
+  - `gpt_researcher/mcp/tool_selector.py`
+  - `gpt_researcher/mcp/research.py`
+  - `docker-compose.yml`
+  - `Dockerfile`
+- Created `docs/gpt_researcher_reading_notes.md` with notes on startup,
+  FastAPI service shape, `GPTResearcher.conduct_research`, `write_report`,
+  `ResearchConductor` branches, `DocumentLoader`, MCP components, reuse points,
+  and required rewrites for this project.
+- Added Day1-3 minimal project skeleton:
+  - `app/__init__.py`
+  - `app/main.py`
+  - `app/config.py`
+  - `app/schemas.py`
+  - `app/api/__init__.py`
+  - `app/api/tasks.py`
+  - `app/api/tools.py`
+  - `app/api/reports.py`
+  - `tests/__init__.py`
+  - `requirements.txt`
+  - `.env.example`
+  - `README.md`
+- Implemented mock API surface only:
+  - `GET /health`
+  - `POST /api/tasks`
+  - `GET /api/tasks/{run_id}`
+  - `GET /api/tools`
+  - `GET /api/reports/{run_id}`
+- Dependency installation:
+  - First `python -m pip install -r requirements.txt` failed because no package
+    index result was available in the initial restricted environment.
+  - Retried with network available and installed `fastapi`; existing local
+    packages already satisfied `uvicorn[standard]`, `pydantic`, and
+    `python-dotenv`.
+- API verification:
+  - A previous Uvicorn command using `--reload` ran too long and was interrupted
+    by the user. A residual `python -m uvicorn app.main:app --reload --host
+    127.0.0.1 --port 8000` process was found and stopped.
+  - Re-ran service in non-blocking mode without `--reload`, waited 5 seconds,
+    verified endpoints, and stopped process ID `19012` in a `finally` block.
+  - Confirmed no `uvicorn app.main:app` Python process remained afterward.
+- Verified API results:
+  - `/health` returned `status=ok`, `service=traceable-research-agent`,
+    `phase=day1-3`.
+  - `/api/tools` returned 5 mock tools: `file_reader`, `sql_query`,
+    `rag_search`, `mcp_github_search`, `report_writer`.
+  - `POST /api/tasks` returned a mock pending run with status, trace, and report
+    URLs.
+  - `/api/reports/{run_id}` returned mock Markdown and no report file path.
+- Current intentionally unimplemented scope:
+  - SQLite and SQLAlchemy.
+  - `agent_runs` and `tool_traces` persistence.
+  - Real Tool Registry and executable tool handlers.
+  - Agent Planner, Executor, RAG, MCP, human confirmation, and real report
+    writing.
+- Next step:
+  - Day4 should add SQLite + SQLAlchemy database setup and create the
+    `agent_runs` / `tool_traces` models while keeping the existing API contract.
+
 ## Commands Run
 
 - `Get-ChildItem -Force`
@@ -346,6 +422,17 @@ Current phase: Phase 1 - Day 1-5.
 - `git add task.txt` failed because `.git/index.lock` already exists.
 - `git --no-optional-locks status --short --branch`
 - `git --no-optional-locks diff -- task.txt`
+- `git status`
+- `python -m pip install -r requirements.txt`
+- `python -c "import app.main; print('import ok')"`
+- `Get-CimInstance Win32_Process -Filter "name = 'python.exe'"`
+- `Stop-Process -Id 32608 -Force -ErrorAction SilentlyContinue`
+- `Start-Process -FilePath python -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 8000' ...`
+- `Invoke-RestMethod http://127.0.0.1:8000/health`
+- `Invoke-RestMethod http://127.0.0.1:8000/api/tools`
+- `Invoke-RestMethod -Uri http://127.0.0.1:8000/api/tasks -Method POST ...`
+- `Invoke-RestMethod http://127.0.0.1:8000/api/reports/{run_id}`
+- `Stop-Process -Id 19012 -Force`
 
 ## Test / Smoke Results
 
@@ -358,6 +445,13 @@ Current phase: Phase 1 - Day 1-5.
   - Planning document and GPT Researcher reference directory confirmed.
   - Git remote confirmed.
   - No FastAPI, database, Agent, or Tool Registry code was created.
+- Phase 1 Day1-3 smoke checks completed:
+  - `python -c "import app.main; print('import ok')"` succeeded.
+  - `GET /health` succeeded.
+  - `GET /api/tools` succeeded and returned 5 mock tools.
+  - `POST /api/tasks` succeeded and returned a mock pending `run_id`.
+  - `GET /api/reports/{run_id}` succeeded and returned mock Markdown.
+  - The non-blocking Uvicorn process was stopped after verification.
 
 ## Git Checkpoints
 
@@ -387,19 +481,25 @@ Actual checkpoints:
   next commit may be blocked until the lock is cleared.
 - Checkpoint commit for this documentation update is pending because
   `git add task.txt` failed on the stale Git lock.
+- The previous long-running Uvicorn attempt used `--reload`, which left a
+  service process after the user interrupted the turn. The process was located
+  by command line and stopped before the final Day1-3 verification.
 - GPT Researcher is large and should remain a reference only; avoid copying
   source structure blindly.
 - MCP should remain late-stage and optional to avoid blocking the MVP.
 - RAG backend choice is still open; prefer a lightweight local implementation
   unless Phase 2 needs Chroma/FAISS.
+- The current `/api/tools` endpoint is a mock catalog, not a real Tool Registry.
+- Task creation is mock-only and does not create `agent_runs` rows yet.
 
 ## Next Actions
 
-Recommended next Phase 1 start after the Git lock is cleared:
+Recommended next Phase 1 start:
 
-1. Phase 1 Step 2: create minimal Python project structure and dependencies.
-2. Add FastAPI app with `GET /health`.
-3. Add SQLAlchemy database setup and `agent_runs` / `tool_traces` models.
-4. Implement minimal `POST /api/tasks` to create a pending run row.
-5. Implement Tool Registry base and `GET /api/tools`.
-6. Run local smoke checks, update `task.txt`, then checkpoint commit and push.
+1. Day4: add SQLite + SQLAlchemy dependency and database configuration.
+2. Create `agent_runs` and `tool_traces` ORM models matching `AGENTS.md`.
+3. Add database initialization on app startup.
+4. Change `POST /api/tasks` from mock-only to creating a pending `agent_runs`
+   row.
+5. Keep `/api/tools` as mock catalog until the real Tool Registry step.
+6. Add focused tests or smoke checks for DB creation and task persistence.
