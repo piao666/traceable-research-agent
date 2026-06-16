@@ -2,12 +2,13 @@
 
 from app.tools.base import RiskLevel, ToolSpec
 from app.tools.file_reader import read_file
+from app.tools.rag_search import search_rag
 from app.tools.registry import register_tool
 from app.tools.sql_query import run_query
 
 
 def register_default_tools() -> None:
-    """Register default tools, wiring Day6-8 handlers where available."""
+    """Register default tools, wiring implemented Phase 2 handlers."""
 
     register_tool(
         ToolSpec(
@@ -39,10 +40,11 @@ def register_default_tools() -> None:
             name="rag_search",
             description="Search local vector index and return top-k chunks.",
             input_schema={"query": "string", "top_k": "integer"},
-            output_schema={"hits": "array"},
+            output_schema={"query": "string", "top_k": "integer", "hits": "array"},
             risk_level=RiskLevel.LOW,
             tags=["rag", "search", "read-only"],
-        )
+        ),
+        handler=search_rag,
     )
     register_tool(
         ToolSpec(

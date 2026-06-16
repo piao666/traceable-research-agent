@@ -1,7 +1,7 @@
 # Traceable Research Agent
 
 Traceable Research Agent is an independent FastAPI project for building a
-traceable task-oriented research agent. The Day8 version exposes health, task,
+traceable task-oriented research agent. The Day9 version exposes health, task,
 tool catalog, tool execution, trace, and report endpoints, with task runs and
 tool traces persisted to local SQLite.
 
@@ -43,8 +43,13 @@ Invoke-RestMethod `
 - `sql_query` is a real read-only handler against `workspace/demo.sqlite`. It
   allows only `SELECT` or `WITH`, rejects destructive keywords, appends a limit
   when needed, and caps returned rows at 100.
+- `rag_search` is a real read-only handler against
+  `workspace/index/rag_index.json`. It accepts `query` and `top_k`, caps
+  `top_k` at 10, returns top-k chunks with `source`, `chunk_id`, `score`, and
+  `text`, handles missing indexes with `metadata.error_type=index_missing`, and
+  rejects empty queries with `metadata.error_type=invalid_args`.
 - `POST /api/tools/{tool_name}/execute` accepts optional `run_id` and `step_no`
-  fields for Day6-8 smoke verification. When `run_id` exists, the API writes a
+  fields for Phase 2 smoke verification. When `run_id` exists, the API writes a
   `tool_traces` row for success, failure, or safety rejection.
 - The RAG foundation can load `.md`/`.txt` files from `workspace/docs`, split
   them into overlapping character chunks, embed them with deterministic
@@ -63,8 +68,9 @@ Runtime artifacts are intentionally ignored by Git: `workspace/demo.sqlite`,
   tables, database-backed task creation/status, and reserved trace listing.
 - Implemented: Tool Registry metadata with `ToolSpec`, `ToolResult`,
   `register_tool`, `get_tool`, `list_tools`, and `execute_tool`.
-- Implemented: real `file_reader`, real `sql_query`, trace logging through the
-  tool execution API, and lightweight local RAG indexing/query modules.
-- Not implemented yet: formal `rag_search` Tool Registry handler, real
-  planner/executor, real reporter, MCP/GitHub integration, HITL, eval cases,
-  and persistent report files.
+- Implemented: real `file_reader`, real `sql_query`, real `rag_search`, trace
+  logging through the tool execution API, and lightweight local RAG
+  indexing/query modules.
+- Not implemented yet: Planner, Executor, Reporter, MCP/GitHub integration,
+  HITL, eval cases, persistent report files, and full automatic task execution
+  from `POST /api/tasks`.

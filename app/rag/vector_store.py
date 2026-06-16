@@ -33,7 +33,7 @@ class LocalVectorStore:
     @classmethod
     def load(cls, index_path: str | Path) -> "LocalVectorStore":
         path = Path(index_path)
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return cls(records=data.get("records", []))
 
     def save(self, index_path: str | Path) -> Path:

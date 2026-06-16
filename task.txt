@@ -266,8 +266,10 @@ Current phase: Phase 2 - Day 6-8 combined task.
   trace writing through execute API.
 - [x] Day8: implement lightweight local RAG loader, chunker, deterministic
   embeddings, JSON vector store, build script, and smoke query script.
-- [x] Keep `POST /api/tasks` as task creation only; no Planner, Executor, RAG
-  tool registry handler, Reporter, MCP, or HITL added in this round.
+- [x] Day9: connect `rag_search` as a real Tool Registry handler, including
+  success, invalid query, missing index, and no-hit trace paths.
+- [x] Keep `POST /api/tasks` as task creation only; no Planner, Executor,
+  Reporter, MCP, or HITL added in this round.
 
 ## Completed Work Log
 
@@ -604,6 +606,127 @@ Current phase: Phase 2 - Day 6-8 combined task.
     `workspace/index/rag_index.json`, trace success/empty/index-missing paths,
     and run a Phase 2 checkpoint smoke before commit.
 
+2026-06-16 21:50:15 +08:00 - Phase 2 Day9 rag_search Tool Registry handler:
+
+- Start state:
+  - `git status --short --branch`: `## main...origin/main`.
+  - `git status --porcelain`: clean.
+  - `git pull origin main`: already up to date.
+- RAG foundation pre-check:
+  - Confirmed these files exist:
+    - `app/rag/loader.py`
+    - `app/rag/chunker.py`
+    - `app/rag/embeddings.py`
+    - `app/rag/vector_store.py`
+    - `app/rag/build_index.py`
+    - `scripts/build_rag_index.py`
+    - `scripts/smoke_rag_query.py`
+    - `workspace/docs/demo_research_note.md`
+  - `python -m compileall app tests scripts`: succeeded.
+  - `python scripts/build_rag_index.py`: built 1 document into 3 chunks.
+  - `python scripts/smoke_rag_query.py`: returned 3 top-k chunk previews; best
+    hit was `demo_research_note.md#0` with score `0.489702`.
+- Implemented `rag_search` handler:
+  - New file: `app/tools/rag_search.py`.
+  - Default index: `workspace/index/rag_index.json`.
+  - Input: `query` required, `top_k` optional with default `3`, min clamped to
+    `1`, max clamped to `10`.
+  - Empty query returns `success=false`,
+    `metadata.error_type=invalid_args`.
+  - Missing index returns `success=false`,
+    `metadata.error_type=index_missing`, and error message:
+    `RAG index not found, run scripts/build_rag_index.py first.`
+  - Normal result returns `output.query`, `output.top_k`, and `output.hits`.
+    Each hit includes `source`, `chunk_id`, `score`, and `text`.
+  - Empty index/no hits returns `success=true`, `hits=[]`, and an explicit
+    no-hits output summary.
+  - JSON load/search exceptions return stable `success=false` results with
+    `metadata.error_type=search_error`.
+- Registry connection:
+  - Updated `app/tools/defaults.py` so `rag_search` registers the real handler.
+  - Kept `file_reader` and `sql_query` registered as real handlers.
+  - Kept `mcp_github_search` and `report_writer` as stubs.
+  - `/api/tools` confirms `rag_search` remains `enabled=true`,
+    `risk_level=low`, and `requires_confirmation=false`.
+- Minimal RAG robustness fix:
+  - Updated `app/rag/vector_store.py` to read JSON index with `utf-8-sig`.
+  - Reason: temporary PowerShell-generated JSON may include a BOM; the handler
+    should still support it and return no-hit success for empty indexes.
+- Service metadata:
+  - Updated `app/config.py` phase to `day9`.
+  - Updated `app/main.py` description to Day9 file/sql/rag tools.
+- README updated:
+  - Documented real `rag_search`, `query`/`top_k`, top-k output fields,
+    `index_missing`, invalid query behavior, trace writing, and current
+    unimplemented scope.
+- Validation commands and results:
+  - `python -m pip install -r requirements.txt`: all requirements already
+    satisfied.
+  - `python -m compileall app tests scripts`: succeeded.
+  - `python scripts/init_demo_db.py`: generated ignored `workspace/demo.sqlite`.
+  - `python scripts/build_rag_index.py`: rebuilt ignored
+    `workspace/index/rag_index.json`.
+  - `python scripts/smoke_rag_query.py`: succeeded with 3 hits.
+  - Started Uvicorn in a non-blocking hidden process without `--reload`, waited
+    5 seconds, ran API smoke checks, stopped the process, and confirmed no
+    residual `uvicorn app.main:app` Python process remained.
+- API smoke results:
+  - `GET /health`: `status=ok`, `service=traceable-research-agent`,
+    `phase=day9`.
+  - Created run: `e78671129eea4d88a24e67812a039718`.
+  - `rag_search` success:
+    - Query: `trace tool registry`, `top_k=3`.
+    - Summary: `rag_search returned 3 hits for query: trace tool registry`.
+    - Top hit: `demo_research_note.md#0`.
+  - `rag_search` invalid query:
+    - Query: whitespace.
+    - Result: `success=false`.
+    - Error: `Missing required argument: query.`
+    - `metadata.error_type=invalid_args`.
+  - `file_reader` regression:
+    - Input: `demo_research_note.md`, `max_chars=800`.
+    - Summary: `Read demo_research_note.md: 800 chars (truncated)`.
+  - `sql_query` regression:
+    - Query: `SELECT id, title, category FROM documents`, `limit=5`.
+    - Summary: `Returned 5 row(s) with columns: id, title, category.`
+  - `rag_search` index_missing:
+    - Temporarily renamed `workspace/index/rag_index.json` to
+      `rag_index.json.bak`.
+    - Result: `success=false`.
+    - Error: `RAG index not found, run scripts/build_rag_index.py first.`
+    - `metadata.error_type=index_missing`.
+    - Restored the original index after the smoke check.
+  - `rag_search` no-hit / empty-index path:
+    - Temporarily wrote an empty runtime index with `records=[]`.
+    - Result: `success=true`.
+    - Summary: `rag_search returned no hits for query: trace registry`.
+    - Hits: `0`.
+    - Restored the original index after the smoke check.
+  - Trace endpoint returned 6 rows:
+    - `success: 4`
+    - `failed: 2`
+    - No `rejected` traces were expected because Day9 RAG invalid/index errors
+      are not `safety_rejected`.
+- Git runtime artifact check:
+  - `git status --ignored --short workspace` showed
+    `workspace/demo.sqlite`, `workspace/index/`, and
+    `workspace/traceable_research_agent.sqlite` as ignored.
+  - `git ls-files workspace` returned only:
+    - `workspace/data/.gitkeep`
+    - `workspace/docs/demo_research_note.md`
+- Current intentionally unimplemented scope:
+  - Agent Planner.
+  - Executor.
+  - Reporter and persistent Markdown reports.
+  - MCP/GitHub.
+  - HITL.
+  - Eval cases.
+  - Full automatic task execution from `POST /api/tasks`.
+- Next step:
+  - Phase 2 CheckPoint should run Day6-9 full smoke, create
+    `docs/checkpoints/phase2_day6_9_checkpoint.md`, update README/task log, and
+    then proceed to Phase 3 Day10 Planner.
+
 2026-06-16 15:49:03 +08:00 - Phase 1 Day4 SQLite + SQLAlchemy database foundation:
 
 - Added dependency:
@@ -745,6 +868,16 @@ Current phase: Phase 2 - Day 6-8 combined task.
 - Non-blocking Uvicorn smoke for Day6-8 tool execution and trace writing.
 - `git status --ignored --short workspace`
 - `git ls-files workspace`
+- `python -m compileall app tests scripts`
+- `python scripts/build_rag_index.py`
+- `python scripts/smoke_rag_query.py`
+- Function-level smoke for `app.tools.rag_search.search_rag`.
+- `python -m pip install -r requirements.txt`
+- `python scripts/init_demo_db.py`
+- Non-blocking Uvicorn smoke for Day9 `rag_search`, file/sql regression, trace
+  writing, index-missing, and empty-index paths.
+- `git status --ignored --short workspace`
+- `git ls-files workspace`
 
 ## Test / Smoke Results
 
@@ -791,6 +924,15 @@ Current phase: Phase 2 - Day 6-8 combined task.
     destructive statement rejection, task status, trace query, and mock report.
   - Trace query returned 4 rows with status distribution `success:2`,
     `rejected:2`.
+  - Uvicorn process was stopped after verification and no residual process was
+    found.
+- Phase 2 Day9 smoke checks completed:
+  - Compile check succeeded.
+  - RAG index build and smoke query succeeded.
+  - API smoke succeeded for `rag_search` success, invalid query, index missing,
+    no-hit empty index, `file_reader` regression, and `sql_query` regression.
+  - Trace query returned 6 rows with status distribution `success:4`,
+    `failed:2`.
   - Uvicorn process was stopped after verification and no residual process was
     found.
 
@@ -844,15 +986,18 @@ Actual checkpoints:
 - `workspace/demo.sqlite`, `workspace/traceable_research_agent.sqlite`, and
   `workspace/index/rag_index.json` are runtime artifacts and must remain
   untracked.
+- Day9 now has real `rag_search`; Phase 2 still needs a checkpoint document and
+  one full Day6-9 smoke pass before entering Phase 3.
 
 ## Next Actions
 
-Recommended next Phase 2 Day9 start:
+Recommended next Phase 2 CheckPoint start:
 
-1. Add `app/tools/rag_search.py` as the formal Tool Registry handler.
-2. Load `workspace/index/rag_index.json`, validate query/top_k, and return
-   source, chunk id, score, and text preview.
-3. Write traces for RAG success, empty retrieval, invalid args, and missing
-   index through the existing execute API path.
-4. Run a Phase 2 checkpoint smoke covering file, SQL, RAG, and trace endpoints.
-5. Update README/task log, then commit and push the Phase 2 checkpoint.
+1. Run a full Day6-9 smoke covering `file_reader`, `sql_query`, `rag_search`,
+   task status, trace status distribution, and mock report endpoint.
+2. Create `docs/checkpoints/phase2_day6_9_checkpoint.md` with commands,
+   representative responses, trace examples, limitations, and Phase 3 handoff.
+3. Confirm runtime DB/index files remain ignored.
+4. Commit and push the Phase 2 checkpoint.
+5. Start Phase 3 Day10 with a deterministic Planner that creates and stores a
+   JSON plan without executing automatically from `POST /api/tasks`.
