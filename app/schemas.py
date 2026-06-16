@@ -1,5 +1,6 @@
-"""Pydantic schemas for the Day 1-3 mock API surface."""
+"""Pydantic schemas for the API surface."""
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -15,6 +16,7 @@ class TaskCreateRequest(BaseModel):
     task: str = Field(..., min_length=1)
     report_type: str = "summary"
     source_mode: str = "mock"
+    allowed_tools: list[str] | None = None
 
 
 class TaskCreateResponse(BaseModel):
@@ -27,12 +29,33 @@ class TaskCreateResponse(BaseModel):
 
 class TaskStatusResponse(BaseModel):
     run_id: str
+    task: str
+    report_type: str
+    source_mode: str
     status: str
     current_step: int
     total_steps: int
     report_path: str | None = None
     error_message: str | None = None
-    message: str
+    total_tool_calls: int
+    total_latency_ms: int
+    estimated_cost: float
+    created_at: datetime
+    updated_at: datetime
+
+
+class ToolTraceResponse(BaseModel):
+    trace_id: str
+    run_id: str
+    step_no: int
+    tool_name: str
+    input_summary: str | None = None
+    output_summary: str | None = None
+    status: str
+    latency_ms: int | None = None
+    error_message: str | None = None
+    created_at: datetime
+    finished_at: datetime | None = None
 
 
 class ToolInfo(BaseModel):

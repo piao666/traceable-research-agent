@@ -250,9 +250,12 @@ Current phase: Phase 1 - Day 1-5.
 - [x] Implement mock `GET /api/tools`.
 - [x] Implement mock `GET /api/reports/{run_id}`.
 - [x] Create `docs/gpt_researcher_reading_notes.md`.
-- [ ] Add SQLite + SQLAlchemy models.
-- [ ] Implement database-backed task creation.
-- [ ] Implement Tool Registry base and `/api/tools`.
+- [x] Add SQLite + SQLAlchemy database foundation.
+- [x] Add `agent_runs` and `tool_traces` ORM models.
+- [x] Implement database-backed task creation.
+- [x] Implement database-backed task status lookup.
+- [x] Reserve trace list endpoint for `tool_traces`.
+- [ ] Implement Tool Registry base while keeping `/api/tools` contract stable.
 - [ ] Run Phase 1 smoke checks.
 - [ ] Phase 1 checkpoint commit and push after skeleton work.
 
@@ -389,6 +392,79 @@ Current phase: Phase 1 - Day 1-5.
   - Day4 should add SQLite + SQLAlchemy database setup and create the
     `agent_runs` / `tool_traces` models while keeping the existing API contract.
 
+2026-06-16 15:49:03 +08:00 - Phase 1 Day4 SQLite + SQLAlchemy database foundation:
+
+- Added dependency:
+  - `sqlalchemy`
+- Added database foundation:
+  - `app/database.py`
+  - Default SQLite path: `workspace/traceable_research_agent.sqlite`
+  - Exposes `DATABASE_URL`, `engine`, `SessionLocal`, `Base`, `get_db()`, and
+    `init_db()`.
+  - Ensures `workspace/` exists before using the SQLite file.
+- Added trace persistence package:
+  - `app/trace/__init__.py`
+  - `app/trace/models.py`
+  - `app/trace/store.py`
+- Created ORM models:
+  - `AgentRun` maps to `agent_runs`.
+  - `ToolTrace` maps to `tool_traces`.
+  - Relationship: `AgentRun.traces` <-> `ToolTrace.run`.
+  - Timestamps use UTC via a shared `utc_now()` helper.
+- Added store-layer helpers:
+  - `create_agent_run(db, task, report_type, source_mode, allowed_tools=None)`
+  - `get_agent_run(db, run_id)`
+  - `list_tool_traces(db, run_id)`
+  - `create_tool_trace(...)`
+- Updated API schemas:
+  - `TaskCreateRequest` now accepts `allowed_tools`.
+  - `TaskStatusResponse` now returns persisted task metadata, progress,
+    cost/latency counters, and timestamps.
+  - Added `ToolTraceResponse`.
+- Updated startup:
+  - `app/main.py` now calls `init_db()` in FastAPI lifespan startup.
+  - `/health` phase changed to `day4`.
+- Updated task API:
+  - `POST /api/tasks` now creates a real pending `agent_runs` row.
+  - `GET /api/tasks/{run_id}` now reads from SQLite and returns 404 when the run
+    does not exist.
+  - `GET /api/tasks/{run_id}/trace` now validates the run exists and returns
+    that run's `tool_traces`; Day4 allows an empty list.
+- Preserved boundary:
+  - `/api/tools` remains the Day1-3 mock catalog.
+  - `/api/reports/{run_id}` remains mock Markdown.
+  - No Agent Planner, Executor, real Tool Registry, real tool execution, RAG,
+    or MCP was implemented.
+- Local verification:
+  - `python -m pip install -r requirements.txt` installed `sqlalchemy` and
+    confirmed existing FastAPI/Uvicorn/Pydantic/python-dotenv dependencies.
+  - Started Uvicorn in a non-blocking process, waited 5 seconds, verified API
+    endpoints, and stopped process ID `5652`.
+  - Confirmed no `uvicorn app.main:app` Python process remained afterward.
+- API verification results:
+  - `GET /health` returned:
+    `{"status":"ok","service":"traceable-research-agent","phase":"day4"}`
+  - `GET /api/tools` returned 5 mock tools.
+  - `POST /api/tasks` created run
+    `ff42fff7969c4934bc90d531cb378962` with status `pending`.
+  - `GET /api/tasks/{run_id}` returned persisted task fields from
+    `agent_runs`.
+  - `GET /api/tasks/{run_id}/trace` returned an empty trace list.
+  - `GET /api/reports/{run_id}` returned mock Markdown.
+- Database verification:
+  - `workspace/traceable_research_agent.sqlite` was generated.
+  - SQLite table check returned `agent_runs` and `tool_traces`.
+  - `agent_runs` contained 1 row from the Day4 smoke test.
+- Current intentionally unimplemented scope:
+  - Real Tool Registry abstractions and execution path.
+  - Tool trace creation during real tool execution.
+  - file_reader, sql_query, rag_search, report_writer real handlers.
+  - Agent Planner, Executor, RAG, MCP, HITL, and persistent report files.
+- Next step:
+  - Day5 should implement `ToolSpec`, `ToolResult`, `register_tool`,
+    `list_tools`, and `execute_tool` skeletons, then wire `/api/tools` to the
+    registry metadata without implementing real file/SQL/RAG tool behavior yet.
+
 ## Commands Run
 
 - `Get-ChildItem -Force`
@@ -433,6 +509,18 @@ Current phase: Phase 1 - Day 1-5.
 - `Invoke-RestMethod -Uri http://127.0.0.1:8000/api/tasks -Method POST ...`
 - `Invoke-RestMethod http://127.0.0.1:8000/api/reports/{run_id}`
 - `Stop-Process -Id 19012 -Force`
+- `python -m pip install -r requirements.txt`
+- `Start-Process -FilePath python -ArgumentList '-m uvicorn app.main:app --host 127.0.0.1 --port 8000' ...`
+- `Invoke-RestMethod http://127.0.0.1:8000/health`
+- `Invoke-RestMethod http://127.0.0.1:8000/api/tools`
+- `Invoke-RestMethod -Uri http://127.0.0.1:8000/api/tasks -Method POST ...`
+- `Invoke-RestMethod http://127.0.0.1:8000/api/tasks/{run_id}`
+- `Invoke-RestMethod http://127.0.0.1:8000/api/tasks/{run_id}/trace`
+- `Invoke-RestMethod http://127.0.0.1:8000/api/reports/{run_id}`
+- `Stop-Process -Id 5652 -Force`
+- `Test-Path -LiteralPath 'workspace\traceable_research_agent.sqlite'`
+- `python -c "import sqlite3; conn=sqlite3.connect('workspace/traceable_research_agent.sqlite'); ..."`
+- `python -m compileall app tests`
 
 ## Test / Smoke Results
 
@@ -452,6 +540,15 @@ Current phase: Phase 1 - Day 1-5.
   - `POST /api/tasks` succeeded and returned a mock pending `run_id`.
   - `GET /api/reports/{run_id}` succeeded and returned mock Markdown.
   - The non-blocking Uvicorn process was stopped after verification.
+- Phase 1 Day4 smoke checks completed:
+  - Dependency installation succeeded.
+  - `python -m compileall app tests` succeeded.
+  - `GET /health`, `GET /api/tools`, `POST /api/tasks`,
+    `GET /api/tasks/{run_id}`, `GET /api/tasks/{run_id}/trace`, and
+    `GET /api/reports/{run_id}` all succeeded.
+  - SQLite database file was generated.
+  - `agent_runs` and `tool_traces` tables exist.
+  - Uvicorn process was stopped after verification.
 
 ## Git Checkpoints
 
@@ -490,16 +587,20 @@ Actual checkpoints:
 - RAG backend choice is still open; prefer a lightweight local implementation
   unless Phase 2 needs Chroma/FAISS.
 - The current `/api/tools` endpoint is a mock catalog, not a real Tool Registry.
-- Task creation is mock-only and does not create `agent_runs` rows yet.
+- Task creation now writes `agent_runs`, but no Agent execution or real tool
+  traces are created yet.
+- `workspace/traceable_research_agent.sqlite` is local generated state and is
+  intentionally ignored by `.gitignore`.
 
 ## Next Actions
 
 Recommended next Phase 1 start:
 
-1. Day4: add SQLite + SQLAlchemy dependency and database configuration.
-2. Create `agent_runs` and `tool_traces` ORM models matching `AGENTS.md`.
-3. Add database initialization on app startup.
-4. Change `POST /api/tasks` from mock-only to creating a pending `agent_runs`
-   row.
-5. Keep `/api/tools` as mock catalog until the real Tool Registry step.
-6. Add focused tests or smoke checks for DB creation and task persistence.
+1. Day5: add `app/tools/base.py` and `app/tools/registry.py`.
+2. Define `ToolSpec` and `ToolResult`.
+3. Implement `register_tool`, `list_tools`, and an `execute_tool` skeleton.
+4. Register metadata-only placeholder specs for file, SQL, RAG, report, and
+   GitHub/MCP tools.
+5. Change `/api/tools` to read metadata from the registry while still avoiding
+   real tool execution.
+6. Add smoke checks for registry listing and unknown-tool behavior.

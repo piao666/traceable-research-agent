@@ -1,9 +1,8 @@
 # Traceable Research Agent
 
 Traceable Research Agent is an independent FastAPI project for building a
-traceable task-oriented research agent. The Day 1-3 version is a runnable mock
-skeleton: it exposes health, task, tool catalog, and report endpoints without
-database persistence or real tool execution.
+traceable task-oriented research agent. The Day4 version exposes health, task,
+tool catalog, and report endpoints, with task runs persisted to local SQLite.
 
 ## Local Start
 
@@ -26,7 +25,9 @@ Invoke-RestMethod `
 
 ## Current Scope
 
-- Implemented: FastAPI app, `/health`, mock `/api/tasks`, mock `/api/tools`,
-  mock `/api/reports/{run_id}`.
-- Not implemented yet: SQLite, SQLAlchemy models, real Tool Registry, Agent
-  Planner, Executor, RAG, MCP, and persistent reports.
+- Implemented: FastAPI app, `/health`, database-backed `/api/tasks`, mock
+  `/api/tools`, and mock `/api/reports/{run_id}`.
+- Implemented: SQLite database setup, `agent_runs` and `tool_traces` ORM
+  tables, database-backed task creation/status, and reserved trace listing.
+- Not implemented yet: real Tool Registry, Agent Planner, Executor, RAG, MCP,
+  and persistent reports.
