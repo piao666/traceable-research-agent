@@ -1,7 +1,11 @@
-"""Tool Registry metadata endpoints."""
+"""Tool Registry metadata and execution endpoints."""
 
-from fastapi import APIRouter, HTTPException
+from time import perf_counter
 
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.database import get_db
 from app.schemas import (
     ToolExecuteRequest,
     ToolExecuteResponse,
@@ -10,6 +14,8 @@ from app.schemas import (
 )
 from app.tools import registry
 from app.tools.base import ToolResult, ToolSpec
+from app.trace import store
+from app.trace.logger import record_tool_result
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -59,8 +65,31 @@ async def get_tool(tool_name: str) -> ToolInfo:
 async def execute_tool(
     tool_name: str,
     request: ToolExecuteRequest,
+    db: Session = Depends(get_db),
 ) -> ToolExecuteResponse:
-    """Execute a registry stub without writing trace records."""
+    """Execute a registry tool and optionally write one trace row.
 
+    The optional `run_id`/`step_no` path exists for Day6-8 tool verification. It
+    is not an Agent Executor implementation.
+    """
+
+    if request.run_id:
+        run = store.get_agent_run(db, request.run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Task run not found")
+
+    started = perf_counter()
     result = registry.execute_tool(tool_name, request.arguments)
+    latency_ms = int((perf_counter() - started) * 1000)
+
+    if request.run_id:
+        record_tool_result(
+            db=db,
+            run_id=request.run_id,
+            step_no=request.step_no,
+            tool_name=tool_name,
+            input_data=request.arguments or {},
+            result=result,
+            latency_ms=latency_ms,
+        )
     return _tool_execute_response(result)

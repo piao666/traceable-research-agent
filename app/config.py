@@ -4,10 +4,10 @@ from pydantic import BaseModel
 
 
 class Settings(BaseModel):
-    """Small settings object; expanded later for database and model providers."""
+    """Small settings object; expanded later for model providers."""
 
     service_name: str = "traceable-research-agent"
-    phase: str = "day5"
+    phase: str = "day8"
     api_prefix: str = "/api"
 
 

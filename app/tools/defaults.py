@@ -1,15 +1,13 @@
-"""Default Tool Registry metadata for Phase 1."""
+"""Default Tool Registry metadata and Phase 2 handlers."""
 
 from app.tools.base import RiskLevel, ToolSpec
+from app.tools.file_reader import read_file
 from app.tools.registry import register_tool
+from app.tools.sql_query import run_query
 
 
 def register_default_tools() -> None:
-    """Register metadata-only default tools.
-
-    Handlers are intentionally omitted in Day5. Calling `execute_tool` for these
-    tools returns a not-implemented ToolResult.
-    """
+    """Register default tools, wiring Day6-8 handlers where available."""
 
     register_tool(
         ToolSpec(
@@ -19,7 +17,8 @@ def register_default_tools() -> None:
             output_schema={"content": "string", "source_path": "string"},
             risk_level=RiskLevel.LOW,
             tags=["local", "file", "read-only"],
-        )
+        ),
+        handler=read_file,
     )
     register_tool(
         ToolSpec(
@@ -32,7 +31,8 @@ def register_default_tools() -> None:
             output_schema={"rows": "array", "row_count": "integer"},
             risk_level=RiskLevel.MEDIUM,
             tags=["database", "sql", "read-only"],
-        )
+        ),
+        handler=run_query,
     )
     register_tool(
         ToolSpec(

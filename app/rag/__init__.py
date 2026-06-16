@@ -1,0 +1,2 @@
+"""Lightweight local RAG foundation."""
+

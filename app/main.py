@@ -23,14 +23,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Traceable Research Agent",
     version="0.1.0",
-    description="Day 5 API skeleton with SQLite and Tool Registry metadata.",
+    description="Day 8 API with file/sql tools, traces, and local RAG foundation.",
     lifespan=lifespan,
 )
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Return service readiness for the Day 5 skeleton."""
+    """Return service readiness for the current phase."""
 
     return HealthResponse(
         status="ok",

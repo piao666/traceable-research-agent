@@ -76,6 +76,8 @@ class ToolListResponse(BaseModel):
 
 class ToolExecuteRequest(BaseModel):
     arguments: dict[str, Any] | None = None
+    run_id: str | None = None
+    step_no: int = 1
 
 
 class ToolExecuteResponse(BaseModel):

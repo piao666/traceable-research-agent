@@ -1,4 +1,4 @@
-"""Mock report endpoint for the Day 1-3 skeleton."""
+"""Mock report endpoint until the report writer is implemented."""
 
 from fastapi import APIRouter
 
@@ -21,5 +21,5 @@ async def get_report(run_id: str) -> ReportResponse:
         run_id=run_id,
         markdown=markdown,
         report_path=None,
-        message="Mock report endpoint. No report file is generated in Day 1-3.",
+        message="Mock report endpoint. No report file is generated in the current phase.",
     )

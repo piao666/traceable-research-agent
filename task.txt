@@ -232,7 +232,7 @@ Evaluation requirements:
 
 ## Current Phase Checklist
 
-Current phase: Phase 1 - Day 1-5.
+Current phase: Phase 2 - Day 6-8 combined task.
 
 - [x] Confirm independent repository path.
 - [x] Phase 1 Step 1: project baseline check and task file confirmation.
@@ -257,7 +257,17 @@ Current phase: Phase 1 - Day 1-5.
 - [x] Reserve trace list endpoint for `tool_traces`.
 - [x] Implement Tool Registry base while keeping `/api/tools` contract stable.
 - [x] Run Day5 Tool Registry smoke checks.
-- [ ] Phase 1 checkpoint commit and push after skeleton work.
+- [x] Phase 1 checkpoint commit and push after skeleton work.
+- [x] Day6: implement real `file_reader` with `workspace/docs` whitelist,
+  path traversal rejection, supported text formats, `max_chars`, stable
+  failures, and optional trace writing through execute API.
+- [x] Day7: implement real `sql_query` with read-only SQL guard, dangerous
+  keyword rejection, limit enforcement, demo SQLite seed script, and optional
+  trace writing through execute API.
+- [x] Day8: implement lightweight local RAG loader, chunker, deterministic
+  embeddings, JSON vector store, build script, and smoke query script.
+- [x] Keep `POST /api/tasks` as task creation only; no Planner, Executor, RAG
+  tool registry handler, Reporter, MCP, or HITL added in this round.
 
 ## Completed Work Log
 
@@ -462,6 +472,138 @@ Current phase: Phase 1 - Day 1-5.
     `/api/tasks/{run_id}/trace`, `/api/tools`, and report mock.
   - Confirm GitHub is clean and runtime artifacts are ignored.
 
+2026-06-16 21:43:43 +08:00 - Phase 2 Day6-8 file/sql/RAG foundations:
+
+- Start state:
+  - Ran `git status --short --branch`: `## main...origin/main`.
+  - Ran `git pull origin main`: already up to date.
+  - Worktree was clean before implementation.
+- `.gitignore` updated:
+  - Added recursive `**/__pycache__/` coverage.
+  - Added runtime ignores for `workspace/index/`, `workspace/rag_index/`, and
+    `workspace/uploads/`.
+  - Confirmed local SQLite files and generated RAG index remain ignored.
+- Added small demo workspace files:
+  - `workspace/docs/demo_research_note.md`
+  - `workspace/data/.gitkeep`
+- Added demo DB script:
+  - `scripts/init_demo_db.py`
+  - Generates ignored runtime DB: `workspace/demo.sqlite`.
+  - Tables: `documents`, `metrics`.
+  - Seeded sample document and metric rows for SQL smoke checks.
+- Implemented real `file_reader`:
+  - File: `app/tools/file_reader.py`
+  - Reads only under resolved `workspace/docs`.
+  - Rejects path traversal and absolute paths outside the whitelist after
+    `Path.resolve()` / `relative_to()` checks.
+  - Supports `.txt`, `.md`, `.csv`, `.json`, `.py`, `.log`.
+  - `.docx`, `.pdf`, `.xlsx` return `format not implemented in Day6`.
+  - Enforces default `max_chars=8000` and hard max `20000`.
+  - Stable `ToolResult` responses for missing file, unsafe path, unsupported
+    extension, decode failure, and read failure.
+- Implemented real `sql_query`:
+  - File: `app/tools/sql_query.py`
+  - Default DB: `workspace/demo.sqlite`.
+  - Allows only `SELECT` or `WITH`.
+  - Rejects `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`,
+    `REPLACE`, `TRUNCATE`, `ATTACH`, `DETACH`, `PRAGMA`, and `VACUUM`.
+  - Rejects multiple statements.
+  - Uses default `limit=50`, max `limit=100`, and appends `LIMIT` when missing.
+  - Stable `ToolResult` responses for safety rejection, missing DB, and SQL
+    execution errors.
+- Added trace writing helper:
+  - File: `app/trace/logger.py`
+  - Function: `record_tool_result(db, run_id, step_no, tool_name, input_data,
+    result, latency_ms=None)`.
+  - Serializes input/output safely, stores concise summaries, marks status as
+    `success`, `rejected`, or `failed`, and writes `finished_at`.
+- Updated registry/API:
+  - `app/tools/defaults.py` now registers `file_reader` and `sql_query` with
+    real handlers.
+  - `rag_search`, `mcp_github_search`, and `report_writer` intentionally remain
+    unimplemented handlers for this round.
+  - `app/schemas.py` extends `ToolExecuteRequest` with optional `run_id` and
+    `step_no`.
+  - `app/api/tools.py` writes `tool_traces` only when `run_id` is provided and
+    validates that the run exists first.
+  - `POST /api/tasks` still only creates a pending run.
+- Added RAG foundation:
+  - `app/rag/loader.py`: loads `.md` / `.txt` files from `workspace/docs`.
+  - `app/rag/chunker.py`: character chunks with default size 500 and overlap
+    80.
+  - `app/rag/embeddings.py`: deterministic bag-of-words vectors and cosine
+    similarity.
+  - `app/rag/vector_store.py`: in-memory records plus JSON save/load/search.
+  - `app/rag/build_index.py`: build function for local docs.
+  - `scripts/build_rag_index.py`: builds ignored
+    `workspace/index/rag_index.json`.
+  - `scripts/smoke_rag_query.py`: queries `"trace tool registry"` and prints
+    top-k chunk previews.
+- README updated:
+  - Added Day6-8 setup commands.
+  - Documented real `file_reader`, real `sql_query`, trace-writing execute API,
+    RAG foundation, ignored runtime artifacts, and still-unimplemented scope.
+- Validation commands and results:
+  - `python -m pip install -r requirements.txt`: all requirements already
+    satisfied.
+  - `python -m compileall app tests scripts`: succeeded.
+  - `python scripts/init_demo_db.py`: generated `workspace/demo.sqlite`.
+  - `python scripts/build_rag_index.py`: built 1 document into 3 chunks at
+    `workspace/index/rag_index.json`.
+  - `python scripts/smoke_rag_query.py`: returned 3 top-k chunk previews;
+    best hit was `demo_research_note.md#0` with score `0.489702`.
+  - Started Uvicorn in a non-blocking hidden process without `--reload`, waited
+    5 seconds, ran API smoke checks, stopped the process, and confirmed no
+    `uvicorn app.main:app` Python process remained.
+- API smoke results:
+  - `GET /health`: `status=ok`, `service=traceable-research-agent`,
+    `phase=day8`.
+  - Created run: `4f645b74358142128220f584a64a4739`.
+  - `file_reader` success:
+    - Input: `demo_research_note.md`, `max_chars=1200`.
+    - Result: `success=true`.
+    - Summary: `Read demo_research_note.md: 1200 chars (truncated)`.
+  - `file_reader` safety rejection:
+    - Input: `../task.txt`.
+    - Result: `success=false`.
+    - Error: `Path is outside workspace/docs.`
+    - Trace status: `rejected`.
+  - `sql_query` success:
+    - Query: `SELECT id, title, category FROM documents`, `limit=5`.
+    - Result: `success=true`.
+    - Summary: `Returned 5 row(s) with columns: id, title, category.`
+    - Final query: `SELECT id, title, category FROM documents LIMIT 5`.
+  - `sql_query` safety rejection:
+    - Query: `DELETE FROM documents`.
+    - Result: `success=false`.
+    - Error: `Only SELECT or WITH read-only queries are allowed.`
+    - Trace status: `rejected`.
+  - Trace endpoint for the smoke run returned 4 traces:
+    - `success: 2`
+    - `rejected: 2`
+  - `GET /api/tasks/{run_id}` still returned the pending run; no automatic
+    execution was introduced.
+  - `GET /api/reports/{run_id}` remains a mock endpoint.
+- Git runtime artifact check:
+  - `git status --ignored --short workspace` showed generated
+    `workspace/demo.sqlite`, `workspace/index/`, and
+    `workspace/traceable_research_agent.sqlite` as ignored.
+  - `git ls-files workspace` returned no tracked workspace files before
+    staging, as expected.
+- Current intentionally unimplemented scope:
+  - Formal `rag_search` Tool Registry handler and `/api/tools/rag_search/execute`
+    closed loop.
+  - Agent Planner.
+  - Executor.
+  - Reporter and persistent Markdown report files.
+  - MCP/GitHub integration.
+  - HITL confirmation.
+  - Eval cases.
+- Next step:
+  - Day9 should register a real `rag_search` handler, return top-k chunks from
+    `workspace/index/rag_index.json`, trace success/empty/index-missing paths,
+    and run a Phase 2 checkpoint smoke before commit.
+
 2026-06-16 15:49:03 +08:00 - Phase 1 Day4 SQLite + SQLAlchemy database foundation:
 
 - Added dependency:
@@ -594,6 +736,15 @@ Current phase: Phase 1 - Day 1-5.
 - `Invoke-RestMethod http://127.0.0.1:8000/api/tools/file_reader`
 - `Invoke-RestMethod -Uri http://127.0.0.1:8000/api/tools/file_reader/execute -Method POST ...`
 - `Stop-Process -Id 24040 -Force`
+- `git pull origin main`
+- `python -m pip install -r requirements.txt`
+- `python -m compileall app tests scripts`
+- `python scripts/init_demo_db.py`
+- `python scripts/build_rag_index.py`
+- `python scripts/smoke_rag_query.py`
+- Non-blocking Uvicorn smoke for Day6-8 tool execution and trace writing.
+- `git status --ignored --short workspace`
+- `git ls-files workspace`
 
 ## Test / Smoke Results
 
@@ -629,6 +780,19 @@ Current phase: Phase 1 - Day 1-5.
   - Execute stub returned a stable not-implemented result.
   - Day4 database-backed task creation and status lookup still worked.
   - Uvicorn process was stopped after verification.
+- Phase 2 Day6-8 smoke checks completed:
+  - Dependency check succeeded.
+  - Compile check succeeded for `app`, `tests`, and `scripts`.
+  - Demo SQLite database initialization succeeded.
+  - RAG index build succeeded: 1 document, 3 chunks.
+  - RAG smoke query returned 3 top-k chunk previews.
+  - API smoke succeeded for `/health`, task creation, `file_reader` success,
+    `file_reader` path traversal rejection, `sql_query` success, `sql_query`
+    destructive statement rejection, task status, trace query, and mock report.
+  - Trace query returned 4 rows with status distribution `success:2`,
+    `rejected:2`.
+  - Uvicorn process was stopped after verification and no residual process was
+    found.
 
 ## Git Checkpoints
 
@@ -674,14 +838,21 @@ Actual checkpoints:
   intentionally ignored by `.gitignore`.
 - Real tools are still stubs. This is expected for Day5, but Phase 2 should
   connect handlers to trace persistence before claiming real execution ability.
+- Day6-8 scope intentionally leaves `rag_search` as a registry stub. The RAG
+  internals work through build/query scripts, but the formal tool handler is
+  scheduled for Day9.
+- `workspace/demo.sqlite`, `workspace/traceable_research_agent.sqlite`, and
+  `workspace/index/rag_index.json` are runtime artifacts and must remain
+  untracked.
 
 ## Next Actions
 
-Recommended next Phase 1 start:
+Recommended next Phase 2 Day9 start:
 
-1. Phase 1 checkpoint: run final Day1-5 smoke checks.
-2. Clean up README and task log so the project can be explained clearly.
-3. Confirm `workspace/traceable_research_agent.sqlite`, caches, `.env`, and
-   runtime files are not staged.
-4. Commit and push the Phase 1 checkpoint if all checks pass.
-5. Then start Phase 2 with real `file_reader` safety checks and trace writing.
+1. Add `app/tools/rag_search.py` as the formal Tool Registry handler.
+2. Load `workspace/index/rag_index.json`, validate query/top_k, and return
+   source, chunk id, score, and text preview.
+3. Write traces for RAG success, empty retrieval, invalid args, and missing
+   index through the existing execute API path.
+4. Run a Phase 2 checkpoint smoke covering file, SQL, RAG, and trace endpoints.
+5. Update README/task log, then commit and push the Phase 2 checkpoint.
