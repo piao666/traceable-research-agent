@@ -1,63 +1,66 @@
-"""Mock tool catalog endpoint for the Day 1-3 skeleton."""
+"""Tool Registry metadata endpoints."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
-from app.schemas import ToolInfo, ToolListResponse
+from app.schemas import (
+    ToolExecuteRequest,
+    ToolExecuteResponse,
+    ToolInfo,
+    ToolListResponse,
+)
+from app.tools import registry
+from app.tools.base import ToolResult, ToolSpec
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
 
-MOCK_TOOLS = [
-    ToolInfo(
-        name="file_reader",
-        description="Read whitelisted local documents under workspace/docs.",
-        risk_level="low",
-        requires_confirmation=False,
-        enabled=False,
-        input_schema={"path": "string", "max_chars": "integer"},
-        output_schema={"content": "string", "source_path": "string"},
-    ),
-    ToolInfo(
-        name="sql_query",
-        description="Run read-only SELECT/WITH queries against a demo database.",
-        risk_level="medium",
-        requires_confirmation=False,
-        enabled=False,
-        input_schema={"query": "string", "limit": "integer"},
-        output_schema={"rows": "array", "row_count": "integer"},
-    ),
-    ToolInfo(
-        name="rag_search",
-        description="Search indexed document chunks and return traceable hits.",
-        risk_level="low",
-        requires_confirmation=False,
-        enabled=False,
-        input_schema={"query": "string", "top_k": "integer"},
-        output_schema={"hits": "array"},
-    ),
-    ToolInfo(
-        name="mcp_github_search",
-        description="Read-only GitHub/MCP search placeholder for later phases.",
-        risk_level="medium",
-        requires_confirmation=False,
-        enabled=False,
-        input_schema={"query": "string", "repo": "string"},
-        output_schema={"results": "array"},
-    ),
-    ToolInfo(
-        name="report_writer",
-        description="Generate Markdown reports from observations and evidence.",
-        risk_level="low",
-        requires_confirmation=False,
-        enabled=False,
-        input_schema={"run_id": "string", "observations": "array"},
-        output_schema={"markdown": "string", "report_path": "string"},
-    ),
-]
+def _tool_info(spec: ToolSpec) -> ToolInfo:
+    return ToolInfo(
+        name=spec.name,
+        description=spec.description,
+        risk_level=spec.risk_level.value,
+        requires_confirmation=spec.requires_confirmation,
+        enabled=spec.enabled,
+        timeout_seconds=spec.timeout_seconds,
+        input_schema=spec.input_schema,
+        output_schema=spec.output_schema,
+        tags=spec.tags,
+    )
+
+
+def _tool_execute_response(result: ToolResult) -> ToolExecuteResponse:
+    return ToolExecuteResponse(
+        success=result.success,
+        output=result.output,
+        output_summary=result.output_summary,
+        error_message=result.error_message,
+        metadata=result.metadata,
+    )
 
 
 @router.get("", response_model=ToolListResponse)
 async def list_tools() -> ToolListResponse:
-    """Return mock tool metadata without registering executable handlers."""
+    """Return registered tool metadata."""
 
-    return ToolListResponse(tools=MOCK_TOOLS)
+    return ToolListResponse(tools=[_tool_info(spec) for spec in registry.list_tools()])
+
+
+@router.get("/{tool_name}", response_model=ToolInfo)
+async def get_tool(tool_name: str) -> ToolInfo:
+    """Return one registered tool or 404."""
+
+    spec = registry.get_tool(tool_name)
+    if spec is None:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    return _tool_info(spec)
+
+
+@router.post("/{tool_name}/execute", response_model=ToolExecuteResponse)
+async def execute_tool(
+    tool_name: str,
+    request: ToolExecuteRequest,
+) -> ToolExecuteResponse:
+    """Execute a registry stub without writing trace records."""
+
+    result = registry.execute_tool(tool_name, request.arguments)
+    return _tool_execute_response(result)

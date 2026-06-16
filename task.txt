@@ -255,8 +255,8 @@ Current phase: Phase 1 - Day 1-5.
 - [x] Implement database-backed task creation.
 - [x] Implement database-backed task status lookup.
 - [x] Reserve trace list endpoint for `tool_traces`.
-- [ ] Implement Tool Registry base while keeping `/api/tools` contract stable.
-- [ ] Run Phase 1 smoke checks.
+- [x] Implement Tool Registry base while keeping `/api/tools` contract stable.
+- [x] Run Day5 Tool Registry smoke checks.
 - [ ] Phase 1 checkpoint commit and push after skeleton work.
 
 ## Completed Work Log
@@ -392,6 +392,76 @@ Current phase: Phase 1 - Day 1-5.
   - Day4 should add SQLite + SQLAlchemy database setup and create the
     `agent_runs` / `tool_traces` models while keeping the existing API contract.
 
+2026-06-16 15:57:44 +08:00 - Phase 1 Day5 Tool Registry foundation:
+
+- Checked `.gitignore` and confirmed it ignores secrets, virtual environments,
+  Python caches, local SQLite/DB files, and generated reports. Added
+  `workspace/tmp/` so future runtime scratch data is ignored.
+- Added Tool Registry package:
+  - `app/tools/__init__.py`
+  - `app/tools/base.py`
+  - `app/tools/registry.py`
+  - `app/tools/defaults.py`
+- `ToolSpec` fields: `name`, `description`, `input_schema`, `output_schema`,
+  `risk_level`, `requires_confirmation`, `enabled`, `timeout_seconds`, `tags`.
+- `ToolResult` fields: `success`, `output`, `output_summary`,
+  `error_message`, `metadata`.
+- Added `RiskLevel` enum with `low`, `medium`, and `high`.
+- Added `ToolExecutionError` for future handler-level failures.
+- Implemented registry functions:
+  - `register_tool(spec, handler=None)`
+  - `get_tool(name)`
+  - `list_tools()`
+  - `execute_tool(name, arguments=None)`
+- `execute_tool` behavior in Day5:
+  - Unknown tools return `success=False` with `not_found` metadata.
+  - Disabled tools return `success=False` with `disabled` metadata.
+  - Registered tools without handlers return `success=False` and
+    `Tool handler is not implemented yet.`
+  - No trace rows are written in Day5.
+- Registered five default metadata-only tools:
+  - `file_reader`
+  - `sql_query`
+  - `rag_search`
+  - `mcp_github_search`
+  - `report_writer`
+- Updated startup:
+  - `app/main.py` calls `register_default_tools()` in lifespan startup.
+  - `/health` phase changed to `day5`.
+- Updated `/api/tools`:
+  - `GET /api/tools` now reads from Tool Registry, not a hard-coded mock list.
+  - `GET /api/tools/{tool_name}` returns one registered tool or 404.
+  - `POST /api/tools/{tool_name}/execute` exposes the registry execution stub
+    for verification only; it does not call real tools or write traces.
+- Local verification:
+  - `python -m compileall app tests` succeeded.
+  - Started Uvicorn in a non-blocking process, waited 5 seconds, verified APIs,
+    and stopped process ID `24040`.
+  - Confirmed no `uvicorn app.main:app` process remained afterward.
+- API verification results:
+  - `GET /health` returned phase `day5`.
+  - `GET /api/tools` returned 5 registry-backed tools.
+  - `GET /api/tools/file_reader` returned expected metadata:
+    `risk_level=low`, `enabled=true`, `timeout_seconds=30`, tags `local`,
+    `file`, `read-only`.
+  - `POST /api/tools/file_reader/execute` returned `success=false` with
+    `Tool handler is not implemented yet.`
+  - Day4 regression check passed: `POST /api/tasks` still created a pending
+    database run and status/trace endpoints still worked.
+- Current intentionally unimplemented scope:
+  - Real file reading.
+  - Real SQL execution and SQL safety parser.
+  - Real RAG search.
+  - Real report writing.
+  - Real MCP/GitHub integration.
+  - Agent Planner and Executor.
+  - Tool execution trace persistence.
+- Before Phase 1 checkpoint:
+  - Review README and task log for Day1-5 consistency.
+  - Run final smoke checks for `/health`, `/api/tasks`, `/api/tasks/{run_id}`,
+    `/api/tasks/{run_id}/trace`, `/api/tools`, and report mock.
+  - Confirm GitHub is clean and runtime artifacts are ignored.
+
 2026-06-16 15:49:03 +08:00 - Phase 1 Day4 SQLite + SQLAlchemy database foundation:
 
 - Added dependency:
@@ -521,6 +591,9 @@ Current phase: Phase 1 - Day 1-5.
 - `Test-Path -LiteralPath 'workspace\traceable_research_agent.sqlite'`
 - `python -c "import sqlite3; conn=sqlite3.connect('workspace/traceable_research_agent.sqlite'); ..."`
 - `python -m compileall app tests`
+- `Invoke-RestMethod http://127.0.0.1:8000/api/tools/file_reader`
+- `Invoke-RestMethod -Uri http://127.0.0.1:8000/api/tools/file_reader/execute -Method POST ...`
+- `Stop-Process -Id 24040 -Force`
 
 ## Test / Smoke Results
 
@@ -548,6 +621,13 @@ Current phase: Phase 1 - Day 1-5.
     `GET /api/reports/{run_id}` all succeeded.
   - SQLite database file was generated.
   - `agent_runs` and `tool_traces` tables exist.
+  - Uvicorn process was stopped after verification.
+- Phase 1 Day5 smoke checks completed:
+  - Compile check succeeded.
+  - Registry-backed `/api/tools` returned 5 tools.
+  - Single-tool lookup for `file_reader` succeeded.
+  - Execute stub returned a stable not-implemented result.
+  - Day4 database-backed task creation and status lookup still worked.
   - Uvicorn process was stopped after verification.
 
 ## Git Checkpoints
@@ -586,21 +666,22 @@ Actual checkpoints:
 - MCP should remain late-stage and optional to avoid blocking the MVP.
 - RAG backend choice is still open; prefer a lightweight local implementation
   unless Phase 2 needs Chroma/FAISS.
-- The current `/api/tools` endpoint is a mock catalog, not a real Tool Registry.
+- `/api/tools` is now registry-backed, but registered tools still have stub
+  execution behavior.
 - Task creation now writes `agent_runs`, but no Agent execution or real tool
   traces are created yet.
 - `workspace/traceable_research_agent.sqlite` is local generated state and is
   intentionally ignored by `.gitignore`.
+- Real tools are still stubs. This is expected for Day5, but Phase 2 should
+  connect handlers to trace persistence before claiming real execution ability.
 
 ## Next Actions
 
 Recommended next Phase 1 start:
 
-1. Day5: add `app/tools/base.py` and `app/tools/registry.py`.
-2. Define `ToolSpec` and `ToolResult`.
-3. Implement `register_tool`, `list_tools`, and an `execute_tool` skeleton.
-4. Register metadata-only placeholder specs for file, SQL, RAG, report, and
-   GitHub/MCP tools.
-5. Change `/api/tools` to read metadata from the registry while still avoiding
-   real tool execution.
-6. Add smoke checks for registry listing and unknown-tool behavior.
+1. Phase 1 checkpoint: run final Day1-5 smoke checks.
+2. Clean up README and task log so the project can be explained clearly.
+3. Confirm `workspace/traceable_research_agent.sqlite`, caches, `.env`, and
+   runtime files are not staged.
+4. Commit and push the Phase 1 checkpoint if all checks pass.
+5. Then start Phase 2 with real `file_reader` safety checks and trace writing.

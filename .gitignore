@@ -22,6 +22,7 @@ env/
 workspace/reports/
 workspace/*.sqlite
 workspace/*.db
+workspace/tmp/
 *.sqlite
 *.sqlite3
 *.db
@@ -43,4 +44,3 @@ build/
 Thumbs.db
 .idea/
 .vscode/
-

@@ -8,27 +8,29 @@ from app.api import reports, tasks, tools
 from app.config import settings
 from app.database import init_db
 from app.schemas import HealthResponse
+from app.tools.defaults import register_default_tools
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize local SQLite tables when the app starts."""
+    """Initialize local SQLite tables and default tool metadata."""
 
     init_db()
+    register_default_tools()
     yield
 
 
 app = FastAPI(
     title="Traceable Research Agent",
     version="0.1.0",
-    description="Day 4 API skeleton with SQLite-backed task records.",
+    description="Day 5 API skeleton with SQLite and Tool Registry metadata.",
     lifespan=lifespan,
 )
 
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """Return service readiness for the Day 4 skeleton."""
+    """Return service readiness for the Day 5 skeleton."""
 
     return HealthResponse(
         status="ok",

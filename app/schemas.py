@@ -64,12 +64,26 @@ class ToolInfo(BaseModel):
     risk_level: str
     requires_confirmation: bool
     enabled: bool
+    timeout_seconds: int
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
+    tags: list[str]
 
 
 class ToolListResponse(BaseModel):
     tools: list[ToolInfo]
+
+
+class ToolExecuteRequest(BaseModel):
+    arguments: dict[str, Any] | None = None
+
+
+class ToolExecuteResponse(BaseModel):
+    success: bool
+    output: Any | None = None
+    output_summary: str | None = None
+    error_message: str | None = None
+    metadata: dict[str, Any]
 
 
 class ReportResponse(BaseModel):
