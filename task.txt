@@ -462,6 +462,30 @@ Current phase: Phase 1 - Day 1-5.
     `/api/tasks/{run_id}/trace`, `/api/tools`, and report mock.
   - Confirm GitHub is clean and runtime artifacts are ignored.
 
+2026-06-16 15:59:38 +08:00 - Phase 1 Day5 final smoke before checkpoint:
+
+- Re-ran `python -m compileall app tests`; it succeeded.
+- Started Uvicorn without reload in a temporary hidden process and stopped it
+  after verification.
+- Verified `GET /health` returned `status=ok` and `phase=day5`.
+- Verified `GET /api/tools` returned 5 registry-backed tools:
+  `file_reader`, `mcp_github_search`, `rag_search`, `report_writer`, and
+  `sql_query`.
+- Verified `GET /api/tools/file_reader` returned risk level `low`.
+- Verified `POST /api/tools/file_reader/execute` returned `success=false` with
+  `Tool handler is not implemented yet.`, as expected for Day5 stub execution.
+- Day4 regression remained healthy:
+  - `POST /api/tasks` created pending run
+    `1e69873f05e3434b9437b305a8ef581c`.
+  - `GET /api/tasks/{run_id}` returned status `pending`.
+  - `GET /api/tasks/{run_id}/trace` returned an empty trace list, as expected
+    before real tool execution is implemented.
+- Confirmed no `uvicorn app.main:app` Python process remained after the smoke
+  test.
+- No real file reading, SQL execution, RAG search, MCP/GitHub access, planner,
+  executor, reporter, or trace-writing tool execution was implemented in this
+  round.
+
 2026-06-16 15:49:03 +08:00 - Phase 1 Day4 SQLite + SQLAlchemy database foundation:
 
 - Added dependency:
