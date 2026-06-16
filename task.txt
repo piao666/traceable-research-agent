@@ -727,6 +727,95 @@ Current phase: Phase 2 - Day 6-8 combined task.
     `docs/checkpoints/phase2_day6_9_checkpoint.md`, update README/task log, and
     then proceed to Phase 3 Day10 Planner.
 
+2026-06-16 22:13:09 +08:00 - Phase 2 CheckPoint Day6-9 full smoke and archive:
+
+- Start state:
+  - Found an untracked `docs/checkpoints/` directory containing only an empty
+    `phase2_day6_9_checkpoint.md` placeholder.
+  - Treated it as invalid placeholder content, removed it, and confirmed the
+    worktree returned to clean before continuing.
+  - `git pull origin main`: already up to date.
+- Scope boundary:
+  - This round only completed the Phase 2 CheckPoint.
+  - Did not implement Planner, Executor, Reporter, MCP/GitHub, HITL, eval
+    cases, or automatic task execution from `POST /api/tasks`.
+  - Did not modify the GPT Researcher read-only reference project.
+- Base checks:
+  - `python -m pip install -r requirements.txt`: all requirements already
+    satisfied.
+  - `python -m compileall app tests scripts`: succeeded.
+  - `python scripts/init_demo_db.py`: generated ignored
+    `workspace/demo.sqlite`.
+  - `python scripts/build_rag_index.py`: built 1 document into 3 chunks at
+    ignored `workspace/index/rag_index.json`.
+  - `python scripts/smoke_rag_query.py`: returned top-k chunks; best hit was
+    `demo_research_note.md#0` with score `0.489702`.
+- Full API smoke:
+  - Started Uvicorn in a non-blocking hidden process without `--reload`.
+  - `GET /health` returned:
+    `status=ok`, `service=traceable-research-agent`, `phase=day9`.
+  - Checkpoint run id: `96ecdf2fa6fb4c6b9b154c8918f02e6c`.
+  - `file_reader` success:
+    - Input: `demo_research_note.md`, `max_chars=1000`.
+    - Summary: `Read demo_research_note.md: 1000 chars (truncated)`.
+    - Output included `content`, `chars_read=1000`, and `truncated=true`.
+  - `file_reader` safety rejection:
+    - Input: `../task.txt`.
+    - Error: `Path is outside workspace/docs.`
+    - `metadata.error_type=safety_rejected`.
+  - `sql_query` success:
+    - Query: `SELECT id, title, category FROM documents`, `limit=5`.
+    - Summary: `Returned 5 row(s) with columns: id, title, category.`
+  - `sql_query` dangerous SQL rejection:
+    - Query: `DELETE FROM documents`.
+    - Error: `Only SELECT or WITH read-only queries are allowed.`
+    - `metadata.error_type=safety_rejected`.
+  - `rag_search` success:
+    - Query: `trace tool registry`, `top_k=3`.
+    - Summary: `rag_search returned 3 hits for query: trace tool registry`.
+    - Top source: `demo_research_note.md`.
+  - `rag_search` invalid args:
+    - Query: whitespace.
+    - Error: `Missing required argument: query.`
+    - `metadata.error_type=invalid_args`.
+  - `GET /api/tasks/{run_id}/trace` returned 6 traces:
+    - `success: 3`
+    - `rejected: 2`
+    - `failed: 1`
+  - Trace sequence:
+    - `1:file_reader:success`
+    - `2:file_reader:rejected`
+    - `3:sql_query:success`
+    - `4:sql_query:rejected`
+    - `5:rag_search:success`
+    - `6:rag_search:failed`
+  - `GET /api/tasks/{run_id}` returned `status=pending`, which is expected
+    because Phase 2 does not auto-execute tasks.
+  - `GET /api/reports/{run_id}` returned mock Markdown, which is expected
+    because Reporter is Phase 3 work.
+  - Stopped Uvicorn and confirmed no residual `uvicorn app.main:app` Python
+    process remained.
+- Runtime artifact Git check:
+  - `git status --ignored --short workspace` showed these runtime artifacts as
+    ignored:
+    - `workspace/demo.sqlite`
+    - `workspace/index/`
+    - `workspace/traceable_research_agent.sqlite`
+  - `git ls-files workspace` returned only:
+    - `workspace/data/.gitkeep`
+    - `workspace/docs/demo_research_note.md`
+- Documentation:
+  - Created `docs/checkpoints/phase2_day6_9_checkpoint.md` with scope,
+    completed capabilities, smoke output summary, runtime artifact policy,
+    current limitations, and Phase 3 handoff.
+  - Updated `README.md` heading from Day6-8 to Day6-9 and linked the checkpoint
+    document.
+- Phase 2 status:
+  - Day6-9 smoke passed.
+  - Phase 2 is ready to checkpoint.
+  - It is reasonable to enter Phase 3 Day10 next, starting with deterministic
+    JSON Planner only.
+
 2026-06-16 15:49:03 +08:00 - Phase 1 Day4 SQLite + SQLAlchemy database foundation:
 
 - Added dependency:
@@ -868,6 +957,18 @@ Current phase: Phase 2 - Day 6-8 combined task.
 - Non-blocking Uvicorn smoke for Day6-8 tool execution and trace writing.
 - `git status --ignored --short workspace`
 - `git ls-files workspace`
+- `git status --short --branch`
+- Inspected and removed empty placeholder `docs/checkpoints/`.
+- `git pull origin main`
+- `python -m pip install -r requirements.txt`
+- `python -m compileall app tests scripts`
+- `python scripts/init_demo_db.py`
+- `python scripts/build_rag_index.py`
+- `python scripts/smoke_rag_query.py`
+- Non-blocking Uvicorn full Phase 2 CheckPoint smoke for file/sql/rag tools,
+  trace summary, task status, and mock report.
+- `git status --ignored --short workspace`
+- `git ls-files workspace`
 - `python -m compileall app tests scripts`
 - `python scripts/build_rag_index.py`
 - `python scripts/smoke_rag_query.py`
@@ -935,6 +1036,18 @@ Current phase: Phase 2 - Day 6-8 combined task.
     `failed:2`.
   - Uvicorn process was stopped after verification and no residual process was
     found.
+- Phase 2 CheckPoint Day6-9 smoke checks completed:
+  - Dependency and compile checks succeeded.
+  - Demo DB generation and RAG index build succeeded.
+  - RAG smoke query returned top-k chunks.
+  - Full API smoke succeeded for `file_reader`, `sql_query`, and `rag_search`
+    success and failure/safety paths.
+  - Trace query returned 6 rows with status distribution `success:3`,
+    `rejected:2`, `failed:1`.
+  - Task remained `pending` and report remained mock Markdown, as expected for
+    Phase 2.
+  - Uvicorn process was stopped after verification and no residual process was
+    found.
 
 ## Git Checkpoints
 
@@ -988,16 +1101,16 @@ Actual checkpoints:
   untracked.
 - Day9 now has real `rag_search`; Phase 2 still needs a checkpoint document and
   one full Day6-9 smoke pass before entering Phase 3.
+- Phase 2 CheckPoint document now exists. Remaining technical work starts in
+  Phase 3 and should begin with deterministic planning, not automatic
+  execution.
 
 ## Next Actions
 
-Recommended next Phase 2 CheckPoint start:
+Recommended next action:
 
-1. Run a full Day6-9 smoke covering `file_reader`, `sql_query`, `rag_search`,
-   task status, trace status distribution, and mock report endpoint.
-2. Create `docs/checkpoints/phase2_day6_9_checkpoint.md` with commands,
-   representative responses, trace examples, limitations, and Phase 3 handoff.
-3. Confirm runtime DB/index files remain ignored.
-4. Commit and push the Phase 2 checkpoint.
-5. Start Phase 3 Day10 with a deterministic Planner that creates and stores a
-   JSON plan without executing automatically from `POST /api/tasks`.
+1. Commit and push the Phase 2 checkpoint documentation.
+2. Start Phase 3 Day10 with a deterministic Planner that creates a JSON plan and
+   stores it in `agent_runs.plan_json`.
+3. Keep `POST /api/tasks` automatic execution disabled until Executor work
+   begins in a later Phase 3 step.

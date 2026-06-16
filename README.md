@@ -32,7 +32,7 @@ Invoke-RestMethod `
   -Body '{"task":"Read local docs and generate a traceable report","report_type":"summary","source_mode":"mock","allowed_tools":["file_reader","report_writer"]}'
 ```
 
-## Phase 2 Day6-8 Capabilities
+## Phase 2 Day6-9 Capabilities
 
 - `file_reader` is a real read-only handler. It only reads files under
   `workspace/docs`, resolves paths before reading, rejects path traversal and
@@ -59,6 +59,9 @@ Invoke-RestMethod `
 Runtime artifacts are intentionally ignored by Git: `workspace/demo.sqlite`,
 `workspace/traceable_research_agent.sqlite`, and
 `workspace/index/rag_index.json`.
+
+Phase 2 checkpoint notes are available at
+`docs/checkpoints/phase2_day6_9_checkpoint.md`.
 
 ## Current Scope
 
