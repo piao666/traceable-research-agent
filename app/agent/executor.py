@@ -35,6 +35,7 @@ def _summary(run: AgentRun) -> dict[str, Any]:
         "report_url": f"/api/reports/{run.run_id}",
         "trace_url": f"/api/tasks/{run.run_id}/trace",
         "error_message": run.error_message,
+        "message": None,
     }
 
 
@@ -49,6 +50,19 @@ def _failed_observation(step: dict[str, Any], result: ToolResult) -> dict[str, A
     }
 
 
+def _is_step_confirmed(plan: dict[str, Any], step_no: int) -> bool:
+    confirmation = plan.get("confirmation")
+    if not isinstance(confirmation, dict):
+        return False
+    return bool(confirmation.get("approved")) and confirmation.get("required_step_no") == step_no
+
+
+def _message_summary(run: AgentRun, message: str) -> dict[str, Any]:
+    summary = _summary(run)
+    summary["message"] = message
+    return summary
+
+
 def run_plan(db: Session, run_id: str) -> dict[str, Any]:
     """Execute a run plan step by step and generate a Markdown report."""
 
@@ -56,11 +70,14 @@ def run_plan(db: Session, run_id: str) -> dict[str, Any]:
     if run is None:
         raise ValueError("Task run not found.")
     if run.status == "completed":
-        return _summary(run)
+        return _message_summary(run, "Run already completed; no tools executed.")
+    if run.status == "failed":
+        return _message_summary(run, "Run is failed and cannot be rerun in Day13-15.")
 
     plan = _parse_plan(run)
     steps = plan.get("steps") or []
     observations: list[dict[str, Any]] = []
+    resume_after_step = run.current_step
 
     try:
         run = store.update_agent_run_status(db, run_id, "running", None)
@@ -68,6 +85,14 @@ def run_plan(db: Session, run_id: str) -> dict[str, Any]:
             step_no = int(step.get("step_no") or 0)
             tool_name = str(step.get("tool_name") or "")
             arguments = step.get("arguments") or {}
+            if step_no <= resume_after_step:
+                continue
+
+            if step.get("requires_confirmation") and not _is_step_confirmed(plan, step_no):
+                message = f"Waiting for human confirmation before step {step_no}: {tool_name}"
+                run = store.update_agent_run_progress(db, run_id, max(step_no - 1, 0))
+                run = store.update_agent_run_status(db, run_id, "waiting_human", message)
+                return _message_summary(run, message)
 
             if tool_name == "report_writer":
                 observations.append(

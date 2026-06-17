@@ -38,11 +38,11 @@ async def get_report(
                 message=None,
             )
 
-    markdown = "Report has not been generated yet. Run POST /api/tasks/{run_id}/run first."
+    message = "Report has not been generated yet. Run POST /api/tasks/{run_id}/run first."
     return ReportResponse(
         run_id=run_id,
-        markdown=markdown,
+        markdown=message,
         report_path=None,
         exists=False,
-        message="Report file does not exist for this run.",
+        message=message,
     )

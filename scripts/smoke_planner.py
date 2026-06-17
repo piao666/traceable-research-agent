@@ -36,12 +36,31 @@ def main() -> None:
     if not limited["notes"]:
         raise SystemExit("Expected allowed_tools restriction notes.")
 
+    empty = plan_task(
+        task="Read local docs and query database then generate report",
+        allowed_tools=[],
+        source_mode="mock",
+    )
+    if empty["steps"] or "No executable planning step" not in " ".join(empty["notes"]):
+        raise SystemExit(f"Expected empty plan for allowed_tools=[], got {empty}")
+
+    hitl = plan_task(
+        task="Read local docs and generate a markdown report with human approval",
+        allowed_tools=["file_reader", "report_writer"],
+        source_mode="mock",
+    )
+    report_steps = [step for step in hitl["steps"] if step["tool_name"] == "report_writer"]
+    if not report_steps or not report_steps[0]["requires_confirmation"]:
+        raise SystemExit(f"Expected report_writer HITL confirmation, got {hitl}")
+
     print(
         {
             "planner": "ok",
             "tools": tool_names,
             "limited_tools": limited_tools,
             "limited_notes": limited["notes"],
+            "empty_steps": len(empty["steps"]),
+            "hitl_report_requires_confirmation": report_steps[0]["requires_confirmation"],
         }
     )
 

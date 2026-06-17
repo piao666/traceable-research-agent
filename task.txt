@@ -1221,7 +1221,167 @@ Current unimplemented scope:
 
 Next action:
 
-1. Commit and push `feat: add planner executor and reporter flow`.
-2. Start Day13 by polishing the end-to-end demo flow, response shapes, and
-   status/report/trace presentation without changing `POST /api/tasks` into an
-   automatic execution endpoint.
+1. Commit and push Day13-15 changes.
+2. Prepare a Phase 3/4 checkpoint, then continue with Day16 read-only
+   MCP/GitHub mock or API integration.
+
+## Phase 3 Day13-15 Completion Log
+
+Current status:
+
+- Day13 manual end-to-end demo flow polished.
+- Day14 exception visibility hardened.
+- Day15 minimal HITL confirmation flow implemented.
+- `POST /api/tasks` still creates a pending run and plan only; it does not
+  execute tools.
+- Manual execution remains `POST /api/tasks/{run_id}/run`.
+
+新增/修改文件:
+
+- Updated `app/agent/planner.py`.
+- Updated `app/agent/executor.py`.
+- Updated `app/agent/reporter.py`.
+- Updated `app/api/tasks.py`.
+- Updated `app/api/reports.py`.
+- Updated `app/schemas.py`.
+- Updated `app/trace/store.py`.
+- Updated `app/config.py`.
+- Updated `app/main.py`.
+- Added `scripts/smoke_e2e.py`.
+- Added `scripts/smoke_exceptions.py`.
+- Added `scripts/smoke_hitl.py`.
+- Updated `scripts/smoke_planner.py`.
+- Updated `README.md`.
+- Updated `task.txt`.
+
+Day13 demo flow improvements:
+
+- `POST /api/tasks` now returns `plan_url` and `run_url` in addition to
+  existing `status_url`, `trace_url`, and `report_url`.
+- `GET /api/tasks/{run_id}/plan` remains stable and returns the persisted
+  deterministic plan.
+- `POST /api/tasks/{run_id}/run` now has stable behavior for completed,
+  running, waiting_human, and failed states.
+- Completed runs are not executed again and do not write duplicate traces.
+- `GET /api/reports/{run_id}` before execution returns `exists=false` with the
+  message `Report has not been generated yet. Run POST /api/tasks/{run_id}/run first.`
+
+Day14 exception handling coverage:
+
+- File missing returns `success=false`, `error_type=not_found`, and trace
+  status `failed` when recorded.
+- Path traversal such as `../task.txt` returns `error_type=safety_rejected` and
+  trace status `rejected`.
+- SQL write attempts such as `DELETE FROM documents` return
+  `error_type=safety_rejected` and trace status `rejected`.
+- SQL runtime errors such as missing tables return `error_type=sql_error` and
+  trace status `failed`.
+- RAG index missing returns `error_type=index_missing`.
+- RAG empty query returns `error_type=invalid_args` and trace status `failed`.
+- Unknown tools in `plan_json` produce a failed trace and do not crash the
+  executor.
+- Empty plans complete with a limitation report instead of crashing.
+- Repeated completed runs return the current status without duplicate trace
+  writes.
+
+Day15 HITL behavior:
+
+- Planner marks `report_writer` as `risk_level=high` and
+  `requires_confirmation=true` when the task contains `human approval`,
+  `human confirm`, `requires confirmation`, or equivalent Chinese phrases.
+- Executor stops before an unapproved confirmation step with
+  `status=waiting_human`.
+- Waiting runs set `current_step` to the last completed step and do not generate
+  a report until approved.
+- `POST /api/tasks/{run_id}/confirm` accepts:
+  - `approved`
+  - `comment`
+  - `resume`
+- `approved=false` sets status to `failed`.
+- `approved=true, resume=false` records confirmation and sets status to
+  `pending`.
+- `approved=true, resume=true` records confirmation and resumes from the waiting
+  point without replaying completed tool steps.
+- Non-waiting runs reject confirm with HTTP 400.
+
+Smoke commands:
+
+- `python -m compileall app tests scripts`
+- `python scripts/init_demo_db.py`
+- `python scripts/build_rag_index.py`
+- `python scripts/smoke_planner.py`
+- `python scripts/smoke_e2e.py`
+- `python scripts/smoke_exceptions.py`
+- `python scripts/smoke_hitl.py`
+- Non-blocking Uvicorn API smoke for normal e2e, repeated run, report before
+  run, HITL waiting/confirm, and confirm-on-non-waiting rejection.
+
+Smoke results:
+
+- Compile check succeeded for `app`, `tests`, and `scripts`.
+- Demo SQLite DB initialization succeeded.
+- RAG index build succeeded.
+- Planner smoke succeeded:
+  - Full task planned `file_reader`, `sql_query`, `rag_search`,
+    `report_writer`.
+  - `allowed_tools=["file_reader"]` restricted plan to `file_reader`.
+  - `allowed_tools=[]` produced 0 steps.
+  - HITL report step required confirmation.
+- `scripts/smoke_e2e.py` succeeded with 3 success traces and repeated completed
+  run protection.
+- `scripts/smoke_exceptions.py` succeeded and covered file missing, path
+  traversal, SQL DELETE rejection, SQL missing table, RAG empty query, RAG index
+  missing, unknown tool failed trace, empty plan limitation report, and
+  exception trace statuses.
+- `scripts/smoke_hitl.py` succeeded with `waiting_human -> completed` after
+  confirmation.
+
+API smoke results:
+
+- `/health` returned `phase=day15`.
+- Normal API run id: `920bdfb2a0414f14a49ec584825b168b`.
+  - Create response returned `plan_url` and `run_url`.
+  - Trace count before run: 0.
+  - Plan tools: `file_reader`, `sql_query`, `rag_search`, `report_writer`.
+  - Run completed with `current_step=4`, `total_steps=4`,
+    `total_tool_calls=3`.
+  - Trace count after run: 3, status distribution `success:3`.
+  - Report returned `exists=true`.
+- Repeated run returned message `Run already completed; no tools executed.`
+  and trace count remained 3.
+- Report-before-run returned `exists=false` with the expected message.
+- HITL API run id: `f6210be6da9649c9a4191d9a9baf09d8`.
+  - `report_writer.requires_confirmation=true`.
+  - Initial run stopped at `status=waiting_human`, `current_step=2`,
+    `total_tool_calls=2`.
+  - Report before confirm returned `exists=false`.
+  - Confirm with `approved=true, resume=true` completed the run.
+  - HITL report returned `exists=true` and included `Human Confirmation`.
+- Confirming a normal completed run returned HTTP 400.
+- Uvicorn was stopped after smoke; no residual `uvicorn app.main:app` process was
+  found.
+
+Runtime artifact check:
+
+- Runtime SQLite files, RAG index, and generated reports remain ignored.
+- Expected tracked workspace files remain:
+  - `workspace/data/.gitkeep`
+  - `workspace/docs/demo_research_note.md`
+
+Current unimplemented scope:
+
+- MCP/GitHub real integration.
+- Docker.
+- eval cases.
+- production auth.
+- async background job queue.
+- LLM planner.
+- Full automatic task execution from `POST /api/tasks`.
+
+Next action:
+
+1. Create a Phase 3/4 checkpoint.
+2. Day16: add read-only MCP/GitHub mock/API path.
+3. Day17: add Docker Compose.
+4. Day18: add eval cases.
+5. Day19: polish README and interview packaging.

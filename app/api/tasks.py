@@ -1,6 +1,7 @@
 """Task endpoints backed by SQLite run records."""
 
 import json
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -11,6 +12,8 @@ from app.database import get_db
 from app.schemas import (
     TaskCreateRequest,
     TaskCreateResponse,
+    TaskConfirmRequest,
+    TaskConfirmResponse,
     TaskPlanResponse,
     TaskRunResponse,
     TaskStatusResponse,
@@ -51,7 +54,22 @@ def _task_run_response(summary: dict) -> TaskRunResponse:
         report_url=summary["report_url"],
         trace_url=summary["trace_url"],
         error_message=summary.get("error_message"),
+        message=summary.get("message"),
     )
+
+
+def _run_summary(run: AgentRun, message: str | None = None) -> dict:
+    return {
+        "run_id": run.run_id,
+        "status": run.status,
+        "current_step": run.current_step,
+        "total_steps": run.total_steps,
+        "total_tool_calls": run.total_tool_calls,
+        "report_url": f"/api/reports/{run.run_id}",
+        "trace_url": f"/api/tasks/{run.run_id}/trace",
+        "error_message": run.error_message,
+        "message": message,
+    }
 
 
 def _tool_trace_response(trace: ToolTrace) -> ToolTraceResponse:
@@ -96,6 +114,8 @@ async def create_task(
         status_url=f"/api/tasks/{run.run_id}",
         trace_url=f"/api/tasks/{run.run_id}/trace",
         report_url=f"/api/reports/{run.run_id}",
+        plan_url=f"/api/tasks/{run.run_id}/plan",
+        run_url=f"/api/tasks/{run.run_id}/run",
     )
 
 
@@ -143,11 +163,105 @@ async def run_task(
         raise HTTPException(status_code=404, detail="Task run not found")
     if not run.plan_json:
         raise HTTPException(status_code=400, detail="Task run does not have a plan")
+    if run.status == "completed":
+        return _task_run_response(
+            _run_summary(run, "Run already completed; no tools executed.")
+        )
     if run.status == "running":
         raise HTTPException(status_code=409, detail="Task run is already running")
+    if run.status == "waiting_human":
+        return _task_run_response(
+            _run_summary(run, "Run is waiting for human confirmation. Call POST /api/tasks/{run_id}/confirm.")
+        )
+    if run.status == "failed":
+        raise HTTPException(status_code=409, detail="Failed runs cannot be rerun in Day13-15")
 
     summary = run_plan(db, run_id)
     return _task_run_response(summary)
+
+
+@router.post("/{run_id}/confirm", response_model=TaskConfirmResponse)
+async def confirm_task(
+    run_id: str,
+    request: TaskConfirmRequest,
+    db: Session = Depends(get_db),
+) -> TaskConfirmResponse:
+    """Confirm or reject a run waiting for human approval."""
+
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    if run.status != "waiting_human":
+        raise HTTPException(
+            status_code=400,
+            detail="Current run is not waiting for human confirmation",
+        )
+    if not run.plan_json:
+        raise HTTPException(status_code=400, detail="Task run does not have a plan")
+
+    try:
+        plan = json.loads(run.plan_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Task run plan is invalid") from exc
+
+    required_step_no = None
+    required_tool_name = None
+    for step in plan.get("steps") or []:
+        step_no = int(step.get("step_no") or 0)
+        if step_no > run.current_step and step.get("requires_confirmation"):
+            required_step_no = step_no
+            required_tool_name = step.get("tool_name")
+            break
+
+    plan["confirmation"] = {
+        "required_step_no": required_step_no,
+        "required_tool_name": required_tool_name,
+        "approved": request.approved,
+        "comment": request.comment,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    store.replace_agent_run_plan(db, run_id, plan)
+
+    if not request.approved:
+        run = store.update_agent_run_status(
+            db,
+            run_id,
+            "failed",
+            "Human rejected execution.",
+        )
+        return TaskConfirmResponse(
+            run_id=run.run_id,
+            status=run.status,
+            approved=False,
+            comment=request.comment,
+            resumed=False,
+            message="Human rejected execution.",
+            run_result=None,
+        )
+
+    if not request.resume:
+        run = store.update_agent_run_status(db, run_id, "pending", None)
+        return TaskConfirmResponse(
+            run_id=run.run_id,
+            status=run.status,
+            approved=True,
+            comment=request.comment,
+            resumed=False,
+            message="Human confirmation recorded. Run remains pending for manual resume.",
+            run_result=None,
+        )
+
+    summary = run_plan(db, run_id)
+    run_result = _task_run_response(summary)
+    return TaskConfirmResponse(
+        run_id=run_id,
+        status=run_result.status,
+        approved=True,
+        comment=request.comment,
+        resumed=True,
+        message="Human confirmation recorded and run resumed.",
+        run_result=run_result,
+    )
 
 
 @router.get("/{run_id}/trace", response_model=list[ToolTraceResponse])

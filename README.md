@@ -1,7 +1,7 @@
 # Traceable Research Agent
 
 Traceable Research Agent is an independent FastAPI project for building a
-traceable task-oriented research agent. The Day12 version exposes health, task,
+traceable task-oriented research agent. The Day15 version exposes health, task,
 plan, manual execution, tool catalog, trace, and report endpoints, with task
 runs, plans, tool traces, and report paths persisted to local SQLite.
 
@@ -37,6 +37,11 @@ Invoke-RestMethod `
   -ContentType "application/json" `
   -Body '{}'
 Invoke-RestMethod http://127.0.0.1:8000/api/reports/{run_id}
+Invoke-RestMethod `
+  -Uri http://127.0.0.1:8000/api/tasks/{run_id}/confirm `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"approved":true,"comment":"Approved for demo.","resume":true}'
 ```
 
 ## Phase 2 Day6-9 Capabilities
@@ -93,6 +98,40 @@ Phase 2 checkpoint notes are available at
   exists and returns `exists=false` with a clear placeholder when it has not
   been generated yet.
 
+## Phase 3 Day13-15 Capabilities
+
+- Manual end-to-end demo flow is the primary path:
+  `POST /api/tasks` -> `GET /api/tasks/{run_id}/plan` ->
+  `POST /api/tasks/{run_id}/run` -> `GET /api/tasks/{run_id}/trace` ->
+  `GET /api/reports/{run_id}`.
+- `POST /api/tasks` remains create-and-plan only. It returns `status_url`,
+  `trace_url`, `report_url`, plus `plan_url` and `run_url`.
+- Repeated `POST /api/tasks/{run_id}/run` on a completed run returns the
+  current completed summary with `Run already completed; no tools executed.`
+  and does not add duplicate traces.
+- `GET /api/reports/{run_id}` before execution returns `exists=false` and the
+  message `Report has not been generated yet. Run POST /api/tasks/{run_id}/run first.`
+- Exception visibility is hardened for file missing, path traversal rejection,
+  SQL write rejection, SQL runtime errors, RAG index missing, invalid arguments,
+  unknown tools, empty plans, repeated runs, and report-before-run cases.
+- Tool results that fail or are safety rejected are persisted as `tool_traces`
+  with `failed` or `rejected` status; successful tool calls remain `success`.
+- Minimal HITL is available through `waiting_human` and
+  `POST /api/tasks/{run_id}/confirm`.
+- HITL trigger is deterministic: tasks containing `human approval`,
+  `human confirm`, `requires confirmation`, or the equivalent Chinese phrases
+  mark the `report_writer` step as `risk_level=high` and
+  `requires_confirmation=true`.
+- If execution reaches a step requiring confirmation, the run stops with
+  `status=waiting_human`, preserves completed prior steps, and does not generate
+  the report until confirmation is approved.
+- `POST /api/tasks/{run_id}/confirm` accepts `approved`, `comment`, and
+  `resume`. Rejection sets the run to `failed`; approval with `resume=false`
+  records confirmation and leaves the run pending; approval with `resume=true`
+  resumes from the waiting step without repeating completed traces.
+- Reports now include Human Confirmation, Failure / Rejection Details, Trace
+  Summary, and Runtime Limitations sections when relevant.
+
 ## Current Scope
 
 - Implemented: FastAPI skeleton, `/health`, database-backed `/api/tasks`,
@@ -107,6 +146,8 @@ Phase 2 checkpoint notes are available at
   indexing/query modules.
 - Implemented: deterministic Planner, manual Executor step loop, trace writing
   from executor, and deterministic Markdown Reporter.
-- Not implemented yet: Day13 polished end-to-end flow, Day14 exception
-  hardening, MCP/GitHub integration, HITL, eval cases, Docker, and full
-  automatic task execution from `POST /api/tasks`.
+- Implemented: Day13 manual demo polish, Day14 exception visibility, and Day15
+  minimal HITL confirmation/resume.
+- Not implemented yet: MCP/GitHub real integration, Docker, eval cases,
+  production auth, async background job queue, LLM planner, and full automatic
+  task execution from `POST /api/tasks`.

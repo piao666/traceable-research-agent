@@ -25,6 +25,8 @@ class TaskCreateResponse(BaseModel):
     status_url: str
     trace_url: str
     report_url: str
+    plan_url: str | None = None
+    run_url: str | None = None
 
 
 class TaskStatusResponse(BaseModel):
@@ -63,6 +65,7 @@ class TaskPlanResponse(BaseModel):
     allowed_tools: list[str]
     steps: list[PlanStepResponse]
     notes: list[str]
+    confirmation: dict[str, Any] | None = None
 
 
 class TaskRunResponse(BaseModel):
@@ -74,6 +77,23 @@ class TaskRunResponse(BaseModel):
     report_url: str
     trace_url: str
     error_message: str | None = None
+    message: str | None = None
+
+
+class TaskConfirmRequest(BaseModel):
+    approved: bool
+    comment: str | None = None
+    resume: bool = True
+
+
+class TaskConfirmResponse(BaseModel):
+    run_id: str
+    status: str
+    approved: bool
+    comment: str | None = None
+    resumed: bool
+    message: str
+    run_result: TaskRunResponse | None = None
 
 
 class ToolTraceResponse(BaseModel):

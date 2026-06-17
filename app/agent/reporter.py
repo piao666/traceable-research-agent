@@ -89,6 +89,23 @@ def generate_markdown_report(
         lines.extend(["### Planning Notes", ""])
         lines.extend([f"* {note}" for note in notes])
         lines.append("")
+    if not plan.get("steps"):
+        lines.extend(["No executable plan steps were generated.", ""])
+
+    confirmation = plan.get("confirmation")
+    if isinstance(confirmation, dict) and confirmation:
+        lines.extend(
+            [
+                "## Human Confirmation",
+                "",
+                f"* required_step_no: {confirmation.get('required_step_no')}",
+                f"* required_tool_name: {confirmation.get('required_tool_name')}",
+                f"* approved: `{confirmation.get('approved')}`",
+                f"* comment: {confirmation.get('comment') or '<none>'}",
+                f"* approved_at: {confirmation.get('approved_at') or '<none>'}",
+                "",
+            ]
+        )
 
     lines.extend(["## Evidence And Observations", ""])
     if observations:
@@ -127,16 +144,32 @@ def generate_markdown_report(
             f"status={trace.status}"
         )
 
+    problem_traces = [trace for trace in traces if trace.status in {"failed", "rejected"}]
+    if problem_traces:
+        lines.extend(["", "## Failure / Rejection Details", ""])
+        for trace in problem_traces:
+            lines.extend(
+                [
+                    f"### Step {trace.step_no}: {trace.tool_name}",
+                    "",
+                    f"* status: `{trace.status}`",
+                    f"* error_message: {trace.error_message or '<none>'}",
+                    f"* output_summary: {trace.output_summary or '<none>'}",
+                    "",
+                ]
+            )
+
     lines.extend(
         [
             "",
-            "## Limitations",
+            "## Runtime Limitations",
             "",
             "* deterministic planner",
             "* no LLM reasoning yet",
             "* no MCP/GitHub",
-            "* no HITL",
+            "* HITL is a minimal status and confirmation flow, not production auth",
             "* report generated from tool observations only",
+            "* generated reports and runtime indexes are local ignored artifacts",
             "",
         ]
     )

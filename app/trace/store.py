@@ -107,6 +107,20 @@ def update_agent_run_report(db: Session, run_id: str, report_path: str) -> Agent
     return run
 
 
+def replace_agent_run_plan(db: Session, run_id: str, plan: dict) -> AgentRun:
+    """Replace plan JSON without resetting progress counters."""
+
+    run = db.get(AgentRun, run_id)
+    if run is None:
+        raise ValueError("Task run not found")
+    run.plan_json = json.dumps(plan, ensure_ascii=False, default=str)
+    run.total_steps = len(plan.get("steps") or [])
+    run.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
 def list_tool_traces(db: Session, run_id: str) -> list[ToolTrace]:
     """Return traces for a run in step order."""
 
