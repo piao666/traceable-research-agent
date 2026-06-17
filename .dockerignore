@@ -1,0 +1,14 @@
+.git
+.venv
+venv
+__pycache__
+**/__pycache__
+.pytest_cache
+workspace/*.sqlite
+workspace/*.db
+workspace/index
+workspace/reports
+workspace/tmp
+workspace/eval_outputs
+.env
+*.log

@@ -53,6 +53,15 @@ def main() -> None:
     if not report_steps or not report_steps[0]["requires_confirmation"]:
         raise SystemExit(f"Expected report_writer HITL confirmation, got {hitl}")
 
+    github = plan_task(
+        task="Search GitHub repository issues about traceable research agent and generate a markdown report",
+        allowed_tools=["mcp_github_search", "report_writer"],
+        source_mode="mock",
+    )
+    github_tools = [step["tool_name"] for step in github["steps"]]
+    if github_tools != ["mcp_github_search", "report_writer"]:
+        raise SystemExit(f"Expected GitHub mock planning path, got {github_tools}")
+
     print(
         {
             "planner": "ok",
@@ -61,6 +70,7 @@ def main() -> None:
             "limited_notes": limited["notes"],
             "empty_steps": len(empty["steps"]),
             "hitl_report_requires_confirmation": report_steps[0]["requires_confirmation"],
+            "github_tools": github_tools,
         }
     )
 

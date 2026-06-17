@@ -1,0 +1,9 @@
+services:
+  traceable-research-agent:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./workspace:/app/workspace
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}

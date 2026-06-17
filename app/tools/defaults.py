@@ -2,6 +2,7 @@
 
 from app.tools.base import RiskLevel, ToolSpec
 from app.tools.file_reader import read_file
+from app.tools.mcp_github import github_search_handler
 from app.tools.rag_search import search_rag
 from app.tools.registry import register_tool
 from app.tools.sql_query import run_query
@@ -51,13 +52,21 @@ def register_default_tools() -> None:
             name="mcp_github_search",
             description=(
                 "Search GitHub repository information through a read-only "
-                "MCP/GitHub adapter."
+                "MCP/GitHub-style adapter. Defaults to offline mock mode."
             ),
-            input_schema={"query": "string", "repo": "string", "limit": "integer"},
-            output_schema={"results": "array"},
+            input_schema={
+                "query": "string",
+                "repo": "string|null",
+                "limit": "integer",
+                "mode": "mock|public_api",
+            },
+            output_schema={"query": "string", "repo": "string|null", "mode": "string", "results": "array"},
             risk_level=RiskLevel.MEDIUM,
+            requires_confirmation=False,
+            enabled=True,
             tags=["github", "mcp", "read-only"],
-        )
+        ),
+        handler=github_search_handler,
     )
     register_tool(
         ToolSpec(

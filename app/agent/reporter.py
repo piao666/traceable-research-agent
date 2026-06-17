@@ -42,6 +42,19 @@ def _selected_evidence(tool_name: str, output: Any) -> str:
             for hit in hits[:5]
         ]
         return _json_preview(selected, max_chars=1200)
+    if tool_name == "mcp_github_search":
+        results = output.get("results") or []
+        selected = [
+            {
+                "title": result.get("title"),
+                "url": result.get("url"),
+                "type": result.get("type"),
+                "source": result.get("source"),
+                "snippet": str(result.get("snippet") or "")[:240],
+            }
+            for result in results[:5]
+        ]
+        return _json_preview(selected, max_chars=1200)
     return _json_preview(output)
 
 
@@ -166,7 +179,7 @@ def generate_markdown_report(
             "",
             "* deterministic planner",
             "* no LLM reasoning yet",
-            "* no MCP/GitHub",
+            "* GitHub/MCP path is read-only and defaults to deterministic mock mode",
             "* HITL is a minimal status and confirmation flow, not production auth",
             "* report generated from tool observations only",
             "* generated reports and runtime indexes are local ignored artifacts",

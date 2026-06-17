@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Traceable Research Agent",
     version="0.1.0",
-    description="Day 15 API with manual e2e flow, exception visibility, and minimal HITL.",
+    description="Day 19 API with GitHub mock tool, Docker, eval cases, and final docs.",
     lifespan=lifespan,
 )
 

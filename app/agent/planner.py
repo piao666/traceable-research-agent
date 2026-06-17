@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 
-DEFAULT_TOOL_ORDER = ["file_reader", "sql_query", "rag_search", "report_writer"]
+DEFAULT_TOOL_ORDER = [
+    "file_reader",
+    "sql_query",
+    "rag_search",
+    "mcp_github_search",
+    "report_writer",
+]
 
 FILE_KEYWORDS = {
     "file",
@@ -41,6 +47,17 @@ RAG_KEYWORDS = {
     "registry",
     "\u68c0\u7d22",
     "\u8bc1\u636e",
+}
+GITHUB_KEYWORDS = {
+    "github",
+    "repo",
+    "repository",
+    "issue",
+    "pr",
+    "pull request",
+    "code search",
+    "\u4ed3\u5e93",
+    "\u4ee3\u7801\u4ed3\u5e93",
 }
 REPORT_KEYWORDS = {
     "report",
@@ -91,6 +108,19 @@ def _step_template(
             "expected_output": "Top-k chunks with source, chunk id, score, and text.",
             "completion_criteria": "The local index returns relevant chunks or a stable empty result.",
             "risk_level": "low",
+            "requires_confirmation": False,
+        },
+        "mcp_github_search": {
+            "goal": "Collect read-only GitHub-style evidence through the mock/public adapter.",
+            "arguments": {
+                "query": task,
+                "repo": "piao666/traceable-research-agent",
+                "limit": 5,
+                "mode": "mock",
+            },
+            "expected_output": "Mock or public read-only GitHub search results.",
+            "completion_criteria": "The adapter returns evidence without any write operation.",
+            "risk_level": "medium",
             "requires_confirmation": False,
         },
         "report_writer": {
@@ -155,6 +185,8 @@ def plan_task(
         _append_step(steps, notes, "sql_query", task_text, allowed_set)
     if _matches(task_lower, RAG_KEYWORDS):
         _append_step(steps, notes, "rag_search", task_text, allowed_set)
+    if _matches(task_lower, GITHUB_KEYWORDS):
+        _append_step(steps, notes, "mcp_github_search", task_text, allowed_set)
     if _matches(task_lower, REPORT_KEYWORDS):
         _append_step(
             steps,

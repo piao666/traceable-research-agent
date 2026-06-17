@@ -28,6 +28,8 @@ workspace/tmp/
 workspace/index/
 workspace/rag_index/
 workspace/uploads/
+workspace/eval_outputs/
+eval_outputs/
 *.sqlite
 *.sqlite3
 *.db

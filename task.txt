@@ -1480,3 +1480,139 @@ Day16 readiness:
 
 - Phase 3 checkpoint passed.
 - It is reasonable to enter Day16 read-only MCP/GitHub mock/API path next.
+
+## Phase 4 Day16-19 Completion Log
+
+Date: 2026-06-17
+
+Current status:
+
+- Day16 read-only `mcp_github_search` completed.
+- Day17 Dockerfile and Docker Compose completed.
+- Day18 eval cases and eval runner completed.
+- Day19 README and project packaging docs completed.
+
+New and modified files:
+
+- Added `app/tools/mcp_github.py`.
+- Updated `app/tools/defaults.py`.
+- Updated `app/agent/planner.py`.
+- Updated `app/agent/executor.py`.
+- Updated `app/agent/reporter.py`.
+- Updated `app/config.py` and `app/main.py` to report `phase=day19`.
+- Added `.dockerignore`, `Dockerfile`, and `docker-compose.yml`.
+- Added `app/eval/__init__.py`, `app/eval/cases.jsonl`, and
+  `app/eval/run_eval.py`.
+- Updated `scripts/smoke_planner.py` with GitHub planning coverage.
+- Rewrote `README.md` for final quick start, API, Docker, eval, architecture,
+  security notes, and limitations.
+- Added docs:
+  - `docs/architecture.md`
+  - `docs/api_examples.md`
+  - `docs/trace_examples.md`
+  - `docs/bad_cases.md`
+  - `docs/interview_notes.md`
+  - `docs/checkpoints/phase4_day16_19_checkpoint.md`
+
+`mcp_github_search` implementation:
+
+- Default mode is `mock`, requiring no token, network, or external service.
+- Optional `public_api` mode uses GitHub read-only GET search requests.
+- Inputs: `query`, optional `repo`, `limit`, `mode`.
+- Empty query and invalid repo/mode return stable `invalid_args` failures.
+- `limit` is clamped to 1-10.
+- Metadata includes `read_only=true`.
+- No write operations are implemented.
+
+Planner and executor behavior:
+
+- GitHub/repo/issue/PR/code-search keywords add a `mcp_github_search` step.
+- Default GitHub step arguments use repo `piao666/traceable-research-agent`,
+  `limit=5`, and `mode=mock`.
+- `allowed_tools` restrictions still apply.
+- Executor treats `mcp_github_search` as a normal executable registry tool.
+- Tool success/failure is written to `tool_traces`.
+- `POST /api/tasks` remains create-and-plan only.
+
+Local smoke commands and results:
+
+- `python -m pip install -r requirements.txt`: succeeded.
+- `python -m compileall app tests scripts`: succeeded.
+- `python scripts/init_demo_db.py`: succeeded.
+- `python scripts/build_rag_index.py`: generated 1 document and 3 chunks.
+- `python scripts/smoke_planner.py`: returned `planner=ok` and
+  `github_tools=['mcp_github_search', 'report_writer']`.
+- `python scripts/smoke_e2e.py`: returned `e2e=ok`, run_id
+  `4d20dcde8ded4e6f96e6aeb06ab5ae51`.
+- `python scripts/smoke_exceptions.py`: returned `exceptions=ok`.
+- `python scripts/smoke_hitl.py`: returned `hitl=ok`, run_id
+  `1b4823bd6c574353a0cc7ffa9288e80e`.
+
+Eval result:
+
+- Eval file: `app/eval/cases.jsonl`.
+- Eval runner: `python -m app.eval.run_eval`.
+- Cases: 11.
+- Passed: 11.
+- Failed: 0.
+- Task success rate: 1.0.
+- Trace complete rate: 1.0.
+- Report exists count: 8.
+- Safety hit count: 2.
+- Failure visible count: 3.
+
+API smoke result:
+
+- `/health`: `status=ok`, `service=traceable-research-agent`, `phase=day19`.
+- Tool catalog count: 5.
+- Direct `mcp_github_search` mock:
+  - success: true
+  - summary: `mcp_github_search returned 3 mock results.`
+  - read_only: true
+  - mode: `mock`
+  - result_count: 3
+- GitHub mock task run_id: `2eefdf099cc847bca268c22fc7fdf0c9`.
+- GitHub task plan tools: `mcp_github_search,report_writer`.
+- GitHub task run status: `completed`.
+- GitHub task trace status distribution: `success:1`.
+- GitHub report exists: true.
+- GitHub report includes GitHub or `mcp_github_search` evidence.
+- Uvicorn was stopped and no residual `uvicorn app.main:app` process remained.
+
+Docker verification:
+
+- `docker --version`: `Docker version 29.5.2, build 79eb04c`.
+- `docker compose version`: `Docker Compose version v5.1.4`.
+- `docker compose build`: succeeded.
+- `docker compose up -d`: succeeded.
+- Container `/health`: `status=ok`, `phase=day19`.
+- `docker compose down`: succeeded.
+
+Runtime artifact check:
+
+- `git ls-files workspace` only returned:
+  - `workspace/data/.gitkeep`
+  - `workspace/docs/demo_research_note.md`
+- Ignored runtime artifacts observed:
+  - `workspace/demo.sqlite`
+  - `workspace/traceable_research_agent.sqlite`
+  - `workspace/index/`
+  - `workspace/reports/`
+  - `workspace/eval_outputs/`
+
+Current limitations:
+
+- `mcp_github_search` is read-only.
+- Mock mode is the default stable path.
+- Public GitHub API mode may be rate-limited.
+- No production auth.
+- No async background job queue.
+- No real LLM planner.
+- No persistent migration system.
+- MCP is represented as a compatible adapter, not a full MCP server.
+
+Next step:
+
+- Final manual acceptance.
+- Prepare resume bullets, interview Q&A, demo script, and optional short
+  presentation based on `docs/interview_notes.md`.
