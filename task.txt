@@ -1385,3 +1385,98 @@ Next action:
 3. Day17: add Docker Compose.
 4. Day18: add eval cases.
 5. Day19: polish README and interview packaging.
+
+## Phase 3 CheckPoint Day10-15
+
+Checkpoint time:
+
+- 2026-06-17
+
+Checkpoint scope:
+
+- Re-ran Day10-15 core smoke.
+- Archived Phase 3 capabilities in
+  `docs/checkpoints/phase3_day10_15_checkpoint.md`.
+- Updated README checkpoint summary.
+- Did not enter Day16.
+- Did not implement MCP/GitHub, Docker, eval cases, real LLM calls, or automatic
+  execution from `POST /api/tasks`.
+
+Smoke commands and results:
+
+- `python -m pip install -r requirements.txt`: succeeded, requirements already
+  installed.
+- `python -m compileall app tests scripts`: succeeded.
+- `python scripts/init_demo_db.py`: generated `workspace/demo.sqlite`.
+- `python scripts/build_rag_index.py`: generated 1 document and 3 chunks.
+- `python scripts/smoke_planner.py`: returned `planner=ok`.
+- `python scripts/smoke_e2e.py`: returned `e2e=ok`.
+- `python scripts/smoke_exceptions.py`: returned `exceptions=ok`.
+- `python scripts/smoke_hitl.py`: returned `hitl=ok`.
+
+API smoke results:
+
+- `/health`: `status=ok`, `service=traceable-research-agent`, `phase=day15`.
+- normal run_id: `d19a06ce96ef48fab599ec6180f5c617`.
+- create status: `pending`.
+- trace count before run: 0.
+- plan version: `deterministic-v1`.
+- plan tools: `file_reader`, `sql_query`, `rag_search`, `report_writer`.
+- run status: `completed`.
+- normal trace count: 3.
+- normal trace status distribution: `success:3`.
+- normal report exists: `true`.
+- normal report content checks passed for `Traceable Research Report`, `Plan`,
+  `Evidence And Observations`, and `Trace Summary`.
+- repeated run result: `Run already completed; no tools executed.`
+- repeated run trace count: before 3, after 3.
+- report-before-run result: `exists=false`.
+- report-before-run message:
+  `Report has not been generated yet. Run POST /api/tasks/{run_id}/run first.`
+- HITL run_id: `ee156a9f8c154ea4a32c89cf989bd60e`.
+- HITL plan: `report_writer` had `risk_level=high` and
+  `requires_confirmation=true`.
+- HITL first run: `status=waiting_human`, `current_step=2`.
+- HITL waiting error:
+  `Waiting for human confirmation before step 3: report_writer`.
+- HITL report before confirm: `exists=false`.
+- HITL confirm approved+resume: `status=completed`, `resumed=true`.
+- HITL report after confirm: `exists=true`.
+- HITL report included `Human Confirmation`.
+- HITL trace count: 2.
+- confirm on non-waiting completed run: HTTP 400 with
+  `Current run is not waiting for human confirmation`.
+- Uvicorn was stopped after API smoke and no residual `uvicorn app.main:app`
+  process was found.
+
+Runtime artifact ignore check:
+
+- Ignored runtime artifacts observed:
+  - `workspace/demo.sqlite`
+  - `workspace/index/`
+  - `workspace/reports/`
+  - `workspace/traceable_research_agent.sqlite`
+- `git ls-files workspace` output:
+  - `workspace/data/.gitkeep`
+  - `workspace/docs/demo_research_note.md`
+
+Checkpoint document:
+
+- Created `docs/checkpoints/phase3_day10_15_checkpoint.md`.
+- Document records completed capabilities, smoke results, runtime artifact
+  policy, current limitations, and next phase handoff.
+
+Current limitations:
+
+- MCP/GitHub real integration is not implemented.
+- Docker is not implemented.
+- eval cases are not implemented.
+- production auth is not implemented.
+- async background queue is not implemented.
+- LLM planner is not implemented.
+- `POST /api/tasks` intentionally does not auto-run.
+
+Day16 readiness:
+
+- Phase 3 checkpoint passed.
+- It is reasonable to enter Day16 read-only MCP/GitHub mock/API path next.

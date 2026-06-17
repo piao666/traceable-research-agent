@@ -132,6 +132,20 @@ Phase 2 checkpoint notes are available at
 - Reports now include Human Confirmation, Failure / Rejection Details, Trace
   Summary, and Runtime Limitations sections when relevant.
 
+Phase 3 checkpoint notes are available at
+`docs/checkpoints/phase3_day10_15_checkpoint.md`.
+
+## Phase 3 Day10-15 CheckPoint
+
+- Full smoke passed for deterministic Planner, manual Executor, Markdown
+  Reporter, exception visibility, repeated-run guard, report-before-run
+  behavior, and minimal HITL confirmation.
+- Normal API flow remains manual:
+  create task, inspect plan, call `/run`, inspect trace, and read report.
+- `POST /api/tasks` intentionally does not auto-run.
+- Runtime artifacts remain ignored: SQLite databases, RAG index files, and
+  generated Markdown reports.
+
 ## Current Scope
 
 - Implemented: FastAPI skeleton, `/health`, database-backed `/api/tasks`,
