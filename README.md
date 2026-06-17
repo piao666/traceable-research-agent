@@ -1,9 +1,9 @@
 # Traceable Research Agent
 
 Traceable Research Agent is an independent FastAPI project for building a
-traceable task-oriented research agent. The Day9 version exposes health, task,
-tool catalog, tool execution, trace, and report endpoints, with task runs and
-tool traces persisted to local SQLite.
+traceable task-oriented research agent. The Day12 version exposes health, task,
+plan, manual execution, tool catalog, trace, and report endpoints, with task
+runs, plans, tool traces, and report paths persisted to local SQLite.
 
 ## Local Start
 
@@ -30,6 +30,13 @@ Invoke-RestMethod `
   -Method POST `
   -ContentType "application/json" `
   -Body '{"task":"Read local docs and generate a traceable report","report_type":"summary","source_mode":"mock","allowed_tools":["file_reader","report_writer"]}'
+Invoke-RestMethod http://127.0.0.1:8000/api/tasks/{run_id}/plan
+Invoke-RestMethod `
+  -Uri http://127.0.0.1:8000/api/tasks/{run_id}/run `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{}'
+Invoke-RestMethod http://127.0.0.1:8000/api/reports/{run_id}
 ```
 
 ## Phase 2 Day6-9 Capabilities
@@ -63,10 +70,34 @@ Runtime artifacts are intentionally ignored by Git: `workspace/demo.sqlite`,
 Phase 2 checkpoint notes are available at
 `docs/checkpoints/phase2_day6_9_checkpoint.md`.
 
+## Phase 3 Day10-12 Capabilities
+
+- `POST /api/tasks` now creates a pending run and stores a deterministic
+  `plan_json` in `agent_runs`. It does not execute tools automatically.
+- The deterministic JSON Planner maps task keywords to `file_reader`,
+  `sql_query`, `rag_search`, and `report_writer` steps, applies
+  `allowed_tools` restrictions, keeps `step_no` values consecutive, and does
+  not call any LLM, external API, or tool execution path.
+- `GET /api/tasks/{run_id}/plan` returns the persisted plan, including
+  `version`, `task`, `source_mode`, `allowed_tools`, `steps`, and `notes`.
+- `POST /api/tasks/{run_id}/run` manually executes the persisted plan. The
+  Executor calls Tool Registry handlers for `file_reader`, `sql_query`, and
+  `rag_search`, writes one `tool_traces` row per real tool call, tracks
+  progress and latency, and leaves `POST /api/tasks` as create-and-plan only.
+- `report_writer` planner steps are handled by the deterministic Reporter,
+  not by the Tool Registry stub.
+- The Markdown Reporter writes `workspace/reports/{run_id}.md` from the task,
+  plan, observations, and trace summaries. Generated reports are runtime
+  artifacts and are ignored by Git.
+- `GET /api/reports/{run_id}` now reads the real Markdown report when it
+  exists and returns `exists=false` with a clear placeholder when it has not
+  been generated yet.
+
 ## Current Scope
 
 - Implemented: FastAPI skeleton, `/health`, database-backed `/api/tasks`,
-  registry-backed `/api/tools`, and mock `/api/reports/{run_id}`.
+  registry-backed `/api/tools`, and real report lookup through
+  `/api/reports/{run_id}`.
 - Implemented: SQLite database setup, `agent_runs` and `tool_traces` ORM
   tables, database-backed task creation/status, and reserved trace listing.
 - Implemented: Tool Registry metadata with `ToolSpec`, `ToolResult`,
@@ -74,6 +105,8 @@ Phase 2 checkpoint notes are available at
 - Implemented: real `file_reader`, real `sql_query`, real `rag_search`, trace
   logging through the tool execution API, and lightweight local RAG
   indexing/query modules.
-- Not implemented yet: Planner, Executor, Reporter, MCP/GitHub integration,
-  HITL, eval cases, persistent report files, and full automatic task execution
-  from `POST /api/tasks`.
+- Implemented: deterministic Planner, manual Executor step loop, trace writing
+  from executor, and deterministic Markdown Reporter.
+- Not implemented yet: Day13 polished end-to-end flow, Day14 exception
+  hardening, MCP/GitHub integration, HITL, eval cases, Docker, and full
+  automatic task execution from `POST /api/tasks`.

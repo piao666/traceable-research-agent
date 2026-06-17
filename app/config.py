@@ -7,7 +7,7 @@ class Settings(BaseModel):
     """Small settings object; expanded later for model providers."""
 
     service_name: str = "traceable-research-agent"
-    phase: str = "day9"
+    phase: str = "day12"
     api_prefix: str = "/api"
 
 

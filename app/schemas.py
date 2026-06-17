@@ -44,6 +44,38 @@ class TaskStatusResponse(BaseModel):
     updated_at: datetime
 
 
+class PlanStepResponse(BaseModel):
+    step_no: int
+    goal: str
+    tool_name: str
+    arguments: dict[str, Any]
+    expected_output: str
+    completion_criteria: str
+    risk_level: str
+    requires_confirmation: bool
+
+
+class TaskPlanResponse(BaseModel):
+    run_id: str
+    version: str
+    task: str
+    source_mode: str
+    allowed_tools: list[str]
+    steps: list[PlanStepResponse]
+    notes: list[str]
+
+
+class TaskRunResponse(BaseModel):
+    run_id: str
+    status: str
+    current_step: int
+    total_steps: int
+    total_tool_calls: int
+    report_url: str
+    trace_url: str
+    error_message: str | None = None
+
+
 class ToolTraceResponse(BaseModel):
     trace_id: str
     run_id: str
@@ -92,4 +124,5 @@ class ReportResponse(BaseModel):
     run_id: str
     markdown: str
     report_path: str | None = None
-    message: str
+    exists: bool = False
+    message: str | None = None

@@ -1109,8 +1109,119 @@ Actual checkpoints:
 
 Recommended next action:
 
-1. Commit and push the Phase 2 checkpoint documentation.
-2. Start Phase 3 Day10 with a deterministic Planner that creates a JSON plan and
-   stores it in `agent_runs.plan_json`.
-3. Keep `POST /api/tasks` automatic execution disabled until Executor work
-   begins in a later Phase 3 step.
+1. Commit and push the Phase 3 Day10-12 Planner, Executor, and Reporter flow.
+2. Start Phase 3 Day13 with a polished end-to-end demo flow and API response
+   cleanup.
+3. Keep `POST /api/tasks` automatic execution disabled unless a later phase
+   explicitly changes that boundary.
+
+## Phase 3 Day10-12 Completion Log
+
+Current status:
+
+- Phase 3 Day10-12 completed: deterministic Planner, manual Executor step loop,
+  and Markdown Reporter are implemented.
+- `POST /api/tasks` creates a pending run and persists `plan_json`; it does not
+  execute tools automatically.
+- Manual execution is exposed through `POST /api/tasks/{run_id}/run`.
+
+新增/修改文件:
+
+- Added `app/agent/__init__.py`.
+- Added `app/agent/planner.py`.
+- Added `app/agent/executor.py`.
+- Added `app/agent/reporter.py`.
+- Added `app/agent/state.py`.
+- Added `app/agent/prompts.py`.
+- Added `scripts/smoke_planner.py`.
+- Updated `app/api/tasks.py`.
+- Updated `app/api/reports.py`.
+- Updated `app/schemas.py`.
+- Updated `app/trace/store.py`.
+- Updated `app/config.py`.
+- Updated `app/main.py`.
+- Updated `README.md`.
+- Updated `task.txt`.
+
+Planner rules:
+
+- `file_reader` is planned for local file/document/docs/markdown/read keywords.
+- `sql_query` is planned for SQL/database/table/query/metrics keywords.
+- `rag_search` is planned for RAG/retrieve/search/chunks/evidence/trace/registry
+  keywords.
+- `report_writer` is planned for report/summary/summarize/markdown keywords.
+- If no rule matches, default plan is `rag_search` plus `report_writer`.
+- `allowed_tools` restrictions skip unavailable tools and write notes.
+- Planner is deterministic and does not call LLMs, models, external APIs, tools,
+  or trace writing.
+
+Verification commands:
+
+- `python -m pip install -r requirements.txt`
+- `python -m compileall app tests scripts`
+- `python scripts/init_demo_db.py`
+- `python scripts/build_rag_index.py`
+- `python scripts/smoke_planner.py`
+- Non-blocking Uvicorn smoke for create-plan, manual run, trace, report, and
+  allowed_tools restriction.
+- `git status --ignored --short workspace`
+- `git ls-files workspace`
+
+Verification results:
+
+- Dependency check succeeded; all requirements were already installed.
+- Compile check succeeded for `app`, `tests`, and `scripts`.
+- Demo DB initialization succeeded.
+- RAG index build succeeded with 1 document and 3 chunks.
+- Planner smoke succeeded:
+  - Full task planned `file_reader`, `sql_query`, `rag_search`,
+    `report_writer`.
+  - Limited task with `allowed_tools=["file_reader"]` planned only
+    `file_reader` and wrote skip notes.
+- API smoke run id: `0a244b7d962846aebcdf1eb566c9d25a`.
+  - `/health` returned `phase=day12`.
+  - Created task status was `pending`.
+  - Created task had `current_step=0` and `total_steps=4`.
+  - Created task trace was empty before execution.
+  - `GET /api/tasks/{run_id}/plan` returned steps:
+    `file_reader`, `sql_query`, `rag_search`, `report_writer`.
+  - `POST /api/tasks/{run_id}/run` returned `status=completed`,
+    `current_step=4`, `total_steps=4`, `total_tool_calls=3`.
+  - Trace query returned 3 rows, all `success`.
+  - `GET /api/reports/{run_id}` returned `exists=true` and Markdown containing
+    `Traceable Research Report`.
+- allowed_tools smoke run id: `2ae12170486c40078611b6d0a6cc0327`.
+  - Plan contained only `file_reader`.
+  - Notes recorded skipped `sql_query` and `report_writer`.
+  - Manual run completed with 1 trace row and `exists=true` report.
+- Uvicorn was stopped after smoke; no residual `uvicorn app.main:app` process was
+  found.
+
+Runtime artifact check:
+
+- Ignored runtime files observed:
+  - `workspace/demo.sqlite`
+  - `workspace/index/`
+  - `workspace/reports/`
+  - `workspace/traceable_research_agent.sqlite`
+- `git ls-files workspace` tracks only:
+  - `workspace/data/.gitkeep`
+  - `workspace/docs/demo_research_note.md`
+- Generated reports under `workspace/reports/*.md` are not tracked.
+
+Current unimplemented scope:
+
+- Day13 polished end-to-end task flow.
+- Day14 exception hardening.
+- MCP/GitHub integration.
+- HITL.
+- eval cases.
+- Docker.
+- Full automatic task execution from `POST /api/tasks`.
+
+Next action:
+
+1. Commit and push `feat: add planner executor and reporter flow`.
+2. Start Day13 by polishing the end-to-end demo flow, response shapes, and
+   status/report/trace presentation without changing `POST /api/tasks` into an
+   automatic execution endpoint.

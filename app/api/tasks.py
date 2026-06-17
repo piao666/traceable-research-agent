@@ -1,12 +1,18 @@
 """Task endpoints backed by SQLite run records."""
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.agent.executor import run_plan
+from app.agent.planner import plan_task
 from app.database import get_db
 from app.schemas import (
     TaskCreateRequest,
     TaskCreateResponse,
+    TaskPlanResponse,
+    TaskRunResponse,
     TaskStatusResponse,
     ToolTraceResponse,
 )
@@ -35,6 +41,19 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
     )
 
 
+def _task_run_response(summary: dict) -> TaskRunResponse:
+    return TaskRunResponse(
+        run_id=summary["run_id"],
+        status=summary["status"],
+        current_step=summary["current_step"],
+        total_steps=summary["total_steps"],
+        total_tool_calls=summary["total_tool_calls"],
+        report_url=summary["report_url"],
+        trace_url=summary["trace_url"],
+        error_message=summary.get("error_message"),
+    )
+
+
 def _tool_trace_response(trace: ToolTrace) -> ToolTraceResponse:
     return ToolTraceResponse(
         trace_id=trace.trace_id,
@@ -56,7 +75,7 @@ async def create_task(
     request: TaskCreateRequest,
     db: Session = Depends(get_db),
 ) -> TaskCreateResponse:
-    """Accept a task and create a pending database run record."""
+    """Accept a task, create a pending run, and persist a deterministic plan."""
 
     run = store.create_agent_run(
         db=db,
@@ -65,6 +84,12 @@ async def create_task(
         source_mode=request.source_mode,
         allowed_tools=request.allowed_tools,
     )
+    plan = plan_task(
+        task=request.task,
+        allowed_tools=request.allowed_tools,
+        source_mode=request.source_mode,
+    )
+    run = store.update_agent_run_plan(db, run.run_id, plan)
     return TaskCreateResponse(
         run_id=run.run_id,
         status=run.status,
@@ -85,6 +110,44 @@ async def get_task_status(
     if run is None:
         raise HTTPException(status_code=404, detail="Task run not found")
     return _task_status_response(run)
+
+
+@router.get("/{run_id}/plan", response_model=TaskPlanResponse)
+async def get_task_plan(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> TaskPlanResponse:
+    """Return the deterministic plan persisted for a run."""
+
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    if not run.plan_json:
+        raise HTTPException(status_code=404, detail="Task run plan not found")
+    try:
+        plan = json.loads(run.plan_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Task run plan is invalid") from exc
+    return TaskPlanResponse(run_id=run.run_id, **plan)
+
+
+@router.post("/{run_id}/run", response_model=TaskRunResponse)
+async def run_task(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> TaskRunResponse:
+    """Manually execute the persisted plan for a run."""
+
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    if not run.plan_json:
+        raise HTTPException(status_code=400, detail="Task run does not have a plan")
+    if run.status == "running":
+        raise HTTPException(status_code=409, detail="Task run is already running")
+
+    summary = run_plan(db, run_id)
+    return _task_run_response(summary)
 
 
 @router.get("/{run_id}/trace", response_model=list[ToolTraceResponse])

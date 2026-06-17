@@ -1,25 +1,48 @@
-"""Mock report endpoint until the report writer is implemented."""
+"""Report endpoint backed by generated Markdown files."""
 
-from fastapi import APIRouter
+from pathlib import Path
 
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.database import get_db
 from app.schemas import ReportResponse
+from app.trace import store
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
+ROOT = Path(__file__).resolve().parents[2]
+
 
 @router.get("/{run_id}", response_model=ReportResponse)
-async def get_report(run_id: str) -> ReportResponse:
-    """Return mock Markdown until report_writer is implemented."""
+async def get_report(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> ReportResponse:
+    """Return a generated Markdown report when it exists."""
 
-    markdown = (
-        "# Mock Traceable Research Report\n\n"
-        f"- Run ID: `{run_id}`\n"
-        "- Status: placeholder\n\n"
-        "The real report_writer tool will be implemented in a later phase."
-    )
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    if run.report_path:
+        report_path = Path(run.report_path)
+        if not report_path.is_absolute():
+            report_path = ROOT / report_path
+        if report_path.exists() and report_path.is_file():
+            return ReportResponse(
+                run_id=run_id,
+                markdown=report_path.read_text(encoding="utf-8"),
+                report_path=run.report_path,
+                exists=True,
+                message=None,
+            )
+
+    markdown = "Report has not been generated yet. Run POST /api/tasks/{run_id}/run first."
     return ReportResponse(
         run_id=run_id,
         markdown=markdown,
         report_path=None,
-        message="Mock report endpoint. No report file is generated in the current phase.",
+        exists=False,
+        message="Report file does not exist for this run.",
     )
