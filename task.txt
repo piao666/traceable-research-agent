@@ -1616,3 +1616,695 @@ Next step:
 - Final manual acceptance.
 - Prepare resume bullets, interview Q&A, demo script, and optional short
   presentation based on `docs/interview_notes.md`.
+
+## 2026-06-17 - Day20+ Revised Master Roadmap: LLM Planner, Streamlit UI, Real RAG, And Engineering Hardening
+
+This revised roadmap supersedes previous Day20+ priority ordering.
+
+### 1. Overall Principles
+
+Current Day19 version is already a complete demo-ready MVP and interview
+project. Later optimization should not replace the existing architecture.
+Instead, it should enhance the current main chain:
+
+```text
+Planner -> Executor -> Tool Registry -> Trace DB -> Reporter
+```
+
+Future work is reorganized into three major steps:
+
+1. Step 1: LLM Planner Upgrade with DeepSeek/Qwen and deterministic fallback.
+2. Step 2: Streamlit Frontend Demo Layer.
+3. Step 3: Real RAG Upgrade plus Engineering Hardening.
+
+Priority:
+
+1. Build the LLM Planner first because it upgrades the core Agent planning
+   capability.
+2. Build the Streamlit frontend second because it wraps the existing API flow
+   into an interview-friendly demo UI.
+3. Build real RAG and engineering hardening last because they involve heavier
+   model dependencies, vector database changes, migrations, async execution,
+   and auth.
+
+All later work must keep these boundaries:
+
+- Do not break the existing FastAPI API.
+- Do not change the core boundary of `POST /api/tasks`: it only creates a
+  pending run and persisted plan; it does not auto-run tools.
+- Tool execution still goes through `POST /api/tasks/{run_id}/run` or explicit
+  tool execute endpoints.
+- All tool success, failed, and rejected results must continue to be written to
+  `tool_traces`.
+- The deterministic planner must always remain available as fallback.
+- The deterministic/json RAG path must always remain available as fallback.
+- Streamlit must call APIs only; it must not directly access the database or
+  internal functions.
+- Without API keys, local models, or extra dependencies, the project must still
+  run in Day19 lightweight mode.
+- Docker default mode must still start in lightweight mode.
+- All old smoke/eval checks must continue to pass.
+- Model files, API keys, runtime DBs, RAG indexes, Chroma/FAISS indexes,
+  reports, and eval outputs must not be committed to Git.
+
+### 2. Step 1: LLM Planner Upgrade
+
+Goal:
+
+Upgrade the current deterministic rule-based Planner to an optional LLM Planner
+that supports DeepSeek and Qwen while preserving deterministic fallback.
+
+Core value:
+
+- Planning no longer depends only on keyword rules.
+- Users can describe tasks more naturally and still get multi-tool plans.
+- The project gains a real LLM Agent Planner talking point.
+- Deterministic fallback preserves stability and demo reliability.
+
+Suggested new/modified files:
+
+- `app/llm/__init__.py`
+- `app/llm/base.py`
+- `app/llm/providers.py`
+- `app/llm/planner_client.py`
+- `app/agent/planner.py`
+- `app/config.py`
+- `app/schemas.py`
+- `.env.example`
+- `README.md`
+- `task.txt`
+- `scripts/smoke_planner.py`
+- `app/eval/cases.jsonl`
+- `app/eval/run_eval.py`
+
+Suggested environment variables:
+
+- `LLM_PLANNER_ENABLED=false`
+- `LLM_PROVIDER=deterministic`
+- `LLM_MODEL=`
+- `LLM_BASE_URL=`
+- `DEEPSEEK_API_KEY=`
+- `QWEN_API_KEY=`
+- `LLM_TIMEOUT_SECONDS=20`
+- `LLM_MAX_RETRIES=1`
+- `LLM_STRICT_JSON=true`
+
+Strictly forbidden:
+
+- Do not commit a real DeepSeek API key.
+- Do not commit a real Qwen API key.
+- Do not write keys into README, `task.txt`, docs, test logs, or Git commits.
+- Missing API keys must not prevent project startup.
+- LLM Planner must not break deterministic fallback.
+- `POST /api/tasks` must not auto-run tools.
+
+#### 2.1 LLM provider abstraction
+
+- Add an `app/llm` layer.
+- Define a unified `LLMClient` interface.
+- Support provider, model, base URL, API-key env name, timeout, and retry.
+- Prefer OpenAI-compatible API style for DeepSeek and Qwen.
+- If no usable key exists, return a clear unavailable status.
+- Avoid heavy dependencies; prefer standard library or a lightweight HTTP
+  client.
+
+#### 2.2 Strict plan JSON schema
+
+Plan schema:
+
+- `version`
+- `task`
+- `source_mode`
+- `allowed_tools`
+- `steps`
+- `notes`
+- `confirmation`
+- `planner_source`
+
+Step schema:
+
+- `step_no`
+- `goal`
+- `tool_name`
+- `arguments`
+- `expected_output`
+- `completion_criteria`
+- `risk_level`
+- `requires_confirmation`
+
+Validation requirements:
+
+- Parse LLM output as JSON.
+- Validate required fields.
+- Validate against the tool whitelist.
+- Fallback to deterministic planner when output is invalid.
+
+#### 2.3 Planner integration
+
+- Add `planner_mode` to `plan_task`:
+  - `deterministic`
+  - `llm`
+  - `auto`
+- Default mode remains deterministic.
+- Auto mode tries LLM only when `LLM_PLANNER_ENABLED=true` and a key is
+  available; otherwise it uses deterministic fallback.
+- LLM output must be filtered by `allowed_tools`.
+- Unknown tools must be filtered or recorded in notes.
+- `step_no` must be renumbered consecutively.
+- HITL trigger rules must remain.
+- GitHub, file, SQL, RAG, and report_writer tool semantics must stay
+  compatible.
+
+#### 2.4 Fallback observability
+
+- When LLM planning fails, record the fallback reason in plan notes.
+- Record `planner_source` in `plan_json`:
+  - `deterministic`
+  - `llm`
+  - `deterministic_fallback`
+- Planning is not tool execution and must not write `tool_traces`.
+- Reporter can show `planner_source`.
+
+#### 2.5 Smoke and eval
+
+Add coverage to `smoke_planner.py`:
+
+- deterministic mode
+- auto without key fallback
+- invalid LLM output fallback
+- `allowed_tools` still works
+- HITL still works
+- GitHub planning still works
+
+Eval additions:
+
+- Add LLM fallback case.
+- All old eval cases must keep passing.
+
+Step 1 acceptance criteria:
+
+- Project runs normally without API keys.
+- `LLM_PLANNER_ENABLED=false` makes no LLM call.
+- LLM unavailable path falls back successfully.
+- `POST /api/tasks` still generates a plan.
+- Deterministic planner output is not broken.
+- `allowed_tools` still works.
+- HITL still works.
+- GitHub planning still works.
+- Eval passes.
+- No real key is committed.
+- Docker lightweight mode still starts.
+
+### 3. Step 2: Streamlit Frontend Demo Layer
+
+Goal:
+
+Add a lightweight Streamlit frontend that wraps the existing API flow into a
+demo UI.
+
+Core value:
+
+- Interview demos no longer require command-line-only interaction.
+- The UI can show create -> plan -> run -> trace -> report.
+- The UI can show `waiting_human` and confirmation.
+- The UI can quickly demonstrate GitHub mock and exception trace flows.
+
+Suggested new directory:
+
+```text
+frontend/
+  streamlit_app.py
+  README.md
+```
+
+Suggested config:
+
+- `STREAMLIT_API_BASE_URL=http://127.0.0.1:8000`
+
+Suggested dependencies:
+
+- `streamlit`
+- `requests`
+
+#### 3.1 Backend health panel
+
+- Call `GET /health`.
+- Show status, service, and phase.
+- If backend is not running, show a clear error.
+
+#### 3.2 Task creation panel
+
+- Task text input.
+- `report_type` selector.
+- `source_mode` selector.
+- `allowed_tools` multiselect:
+  - `file_reader`
+  - `sql_query`
+  - `rag_search`
+  - `mcp_github_search`
+  - `report_writer`
+- Create Task button.
+- Call `POST /api/tasks`.
+- Save `run_id` in Streamlit `session_state`.
+
+#### 3.3 Plan viewer
+
+- Call `GET /api/tasks/{run_id}/plan`.
+- Show plan version, `planner_source`, steps, notes, and confirmation.
+- Display steps as a table:
+  - `step_no`
+  - `tool_name`
+  - `goal`
+  - `risk_level`
+  - `requires_confirmation`
+- Expand arguments as JSON.
+
+#### 3.4 Run executor panel
+
+- Run Task button.
+- Call `POST /api/tasks/{run_id}/run`.
+- Show status, current step, total steps, total tool calls, and error message.
+- If status is `waiting_human`, show HITL confirmation panel.
+
+#### 3.5 Trace viewer
+
+- Call `GET /api/tasks/{run_id}/trace`.
+- Display trace list.
+- Visually distinguish statuses:
+  - `success`
+  - `failed`
+  - `rejected`
+- Show step number, tool name, input summary, output summary, error message,
+  and latency.
+
+#### 3.6 Report viewer
+
+- Call `GET /api/reports/{run_id}`.
+- If `exists=true`, render Markdown.
+- If `exists=false`, show message.
+- Support copying `run_id`.
+
+#### 3.7 HITL confirm panel
+
+- Show only when run status is `waiting_human`.
+- Comment input.
+- Approved true/false selector.
+- Resume true/false selector.
+- Call `POST /api/tasks/{run_id}/confirm`.
+- Show confirm response.
+- Refresh status, trace, and report.
+
+#### 3.8 Demo templates
+
+- Normal file/sql/rag/report demo.
+- GitHub mock demo.
+- HITL demo.
+- Report-before-run demo.
+- Optional exception demo.
+
+Run commands:
+
+Terminal 1:
+
+```powershell
+cd E:\BOSS\traceable-research-agent
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Terminal 2:
+
+```powershell
+cd E:\BOSS\traceable-research-agent
+streamlit run frontend/streamlit_app.py
+```
+
+Future Docker direction:
+
+- First version does not need to include Streamlit in Docker Compose.
+- Second version can add two Compose services:
+  - backend: 8000
+  - streamlit: 8501
+- Default backend Docker lightweight mode must stay usable.
+
+Step 2 acceptance criteria:
+
+- UI shows backend health.
+- UI can create a task.
+- UI can show plan.
+- UI can run task.
+- UI can show trace.
+- UI can show report.
+- UI handles `waiting_human` and confirm.
+- GitHub mock demo works through UI.
+- Old smoke/eval still pass.
+- Backend Docker is not broken.
+- No runtime artifacts are committed.
+
+### 4. Step 3: Real RAG Upgrade And Engineering Hardening
+
+Goal:
+
+Upgrade the current deterministic embedding + JSON index path to optional real
+RAG, and then add selected engineering hardening capabilities.
+
+Step 3 has two layers:
+
+- 3A: Real RAG first.
+- 3B: Engineering hardening afterward.
+
+### 5. Step 3A: Real RAG Upgrade
+
+Goal:
+
+Use SentenceTransformers plus ChromaDB/FAISS to replace the current
+deterministic embedding + JSON index path when explicitly enabled. The fallback
+must remain available.
+
+Local model directory:
+
+```text
+E:\Models
+```
+
+Available local models:
+
+- `E:\Models\bge-small-zh-v1.5`
+- `E:\Models\qwen3-embedding-0.6b`
+- `E:\Models\bge-m3`
+
+Recommended default model:
+
+```text
+E:\Models\bge-small-zh-v1.5
+```
+
+Reason:
+
+- Relatively lightweight.
+- More realistic for CPU verification.
+- Good first target for validating the SentenceTransformers pipeline.
+
+Suggested technical route:
+
+- SentenceTransformers as embedding backend.
+- ChromaDB as first vector database backend.
+- FAISS as later fallback/alternative.
+- Keep deterministic embedding + JSON index as default fallback.
+
+Suggested config:
+
+- `RAG_EMBEDDING_BACKEND=deterministic`
+- `RAG_VECTOR_BACKEND=json`
+- `RAG_MODEL_PATH=E:\Models\bge-small-zh-v1.5`
+- `RAG_CHROMA_DIR=workspace/chroma`
+- `RAG_COLLECTION_NAME=traceable_research_docs`
+- `RAG_DEVICE=cpu`
+- `RAG_NORMALIZE_EMBEDDINGS=true`
+- `RAG_REAL_BACKEND_ENABLED=false`
+
+Suggested new/modified files:
+
+- `app/rag/embedding_backends.py`
+- `app/rag/sentence_transformer_embedder.py`
+- `app/rag/chroma_store.py`
+- `app/rag/vector_store.py`
+- `app/rag/build_index.py`
+- `app/tools/rag_search.py`
+- `app/config.py`
+- `requirements.txt`
+- `.env.example`
+- `scripts/build_rag_index.py`
+- `scripts/smoke_rag_query.py`
+- `scripts/smoke_real_rag.py`
+- `app/eval/cases.jsonl`
+- `app/eval/run_eval.py`
+- `README.md`
+- `task.txt`
+
+#### 5.1 Embedding backend abstraction
+
+- Keep deterministic backend.
+- Add sentence_transformers backend.
+- Select by `RAG_EMBEDDING_BACKEND`.
+- If sentence_transformers is missing or the model path does not exist, return
+  a clear error or fallback deterministic. Behavior must be stable.
+
+#### 5.2 Vector backend abstraction
+
+- Keep JSON backend.
+- Add Chroma backend.
+- Select by `RAG_VECTOR_BACKEND`.
+- Add `workspace/chroma` to `.gitignore`.
+- Do not commit Chroma index.
+- If FAISS is added later, persist metadata separately and do not commit runtime
+  indexes.
+
+#### 5.3 Build index
+
+- Support old deterministic/json path.
+- Support new sentence_transformers/chroma path.
+- Output index summary:
+  - documents
+  - chunks
+  - embedding_backend
+  - vector_backend
+  - model_path
+  - persist_dir
+  - collection_name
+
+#### 5.4 rag_search
+
+- Query JSON or Chroma according to config.
+- Keep the old response format:
+  - `query`
+  - `top_k`
+  - `hits`
+- Each hit still includes:
+  - `source`
+  - `chunk_id`
+  - `score`
+  - `text`
+- Metadata should add:
+  - `embedding_backend`
+  - `vector_backend`
+  - `model_path`
+  - `collection_name`
+- Do not break Reporter.
+
+#### 5.5 Eval and smoke
+
+- Old deterministic/json smoke must pass.
+- Add real RAG smoke:
+  - If model path and dependencies exist, test sentence_transformers/chroma.
+  - If model path does not exist, test fallback behavior.
+- Eval must not depend on local large models by default unless explicitly
+  enabled with environment variables.
+
+#### 5.6 Docker
+
+- Docker must not package local models by default.
+- Real RAG Docker test may use volume mount:
+  - `E:\Models:/models:ro`
+- README should document real RAG Docker as optional mode.
+- Default Docker lightweight mode must still start.
+
+Strictly forbidden:
+
+- Do not commit files under `E:\Models`.
+- Do not commit `workspace/chroma`.
+- Do not commit `workspace/index`.
+- Do not commit `workspace/reports`.
+- Do not commit real API keys.
+- Missing local models must not prevent project startup.
+- Do not remove deterministic fallback.
+
+Step 3A acceptance criteria:
+
+- deterministic/json RAG still works.
+- sentence_transformers/chroma can build an index when local model exists.
+- `rag_search` can query ChromaDB.
+- API response structure stays compatible.
+- Reporter can show real RAG hits.
+- smoke/eval pass.
+- Docker default mode works.
+- Runtime artifacts are not Git-tracked.
+
+### 6. Step 3B: Engineering Hardening Package
+
+Goal:
+
+Move the project closer to production-grade backend practice while keeping it
+lightweight, clear, and demo-friendly.
+
+#### 6.1 API key auth and tenant isolation
+
+- Add simple API key auth middleware or dependency.
+- Use environment variable `DEMO_API_KEY`.
+- Default development mode can keep auth disabled.
+- Add tenant_id/user_id design for `agent_runs`.
+- If DB fields are added, pair with Alembic or document a migration strategy.
+- Goal is to show production security awareness, not build a full user system.
+
+#### 6.2 Async execution
+
+- Add optional manual async endpoint:
+  - `POST /api/tasks/{run_id}/run_async`
+- Prefer FastAPI `BackgroundTasks`.
+- Keep existing synchronous `/run` endpoint.
+- `running` status should be queryable from `GET /api/tasks/{run_id}`.
+- Do not introduce Celery/RQ/Arq in the first version.
+- Document Celery/RQ/Arq as future scaling paths.
+
+#### 6.3 Alembic migration
+
+- Introduce Alembic.
+- Generate initial migration.
+- Record `agent_runs` and `tool_traces` schema.
+- Add migration commands to README.
+- Do not break the current SQLite demo.
+
+#### 6.4 SQL parser read-only validation
+
+- Current `sql_query` mainly uses startswith and dangerous keyword checks.
+- Later use a SQL parser for stricter read-only validation.
+- Goals:
+  - only one SELECT/WITH statement
+  - reject multi-statement input
+  - reject DDL/DML
+  - reject PRAGMA/ATTACH/DETACH/VACUUM
+- Keep the current keyword guard as a second defensive layer.
+
+#### 6.5 GitHub public_api cache / retry / fallback
+
+- `mcp_github_search` mock mode remains default and stable.
+- Public API may hit network failures or rate limits.
+- Add cache and retry strategy.
+- On network failure, return stable `ToolResult` or fallback mock.
+- Never print token.
+- Never commit token.
+- Metadata should mark `data_source`:
+  - `mock`
+  - `public_api`
+  - `cache`
+  - `fallback`
+
+#### 6.6 MCP read-only client/server direction
+
+- Current MCP is a read-only compatible adapter, not a full MCP server.
+- Later add a minimal MCP client/server stub or design doc.
+- Keep read-only and HITL boundaries.
+- Do not add write operations.
+- Do not introduce large dependencies that make the project hard to run.
+
+#### 6.7 Eval expansion and final checkpoint
+
+- Add smoke/eval coverage for auth, async, migration, SQL parser, GitHub
+  fallback, real RAG, and Streamlit.
+- Add checkpoint:
+  - `docs/checkpoints/day20_plus_optimization_checkpoint.md`
+- Update README and interview notes.
+
+Step 3B acceptance criteria:
+
+- Day19 features do not regress.
+- Step 1 LLM Planner does not regress.
+- Step 2 Streamlit demo does not regress.
+- Step 3A real RAG does not regress.
+- Old smoke/eval all pass.
+- New features have smoke/eval coverage.
+- Docker still starts.
+- No runtime artifacts are committed.
+- No secrets are committed.
+- README, docs, and `task.txt` are complete.
+
+### 7. Suggested Execution Order
+
+Do not implement all optimizations in one pass. Execute gradually:
+
+Phase A - LLM Planner
+
+Day20:
+
+- Update `task.txt` revised master roadmap.
+- No code changes.
+
+Day21:
+
+- Add LLM config and `.env.example` variables.
+- Add `app/llm` provider abstraction.
+- Do not fully replace Planner yet.
+
+Day22:
+
+- Add strict plan schema validation.
+- Integrate LLM planner mode with deterministic fallback.
+- Add smoke/eval for fallback.
+- Manual checkpoint.
+
+Phase B - Streamlit UI
+
+Day23:
+
+- Add `frontend/streamlit_app.py` and `frontend/README.md`.
+- Add streamlit and requests dependencies.
+- UI calls existing API only.
+
+Day24:
+
+- Add HITL panel, trace viewer, report viewer, and demo templates.
+- Update README.
+- Manual UI smoke.
+
+Day25:
+
+- Streamlit checkpoint.
+- Confirm backend API, backend Docker, smoke, and eval still pass.
+
+Phase C - Real RAG
+
+Day26:
+
+- Add RAG backend abstraction.
+- Keep deterministic/json default.
+
+Day27:
+
+- Add SentenceTransformers backend.
+- Add ChromaDB backend.
+- Use `E:\Models\bge-small-zh-v1.5` for local verification.
+
+Day28:
+
+- Update `rag_search`, `build_index`, smoke, and eval.
+- Real RAG checkpoint.
+
+Phase D - Engineering Hardening
+
+Day29:
+
+- API key auth and tenant design.
+- BackgroundTasks `run_async`.
+
+Day30:
+
+- Alembic migration and SQL parser validation.
+
+Day31:
+
+- GitHub cache/retry/fallback.
+- MCP read-only client/server stub or design doc.
+
+Day32:
+
+- Expanded eval and final Day20+ checkpoint.
+
+### 8. Current Next Step
+
+After this `task.txt` roadmap update, the next implementation task should be:
+
+Day21 Step A1-A2:
+
+- Add LLM config and provider abstraction.
+- Do not fully replace Planner yet.
+- Keep deterministic planner as default.
+- Do not commit any real API key.
