@@ -90,6 +90,42 @@ Invoke-RestMethod `
   -Body '{"arguments":{"query":"traceable research agent tool registry","repo":"piao666/traceable-research-agent","limit":3,"mode":"mock"}}'
 ```
 
+## Streamlit Demo UI
+
+The Streamlit UI is a lightweight demo layer. It only calls the FastAPI HTTP
+API and does not read `.env`, display API keys, access SQLite directly, or call
+internal Python functions.
+
+Start the backend:
+
+```bash
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Start the frontend:
+
+```bash
+streamlit run frontend/streamlit_app.py
+```
+
+Default UI URL:
+
+```text
+http://localhost:8501
+```
+
+The UI supports:
+
+- Create task.
+- Inspect persisted plan.
+- Display `planner_source`, `llm_provider`, and `llm_model`.
+- Manually run a task.
+- View trace rows and status distribution.
+- View and download generated Markdown reports.
+- Handle HITL `waiting_human` confirmation and resume.
+- Demo templates for normal file/sql/rag/report, GitHub mock report, HITL
+  report, and LLM planner full-tools flow.
+
 ## Docker
 
 Build and run with Docker:

@@ -2528,3 +2528,198 @@ Security and Git hygiene:
 Next step:
 
 - Day23 Streamlit Frontend Demo Layer.
+
+## 2026-06-17 - Day23 Streamlit Frontend Demo Layer
+
+Scope:
+
+- Added a lightweight Streamlit frontend demo layer.
+- Streamlit calls the existing FastAPI HTTP API only.
+- No direct SQLite access.
+- No direct imports from `app`.
+- No `.env` read/print/display behavior.
+- No API key values in code, README, task log, or commit message.
+
+Added/modified files:
+
+- `frontend/streamlit_app.py`
+- `frontend/README.md`
+- `scripts/smoke_streamlit_frontend.py`
+- `requirements.txt`
+- `README.md`
+- `task.txt`
+
+Streamlit functionality:
+
+- Backend health panel for `GET /health`.
+- Task creation panel for `POST /api/tasks`.
+- Plan viewer for `GET /api/tasks/{run_id}/plan`.
+- Manual run panel for `POST /api/tasks/{run_id}/run`.
+- Status panel for `GET /api/tasks/{run_id}`.
+- Trace viewer for `GET /api/tasks/{run_id}/trace`.
+- Report viewer for `GET /api/reports/{run_id}`.
+- HITL confirmation panel for `POST /api/tasks/{run_id}/confirm`.
+- Markdown report download button.
+
+Demo templates:
+
+- Normal file/sql/rag/report.
+- GitHub mock report.
+- HITL report.
+- LLM planner full tools.
+
+LLM planner display:
+
+- Plan viewer shows `planner_source`.
+- Plan viewer shows `llm_provider`.
+- Plan viewer shows `llm_model`.
+- `llm` plans show an active LLM planner hint.
+- `deterministic_fallback` plans show a fallback hint.
+- `deterministic` plans show deterministic mode.
+
+HITL support:
+
+- UI detects `waiting_human` from task status or run response.
+- UI supports `approved`, `resume`, and `comment`.
+- UI calls confirm API and refreshes status, trace, and report.
+
+Static frontend smoke:
+
+- `scripts/smoke_streamlit_frontend.py` checks:
+  - `frontend/streamlit_app.py` exists.
+  - `frontend/README.md` exists.
+  - `requirements.txt` includes `streamlit` and `requests`.
+  - `frontend/streamlit_app.py` compiles.
+  - Required API paths are present:
+    - `/health`
+    - `/api/tasks`
+    - `/plan`
+    - `/run`
+    - `/trace`
+    - `/api/reports`
+    - `/confirm`
+  - Simple hardcoded secret patterns are absent.
+
+Validation commands to run:
+
+- `python -m pip install -r requirements.txt`
+- `python -m compileall app tests scripts frontend`
+- `python scripts/init_demo_db.py`
+- `python scripts/build_rag_index.py`
+- `python scripts/smoke_planner.py`
+- `python scripts/smoke_e2e.py`
+- `python scripts/smoke_exceptions.py`
+- `python scripts/smoke_hitl.py`
+- `python scripts/smoke_llm_config.py`
+- `python scripts/smoke_llm_planner.py`
+- `python scripts/smoke_streamlit_frontend.py`
+- `python -m app.eval.run_eval`
+
+Manual UI smoke plan:
+
+- Start FastAPI on `127.0.0.1:8000`.
+- Start Streamlit on `localhost:8501`.
+- Confirm health panel works.
+- Create an LLM planner full-tools task.
+- Confirm plan displays planner metadata.
+- Run task and inspect trace/report.
+- Create a HITL demo task.
+- Confirm it enters `waiting_human`.
+- Approve and resume through UI.
+- Confirm final status is `completed` and report exists.
+
+Security notes:
+
+- `.env` remains ignored.
+- `.env` must not be read, printed, displayed, added, committed, or pushed.
+- Streamlit UI does not display API keys.
+- Runtime artifacts remain ignored and must not be committed.
+
+Current non-goals:
+
+- Streamlit Docker service is not required in this version.
+- Real RAG is not started in this version.
+- No frontend authentication layer in this version.
+
+Validation results:
+
+- `python -m pip install -r requirements.txt`: passed; `streamlit` and
+  `requests` were already available in the local Python environment.
+- `python -m compileall app tests scripts frontend`: passed.
+- `python scripts/init_demo_db.py`: passed.
+- `python scripts/build_rag_index.py`: passed; built 1 document and 3 chunks.
+- `python scripts/smoke_planner.py`: passed.
+- `python scripts/smoke_e2e.py`: passed.
+- `python scripts/smoke_exceptions.py`: passed.
+- `python scripts/smoke_hitl.py`: passed.
+- `python scripts/smoke_llm_config.py`: passed; only safe key-presence
+  booleans were printed.
+- `python scripts/smoke_llm_planner.py`: passed; auto mode used Qwen and
+  returned `planner_source=llm`.
+- `python scripts/smoke_streamlit_frontend.py`: passed with:
+  - `streamlit_frontend=ok`
+  - `files=ok`
+  - `requirements=ok`
+  - `api_paths=ok`
+  - `secret_scan=ok`
+- `python -m app.eval.run_eval`: passed with:
+  - total_cases: 12
+  - passed: 12
+  - failed: 0
+  - task_success_rate: 1.0
+  - trace_complete_rate: 1.0
+  - report_exists_count: 8
+  - safety_hit_count: 2
+  - failure_visible_count: 3
+
+Manual UI smoke:
+
+- FastAPI started on `127.0.0.1:8000`.
+- `/health` returned `status=ok`, `service=traceable-research-agent`,
+  `phase=day19`.
+- Streamlit started through `python -m streamlit run
+  frontend/streamlit_app.py --server.port 8501 --server.headless true`.
+- Streamlit HTTP check returned status 200.
+- Browser smoke opened `http://127.0.0.1:8501` and confirmed:
+  - page title: `Traceable Research Agent`
+  - `Traceable Research Agent Demo` visible
+  - health panel visible
+  - create task panel visible
+  - plan/status/run/trace/report sections visible
+- UI create/run smoke:
+  - Created run_id: `f1ff4698c6b84e14824bac26a81e5a2e`.
+  - Plan displayed `planner_source=llm`.
+  - Plan displayed `llm_provider=qwen`.
+  - Plan displayed `llm_model=qwen-plus`.
+  - Run completed with status `completed`.
+  - Trace displayed `success:3`.
+  - Report viewer displayed generated Markdown.
+- HITL UI panel is implemented and backend `smoke_hitl.py` passed. Full HITL
+  click-through in Streamlit was not separately repeated after normal UI
+  smoke, because the backend HITL path and UI confirm panel were both covered
+  by implementation/static checks.
+- FastAPI and Streamlit were stopped after smoke.
+- No residual `uvicorn app.main:app` or `streamlit frontend/streamlit_app.py`
+  process remained.
+
+Docker backend regression:
+
+- `docker compose build` was attempted.
+- Docker daemon was unavailable:
+  `failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`.
+- No Docker container was started.
+- This is an environment availability issue; local backend/UI smoke and eval
+  passed.
+
+Runtime artifact check:
+
+- `.env` remains ignored and was not read, printed, added, committed, or
+  pushed.
+- UI does not read or display API keys.
+- Runtime DB, RAG index, reports, and eval outputs remain ignored and must not
+  be committed.
+
+Next step:
+
+- Day26 Real RAG backend abstraction and SentenceTransformers/ChromaDB
+  planning.
