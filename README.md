@@ -127,6 +127,48 @@ python -m app.eval.run_eval
 Eval cases live in `app/eval/cases.jsonl`. The runner prints a summary and may
 write `workspace/eval_outputs/eval_report.json`, which is ignored by Git.
 
+## Optional LLM Planner
+
+The default stable path remains deterministic planning. An optional LLM Planner
+can be enabled through local environment variables and currently supports Qwen
+and DeepSeek through OpenAI-compatible chat APIs.
+
+Planner modes:
+
+- `deterministic`: use the rule-based planner only.
+- `auto`: try the configured LLM only when enabled and available, otherwise
+  fallback to deterministic.
+- `llm`: try the configured LLM, and fallback to deterministic on any failure.
+
+Provider defaults:
+
+- Qwen: `qwen-plus` at `https://dashscope.aliyuncs.com/compatible-mode/v1`
+- DeepSeek: `deepseek-chat` at `https://api.deepseek.com`
+
+Example placeholders in `.env.example`:
+
+```env
+LLM_PLANNER_ENABLED=false
+LLM_PROVIDER=qwen
+LLM_PLANNER_MODE=auto
+LLM_MODEL=qwen-plus
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DEEPSEEK_API_KEY=
+QWEN_API_KEY=
+LLM_TIMEOUT_SECONDS=20
+LLM_MAX_RETRIES=1
+LLM_STRICT_JSON=true
+```
+
+Do not commit `.env` or real API keys. The service only reports
+`deepseek_has_key` / `qwen_has_key` booleans in safe config smoke output.
+
+LLM output must pass strict JSON plan validation before it can be persisted.
+Invalid JSON, schema validation failure, unavailable providers, HTTP errors,
+network timeouts, and missing API keys all fallback to deterministic planning.
+Planning still does not write `tool_traces`, and `POST /api/tasks` still only
+creates a pending run and persisted plan.
+
 ## Architecture
 
 Core flow:

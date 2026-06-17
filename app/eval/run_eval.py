@@ -49,7 +49,7 @@ def _run_task_case(db, case: dict[str, Any]) -> dict[str, Any]:
         source_mode="mock",
         allowed_tools=case.get("allowed_tools"),
     )
-    plan = plan_task(case["task"], case.get("allowed_tools"), "mock")
+    plan = plan_task(case["task"], case.get("allowed_tools"), "mock", planner_mode="deterministic")
     store.update_agent_run_plan(db, run.run_id, plan)
     planned_tools = [step["tool_name"] for step in plan.get("steps", [])]
     summary = run_plan(db, run.run_id)
@@ -119,7 +119,7 @@ def _run_hitl_case(db, case: dict[str, Any]) -> dict[str, Any]:
         source_mode="mock",
         allowed_tools=case.get("allowed_tools"),
     )
-    plan = plan_task(case["task"], case.get("allowed_tools"), "mock")
+    plan = plan_task(case["task"], case.get("allowed_tools"), "mock", planner_mode="deterministic")
     store.update_agent_run_plan(db, run.run_id, plan)
     waiting = run_plan(db, run.run_id)
     report_step = next(step for step in plan["steps"] if step["tool_name"] == "report_writer")
@@ -163,6 +163,29 @@ def _run_repeated_case(db, case: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _run_llm_planner_case(case: dict[str, Any]) -> dict[str, Any]:
+    plan = plan_task(case["task"], case.get("allowed_tools"), "mock", planner_mode="auto")
+    expected_sources = set(case.get("expected_planner_sources") or [])
+    planner_source = plan.get("planner_source")
+    steps = plan.get("steps") or []
+    passed = planner_source in expected_sources and all(
+        step.get("tool_name") in set(case.get("allowed_tools") or []) for step in steps
+    )
+    return {
+        "case_id": case["case_id"],
+        "passed": passed,
+        "run_id": None,
+        "status": "planned",
+        "planned_tools": [step.get("tool_name") for step in steps],
+        "planner_source": planner_source,
+        "trace_count": 0,
+        "trace_statuses": Counter(),
+        "trace_complete": True,
+        "report_exists": False,
+        "failure_reason": None if passed else f"Unexpected planner_source {planner_source}",
+    }
+
+
 def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
     try:
         mode = case.get("mode", "task_run")
@@ -172,6 +195,8 @@ def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
             return _run_hitl_case(db, case)
         if mode == "repeated_run":
             return _run_repeated_case(db, case)
+        if mode == "llm_planner":
+            return _run_llm_planner_case(case)
         return _run_task_case(db, case)
     except Exception as exc:
         return {

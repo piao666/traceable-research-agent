@@ -26,7 +26,12 @@ def main() -> None:
             source_mode="mock",
             allowed_tools=["file_reader", "rag_search", "report_writer"],
         )
-        plan = plan_task(task, ["file_reader", "rag_search", "report_writer"], "mock")
+        plan = plan_task(
+            task,
+            ["file_reader", "rag_search", "report_writer"],
+            "mock",
+            planner_mode="deterministic",
+        )
         report_steps = [step for step in plan["steps"] if step["tool_name"] == "report_writer"]
         if not report_steps or not report_steps[0]["requires_confirmation"]:
             raise SystemExit("Planner did not mark report_writer as requiring confirmation.")

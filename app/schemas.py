@@ -66,6 +66,9 @@ class TaskPlanResponse(BaseModel):
     steps: list[PlanStepResponse]
     notes: list[str]
     confirmation: dict[str, Any] | None = None
+    planner_source: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 class TaskRunResponse(BaseModel):

@@ -24,7 +24,12 @@ def main() -> None:
             source_mode="mock",
             allowed_tools=["file_reader", "sql_query", "rag_search", "report_writer"],
         )
-        plan = plan_task(run.task, ["file_reader", "sql_query", "rag_search", "report_writer"], "mock")
+        plan = plan_task(
+            run.task,
+            ["file_reader", "sql_query", "rag_search", "report_writer"],
+            "mock",
+            planner_mode="deterministic",
+        )
         run = store.update_agent_run_plan(db, run.run_id, plan)
         if run.status != "pending" or run.total_steps != 4:
             raise SystemExit(f"Unexpected create/plan state: {run.status}, steps={run.total_steps}")

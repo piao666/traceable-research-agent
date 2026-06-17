@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.config import settings
+from app.llm.planner_client import call_llm_for_plan
+from app.llm.providers import create_llm_client
+from app.llm.schema import extract_json_object, validate_and_normalize_plan
+
 
 DEFAULT_TOOL_ORDER = [
     "file_reader",
@@ -165,6 +170,65 @@ def plan_task(
     task: str,
     allowed_tools: list[str] | None = None,
     source_mode: str = "mock",
+    planner_mode: str | None = None,
+) -> dict[str, Any]:
+    """Create a plan using deterministic rules or optional LLM planning."""
+
+    mode = (planner_mode or settings.llm_planner_mode or "deterministic").lower()
+    if mode not in {"deterministic", "llm", "auto"}:
+        mode = "deterministic"
+
+    if mode == "deterministic":
+        plan = deterministic_plan_task(task, allowed_tools, source_mode)
+        plan["planner_source"] = "deterministic"
+        plan["llm_provider"] = None
+        plan["llm_model"] = None
+        return plan
+
+    should_try_llm = mode == "llm" or (mode == "auto" and settings.llm_planner_enabled)
+    if should_try_llm:
+        fallback_reason = "LLM planner unavailable; used deterministic fallback."
+        client = create_llm_client(settings)
+        response = call_llm_for_plan(client, task, allowed_tools, source_mode)
+        if response.success and response.content:
+            raw_plan = extract_json_object(response.content)
+            if raw_plan is not None:
+                valid, normalized, _validation_notes = validate_and_normalize_plan(
+                    raw_plan=raw_plan,
+                    task=task,
+                    allowed_tools=allowed_tools,
+                    source_mode=source_mode,
+                )
+                if valid and normalized is not None:
+                    _apply_human_confirmation_policy(normalized, task)
+                    normalized["planner_source"] = "llm"
+                    normalized["llm_provider"] = response.provider
+                    normalized["llm_model"] = response.model
+                    return normalized
+                fallback_reason = "LLM output failed schema validation; used deterministic fallback."
+            else:
+                fallback_reason = "LLM output was not valid JSON; used deterministic fallback."
+        elif response.error_message:
+            fallback_reason = f"{response.error_message}; used deterministic fallback."
+
+        plan = deterministic_plan_task(task, allowed_tools, source_mode)
+        plan["planner_source"] = "deterministic_fallback"
+        plan["llm_provider"] = client.describe().get("provider")
+        plan["llm_model"] = client.describe().get("model")
+        plan["notes"] = list(plan.get("notes") or []) + [_safe_fallback_reason(fallback_reason)]
+        return plan
+
+    plan = deterministic_plan_task(task, allowed_tools, source_mode)
+    plan["planner_source"] = "deterministic"
+    plan["llm_provider"] = None
+    plan["llm_model"] = None
+    return plan
+
+
+def deterministic_plan_task(
+    task: str,
+    allowed_tools: list[str] | None = None,
+    source_mode: str = "mock",
 ) -> dict[str, Any]:
     """Create a stable deterministic plan from task keywords.
 
@@ -223,3 +287,28 @@ def plan_task(
         "notes": notes,
         "confirmation": None,
     }
+
+
+def _safe_fallback_reason(reason: str) -> str:
+    """Return a fallback reason without provider secrets or headers."""
+
+    blocked_tokens = ["authorization", "bearer", "api_key", "apikey", "token"]
+    lowered = reason.lower()
+    if any(token in lowered for token in blocked_tokens):
+        return "LLM planner failed with a redacted provider error; used deterministic fallback."
+    return reason[:300]
+
+
+def _apply_human_confirmation_policy(plan: dict[str, Any], task: str) -> None:
+    """Keep HITL behavior deterministic even when an LLM proposes the plan."""
+
+    requires_human_confirmation = _matches(task.lower(), HUMAN_CONFIRM_KEYWORDS)
+    for step in plan.get("steps") or []:
+        if step.get("tool_name") == "report_writer" and requires_human_confirmation:
+            step["risk_level"] = "high"
+            step["requires_confirmation"] = True
+            step["completion_criteria"] = (
+                "Human confirmation is recorded before the final Markdown report is generated."
+            )
+        else:
+            step["requires_confirmation"] = False

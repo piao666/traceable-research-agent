@@ -2308,3 +2308,223 @@ Day21 Step A1-A2:
 - Do not fully replace Planner yet.
 - Keep deterministic planner as default.
 - Do not commit any real API key.
+
+## 2026-06-17 - Day21-B LLM Provider Planner Chain
+
+Current status:
+
+- Completed optional LLM Provider Planner chain.
+- Qwen is the default optional provider.
+- DeepSeek is supported as an optional provider.
+- deterministic planner remains the stable fallback.
+- `POST /api/tasks` still only creates a pending run and persisted plan.
+- Planning still does not write `tool_traces`.
+
+New/modified files:
+
+- Added `app/llm/__init__.py`.
+- Added `app/llm/base.py`.
+- Added `app/llm/providers.py`.
+- Added `app/llm/planner_client.py`.
+- Added `app/llm/schema.py`.
+- Updated `app/config.py`.
+- Updated `app/agent/planner.py`.
+- Updated `app/agent/reporter.py`.
+- Updated `app/schemas.py`.
+- Updated `.env.example`.
+- Updated `README.md`.
+- Updated `scripts/smoke_planner.py`.
+- Updated `scripts/smoke_e2e.py`.
+- Updated `scripts/smoke_hitl.py`.
+- Added `scripts/smoke_llm_config.py`.
+- Added `scripts/smoke_llm_planner.py`.
+- Updated `app/eval/cases.jsonl`.
+- Updated `app/eval/run_eval.py`.
+
+LLM provider abstraction:
+
+- `LLMMessage`, `LLMResponse`, and `LLMClient` are defined in
+  `app/llm/base.py`.
+- `UnavailableLLMClient` safely represents disabled or unavailable providers.
+- `OpenAICompatibleLLMClient` uses standard-library `urllib` and `json`.
+- No OpenAI SDK or extra dependency was added.
+- Provider calls use `{base_url}/chat/completions`.
+- HTTP errors, network errors, timeouts, invalid provider responses, and JSON
+  parse failures return `LLMResponse(success=False)` instead of raising into the
+  API layer.
+
+DeepSeek/Qwen support:
+
+- `provider=qwen` reads `QWEN_API_KEY`.
+- `provider=deepseek` reads `DEEPSEEK_API_KEY`.
+- Qwen defaults:
+  - model: `qwen-plus`
+  - base_url: `https://dashscope.aliyuncs.com/compatible-mode/v1`
+- DeepSeek defaults:
+  - model: `deepseek-chat`
+  - base_url: `https://api.deepseek.com`
+- Explicit factory checks for DeepSeek use DeepSeek defaults even when the
+  active provider is Qwen.
+- No API key is printed or returned by safe summaries.
+
+Strict JSON plan schema:
+
+- Added `extract_json_object(text)`.
+- Supports pure JSON, fenced JSON blocks, and text containing one JSON object.
+- Added `validate_and_normalize_plan`.
+- Known tools:
+  - `file_reader`
+  - `sql_query`
+  - `rag_search`
+  - `mcp_github_search`
+  - `report_writer`
+- Unknown tools are skipped with notes.
+- `allowed_tools` filtering remains enforced.
+- `step_no` is renumbered consecutively.
+- invalid risk levels normalize to `medium`.
+- `arguments` are normalized to objects.
+- Empty final steps are allowed with explanatory notes.
+
+Planner integration:
+
+- Existing deterministic rule planner was preserved as
+  `deterministic_plan_task`.
+- `plan_task` now supports:
+  - `deterministic`
+  - `llm`
+  - `auto`
+- Default settings come from `app/config.py` and `.env`.
+- LLM success requires:
+  - `LLMResponse.success=true`
+  - extractable JSON
+  - schema validation success
+  - valid known tools
+- LLM failure falls back to deterministic plan.
+- Fallback reason is added to plan notes without headers, tokens, or key values.
+- HITL policy remains deterministic: only tasks containing human approval /
+  confirmation phrases can make `report_writer` require confirmation.
+
+Planner source fields:
+
+- `planner_source=deterministic`
+- `planner_source=llm`
+- `planner_source=deterministic_fallback`
+- Optional `llm_provider`
+- Optional `llm_model`
+
+Reporter/API updates:
+
+- `GET /api/tasks/{run_id}/plan` now includes `planner_source`,
+  `llm_provider`, and `llm_model`.
+- Markdown reports include `planner_source`, `llm_provider`, and `llm_model`
+  in Run Summary.
+- API keys are not displayed in API or report output.
+
+Smoke results:
+
+- `python -m pip install -r requirements.txt`: succeeded.
+- `python -m compileall app tests scripts`: succeeded.
+- `python scripts/init_demo_db.py`: succeeded.
+- `python scripts/build_rag_index.py`: succeeded.
+- `python scripts/smoke_planner.py`: succeeded.
+- `python scripts/smoke_e2e.py`: succeeded.
+- `python scripts/smoke_exceptions.py`: succeeded.
+- `python scripts/smoke_hitl.py`: succeeded.
+- `python scripts/smoke_llm_config.py`: succeeded.
+- `python scripts/smoke_llm_planner.py`: succeeded.
+- `python -m app.eval.run_eval`: succeeded.
+
+Safe LLM config smoke summary:
+
+- `llm_planner_enabled=true`.
+- `llm_provider=qwen`.
+- `llm_planner_mode=auto`.
+- `llm_model=qwen-plus`.
+- `deepseek_has_key=true`.
+- `qwen_has_key=true`.
+- deterministic client unavailable by design.
+- qwen client available.
+- deepseek client available.
+- No API key values were printed.
+
+LLM planner smoke summary:
+
+- deterministic mode returned `planner_source=deterministic`.
+- auto mode returned `planner_source=llm`.
+- actual provider: `qwen`.
+- actual model: `qwen-plus`.
+- auto plan tools:
+  - `file_reader`
+  - `sql_query`
+  - `rag_search`
+  - `mcp_github_search`
+  - `report_writer`
+- `allowed_tools` restriction still worked.
+- HITL trigger still worked.
+- GitHub planning still worked.
+
+Eval summary:
+
+- total_cases: 12.
+- passed: 12.
+- failed: 0.
+- task_success_rate: 1.0.
+- trace_complete_rate: 1.0.
+- report_exists_count: 8.
+- safety_hit_count: 2.
+- failure_visible_count: 3.
+- Added case: `llm_planner_fallback_or_success_001`.
+
+API complex task smoke:
+
+- `/health`: `status=ok`, `service=traceable-research-agent`, `phase=day19`.
+- Created run_id: `471aff51416d4f529a670e9d8f66b45c`.
+- create status: `pending`.
+- plan `planner_source=llm`.
+- plan `llm_provider=qwen`.
+- plan `llm_model=qwen-plus`.
+- plan tools:
+  - `file_reader`
+  - `sql_query`
+  - `rag_search`
+  - `mcp_github_search`
+  - `report_writer`
+- step numbers: `1,2,3,4,5`.
+- trace count before run: 0.
+- run status: `completed`.
+- trace status distribution: `success:4`.
+- report exists: true.
+- report includes `planner_source`.
+- Uvicorn was stopped after smoke and no residual `uvicorn app.main:app`
+  process remained.
+
+Docker lightweight regression:
+
+- Attempted `docker compose build`.
+- Docker daemon was not available:
+  `failed to connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine`.
+- No container was started.
+- This is an environment availability issue, not an application compile/API
+  regression.
+- Docker files were not modified in this round.
+
+Security and Git hygiene:
+
+- `.env` exists locally and is ignored.
+- `.env` was not read, printed, added, committed, or pushed.
+- No real API key was written to `.env.example`, README, task log, scripts, or
+  commit message.
+- Safe scripts only print `deepseek_has_key` and `qwen_has_key` booleans.
+- `git ls-files workspace` only lists:
+  - `workspace/data/.gitkeep`
+  - `workspace/docs/demo_research_note.md`
+- Runtime artifacts remain ignored:
+  - `workspace/demo.sqlite`
+  - `workspace/traceable_research_agent.sqlite`
+  - `workspace/index/`
+  - `workspace/reports/`
+  - `workspace/eval_outputs/`
+
+Next step:
+
+- Day23 Streamlit Frontend Demo Layer.

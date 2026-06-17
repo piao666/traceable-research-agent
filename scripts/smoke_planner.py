@@ -15,6 +15,7 @@ def main() -> None:
         task=task,
         allowed_tools=["file_reader", "sql_query", "rag_search", "report_writer"],
         source_mode="mock",
+        planner_mode="deterministic",
     )
     tool_names = [step["tool_name"] for step in plan["steps"]]
     expected = ["file_reader", "sql_query", "rag_search", "report_writer"]
@@ -29,6 +30,7 @@ def main() -> None:
         task="Read local docs and query database then generate report",
         allowed_tools=["file_reader"],
         source_mode="mock",
+        planner_mode="deterministic",
     )
     limited_tools = [step["tool_name"] for step in limited["steps"]]
     if limited_tools != ["file_reader"]:
@@ -40,6 +42,7 @@ def main() -> None:
         task="Read local docs and query database then generate report",
         allowed_tools=[],
         source_mode="mock",
+        planner_mode="deterministic",
     )
     if empty["steps"] or "No executable planning step" not in " ".join(empty["notes"]):
         raise SystemExit(f"Expected empty plan for allowed_tools=[], got {empty}")
@@ -48,6 +51,7 @@ def main() -> None:
         task="Read local docs and generate a markdown report with human approval",
         allowed_tools=["file_reader", "report_writer"],
         source_mode="mock",
+        planner_mode="deterministic",
     )
     report_steps = [step for step in hitl["steps"] if step["tool_name"] == "report_writer"]
     if not report_steps or not report_steps[0]["requires_confirmation"]:
@@ -57,6 +61,7 @@ def main() -> None:
         task="Search GitHub repository issues about traceable research agent and generate a markdown report",
         allowed_tools=["mcp_github_search", "report_writer"],
         source_mode="mock",
+        planner_mode="deterministic",
     )
     github_tools = [step["tool_name"] for step in github["steps"]]
     if github_tools != ["mcp_github_search", "report_writer"]:
