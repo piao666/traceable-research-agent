@@ -1,8 +1,9 @@
-"""Validate Day26 RAG abstractions without optional model dependencies."""
+"""Validate lightweight RAG abstractions without loading optional backends."""
 
 from __future__ import annotations
 
 import json
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -33,14 +34,24 @@ def main() -> None:
     unavailable_settings = Settings(
         rag_embedding_backend="sentence_transformers",
         rag_vector_backend="chroma",
+        rag_model_path=str(ROOT / "missing-local-model"),
         rag_real_backend_enabled=True,
     )
     unavailable_embedding = create_embedding_backend(unavailable_settings)
     unavailable_vector = create_vector_backend(unavailable_settings)
     assert not unavailable_embedding.is_available()
-    assert not unavailable_vector.is_available()
+    assert unavailable_vector.is_available()
     assert not unavailable_embedding.embed_query("query").success
-    assert not unavailable_vector.search({}, top_k=3).success
+
+    missing_index_settings = Settings(
+        rag_vector_backend="chroma",
+        rag_chroma_dir="workspace/chroma/missing-smoke-index",
+        rag_real_backend_enabled=True,
+    )
+    missing_index_backend = create_vector_backend(missing_index_settings)
+    missing_index_result = missing_index_backend.search([0.0, 1.0], top_k=1)
+    assert not missing_index_result.success
+    assert missing_index_result.metadata.get("error_type") == "index_missing"
 
     fallback_settings = Settings(
         rag_embedding_backend="sentence_transformers",
@@ -53,12 +64,12 @@ def main() -> None:
     assert fallback_result["vector_backend"] == "json"
     assert fallback_result["fallback_used"] is True
 
-    optional_modules_loaded = any(
-        name == package or name.startswith(f"{package}.")
-        for package in ("sentence_transformers", "chromadb", "faiss")
-        for name in sys.modules
-    )
-    assert not optional_modules_loaded
+    sentence_transformers_loaded = "sentence_transformers" in sys.modules
+    chromadb_loaded = "chromadb" in sys.modules
+    faiss_loaded = "faiss" in sys.modules
+    assert not sentence_transformers_loaded
+    assert not chromadb_loaded
+    assert not faiss_loaded
 
     payload = {
         "rag_backends": "ok",
@@ -68,8 +79,14 @@ def main() -> None:
         "deterministic_embedding": "ok",
         "json_vector_search": "ok",
         "unavailable_backends": "safe",
+        "missing_chroma_index": "safe",
         "lightweight_fallback": "ok",
-        "optional_packages_loaded": False,
+        "sentence_transformers_available": importlib.util.find_spec("sentence_transformers")
+        is not None,
+        "chromadb_available": importlib.util.find_spec("chromadb") is not None,
+        "sentence_transformers_loaded": sentence_transformers_loaded,
+        "chromadb_loaded": chromadb_loaded,
+        "faiss_loaded": faiss_loaded,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 

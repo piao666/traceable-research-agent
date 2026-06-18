@@ -2852,3 +2852,116 @@ Next step:
 - Day27 SentenceTransformers and ChromaDB real RAG implementation using the
   local `E:\Models\bge-small-zh-v1.5` model, while preserving the Day26
   lightweight fallback.
+
+2026-06-17 - Day27 SentenceTransformers And ChromaDB Real RAG
+
+Status:
+
+- Day27 implementation and local verification completed on 2026-06-18.
+
+New and modified files:
+
+- Updated `requirements.txt` with `sentence-transformers` and `chromadb`.
+- Updated `app/rag/embedding_backends.py`.
+- Updated `app/rag/vector_backends.py`.
+- Updated `app/rag/build_index.py`.
+- Updated `app/tools/rag_search.py`.
+- Added `scripts/smoke_real_rag.py`.
+- Updated `scripts/smoke_rag_backends.py`.
+- Updated `app/eval/cases.jsonl` and `app/eval/run_eval.py`.
+- Updated `.env.example`, `README.md`, and `task.txt`.
+
+Dependency result:
+
+- Installed `sentence-transformers 5.6.0` and `chromadb 1.5.9` under Python
+  3.10.11.
+- `python -m pip check` returned no broken requirements.
+- FAISS and the OpenAI SDK were not added.
+
+SentenceTransformers backend:
+
+- Loads only the configured local model path with `local_files_only=true`.
+- Uses the configured CPU/device and normalization setting.
+- Returns dense `list[list[float]]` vectors and their dimension.
+- Uses an in-process model cache keyed by model path and device.
+- Missing package, missing model path, and load/encode failures return stable
+  structured failures rather than API exceptions.
+- Empty text batches return success with no vectors and do not load a model.
+
+Chroma backend:
+
+- Uses a persistent client under `workspace/chroma` with anonymized telemetry
+  disabled.
+- Recreates the configured collection during index builds for deterministic
+  demo state.
+- Persists chunk IDs, documents, caller-provided embeddings, and safe scalar
+  metadata.
+- Queries by dense embedding and converts cosine distance to public score with
+  `1/(1+distance)` while preserving raw distance in hit metadata.
+- Missing collection/index, package failures, invalid vectors, and Chroma
+  errors return stable `VectorSearchResult` failures.
+
+Fallback and compatibility:
+
+- Default remains deterministic embeddings plus the JSON v1 index.
+- Requested SentenceTransformers/Chroma with
+  `RAG_REAL_BACKEND_ENABLED=false` selects deterministic/JSON and records
+  `fallback_used=true`.
+- Explicit real mode returns stable failure when model or backend is
+  unavailable; it does not silently hide a broken real configuration.
+- `rag_search` retains `query`, `top_k`, and `hits`, and each hit retains
+  source, chunk_id, score, and text.
+- Tool output and metadata now include active/requested backends, model path,
+  persistence directory, collection, dimension, and fallback state.
+
+Local real RAG verification:
+
+- Model paths `E:\Models\bge-small-zh-v1.5`,
+  `E:\Models\qwen3-embedding-0.6b`, and `E:\Models\bge-m3` existed.
+- Default real model `E:\Models\bge-small-zh-v1.5` loaded successfully on CPU.
+- Real build indexed 1 document and 3 chunks into `workspace/chroma`.
+- Embedding dimension was 512.
+- `scripts/smoke_real_rag.py` returned real_rag=ok, 3 hits,
+  embedding_backend=sentence_transformers, vector_backend=chroma, and
+  fallback_used=false.
+
+Regression results:
+
+- Default deterministic/JSON build and query passed with 3 hits and no
+  optional package import in the lightweight backend smoke.
+- Backend smoke also verified missing model and missing Chroma index failures.
+- Planner, E2E, exception, HITL, LLM config, LLM planner, and Streamlit smoke
+  scripts all passed.
+- Default eval passed 14/14 with failed=0.
+- Optional real-RAG eval with `RUN_REAL_RAG_EVAL=true` passed 14/14 with
+  failed=0.
+
+API real RAG verification:
+
+- Run ID: `9901b083e8ca4c53b9a6b8e0a66fd643`.
+- Planner source was LLM and included a `rag_search` step.
+- Run status completed with one successful RAG trace.
+- RAG output summary reported 3 hits.
+- Direct tool metadata reported SentenceTransformers/Chroma, dimension 512,
+  and fallback_used=false.
+- Report existed and contained the Traceable Research Report title.
+- Uvicorn was stopped after verification.
+
+Docker and runtime artifacts:
+
+- Docker client exists, but the Docker Desktop Linux daemon named pipe was not
+  running; Docker regression was not available and did not block local checks.
+- `.env`, SQLite databases, JSON index, Chroma persistence, reports, eval
+  outputs, logs, and model files remain runtime-only and must not be committed.
+- No model under `E:\Models` was copied, modified, staged, or committed.
+
+Current non-goals:
+
+- FAISS backend.
+- Docker real-RAG model mount verification.
+- Multiple-model selector UI.
+
+Next step:
+
+- Day28 real-RAG API/Streamlit checkpoint and optional model switching, or
+  proceed to API auth, async execution, migrations, and SQL parser hardening.

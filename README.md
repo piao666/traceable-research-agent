@@ -207,8 +207,7 @@ creates a pending run and persisted plan.
 
 ## RAG Backend Configuration
 
-Day26 introduces stable embedding and vector backend interfaces while keeping
-the original lightweight path as the default:
+The project keeps its original lightweight path as the default:
 
 ```env
 RAG_EMBEDDING_BACKEND=deterministic
@@ -221,10 +220,10 @@ RAG_NORMALIZE_EMBEDDINGS=true
 RAG_REAL_BACKEND_ENABLED=false
 ```
 
-The available local model choices planned for later real-RAG work are
-`bge-small-zh-v1.5`, `qwen3-embedding-0.6b`, and `bge-m3`. Day26 does not load
-these models and does not import SentenceTransformers, ChromaDB, or FAISS.
-SentenceTransformers and ChromaDB are planned for Day27/Day28.
+Day27 adds an optional SentenceTransformers embedding backend and persistent
+ChromaDB vector backend. The available local model choices are
+`bge-small-zh-v1.5`, `qwen3-embedding-0.6b`, and `bge-m3`; the first is the
+recommended lightweight starting point.
 
 If a requested backend is unavailable and `RAG_REAL_BACKEND_ENABLED=false`,
 the service falls back to deterministic embeddings and the JSON index. When
@@ -234,6 +233,47 @@ backend and fallback metadata added.
 
 `workspace/index`, `workspace/chroma`, and `workspace/faiss` are runtime-only
 and ignored by Git. Docker lightweight mode does not require a local model.
+
+## Real RAG Optional Mode
+
+Real RAG requires `sentence-transformers`, `chromadb`, and a local model. It
+never downloads a model at runtime; the configured path is loaded with
+`local_files_only=true`.
+
+PowerShell example:
+
+```powershell
+$env:RAG_REAL_BACKEND_ENABLED="true"
+$env:RAG_EMBEDDING_BACKEND="sentence_transformers"
+$env:RAG_VECTOR_BACKEND="chroma"
+$env:RAG_MODEL_PATH="E:\Models\bge-small-zh-v1.5"
+$env:RAG_CHROMA_DIR="workspace/chroma"
+$env:RAG_COLLECTION_NAME="traceable_research_docs"
+$env:RAG_DEVICE="cpu"
+$env:RAG_NORMALIZE_EMBEDDINGS="true"
+python scripts/build_rag_index.py
+python scripts/smoke_real_rag.py
+```
+
+Optional real-RAG eval uses the same RAG variables plus:
+
+```powershell
+$env:RUN_REAL_RAG_EVAL="true"
+python -m app.eval.run_eval
+```
+
+Chroma cosine distance is exposed in hit metadata and converted to the public
+score using `1 / (1 + distance)`. The public `rag_search` shape remains
+`query`, `top_k`, and `hits`, with backend metadata added.
+
+The Streamlit UI needs no backend-specific changes. When FastAPI runs in real
+RAG mode, the existing RAG task flow automatically uses Chroma and displays
+the resulting trace and report.
+
+Docker does not include model files. A future real-RAG container run can mount
+`E:\Models:/models:ro` and set
+`RAG_MODEL_PATH=/models/bge-small-zh-v1.5`; lightweight Docker mode remains the
+default and does not require that mount.
 
 ## Architecture
 
@@ -262,17 +302,18 @@ Checkpoint records:
 
 - `file_reader` only reads under `workspace/docs` after path resolution.
 - `sql_query` accepts only SELECT/WITH and rejects destructive SQL keywords.
-- `rag_search` reads a local ignored JSON index and rejects empty query.
+- `rag_search` reads an ignored JSON or Chroma index and rejects empty query.
 - `mcp_github_search` is read-only and uses mock mode by default.
 - HITL is a minimal confirmation flow, not production authorization.
 - Secrets, `.env`, runtime DBs, RAG indexes, reports, eval outputs, and logs are ignored.
 
 ## Current Limitations
 
-- No real LLM planner.
+- LLM planning depends on an optional external provider and always retains a
+  deterministic fallback.
 - No production auth or tenant isolation.
 - No background job queue.
 - No persistent migration framework.
 - GitHub public API mode is best-effort and may be rate-limited.
 - MCP is represented by a read-only compatible adapter, not a full MCP server.
-- Real SentenceTransformers and ChromaDB RAG backends are not implemented yet.
+- FAISS and a multi-model selector UI are not implemented.

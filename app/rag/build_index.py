@@ -29,7 +29,10 @@ def build_local_index(
     requested_vector = active_settings.rag_vector_backend.strip().lower()
     embedding_backend = create_embedding_backend(active_settings)
     vector_backend = create_vector_backend(active_settings, index_path=index_path)
-    fallback_used = False
+    fallback_used = (
+        embedding_backend.name != requested_embedding
+        or vector_backend.name != requested_vector
+    )
 
     unavailable = not embedding_backend.is_available() or not vector_backend.is_available()
     if unavailable and active_settings.rag_real_backend_enabled:
@@ -74,7 +77,12 @@ def build_local_index(
             error_message=embedding_result.error_message,
         )
 
-    index_result = vector_backend.build_index(chunks, embedding_result.vectors, index_path)
+    persist_path = index_path if vector_backend.name == "json" else None
+    index_result = vector_backend.build_index(
+        chunks,
+        embedding_result.vectors,
+        persist_path,
+    )
     return _summary(
         active_settings,
         success=index_result.success,
@@ -87,6 +95,8 @@ def build_local_index(
         requested_vector_backend=requested_vector,
         fallback_used=fallback_used,
         error_message=index_result.error_message,
+        dimension=embedding_result.dimension,
+        persist_dir=index_result.metadata.get("persist_dir"),
     )
 
 
@@ -103,8 +113,13 @@ def _summary(
     requested_vector_backend: str,
     fallback_used: bool,
     error_message: str | None,
+    dimension: int | None = None,
+    persist_dir: str | None = None,
 ) -> dict[str, Any]:
     path = Path(index_path)
+    resolved_persist_dir = persist_dir or (
+        active_settings.rag_chroma_dir if vector_backend == "chroma" else str(path.parent)
+    )
     return {
         "success": success,
         "documents": documents,
@@ -117,6 +132,7 @@ def _summary(
         "fallback_used": fallback_used,
         "model_path": active_settings.rag_model_path,
         "collection_name": active_settings.rag_collection_name,
-        "persist_dir": str(path.parent),
+        "persist_dir": resolved_persist_dir,
+        "dimension": dimension,
         "error_message": error_message,
     }

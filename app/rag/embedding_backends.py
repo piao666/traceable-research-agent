@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.util
+import math
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias
 
 from app.rag.embeddings import embed_text
@@ -15,6 +19,8 @@ if TYPE_CHECKING:
 SparseVector: TypeAlias = dict[str, float]
 DenseVector: TypeAlias = list[float]
 EmbeddingVector: TypeAlias = SparseVector | DenseVector
+_MODEL_CACHE: dict[tuple[str, str], object] = {}
+_MODEL_CACHE_LOCK = threading.Lock()
 
 
 @dataclass(slots=True)
@@ -113,15 +119,162 @@ class UnavailableEmbeddingBackend(EmbeddingBackend):
         )
 
 
+class SentenceTransformersEmbeddingBackend(EmbeddingBackend):
+    """Dense embeddings from a local SentenceTransformers model."""
+
+    name = "sentence_transformers"
+
+    def __init__(
+        self,
+        model_path: str | None,
+        device: str = "cpu",
+        normalize_embeddings: bool = True,
+    ) -> None:
+        self.model_path = Path(model_path).resolve() if model_path else None
+        self.device = device
+        self.normalize_embeddings = normalize_embeddings
+
+    def is_available(self) -> bool:
+        return bool(
+            self.model_path
+            and self.model_path.is_dir()
+            and importlib.util.find_spec("sentence_transformers") is not None
+        )
+
+    def describe(self) -> dict:
+        reason = self._unavailable_reason()
+        return {
+            "name": self.name,
+            "available": reason is None,
+            "reason": reason,
+            "model_path": str(self.model_path) if self.model_path else None,
+            "device": self.device,
+            "normalize_embeddings": self.normalize_embeddings,
+            "local_files_only": True,
+        }
+
+    def embed_texts(self, texts: list[str]) -> EmbeddingResult:
+        metadata = self._metadata(dimension=None)
+        if not texts:
+            return EmbeddingResult(
+                success=True,
+                vectors=[],
+                backend=self.name,
+                dimension=None,
+                metadata=metadata,
+            )
+
+        reason = self._unavailable_reason()
+        if reason:
+            return EmbeddingResult(
+                success=False,
+                backend=self.name,
+                error_message=f"SentenceTransformers backend unavailable: {reason}",
+                metadata=metadata,
+            )
+
+        try:
+            model = self._load_model()
+            normalized_by_model = True
+            try:
+                encoded = model.encode(
+                    texts,
+                    convert_to_numpy=True,
+                    normalize_embeddings=self.normalize_embeddings,
+                    show_progress_bar=False,
+                )
+            except TypeError:
+                encoded = model.encode(
+                    texts,
+                    convert_to_numpy=True,
+                    show_progress_bar=False,
+                )
+                normalized_by_model = False
+
+            vectors = [[float(value) for value in vector] for vector in encoded]
+            if self.normalize_embeddings and not normalized_by_model:
+                vectors = [_l2_normalize(vector) for vector in vectors]
+            dimension = len(vectors[0]) if vectors else None
+            metadata = self._metadata(dimension=dimension)
+            metadata["normalization_mode"] = (
+                "encode_parameter" if normalized_by_model else "manual_l2"
+            )
+            metadata["count"] = len(vectors)
+            return EmbeddingResult(
+                success=True,
+                vectors=vectors,
+                backend=self.name,
+                dimension=dimension,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            return EmbeddingResult(
+                success=False,
+                backend=self.name,
+                error_message=f"SentenceTransformers embedding failed: {exc}",
+                metadata=metadata,
+            )
+
+    def _load_model(self):
+        cache_key = (str(self.model_path), self.device)
+        with _MODEL_CACHE_LOCK:
+            model = _MODEL_CACHE.get(cache_key)
+            if model is None:
+                from sentence_transformers import SentenceTransformer
+
+                model = SentenceTransformer(
+                    str(self.model_path),
+                    device=self.device,
+                    local_files_only=True,
+                )
+                _MODEL_CACHE[cache_key] = model
+        return model
+
+    def _unavailable_reason(self) -> str | None:
+        if importlib.util.find_spec("sentence_transformers") is None:
+            return "sentence-transformers is not installed"
+        if self.model_path is None:
+            return "model path is not configured"
+        if not self.model_path.is_dir():
+            return f"model path missing: {self.model_path}"
+        return None
+
+    def _metadata(self, dimension: int | None) -> dict:
+        return {
+            "backend": self.name,
+            "model_path": str(self.model_path) if self.model_path else None,
+            "device": self.device,
+            "normalize_embeddings": self.normalize_embeddings,
+            "dimension": dimension,
+            "local_files_only": True,
+        }
+
+
 def create_embedding_backend(settings: "Settings") -> EmbeddingBackend:
-    """Create the requested backend without importing optional model packages."""
+    """Create the requested backend while preserving lightweight fallback."""
 
     name = settings.rag_embedding_backend.strip().lower()
     if name == "deterministic":
         return DeterministicEmbeddingBackend()
     if name == "sentence_transformers":
+        if not settings.rag_real_backend_enabled:
+            return DeterministicEmbeddingBackend()
+        backend = SentenceTransformersEmbeddingBackend(
+            model_path=settings.rag_model_path,
+            device=settings.rag_device,
+            normalize_embeddings=settings.rag_normalize_embeddings,
+        )
+        if backend.is_available():
+            return backend
         return UnavailableEmbeddingBackend(
             name,
-            "sentence_transformers backend planned for Day27",
+            backend.describe().get("reason") or "sentence-transformers unavailable",
         )
     return UnavailableEmbeddingBackend(name or "unknown", "unsupported embedding backend")
+
+
+def _l2_normalize(vector: DenseVector) -> DenseVector:
+    norm = math.sqrt(sum(value * value for value in vector))
+    if norm == 0:
+        return vector
+    return [value / norm for value in vector]

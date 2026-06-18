@@ -60,7 +60,10 @@ def search_rag(arguments: dict[str, Any]) -> ToolResult:
     requested_vector = settings.rag_vector_backend.strip().lower()
     embedding_backend = create_embedding_backend(settings)
     vector_backend = create_vector_backend(settings, index_path=DEFAULT_INDEX_PATH)
-    fallback_used = False
+    fallback_used = (
+        embedding_backend.name != requested_embedding
+        or vector_backend.name != requested_vector
+    )
 
     unavailable = not embedding_backend.is_available() or not vector_backend.is_available()
     if unavailable and settings.rag_real_backend_enabled:
@@ -95,6 +98,7 @@ def search_rag(arguments: dict[str, Any]) -> ToolResult:
         requested_embedding,
         requested_vector,
         fallback_used,
+        dimension=None,
     )
 
     if not query:
@@ -125,6 +129,15 @@ def search_rag(arguments: dict[str, Any]) -> ToolResult:
             metadata=backend_metadata,
         )
 
+    backend_metadata = _backend_metadata(
+        embedding_backend.name,
+        vector_backend.name,
+        requested_embedding,
+        requested_vector,
+        fallback_used,
+        dimension=embedding_result.dimension,
+    )
+
     search_result = vector_backend.search(embedding_result.vectors[0], top_k=top_k)
     if not search_result.success:
         return _failure(
@@ -140,6 +153,9 @@ def search_rag(arguments: dict[str, Any]) -> ToolResult:
     output = {
         "query": query,
         "top_k": top_k,
+        "embedding_backend": embedding_backend.name,
+        "vector_backend": vector_backend.name,
+        "fallback_used": fallback_used,
         "hits": [
             {
                 "source": hit["source"],
@@ -176,12 +192,21 @@ def _backend_metadata(
     requested_embedding_backend: str,
     requested_vector_backend: str,
     fallback_used: bool,
+    dimension: int | None = None,
 ) -> dict[str, Any]:
+    persist_dir = (
+        settings.rag_chroma_dir
+        if vector_backend == "chroma"
+        else str(DEFAULT_INDEX_PATH.parent)
+    )
     return {
         "embedding_backend": embedding_backend,
         "vector_backend": vector_backend,
         "requested_embedding_backend": requested_embedding_backend,
         "requested_vector_backend": requested_vector_backend,
         "fallback_used": fallback_used,
-        "persist_dir": str(DEFAULT_INDEX_PATH.parent),
+        "model_path": settings.rag_model_path,
+        "persist_dir": persist_dir,
+        "collection_name": settings.rag_collection_name,
+        "dimension": dimension,
     }

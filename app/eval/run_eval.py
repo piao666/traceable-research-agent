@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +15,7 @@ from app.database import SessionLocal, init_db
 from app.rag.build_index import build_local_index
 from app.rag.embedding_backends import create_embedding_backend
 from app.rag.vector_backends import create_vector_backend
-from app.config import settings
+from app.config import Settings, settings
 from app.tools.registry import execute_tool
 from app.tools.defaults import register_default_tools
 from app.trace import store
@@ -190,19 +191,22 @@ def _run_llm_planner_case(case: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_rag_backend_case(case: dict[str, Any]) -> dict[str, Any]:
-    embedding = create_embedding_backend(settings)
-    vector = create_vector_backend(settings)
+    default_settings = Settings(
+        rag_embedding_backend="deterministic",
+        rag_vector_backend="json",
+        rag_real_backend_enabled=False,
+    )
+    embedding = create_embedding_backend(default_settings)
+    vector = create_vector_backend(default_settings)
     query_result = embedding.embed_query("trace tool registry")
-    build_result = build_local_index()
-    result = execute_tool("rag_search", {"query": "trace tool registry", "top_k": 3})
+    build_result = build_local_index(settings_obj=default_settings)
+    search_result = vector.search(query_result.vectors[0], top_k=3)
     passed = (
         embedding.name == "deterministic"
         and vector.name == "json"
         and query_result.success
         and build_result.get("success")
-        and result.success
-        and result.metadata.get("embedding_backend") == "deterministic"
-        and result.metadata.get("vector_backend") == "json"
+        and search_result.success
     )
     return {
         "case_id": case["case_id"],
@@ -215,6 +219,53 @@ def _run_rag_backend_case(case: dict[str, Any]) -> dict[str, Any]:
         "trace_complete": True,
         "report_exists": False,
         "failure_reason": None if passed else "Default RAG backend abstraction failed",
+    }
+
+
+def _run_real_rag_optional_case(case: dict[str, Any]) -> dict[str, Any]:
+    enabled = os.getenv("RUN_REAL_RAG_EVAL", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not enabled:
+        return {
+            "case_id": case["case_id"],
+            "passed": True,
+            "run_id": None,
+            "status": "skipped",
+            "planned_tools": ["rag_search"],
+            "trace_count": 0,
+            "trace_statuses": Counter(),
+            "trace_complete": True,
+            "report_exists": False,
+            "failure_reason": None,
+        }
+
+    build_result = build_local_index(settings_obj=settings)
+    result = execute_tool(
+        "rag_search",
+        {"query": "trace persistence tool registry report", "top_k": 3},
+    )
+    passed = (
+        build_result.get("success")
+        and result.success
+        and result.metadata.get("embedding_backend") == "sentence_transformers"
+        and result.metadata.get("vector_backend") == "chroma"
+        and result.metadata.get("fallback_used") is False
+    )
+    return {
+        "case_id": case["case_id"],
+        "passed": passed,
+        "run_id": None,
+        "status": "validated" if passed else "failed",
+        "planned_tools": ["rag_search"],
+        "trace_count": 0,
+        "trace_statuses": Counter(),
+        "trace_complete": True,
+        "report_exists": False,
+        "failure_reason": None if passed else "Optional real RAG validation failed",
     }
 
 
@@ -231,6 +282,8 @@ def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
             return _run_llm_planner_case(case)
         if mode == "rag_backend":
             return _run_rag_backend_case(case)
+        if mode == "real_rag_optional":
+            return _run_real_rag_optional_case(case)
         return _run_task_case(db, case)
     except Exception as exc:
         return {

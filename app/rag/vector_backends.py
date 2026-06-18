@@ -1,7 +1,8 @@
-"""Vector backend contracts and JSON persistence implementation."""
+"""Vector backend contracts with JSON and Chroma persistence."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 from abc import ABC, abstractmethod
@@ -9,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from app.rag.embedding_backends import DenseVector, EmbeddingVector, SparseVector
+from app.rag.embedding_backends import DenseVector, EmbeddingVector
 from app.rag.embeddings import cosine_similarity
 
 if TYPE_CHECKING:
@@ -179,8 +180,201 @@ class JsonVectorBackend(VectorBackend):
             )
 
 
+class ChromaVectorBackend(VectorBackend):
+    """Persistent Chroma collection backed by caller-provided dense vectors."""
+
+    name = "chroma"
+
+    def __init__(self, persist_dir: str | Path, collection_name: str) -> None:
+        self.persist_dir = Path(persist_dir)
+        self.collection_name = collection_name
+
+    def is_available(self) -> bool:
+        return self._unavailable_reason() is None
+
+    def describe(self) -> dict:
+        reason = self._unavailable_reason()
+        return {
+            "name": self.name,
+            "available": reason is None,
+            "reason": reason,
+            "persist_dir": str(self.persist_dir),
+            "collection_name": self.collection_name,
+            "runtime_only": True,
+        }
+
+    def build_index(
+        self,
+        chunks: list[dict],
+        vectors: list[EmbeddingVector],
+        persist_path: str | Path | None = None,
+    ) -> VectorIndexSummary:
+        persist_dir = Path(persist_path) if persist_path else self.persist_dir
+        reason = self._unavailable_reason()
+        if reason:
+            return VectorIndexSummary(
+                success=False,
+                backend=self.name,
+                index_path=str(persist_dir),
+                error_message=f"Chroma backend unavailable: {reason}",
+                metadata=self._metadata(error_type="backend_unavailable"),
+            )
+        if len(chunks) != len(vectors):
+            return VectorIndexSummary(
+                success=False,
+                backend=self.name,
+                index_path=str(persist_dir),
+                error_message="Chunk and vector counts do not match.",
+                metadata=self._metadata(error_type="invalid_vectors"),
+            )
+        if any(not isinstance(vector, list) for vector in vectors):
+            return VectorIndexSummary(
+                success=False,
+                backend=self.name,
+                index_path=str(persist_dir),
+                error_message="Chroma requires dense list embeddings.",
+                metadata=self._metadata(error_type="invalid_vectors"),
+            )
+        try:
+            client = self._client(persist_dir)
+            try:
+                client.delete_collection(self.collection_name)
+            except Exception:
+                pass
+            collection = client.create_collection(
+                self.collection_name,
+                metadata={"hnsw:space": "cosine"},
+            )
+            if chunks:
+                collection.add(
+                    ids=[str(chunk["chunk_id"]) for chunk in chunks],
+                    documents=[str(chunk["text"]) for chunk in chunks],
+                    embeddings=vectors,
+                    metadatas=[_chroma_metadata(chunk) for chunk in chunks],
+                )
+            count = collection.count()
+            return VectorIndexSummary(
+                success=True,
+                documents=len({chunk.get("source") for chunk in chunks}),
+                chunks=len(chunks),
+                backend=self.name,
+                index_path=str(persist_dir),
+                metadata={**self._metadata(), "collection_count": count},
+            )
+        except Exception as exc:
+            return VectorIndexSummary(
+                success=False,
+                backend=self.name,
+                index_path=str(persist_dir),
+                error_message=f"Chroma index build failed: {exc}",
+                metadata=self._metadata(error_type="index_build_error"),
+            )
+
+    def search(self, query_vector: EmbeddingVector, top_k: int = 3) -> VectorSearchResult:
+        reason = self._unavailable_reason()
+        if reason:
+            return VectorSearchResult(
+                success=False,
+                backend=self.name,
+                error_message=f"Chroma backend unavailable: {reason}",
+                metadata=self._metadata(error_type="backend_unavailable"),
+            )
+        if not isinstance(query_vector, list):
+            return VectorSearchResult(
+                success=False,
+                backend=self.name,
+                error_message="Chroma requires a dense query embedding.",
+                metadata=self._metadata(error_type="invalid_vectors"),
+            )
+        if not self.persist_dir.exists():
+            return VectorSearchResult(
+                success=False,
+                backend=self.name,
+                error_message="Chroma RAG index not found, run scripts/build_rag_index.py first.",
+                metadata=self._metadata(error_type="index_missing"),
+            )
+        try:
+            client = self._client(self.persist_dir)
+            collection = client.get_collection(self.collection_name)
+            count = collection.count()
+            if count == 0:
+                return VectorSearchResult(
+                    success=True,
+                    hits=[],
+                    backend=self.name,
+                    metadata={**self._metadata(), "collection_count": 0},
+                )
+            limit = min(max(1, int(top_k)), 10, count)
+            result = collection.query(
+                query_embeddings=[query_vector],
+                n_results=limit,
+                include=["documents", "metadatas", "distances"],
+            )
+            ids = (result.get("ids") or [[]])[0]
+            documents = (result.get("documents") or [[]])[0]
+            metadatas = (result.get("metadatas") or [[]])[0]
+            distances = (result.get("distances") or [[]])[0]
+            hits = []
+            for chunk_id, document, metadata, distance in zip(
+                ids, documents, metadatas, distances
+            ):
+                details = dict(metadata or {})
+                distance_value = float(distance)
+                details["distance"] = distance_value
+                details["score_transform"] = "1/(1+cosine_distance)"
+                hits.append(
+                    VectorHit(
+                        source=str(details.get("source") or ""),
+                        chunk_id=str(details.get("chunk_id") or chunk_id),
+                        score=round(1.0 / (1.0 + max(distance_value, 0.0)), 6),
+                        text=str(document or ""),
+                        metadata=details,
+                    )
+                )
+            return VectorSearchResult(
+                success=True,
+                hits=hits,
+                backend=self.name,
+                metadata={**self._metadata(), "collection_count": count},
+            )
+        except Exception as exc:
+            message = str(exc)
+            error_type = "index_missing" if "does not exist" in message.lower() else "search_error"
+            return VectorSearchResult(
+                success=False,
+                backend=self.name,
+                error_message=f"Chroma vector search failed: {message}",
+                metadata=self._metadata(error_type=error_type),
+            )
+
+    def _client(self, persist_dir: Path):
+        import chromadb
+        from chromadb.config import Settings as ChromaSettings
+
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        return chromadb.PersistentClient(
+            path=str(persist_dir),
+            settings=ChromaSettings(anonymized_telemetry=False),
+        )
+
+    def _unavailable_reason(self) -> str | None:
+        if importlib.util.find_spec("chromadb") is None:
+            return "chromadb is not installed"
+        if not self.collection_name.strip():
+            return "collection name is not configured"
+        return None
+
+    def _metadata(self, error_type: str | None = None) -> dict:
+        return {
+            "persist_dir": str(self.persist_dir),
+            "collection_name": self.collection_name,
+            "vector_backend": self.name,
+            "error_type": error_type,
+        }
+
+
 class UnavailableVectorBackend(VectorBackend):
-    """Stable placeholder for vector databases not installed yet."""
+    """Stable placeholder for vector databases unavailable at runtime."""
 
     def __init__(self, name: str, reason: str) -> None:
         self.name = name
@@ -218,13 +412,24 @@ def create_vector_backend(
     settings: "Settings",
     index_path: str | Path = DEFAULT_JSON_INDEX_PATH,
 ) -> VectorBackend:
-    """Create the requested backend without importing optional vector packages."""
+    """Create the requested backend while preserving lightweight fallback."""
 
     name = settings.rag_vector_backend.strip().lower()
     if name == "json":
         return JsonVectorBackend(index_path)
     if name == "chroma":
-        return UnavailableVectorBackend(name, "chroma backend planned for Day27/Day28")
+        if not settings.rag_real_backend_enabled:
+            return JsonVectorBackend(index_path)
+        backend = ChromaVectorBackend(
+            persist_dir=settings.rag_chroma_dir,
+            collection_name=settings.rag_collection_name,
+        )
+        if backend.is_available():
+            return backend
+        return UnavailableVectorBackend(
+            name,
+            backend.describe().get("reason") or "chromadb unavailable",
+        )
     if name == "faiss":
         return UnavailableVectorBackend(name, "faiss backend planned as an optional future backend")
     return UnavailableVectorBackend(name or "unknown", "unsupported vector backend")
@@ -246,3 +451,14 @@ def _dense_cosine_similarity(left: DenseVector, right: DenseVector) -> float:
     if left_norm == 0 or right_norm == 0:
         return 0.0
     return sum(a * b for a, b in zip(left, right)) / (left_norm * right_norm)
+
+
+def _chroma_metadata(chunk: dict) -> dict:
+    metadata = {
+        "source": str(chunk.get("source") or ""),
+        "chunk_id": str(chunk.get("chunk_id") or ""),
+    }
+    for key, value in (chunk.get("metadata") or {}).items():
+        if isinstance(value, (str, int, float, bool)):
+            metadata[str(key)] = value
+    return metadata
