@@ -156,6 +156,7 @@ def search_rag(arguments: dict[str, Any]) -> ToolResult:
         "embedding_backend": embedding_backend.name,
         "vector_backend": vector_backend.name,
         "fallback_used": fallback_used,
+        "metadata": backend_metadata,
         "hits": [
             {
                 "source": hit["source"],

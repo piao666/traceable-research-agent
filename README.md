@@ -46,7 +46,7 @@ Health check:
 Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-Expected phase: `day19`.
+Expected phase: `day28-real-rag-streamlit`.
 
 ## Manual API Flow
 
@@ -121,6 +121,7 @@ The UI supports:
 - Display `planner_source`, `llm_provider`, and `llm_model`.
 - Manually run a task.
 - View trace rows and status distribution.
+- Inspect complete trace JSON and real RAG backend metadata when available.
 - View and download generated Markdown reports.
 - Handle HITL `waiting_human` confirmation and resume.
 - Demo templates for normal file/sql/rag/report, GitHub mock report, HITL
@@ -205,6 +206,10 @@ network timeouts, and missing API keys all fallback to deterministic planning.
 Planning still does not write `tool_traces`, and `POST /api/tasks` still only
 creates a pending run and persisted plan.
 
+Reporter Runtime Limitations is generated from the persisted `planner_source`,
+so LLM, deterministic fallback, and deterministic runs describe their actual
+planning path.
+
 ## RAG Backend Configuration
 
 The project keeps its original lightweight path as the default:
@@ -266,9 +271,10 @@ Chroma cosine distance is exposed in hit metadata and converted to the public
 score using `1 / (1 + distance)`. The public `rag_search` shape remains
 `query`, `top_k`, and `hits`, with backend metadata added.
 
-The Streamlit UI needs no backend-specific changes. When FastAPI runs in real
-RAG mode, the existing RAG task flow automatically uses Chroma and displays
-the resulting trace and report.
+The Day28 checkpoint passed with local `bge-small-zh-v1.5` and ChromaDB while
+the deterministic/JSON lightweight mode remained available. When FastAPI runs
+in real RAG mode, Streamlit displays the resulting trace, complete JSON, and
+backend metadata such as active backends, fallback state, and dimension.
 
 Docker does not include model files. A future real-RAG container run can mount
 `E:\Models:/models:ro` and set
@@ -297,6 +303,7 @@ Checkpoint records:
 - [Phase 2 Day6-9](docs/checkpoints/phase2_day6_9_checkpoint.md)
 - [Phase 3 Day10-15](docs/checkpoints/phase3_day10_15_checkpoint.md)
 - [Phase 4 Day16-19](docs/checkpoints/phase4_day16_19_checkpoint.md)
+- [Day28 Real RAG + Streamlit](docs/checkpoints/day28_real_rag_streamlit_checkpoint.md)
 
 ## Security Notes
 

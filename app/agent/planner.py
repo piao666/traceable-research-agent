@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.config import settings
@@ -201,6 +202,7 @@ def plan_task(
                 )
                 if valid and normalized is not None:
                     _apply_human_confirmation_policy(normalized, task)
+                    _synchronize_confirmation_notes(normalized)
                     normalized["planner_source"] = "llm"
                     normalized["llm_provider"] = response.provider
                     normalized["llm_model"] = response.model
@@ -216,12 +218,14 @@ def plan_task(
         plan["llm_provider"] = client.describe().get("provider")
         plan["llm_model"] = client.describe().get("model")
         plan["notes"] = list(plan.get("notes") or []) + [_safe_fallback_reason(fallback_reason)]
+        _synchronize_confirmation_notes(plan)
         return plan
 
     plan = deterministic_plan_task(task, allowed_tools, source_mode)
     plan["planner_source"] = "deterministic"
     plan["llm_provider"] = None
     plan["llm_model"] = None
+    _synchronize_confirmation_notes(plan)
     return plan
 
 
@@ -303,7 +307,20 @@ def _apply_human_confirmation_policy(plan: dict[str, Any], task: str) -> None:
     """Keep HITL behavior deterministic even when an LLM proposes the plan."""
 
     requires_human_confirmation = _matches(task.lower(), HUMAN_CONFIRM_KEYWORDS)
-    for step in plan.get("steps") or []:
+    steps = plan.setdefault("steps", [])
+    allowed_tools = set(plan.get("allowed_tools") or DEFAULT_TOOL_ORDER)
+    has_report_step = any(step.get("tool_name") == "report_writer" for step in steps)
+    if requires_human_confirmation and "report_writer" in allowed_tools and not has_report_step:
+        report_step = _step_template(
+            "report_writer",
+            task,
+            requires_human_confirmation=True,
+        )
+        report_step["step_no"] = len(steps) + 1
+        report_step["tool_name"] = "report_writer"
+        steps.append(report_step)
+
+    for step in steps:
         if step.get("tool_name") == "report_writer" and requires_human_confirmation:
             step["risk_level"] = "high"
             step["requires_confirmation"] = True
@@ -312,3 +329,33 @@ def _apply_human_confirmation_policy(plan: dict[str, Any], task: str) -> None:
             )
         else:
             step["requires_confirmation"] = False
+
+
+CONFIRMATION_NOTE_PATTERN = re.compile(
+    r"(?:requires?|requiring)\s+(?:(?:human|manual|explicit)\s+)?(?:confirmation|approval)"
+    r"|confirmation\s+required"
+    r"|human\s+(?:approval|confirmation)"
+    r"|manual\s+approval"
+    r"|\u4eba\u5de5(?:\u786e\u8ba4|\u5ba1\u6279)",
+    re.IGNORECASE,
+)
+
+
+def _synchronize_confirmation_notes(plan: dict[str, Any]) -> None:
+    """Make planning notes authoritative with normalized step confirmation flags."""
+
+    notes = [str(note) for note in plan.get("notes") or []]
+    had_confirmation_note = any(CONFIRMATION_NOTE_PATTERN.search(note) for note in notes)
+    notes = [note for note in notes if not CONFIRMATION_NOTE_PATTERN.search(note)]
+    required_steps = [
+        step for step in plan.get("steps") or [] if step.get("requires_confirmation")
+    ]
+    if required_steps:
+        for step in required_steps:
+            notes.append(
+                "Confirmation required before step "
+                f"{step.get('step_no')}: {step.get('tool_name')}."
+            )
+    elif had_confirmation_note:
+        notes.append("No confirmation-required step was selected for this plan.")
+    plan["notes"] = notes

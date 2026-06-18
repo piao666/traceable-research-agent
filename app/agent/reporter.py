@@ -58,6 +58,33 @@ def _selected_evidence(tool_name: str, output: Any) -> str:
     return _json_preview(output)
 
 
+def _runtime_limitations(plan: dict[str, Any]) -> list[str]:
+    planner_source = plan.get("planner_source") or "deterministic"
+    if planner_source == "llm":
+        planner_lines = [
+            "LLM Planner is enabled.",
+            "deterministic fallback is still available for reliability.",
+            "generated report is based on tool observations and traces.",
+        ]
+    elif planner_source == "deterministic_fallback":
+        planner_lines = [
+            "LLM Planner was attempted but deterministic fallback was used.",
+            "fallback reason is recorded in planning notes when available.",
+            "generated report is based on tool observations and traces.",
+        ]
+    else:
+        planner_lines = [
+            "deterministic planner is used.",
+            "no LLM planning is active for this run.",
+            "generated report is based on tool observations and traces.",
+        ]
+    return planner_lines + [
+        "GitHub/MCP path is read-only and defaults to deterministic mock mode.",
+        "HITL is a minimal status and confirmation flow, not production auth.",
+        "generated reports and runtime indexes are local ignored artifacts.",
+    ]
+
+
 def generate_markdown_report(
     run: AgentRun,
     plan: dict[str, Any],
@@ -143,6 +170,18 @@ def generate_markdown_report(
                     "",
                 ]
             )
+            metadata = observation.get("metadata")
+            if isinstance(metadata, dict) and metadata:
+                lines.extend(
+                    [
+                        "Metadata:",
+                        "",
+                        "```json",
+                        _json_preview(metadata, max_chars=1600),
+                        "```",
+                        "",
+                    ]
+                )
     else:
         lines.extend(["No executable tool observations were recorded.", ""])
 
@@ -175,20 +214,9 @@ def generate_markdown_report(
                 ]
             )
 
-    lines.extend(
-        [
-            "",
-            "## Runtime Limitations",
-            "",
-            "* deterministic planner",
-            "* no LLM reasoning yet",
-            "* GitHub/MCP path is read-only and defaults to deterministic mock mode",
-            "* HITL is a minimal status and confirmation flow, not production auth",
-            "* report generated from tool observations only",
-            "* generated reports and runtime indexes are local ignored artifacts",
-            "",
-        ]
-    )
+    lines.extend(["", "## Runtime Limitations", ""])
+    lines.extend([f"* {limitation}" for limitation in _runtime_limitations(plan)])
+    lines.append("")
     return "\n".join(lines)
 
 

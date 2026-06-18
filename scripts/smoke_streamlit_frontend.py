@@ -43,6 +43,17 @@ def main() -> None:
     missing_paths = [path for path in required_paths if path not in source]
     assert_true(not missing_paths, f"missing API paths: {missing_paths}")
 
+    metadata_fields = [
+        "embedding_backend",
+        "vector_backend",
+        "fallback_used",
+        "dimension",
+        "collection_name",
+    ]
+    missing_metadata = [field for field in metadata_fields if field not in source]
+    assert_true(not missing_metadata, f"missing RAG metadata display fields: {missing_metadata}")
+    assert_true("Trace details:" in source, "trace details expander missing")
+
     forbidden_patterns = [
         r"QWEN_API_KEY\s*=",
         r"DEEPSEEK_API_KEY\s*=",
@@ -62,6 +73,7 @@ def main() -> None:
                 "files": "ok",
                 "requirements": "ok",
                 "api_paths": "ok",
+                "rag_metadata_display": "ok",
                 "secret_scan": "ok",
             },
             indent=2,

@@ -73,6 +73,7 @@ def _run_summary(run: AgentRun, message: str | None = None) -> dict:
 
 
 def _tool_trace_response(trace: ToolTrace) -> ToolTraceResponse:
+    output = _parse_trace_output(trace.output_json)
     return ToolTraceResponse(
         trace_id=trace.trace_id,
         run_id=trace.run_id,
@@ -85,7 +86,39 @@ def _tool_trace_response(trace: ToolTrace) -> ToolTraceResponse:
         error_message=trace.error_message,
         created_at=trace.created_at,
         finished_at=trace.finished_at,
+        output=output,
+        metadata=_extract_trace_metadata(output),
     )
+
+
+def _parse_trace_output(value: str | None):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return value
+
+
+def _extract_trace_metadata(output) -> dict | None:
+    if not isinstance(output, dict):
+        return None
+    metadata = output.get("metadata")
+    if isinstance(metadata, dict):
+        return metadata
+    keys = {
+        "embedding_backend",
+        "vector_backend",
+        "requested_embedding_backend",
+        "requested_vector_backend",
+        "fallback_used",
+        "dimension",
+        "model_path",
+        "persist_dir",
+        "collection_name",
+    }
+    selected = {key: output[key] for key in keys if key in output}
+    return selected or None
 
 
 @router.post("", response_model=TaskCreateResponse)

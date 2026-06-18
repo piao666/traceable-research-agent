@@ -14,7 +14,7 @@ class Settings(BaseModel):
     """Small settings object; expanded later for model providers."""
 
     service_name: str = "traceable-research-agent"
-    phase: str = "day19"
+    phase: str = "day28-real-rag-streamlit"
     api_prefix: str = "/api"
     llm_planner_enabled: bool = False
     llm_provider: str = "qwen"
@@ -41,7 +41,7 @@ class Settings(BaseModel):
 
         return cls(
             service_name=os.getenv("SERVICE_NAME", "traceable-research-agent"),
-            phase=os.getenv("APP_PHASE", "day19"),
+            phase=os.getenv("APP_PHASE", "day28-real-rag-streamlit"),
             api_prefix=os.getenv("API_PREFIX", "/api"),
             llm_planner_enabled=_env_bool("LLM_PLANNER_ENABLED", False),
             llm_provider=os.getenv("LLM_PROVIDER", "qwen").strip() or "qwen",

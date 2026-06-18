@@ -18,6 +18,17 @@ ALL_TOOLS = [
     "mcp_github_search",
     "report_writer",
 ]
+RAG_METADATA_FIELDS = [
+    "embedding_backend",
+    "vector_backend",
+    "requested_embedding_backend",
+    "requested_vector_backend",
+    "fallback_used",
+    "dimension",
+    "model_path",
+    "persist_dir",
+    "collection_name",
+]
 
 DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
     "Normal file/sql/rag/report": {
@@ -113,6 +124,23 @@ def normalize_trace_response(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, dict):
         return [data]
     return []
+
+
+def extract_trace_metadata(trace: dict[str, Any]) -> dict[str, Any]:
+    """Extract backend metadata from current and backward-compatible trace shapes."""
+
+    candidates = [trace.get("metadata"), trace.get("output")]
+    output = trace.get("output")
+    if isinstance(output, dict):
+        candidates.insert(1, output.get("metadata"))
+    selected: dict[str, Any] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for field in RAG_METADATA_FIELDS:
+            if field in candidate and candidate[field] is not None:
+                selected[field] = candidate[field]
+    return selected
 
 
 def render_json(data: Any) -> None:
@@ -450,7 +478,13 @@ def render_trace_viewer() -> None:
     ]
     st.dataframe(rows, use_container_width=True, hide_index=True)
     for trace in traces:
-        with st.expander(f"Trace step {trace.get('step_no')}: {trace.get('tool_name')}"):
+        with st.expander(
+            f"Trace details: {trace.get('step_no')} - {trace.get('tool_name')}"
+        ):
+            metadata = extract_trace_metadata(trace)
+            if metadata:
+                st.caption("RAG backend metadata")
+                st.dataframe([metadata], use_container_width=True, hide_index=True)
             render_json(trace)
 
 

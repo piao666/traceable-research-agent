@@ -2965,3 +2965,102 @@ Next step:
 
 - Day28 real-RAG API/Streamlit checkpoint and optional model switching, or
   proceed to API auth, async execution, migrations, and SQL parser hardening.
+
+2026-06-18 - Day28 Real RAG + Streamlit Display Polish And CheckPoint
+
+Status:
+
+- Day28 implementation, local regression, browser UI validation, checkpoint,
+  and Git preparation completed.
+
+Issues found from the previous manual screenshots:
+
+- Reporter used stale deterministic/no-LLM Runtime Limitations during an LLM
+  run.
+- LLM notes could disagree with normalized `requires_confirmation` flags.
+- Streamlit did not make real RAG metadata sufficiently visible.
+- `/health` still reported phase `day19`.
+
+Fixes applied:
+
+- Reporter now generates Runtime Limitations from `planner_source`.
+- Planner removes misleading confirmation notes and writes authoritative notes
+  from normalized step number and tool name.
+- During UI regression, Qwen omitted `report_writer` from one HITL plan. The
+  Planner policy was hardened to append an allowed report step for explicit
+  human-approval tasks, preserving deterministic HITL behavior.
+- Executor observations and Reporter evidence include safe tool metadata.
+- Trace API parses existing `output_json` and exposes `output` plus extracted
+  metadata without a database schema change.
+- Streamlit trace rows retain their previous columns; every trace now has a
+  full-JSON expander and available RAG metadata is displayed separately.
+- Health phase is now `day28-real-rag-streamlit`.
+
+Default lightweight regression:
+
+- `python -m pip install -r requirements.txt`: dependencies satisfied.
+- `python -m compileall app tests scripts frontend`: passed.
+- Demo DB initialization, deterministic index build, RAG query/backend smoke,
+  Planner, E2E, exception, HITL, LLM config, LLM Planner, and Streamlit smoke
+  all passed.
+- Deterministic/JSON build indexed 1 document and 3 chunks; query returned 3
+  hits and `fallback_used=false`.
+- Eval passed 14/14 with failed=0, task success rate 1.0, and trace complete
+  rate 1.0.
+
+Real RAG regression:
+
+- `sentence-transformers=5.6.0`, `chromadb=1.5.9`.
+- `E:\Models\bge-small-zh-v1.5` existed and loaded locally on CPU.
+- Real build indexed 1 document and 3 chunks at dimension 512 using
+  SentenceTransformers/Chroma with `fallback_used=false`.
+- `scripts/smoke_real_rag.py` returned `real_rag=ok` and 3 hits.
+
+API real RAG validation:
+
+- Run ID: `4e0cebbe0da64f25aec4dbc776684165`.
+- Planner source: LLM/Qwen/qwen-plus; run completed with one successful
+  `rag_search` trace.
+- Trace API exposed SentenceTransformers/Chroma, requested backends, model
+  path, persist directory, collection, dimension 512, and no fallback.
+- Report existed, included RAG metadata, and did not contain the stale
+  `no LLM reasoning yet` limitation.
+
+Streamlit browser validation:
+
+- Backend health and `http://127.0.0.1:8501` were available; Streamlit returned
+  HTTP 200 and displayed phase `day28-real-rag-streamlit`.
+- LLM full-tools run ID `bee42b54c9cd4c1bab69905565309d43`
+  displayed planner_source/provider/model, five plan steps, four successful
+  traces, RAG metadata, and a rendered report.
+- The RAG trace expander displayed full JSON plus `sentence_transformers`,
+  `chroma`, `fallback_used=false`, and dimension 512.
+- HITL run ID `41413fed83534065a5ba3543f8577dca` completed
+  `waiting_human -> confirm -> completed`; its report contained Human
+  Confirmation.
+
+Docker and runtime artifacts:
+
+- Docker client was available, but the Docker Desktop Linux daemon named pipe
+  was unavailable; no container regression was run.
+- `.env`, model files, Chroma/JSON indexes, reports, SQLite databases, eval
+  outputs, and logs remain ignored runtime artifacts and must not be committed.
+- Uvicorn and Streamlit were stopped; no matching service process remained.
+
+Current limitations:
+
+- No production auth, async queue, Alembic, parser-based SQL validation, FAISS,
+  or full MCP server.
+- Docker real-RAG model mounting remains untested.
+- Trace metadata currently comes from persisted `output_json`; there is no
+  dedicated `metadata_json` column.
+
+Checkpoint document:
+
+- `docs/checkpoints/day28_real_rag_streamlit_checkpoint.md`
+
+Next step:
+
+- Enter engineering hardening: API key auth, asynchronous execution, Alembic
+  migrations, SQL parser validation, GitHub cache/retry/fallback, and a
+  read-only MCP client/server direction.

@@ -111,6 +111,8 @@ class ToolTraceResponse(BaseModel):
     error_message: str | None = None
     created_at: datetime
     finished_at: datetime | None = None
+    output: Any | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class ToolInfo(BaseModel):

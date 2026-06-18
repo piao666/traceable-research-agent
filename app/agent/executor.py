@@ -47,6 +47,7 @@ def _failed_observation(step: dict[str, Any], result: ToolResult) -> dict[str, A
         "output_summary": result.output_summary,
         "error_message": result.error_message,
         "output": result.output,
+        "metadata": result.metadata,
     }
 
 
@@ -100,9 +101,10 @@ def run_plan(db: Session, run_id: str) -> dict[str, Any]:
                         "step_no": step_no,
                         "tool_name": tool_name,
                         "success": True,
-                        "output_summary": "Report writer step handled by deterministic Reporter.",
+                        "output_summary": "Report writer step handled by the structured Reporter.",
                         "error_message": None,
                         "output": {"handled_by": "app.agent.reporter"},
+                        "metadata": {},
                     }
                 )
                 run = store.update_agent_run_progress(db, run_id, step_no)
@@ -131,6 +133,7 @@ def run_plan(db: Session, run_id: str) -> dict[str, Any]:
                     "output_summary": result.output_summary,
                     "error_message": result.error_message,
                     "output": result.output,
+                    "metadata": result.metadata,
                 }
             )
             run = store.update_agent_run_progress(
