@@ -2723,3 +2723,132 @@ Next step:
 
 - Day26 Real RAG backend abstraction and SentenceTransformers/ChromaDB
   planning.
+
+2026-06-17 - Day26 RAG Backend Abstraction
+
+Status:
+
+- Day26 implementation completed locally on 2026-06-18; final regression and
+  Git checkpoint results are recorded below.
+
+New and modified files:
+
+- Added `app/rag/embedding_backends.py`.
+- Added `app/rag/vector_backends.py`.
+- Added `scripts/smoke_rag_backends.py`.
+- Updated `app/config.py`.
+- Updated `app/rag/build_index.py`.
+- Updated `app/tools/rag_search.py`.
+- Updated `scripts/build_rag_index.py`.
+- Updated `scripts/smoke_rag_query.py`.
+- Updated `app/eval/cases.jsonl` and `app/eval/run_eval.py`.
+- Updated `.env.example`, `.gitignore`, `README.md`, and `task.txt`.
+
+Embedding backend abstraction:
+
+- `EmbeddingBackend` defines availability, description, batch embedding, and
+  query embedding contracts.
+- `DeterministicEmbeddingBackend` reuses the existing normalized sparse token
+  frequency behavior and is always available.
+- `UnavailableEmbeddingBackend` represents SentenceTransformers or unknown
+  requested backends without importing optional packages or raising service
+  errors.
+- Embedding results include success, vectors, backend, dimension, error, and
+  metadata.
+
+Vector backend abstraction:
+
+- `VectorBackend` defines availability, index build, search, and description
+  contracts.
+- `JsonVectorBackend` preserves JSON index format version 1 and existing hit
+  fields: source, chunk_id, score, text, and metadata.
+- `UnavailableVectorBackend` safely represents ChromaDB, FAISS, or unknown
+  requested backends without importing optional packages.
+- Vector index and search results are structured and do not propagate backend
+  exceptions to the API.
+
+Fallback behavior:
+
+- Default configuration remains `deterministic` plus `json`.
+- When a requested backend is unavailable and
+  `RAG_REAL_BACKEND_ENABLED=false`, build/search selects the lightweight
+  deterministic/JSON fallback.
+- When real backends are explicitly enabled but unavailable, the operation
+  returns a stable backend-unavailable failure.
+- Existing `rag_search` query/top_k/hits output remains compatible.
+- Metadata now includes active and requested embedding/vector backends,
+  `fallback_used`, and persistence location.
+
+RAG configuration:
+
+- `RAG_EMBEDDING_BACKEND=deterministic`
+- `RAG_VECTOR_BACKEND=json`
+- `RAG_MODEL_PATH=E:\Models\bge-small-zh-v1.5`
+- `RAG_CHROMA_DIR=workspace/chroma`
+- `RAG_COLLECTION_NAME=traceable_research_docs`
+- `RAG_DEVICE=cpu`
+- `RAG_NORMALIZE_EMBEDDINGS=true`
+- `RAG_REAL_BACKEND_ENABLED=false`
+- Safe configuration summary reports only backend/path availability metadata;
+  it does not read model contents or expose API keys.
+
+Smoke coverage:
+
+- `scripts/smoke_rag_backends.py` checks default factories, deterministic query
+  embedding, JSON build/search, unavailable backend behavior, lightweight
+  fallback, and confirms optional model/vector packages were not imported.
+- `scripts/smoke_rag_query.py` reports active backend names and top hits.
+- Eval adds `rag_backend_abstraction_default_json_001` without requiring real
+  models or optional vector dependencies.
+
+Runtime and security boundaries:
+
+- `.env` remains ignored and must not be read, printed, staged, or committed.
+- `workspace/index`, `workspace/chroma`, `workspace/faiss`, reports, eval
+  outputs, SQLite files, and logs remain ignored.
+- No SentenceTransformers, ChromaDB, or FAISS dependency was added.
+- No model file under `E:\Models` was loaded, modified, staged, or committed.
+
+Current non-goals:
+
+- SentenceTransformers real embedding is not implemented.
+- ChromaDB real vector storage is not implemented.
+- FAISS remains an optional future backend.
+
+Validation results:
+
+- `python -m pip install -r requirements.txt`: passed; existing lightweight
+  dependencies satisfied and no real-RAG dependency was installed.
+- `python -m compileall app tests scripts frontend`: passed.
+- `python scripts/init_demo_db.py`: passed.
+- `python scripts/build_rag_index.py`: passed with 1 document, 3 chunks,
+  `embedding_backend=deterministic`, `vector_backend=json`, and
+  `fallback_used=false`.
+- `python scripts/smoke_rag_query.py`: passed with 3 top hits and active
+  deterministic/JSON backend metadata.
+- `python scripts/smoke_rag_backends.py`: passed; deterministic embedding,
+  JSON search, unavailable backend handling, and lightweight fallback were
+  verified; optional packages loaded=false.
+- Planner, E2E, exception, HITL, LLM config, LLM planner, and Streamlit smoke
+  scripts all passed.
+- `python -m app.eval.run_eval`: passed 13/13 cases with failed=0,
+  task_success_rate=1.0, and trace_complete_rate=1.0.
+- API RAG run_id: `f8b3494dbfbe431bbcf79b8fd688e1a0`.
+- API plan used `planner_source=llm` with `rag_search` then `report_writer`.
+- API run completed; one `rag_search` trace had status=success and the report
+  existed.
+- Direct RAG tool metadata reported `embedding_backend=deterministic`,
+  `vector_backend=json`, and `fallback_used=false`.
+- Uvicorn was stopped through a `finally` block; no residual Uvicorn or
+  Streamlit Python process remained.
+- Docker client is installed, but Docker daemon regression was unavailable:
+  the `desktop-linux` named pipe was not running. No container was started.
+- Runtime artifact and staging checks are required immediately before the Git
+  checkpoint; their final results and commit hash follow in the checkpoint
+  commit history.
+
+Next step:
+
+- Day27 SentenceTransformers and ChromaDB real RAG implementation using the
+  local `E:\Models\bge-small-zh-v1.5` model, while preserving the Day26
+  lightweight fallback.

@@ -21,7 +21,7 @@ minimal HITL, and read-only MCP/GitHub-style tool integration.
 - Tool Registry with real handlers:
   - `file_reader`: reads only from `workspace/docs`, blocks path traversal.
   - `sql_query`: read-only SQLite queries, SELECT/WITH only.
-  - `rag_search`: local JSON vector index search.
+  - `rag_search`: configurable RAG backend search, deterministic/JSON by default.
   - `mcp_github_search`: read-only GitHub/MCP-style search adapter, mock by default.
   - `report_writer`: handled by Reporter during plan execution.
 - Minimal HITL using `waiting_human` and `POST /api/tasks/{run_id}/confirm`.
@@ -205,6 +205,36 @@ network timeouts, and missing API keys all fallback to deterministic planning.
 Planning still does not write `tool_traces`, and `POST /api/tasks` still only
 creates a pending run and persisted plan.
 
+## RAG Backend Configuration
+
+Day26 introduces stable embedding and vector backend interfaces while keeping
+the original lightweight path as the default:
+
+```env
+RAG_EMBEDDING_BACKEND=deterministic
+RAG_VECTOR_BACKEND=json
+RAG_MODEL_PATH=E:\Models\bge-small-zh-v1.5
+RAG_CHROMA_DIR=workspace/chroma
+RAG_COLLECTION_NAME=traceable_research_docs
+RAG_DEVICE=cpu
+RAG_NORMALIZE_EMBEDDINGS=true
+RAG_REAL_BACKEND_ENABLED=false
+```
+
+The available local model choices planned for later real-RAG work are
+`bge-small-zh-v1.5`, `qwen3-embedding-0.6b`, and `bge-m3`. Day26 does not load
+these models and does not import SentenceTransformers, ChromaDB, or FAISS.
+SentenceTransformers and ChromaDB are planned for Day27/Day28.
+
+If a requested backend is unavailable and `RAG_REAL_BACKEND_ENABLED=false`,
+the service falls back to deterministic embeddings and the JSON index. When
+real backends are explicitly enabled, an unavailable backend returns a stable
+error instead. Existing `rag_search` output fields remain compatible, with
+backend and fallback metadata added.
+
+`workspace/index`, `workspace/chroma`, and `workspace/faiss` are runtime-only
+and ignored by Git. Docker lightweight mode does not require a local model.
+
 ## Architecture
 
 Core flow:
@@ -245,3 +275,4 @@ Checkpoint records:
 - No persistent migration framework.
 - GitHub public API mode is best-effort and may be rate-limited.
 - MCP is represented by a read-only compatible adapter, not a full MCP server.
+- Real SentenceTransformers and ChromaDB RAG backends are not implemented yet.

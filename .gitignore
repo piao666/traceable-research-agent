@@ -26,6 +26,8 @@ workspace/*.sqlite
 workspace/*.db
 workspace/tmp/
 workspace/index/
+workspace/chroma/
+workspace/faiss/
 workspace/rag_index/
 workspace/uploads/
 workspace/eval_outputs/

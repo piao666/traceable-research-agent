@@ -12,6 +12,9 @@ from app.agent.executor import run_plan
 from app.agent.planner import plan_task
 from app.database import SessionLocal, init_db
 from app.rag.build_index import build_local_index
+from app.rag.embedding_backends import create_embedding_backend
+from app.rag.vector_backends import create_vector_backend
+from app.config import settings
 from app.tools.registry import execute_tool
 from app.tools.defaults import register_default_tools
 from app.trace import store
@@ -186,6 +189,35 @@ def _run_llm_planner_case(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_rag_backend_case(case: dict[str, Any]) -> dict[str, Any]:
+    embedding = create_embedding_backend(settings)
+    vector = create_vector_backend(settings)
+    query_result = embedding.embed_query("trace tool registry")
+    build_result = build_local_index()
+    result = execute_tool("rag_search", {"query": "trace tool registry", "top_k": 3})
+    passed = (
+        embedding.name == "deterministic"
+        and vector.name == "json"
+        and query_result.success
+        and build_result.get("success")
+        and result.success
+        and result.metadata.get("embedding_backend") == "deterministic"
+        and result.metadata.get("vector_backend") == "json"
+    )
+    return {
+        "case_id": case["case_id"],
+        "passed": passed,
+        "run_id": None,
+        "status": "validated" if passed else "failed",
+        "planned_tools": ["rag_search"],
+        "trace_count": 0,
+        "trace_statuses": Counter(),
+        "trace_complete": True,
+        "report_exists": False,
+        "failure_reason": None if passed else "Default RAG backend abstraction failed",
+    }
+
+
 def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
     try:
         mode = case.get("mode", "task_run")
@@ -197,6 +229,8 @@ def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
             return _run_repeated_case(db, case)
         if mode == "llm_planner":
             return _run_llm_planner_case(case)
+        if mode == "rag_backend":
+            return _run_rag_backend_case(case)
         return _run_task_case(db, case)
     except Exception as exc:
         return {

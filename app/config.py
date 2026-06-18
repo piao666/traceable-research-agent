@@ -1,6 +1,8 @@
 """Application configuration for the FastAPI skeleton."""
 
 import os
+from pathlib import Path
+
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -24,6 +26,14 @@ class Settings(BaseModel):
     llm_timeout_seconds: int = 20
     llm_max_retries: int = 1
     llm_strict_json: bool = True
+    rag_embedding_backend: str = "deterministic"
+    rag_vector_backend: str = "json"
+    rag_model_path: str | None = r"E:\Models\bge-small-zh-v1.5"
+    rag_chroma_dir: str = "workspace/chroma"
+    rag_collection_name: str = "traceable_research_docs"
+    rag_device: str = "cpu"
+    rag_normalize_embeddings: bool = True
+    rag_real_backend_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -43,6 +53,23 @@ class Settings(BaseModel):
             llm_timeout_seconds=_env_int("LLM_TIMEOUT_SECONDS", 20),
             llm_max_retries=_env_int("LLM_MAX_RETRIES", 1),
             llm_strict_json=_env_bool("LLM_STRICT_JSON", True),
+            rag_embedding_backend=os.getenv(
+                "RAG_EMBEDDING_BACKEND", "deterministic"
+            ).strip()
+            or "deterministic",
+            rag_vector_backend=os.getenv("RAG_VECTOR_BACKEND", "json").strip()
+            or "json",
+            rag_model_path=_env_optional("RAG_MODEL_PATH")
+            or r"E:\Models\bge-small-zh-v1.5",
+            rag_chroma_dir=os.getenv("RAG_CHROMA_DIR", "workspace/chroma").strip()
+            or "workspace/chroma",
+            rag_collection_name=os.getenv(
+                "RAG_COLLECTION_NAME", "traceable_research_docs"
+            ).strip()
+            or "traceable_research_docs",
+            rag_device=os.getenv("RAG_DEVICE", "cpu").strip() or "cpu",
+            rag_normalize_embeddings=_env_bool("RAG_NORMALIZE_EMBEDDINGS", True),
+            rag_real_backend_enabled=_env_bool("RAG_REAL_BACKEND_ENABLED", False),
         )
 
     def get_llm_api_key(self, provider: str) -> str | None:
@@ -106,6 +133,22 @@ class Settings(BaseModel):
             "llm_timeout_seconds": self.llm_timeout_seconds,
             "llm_max_retries": self.llm_max_retries,
             "llm_strict_json": self.llm_strict_json,
+        }
+
+    def get_safe_rag_config_summary(self) -> dict:
+        """Return RAG configuration metadata without reading model contents."""
+
+        model_path = Path(self.rag_model_path) if self.rag_model_path else None
+        return {
+            "embedding_backend": self.rag_embedding_backend,
+            "vector_backend": self.rag_vector_backend,
+            "model_path_configured": model_path is not None,
+            "model_path_exists": bool(model_path and model_path.exists()),
+            "chroma_dir": self.rag_chroma_dir,
+            "collection_name": self.rag_collection_name,
+            "device": self.rag_device,
+            "normalize_embeddings": self.rag_normalize_embeddings,
+            "real_backend_enabled": self.rag_real_backend_enabled,
         }
 
 

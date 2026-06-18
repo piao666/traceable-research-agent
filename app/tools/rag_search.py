@@ -5,7 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.rag.vector_store import LocalVectorStore
+from app.config import settings
+from app.rag.embedding_backends import (
+    DeterministicEmbeddingBackend,
+    create_embedding_backend,
+)
+from app.rag.vector_backends import JsonVectorBackend, create_vector_backend
 from app.tools.base import ToolResult
 
 
@@ -22,16 +27,19 @@ def _failure(
     query: str | None = None,
     top_k: int | None = None,
     index_path: Path = DEFAULT_INDEX_PATH,
+    metadata: dict[str, Any] | None = None,
 ) -> ToolResult:
+    details = {
+        "error_type": error_type,
+        "query": query,
+        "top_k": top_k,
+        "index_path": str(index_path),
+    }
+    details.update(metadata or {})
     return ToolResult(
         success=False,
         error_message=message,
-        metadata={
-            "error_type": error_type,
-            "query": query,
-            "top_k": top_k,
-            "index_path": str(index_path),
-        },
+        metadata=details,
     )
 
 
@@ -44,10 +52,50 @@ def _coerce_top_k(value: Any) -> int:
 
 
 def search_rag(arguments: dict[str, Any]) -> ToolResult:
-    """Search the local JSON RAG index and return top-k chunks."""
+    """Search the configured RAG backend and return compatible top-k chunks."""
 
     query = str(arguments.get("query") or "").strip()
     top_k = _coerce_top_k(arguments.get("top_k"))
+    requested_embedding = settings.rag_embedding_backend.strip().lower()
+    requested_vector = settings.rag_vector_backend.strip().lower()
+    embedding_backend = create_embedding_backend(settings)
+    vector_backend = create_vector_backend(settings, index_path=DEFAULT_INDEX_PATH)
+    fallback_used = False
+
+    unavailable = not embedding_backend.is_available() or not vector_backend.is_available()
+    if unavailable and settings.rag_real_backend_enabled:
+        reasons = [
+            backend.describe().get("reason")
+            for backend in (embedding_backend, vector_backend)
+            if not backend.is_available()
+        ]
+        return _failure(
+            "; ".join(reason for reason in reasons if reason) or "Configured RAG backend unavailable.",
+            error_type="backend_unavailable",
+            query=query,
+            top_k=top_k,
+            metadata=_backend_metadata(
+                embedding_backend.name,
+                vector_backend.name,
+                requested_embedding,
+                requested_vector,
+                False,
+            ),
+        )
+    if not embedding_backend.is_available():
+        embedding_backend = DeterministicEmbeddingBackend()
+        fallback_used = True
+    if not vector_backend.is_available():
+        vector_backend = JsonVectorBackend(DEFAULT_INDEX_PATH)
+        fallback_used = True
+
+    backend_metadata = _backend_metadata(
+        embedding_backend.name,
+        vector_backend.name,
+        requested_embedding,
+        requested_vector,
+        fallback_used,
+    )
 
     if not query:
         return _failure(
@@ -55,26 +103,39 @@ def search_rag(arguments: dict[str, Any]) -> ToolResult:
             error_type="invalid_args",
             query=query,
             top_k=top_k,
+            metadata=backend_metadata,
         )
 
-    if not DEFAULT_INDEX_PATH.exists():
+    if vector_backend.name == "json" and not DEFAULT_INDEX_PATH.exists():
         return _failure(
             "RAG index not found, run scripts/build_rag_index.py first.",
             error_type="index_missing",
             query=query,
             top_k=top_k,
+            metadata=backend_metadata,
         )
 
-    try:
-        store = LocalVectorStore.load(DEFAULT_INDEX_PATH)
-        hits = store.search(query, top_k=top_k)
-    except Exception as exc:
+    embedding_result = embedding_backend.embed_query(query)
+    if not embedding_result.success or not embedding_result.vectors:
         return _failure(
-            f"RAG search failed: {exc}",
-            error_type="search_error",
+            embedding_result.error_message or "RAG query embedding failed.",
+            error_type="embedding_error",
             query=query,
             top_k=top_k,
+            metadata=backend_metadata,
         )
+
+    search_result = vector_backend.search(embedding_result.vectors[0], top_k=top_k)
+    if not search_result.success:
+        return _failure(
+            search_result.error_message or "RAG search failed.",
+            error_type=search_result.metadata.get("error_type", "search_error"),
+            query=query,
+            top_k=top_k,
+            metadata=backend_metadata,
+        )
+
+    hits = [hit.to_dict() for hit in search_result.hits]
 
     output = {
         "query": query,
@@ -101,7 +162,26 @@ def search_rag(arguments: dict[str, Any]) -> ToolResult:
         metadata={
             "error_type": None,
             "index_path": str(DEFAULT_INDEX_PATH),
+            "persist_dir": str(DEFAULT_INDEX_PATH.parent),
             "top_k": top_k,
             "hit_count": len(hits),
+            **backend_metadata,
         },
     )
+
+
+def _backend_metadata(
+    embedding_backend: str,
+    vector_backend: str,
+    requested_embedding_backend: str,
+    requested_vector_backend: str,
+    fallback_used: bool,
+) -> dict[str, Any]:
+    return {
+        "embedding_backend": embedding_backend,
+        "vector_backend": vector_backend,
+        "requested_embedding_backend": requested_embedding_backend,
+        "requested_vector_backend": requested_vector_backend,
+        "fallback_used": fallback_used,
+        "persist_dir": str(DEFAULT_INDEX_PATH.parent),
+    }
