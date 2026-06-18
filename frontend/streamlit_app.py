@@ -57,6 +57,10 @@ class ApiError(Exception):
 def init_state() -> None:
     defaults = {
         "api_base_url": os.environ.get("STREAMLIT_API_BASE_URL", DEFAULT_API_BASE_URL),
+        "api_key": "",
+        "tenant_id": "demo",
+        "user_id": "local-user",
+        "use_async_run": False,
         "run_id": "",
         "last_task_response": None,
         "last_run_response": None,
@@ -87,12 +91,29 @@ def api_post(path: str, payload: dict[str, Any] | None = None) -> Any:
     return api_request("POST", path, payload or {})
 
 
+def request_headers() -> dict[str, str]:
+    """Build request-scoped headers without rendering or persisting credentials."""
+
+    headers: dict[str, str] = {}
+    api_key = st.session_state.get("api_key", "").strip()
+    tenant_id = st.session_state.get("tenant_id", "").strip()
+    user_id = st.session_state.get("user_id", "").strip()
+    if api_key:
+        headers["X-API-Key"] = api_key
+    if tenant_id:
+        headers["X-Tenant-ID"] = tenant_id
+    if user_id:
+        headers["X-User-ID"] = user_id
+    return headers
+
+
 def api_request(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
     try:
         response = requests.request(
             method,
             api_url(path),
             json=payload,
+            headers=request_headers(),
             timeout=30,
         )
     except requests.ConnectionError as exc:
@@ -199,6 +220,15 @@ def render_sidebar() -> None:
             value=st.session_state.api_base_url,
             help="FastAPI backend URL. This UI only calls HTTP APIs.",
         )
+        st.text_input(
+            "API Key",
+            key="api_key",
+            type="password",
+            help="Optional. Kept only in this Streamlit session and sent as X-API-Key.",
+        )
+        st.text_input("Tenant ID", key="tenant_id")
+        st.text_input("User ID", key="user_id")
+        st.checkbox("Use async run", key="use_async_run")
         if st.button("Health Check", use_container_width=True):
             try:
                 st.session_state.health = api_get("/health")
@@ -353,10 +383,17 @@ def render_run_executor() -> None:
 
     if st.button("Run Task", type="primary"):
         try:
-            response = api_post(f"/api/tasks/{run_id}/run", {})
+            run_path = (
+                f"/api/tasks/{run_id}/run_async"
+                if st.session_state.use_async_run
+                else f"/api/tasks/{run_id}/run"
+            )
+            response = api_post(run_path, {})
             st.session_state.last_run_response = response
             st.markdown(status_badge(response.get("status")), unsafe_allow_html=True)
             render_json(response)
+            if st.session_state.use_async_run and response.get("status") == "running":
+                st.info("Async run started. Use Refresh to poll status, trace, and report.")
             refresh_current_run(show_errors=False)
             st.rerun()
         except ApiError as exc:

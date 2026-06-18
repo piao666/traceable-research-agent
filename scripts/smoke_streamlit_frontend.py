@@ -36,6 +36,7 @@ def main() -> None:
         "/api/tasks",
         "/plan",
         "/run",
+        "/run_async",
         "/trace",
         "/api/reports",
         "/confirm",
@@ -53,6 +54,9 @@ def main() -> None:
     missing_metadata = [field for field in metadata_fields if field not in source]
     assert_true(not missing_metadata, f"missing RAG metadata display fields: {missing_metadata}")
     assert_true("Trace details:" in source, "trace details expander missing")
+    for control in ["API Key", "Tenant ID", "User ID", "Use async run"]:
+        assert_true(control in source, f"missing Streamlit control: {control}")
+    assert_true('type="password"' in source, "API key input is not password protected")
 
     forbidden_patterns = [
         r"QWEN_API_KEY\s*=",

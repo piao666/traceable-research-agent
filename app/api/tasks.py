@@ -3,13 +3,15 @@
 import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.agent.executor import run_plan
 from app.agent.planner import plan_task
-from app.database import get_db
+from app.config import settings
+from app.database import SessionLocal, get_db
 from app.schemas import (
+    AsyncRunResponse,
     TaskCreateRequest,
     TaskCreateResponse,
     TaskConfirmRequest,
@@ -19,10 +21,15 @@ from app.schemas import (
     TaskStatusResponse,
     ToolTraceResponse,
 )
+from app.security import require_api_key, require_request_context
 from app.trace import store
 from app.trace.models import AgentRun, ToolTrace
 
-router = APIRouter(prefix="/tasks", tags=["tasks"])
+router = APIRouter(
+    prefix="/tasks",
+    tags=["tasks"],
+    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+)
 
 
 def _task_status_response(run: AgentRun) -> TaskStatusResponse:
@@ -70,6 +77,30 @@ def _run_summary(run: AgentRun, message: str | None = None) -> dict:
         "error_message": run.error_message,
         "message": message,
     }
+
+
+def _async_run_response(run: AgentRun, message: str) -> AsyncRunResponse:
+    return AsyncRunResponse(
+        run_id=run.run_id,
+        status=run.status,
+        status_url=f"/api/tasks/{run.run_id}",
+        trace_url=f"/api/tasks/{run.run_id}/trace",
+        report_url=f"/api/reports/{run.run_id}",
+        message=message,
+    )
+
+
+def _run_task_in_background(run_id: str) -> None:
+    """Execute with a fresh session because request-scoped sessions are closed."""
+
+    with SessionLocal() as db:
+        try:
+            run_plan(db, run_id)
+        except Exception as exc:
+            try:
+                store.update_agent_run_status(db, run_id, "failed", str(exc))
+            except Exception:
+                db.rollback()
 
 
 def _tool_trace_response(trace: ToolTrace) -> ToolTraceResponse:
@@ -211,6 +242,50 @@ async def run_task(
 
     summary = run_plan(db, run_id)
     return _task_run_response(summary)
+
+
+@router.post("/{run_id}/run_async", response_model=AsyncRunResponse)
+async def run_task_async(
+    run_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> AsyncRunResponse:
+    """Queue the existing synchronous executor as a FastAPI background task."""
+
+    if not settings.async_run_enabled:
+        raise HTTPException(status_code=400, detail="Async run is disabled.")
+
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    if not run.plan_json:
+        raise HTTPException(status_code=400, detail="Task run does not have a plan")
+    if run.status == "completed":
+        return _async_run_response(run, "Run already completed; no tools executed.")
+    if run.status == "running":
+        return _async_run_response(run, "Run is already running; no duplicate task queued.")
+    if run.status == "waiting_human":
+        return _async_run_response(
+            run,
+            "Run is waiting for human confirmation. Call POST /api/tasks/{run_id}/confirm.",
+        )
+    if run.status == "failed":
+        raise HTTPException(status_code=409, detail="Failed runs cannot be rerun in Day29")
+
+    if not store.claim_pending_agent_run(db, run_id):
+        db.expire_all()
+        current = store.get_agent_run(db, run_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="Task run not found")
+        return _async_run_response(
+            current,
+            "Run is already running; no duplicate task queued.",
+        )
+
+    db.expire_all()
+    run = store.get_agent_run(db, run_id)
+    background_tasks.add_task(_run_task_in_background, run_id)
+    return _async_run_response(run, "Async run started.")
 
 
 @router.post("/{run_id}/confirm", response_model=TaskConfirmResponse)

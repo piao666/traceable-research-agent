@@ -14,8 +14,18 @@ class Settings(BaseModel):
     """Small settings object; expanded later for model providers."""
 
     service_name: str = "traceable-research-agent"
-    phase: str = "day28-real-rag-streamlit"
+    phase: str = "day29-api-key-auth-async-run"
     api_prefix: str = "/api"
+    auth_enabled: bool = False
+    demo_api_key: str | None = None
+    auth_header_name: str = "X-API-Key"
+    allow_auth_disabled_in_dev: bool = True
+    async_run_enabled: bool = True
+    async_run_poll_interval_seconds: int = 1
+    tenant_header_name: str = "X-Tenant-ID"
+    user_header_name: str = "X-User-ID"
+    default_tenant_id: str = "demo"
+    default_user_id: str = "local-user"
     llm_planner_enabled: bool = False
     llm_provider: str = "qwen"
     llm_planner_mode: str = "auto"
@@ -41,8 +51,27 @@ class Settings(BaseModel):
 
         return cls(
             service_name=os.getenv("SERVICE_NAME", "traceable-research-agent"),
-            phase=os.getenv("APP_PHASE", "day28-real-rag-streamlit"),
+            phase=os.getenv("APP_PHASE", "day29-api-key-auth-async-run"),
             api_prefix=os.getenv("API_PREFIX", "/api"),
+            auth_enabled=_env_bool("AUTH_ENABLED", False),
+            demo_api_key=_env_optional("DEMO_API_KEY"),
+            auth_header_name=os.getenv("AUTH_HEADER_NAME", "X-API-Key").strip()
+            or "X-API-Key",
+            allow_auth_disabled_in_dev=_env_bool("ALLOW_AUTH_DISABLED_IN_DEV", True),
+            async_run_enabled=_env_bool("ASYNC_RUN_ENABLED", True),
+            async_run_poll_interval_seconds=_env_int(
+                "ASYNC_RUN_POLL_INTERVAL_SECONDS", 1
+            ),
+            tenant_header_name=os.getenv(
+                "TENANT_HEADER_NAME", "X-Tenant-ID"
+            ).strip()
+            or "X-Tenant-ID",
+            user_header_name=os.getenv("USER_HEADER_NAME", "X-User-ID").strip()
+            or "X-User-ID",
+            default_tenant_id=os.getenv("DEFAULT_TENANT_ID", "demo").strip()
+            or "demo",
+            default_user_id=os.getenv("DEFAULT_USER_ID", "local-user").strip()
+            or "local-user",
             llm_planner_enabled=_env_bool("LLM_PLANNER_ENABLED", False),
             llm_provider=os.getenv("LLM_PROVIDER", "qwen").strip() or "qwen",
             llm_planner_mode=os.getenv("LLM_PLANNER_MODE", "auto").strip() or "auto",
@@ -133,6 +162,22 @@ class Settings(BaseModel):
             "llm_timeout_seconds": self.llm_timeout_seconds,
             "llm_max_retries": self.llm_max_retries,
             "llm_strict_json": self.llm_strict_json,
+        }
+
+    def get_safe_auth_config_summary(self) -> dict:
+        """Return authentication and request-context settings without secrets."""
+
+        return {
+            "auth_enabled": self.auth_enabled,
+            "demo_api_key_configured": bool(self.demo_api_key),
+            "auth_header_name": self.auth_header_name,
+            "allow_auth_disabled_in_dev": self.allow_auth_disabled_in_dev,
+            "async_run_enabled": self.async_run_enabled,
+            "async_run_poll_interval_seconds": self.async_run_poll_interval_seconds,
+            "tenant_header_name": self.tenant_header_name,
+            "user_header_name": self.user_header_name,
+            "default_tenant_id": self.default_tenant_id,
+            "default_user_id": self.default_user_id,
         }
 
     def get_safe_rag_config_summary(self) -> dict:

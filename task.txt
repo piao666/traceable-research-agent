@@ -3064,3 +3064,103 @@ Next step:
 - Enter engineering hardening: API key auth, asynchronous execution, Alembic
   migrations, SQL parser validation, GitHub cache/retry/fallback, and a
   read-only MCP client/server direction.
+
+2026-06-18 - Day29 API Key Auth, Tenant Context, And Async Run
+
+Status:
+
+- Day29 implementation, lightweight regression, manual API validation,
+  Streamlit browser validation, artifact audit, and Git preparation completed.
+
+Files added:
+
+- `app/security/__init__.py`
+- `app/security/auth.py`
+- `app/security/context.py`
+- `scripts/smoke_auth_async.py`
+
+Files modified:
+
+- `.env.example`
+- `app/config.py`
+- `app/main.py`
+- `app/schemas.py`
+- `app/api/tasks.py`
+- `app/api/tools.py`
+- `app/api/reports.py`
+- `app/trace/store.py`
+- `frontend/streamlit_app.py`
+- `scripts/smoke_streamlit_frontend.py`
+- `app/eval/cases.jsonl`
+- `app/eval/run_eval.py`
+- `README.md`
+- `task.txt`
+
+Implementation:
+
+- Added optional demo API-key authentication. `AUTH_ENABLED=false` remains the
+  default and preserves all existing credential-free smoke/eval flows.
+- With auth enabled, core task/tool/report APIs accept the configured custom
+  API-key header or `Authorization: Bearer`; missing, invalid, and unconfigured
+  credentials return stable 401, 403, and 503 errors without exposing keys.
+- Added a safe config summary that returns only
+  `demo_api_key_configured=true/false`, never the configured value.
+- Added sanitized request-only `tenant_id` / `user_id` context and attached it
+  to `request.state`; no database table or ORM model was changed.
+- Added `POST /api/tasks/{run_id}/run_async` using FastAPI BackgroundTasks and a
+  fresh SQLAlchemy session. It reuses `run_plan`, atomically claims pending runs,
+  preserves completed/running/waiting_human/failed guards, and does not alter
+  the synchronous `/run` or task-creation boundary.
+- Updated Streamlit with a password-masked API Key field, Tenant ID, User ID,
+  shared request headers, and a `Use async run` checkbox.
+- Updated phase to `day29-api-key-auth-async-run`.
+
+Verification:
+
+- `python -m pip install -r requirements.txt`: all dependencies satisfied.
+- `python -m compileall app tests scripts frontend`: passed.
+- Demo DB initialization and deterministic/JSON RAG index build passed.
+- Planner, E2E, exception, HITL, LLM config, LLM planner, RAG query/backend,
+  and Streamlit frontend smoke scripts passed.
+- `scripts/smoke_auth_async.py`: auth_async, auth_disabled_default,
+  api_key_validation, tenant_context, run_async, and repeated_async_guard all
+  returned `ok`. Only a TestClient deprecation warning was emitted.
+- Eval increased from 14 to 15 cases and passed 15/15 with failed=0, task
+  success rate 1.0, and trace complete rate 1.0.
+- Auth-enabled Uvicorn verification: `/health` worked without a key; missing
+  key returned 401; invalid key returned 403; configured header and Bearer
+  credential each returned five tools. No credential value was printed.
+- Auth-disabled async API run ID `ffe0b2b6678d4478ae2f79e3c14345d8`
+  returned running immediately, completed with two traces and an existing
+  report, and rejected repeated execution by returning the existing completed
+  run with no tool execution.
+- Streamlit browser run ID `23efcbdd25fb48f09708e0c6268186ec`
+  verified the password input, tenant/user controls, checked async mode,
+  completed with three successful traces, and rendered the report.
+
+Docker:
+
+- Docker Desktop initially reported Server 29.5.2, but `docker compose build`
+  did not finish within a 10-minute verification window while installing the
+  full ML dependency image. The Docker Desktop Linux Engine then returned HTTP
+  500 for Compose status/cleanup calls. Compose never reached a successful
+  `up`, so no container health result is claimed. Local regression is the
+  authoritative Day29 result.
+
+Security and runtime artifacts:
+
+- No `.env`, credential value, model file, Chroma/JSON index, report, SQLite
+  database, eval output, or log is intended for staging.
+- Uvicorn and Streamlit were stopped and no matching local service process
+  remained after browser verification.
+
+Not implemented in Day29:
+
+- Alembic migration.
+- `tenant_id` / `user_id` database persistence.
+- Parser-based SQL validation.
+- Celery, RQ, or Arq durable queues.
+
+Next step:
+
+- Day30 Alembic migration plus SQL parser validation.

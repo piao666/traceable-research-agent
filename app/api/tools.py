@@ -12,12 +12,17 @@ from app.schemas import (
     ToolInfo,
     ToolListResponse,
 )
+from app.security import require_api_key, require_request_context
 from app.tools import registry
 from app.tools.base import ToolResult, ToolSpec
 from app.trace import store
 from app.trace.logger import record_tool_result
 
-router = APIRouter(prefix="/tools", tags=["tools"])
+router = APIRouter(
+    prefix="/tools",
+    tags=["tools"],
+    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+)
 
 
 def _tool_info(spec: ToolSpec) -> ToolInfo:

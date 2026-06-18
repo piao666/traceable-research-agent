@@ -7,9 +7,14 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.schemas import ReportResponse
+from app.security import require_api_key, require_request_context
 from app.trace import store
 
-router = APIRouter(prefix="/reports", tags=["reports"])
+router = APIRouter(
+    prefix="/reports",
+    tags=["reports"],
+    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 

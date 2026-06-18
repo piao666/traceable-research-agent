@@ -16,7 +16,9 @@ minimal HITL, and read-only MCP/GitHub-style tool integration.
 - FastAPI service with task, plan, run, trace, tool, and report APIs.
 - SQLite persistence for `agent_runs` and `tool_traces`.
 - Deterministic Planner that maps task text to tool steps without LLM calls.
-- Manual Executor through `POST /api/tasks/{run_id}/run`.
+- Synchronous Executor through `POST /api/tasks/{run_id}/run` and optional
+  FastAPI BackgroundTasks execution through `POST /api/tasks/{run_id}/run_async`.
+- Optional demo API-key authentication and request-scoped tenant/user context.
 - Markdown Reporter that writes ignored runtime reports under `workspace/reports`.
 - Tool Registry with real handlers:
   - `file_reader`: reads only from `workspace/docs`, blocks path traversal.
@@ -46,7 +48,7 @@ Health check:
 Invoke-RestMethod http://127.0.0.1:8000/health
 ```
 
-Expected phase: `day28-real-rag-streamlit`.
+Expected phase: `day29-api-key-auth-async-run`.
 
 ## Manual API Flow
 
@@ -79,6 +81,52 @@ Invoke-RestMethod `
 Invoke-RestMethod "http://127.0.0.1:8000/api/tasks/$($task.run_id)/trace"
 Invoke-RestMethod "http://127.0.0.1:8000/api/reports/$($task.run_id)"
 ```
+
+## Optional API Key Auth
+
+Authentication is disabled by default so local smoke and eval flows remain
+credential-free. To enable demo authentication, configure only the local
+`.env` file:
+
+```dotenv
+AUTH_ENABLED=true
+DEMO_API_KEY=your-local-demo-key
+```
+
+Send the configured value using either `X-API-Key: your-local-demo-key` or
+`Authorization: Bearer your-local-demo-key`. The `.env` file must not be
+committed. This is demo-level API-key authentication, not a complete
+production user or authorization system. `/health` remains public.
+
+## Tenant Context
+
+Core API requests accept `X-Tenant-ID` and `X-User-ID`. Values are trimmed,
+restricted to 1-80 letters, numbers, underscores, hyphens, or dots, and fall
+back to `demo` / `local-user` when absent or invalid. Day29 keeps this context
+on `request.state` only and does not change the database schema. A later
+Alembic phase can persist `tenant_id` and `user_id` on `agent_runs`.
+
+## Async Run
+
+The synchronous endpoint remains available:
+
+```text
+POST /api/tasks/{run_id}/run
+```
+
+The optional background endpoint returns immediately with status, trace, and
+report URLs:
+
+```text
+POST /api/tasks/{run_id}/run_async
+GET  /api/tasks/{run_id}
+GET  /api/tasks/{run_id}/trace
+GET  /api/reports/{run_id}
+```
+
+Clients poll the GET endpoints for completion. Day29 uses in-process FastAPI
+`BackgroundTasks`; it is not a durable queue. A later phase can replace this
+adapter with Celery, RQ, or Arq when multi-process delivery is required.
 
 Direct GitHub mock tool smoke:
 
@@ -119,13 +167,21 @@ The UI supports:
 - Create task.
 - Inspect persisted plan.
 - Display `planner_source`, `llm_provider`, and `llm_model`.
-- Manually run a task.
+- Run a task synchronously or through the async endpoint.
+- Send an optional password-masked API key plus Tenant ID and User ID headers.
 - View trace rows and status distribution.
 - Inspect complete trace JSON and real RAG backend metadata when available.
 - View and download generated Markdown reports.
 - Handle HITL `waiting_human` confirmation and resume.
 - Demo templates for normal file/sql/rag/report, GitHub mock report, HITL
   report, and LLM planner full-tools flow.
+
+## Streamlit Auth Support
+
+The sidebar provides password-masked API Key, Tenant ID, User ID, and
+`Use async run` controls. The key is held only in Streamlit session state,
+sent as `X-API-Key`, never rendered in response panels, and never written to a
+file. With default `AUTH_ENABLED=false`, the API key field may remain empty.
 
 ## Docker
 
@@ -158,6 +214,7 @@ python scripts/smoke_planner.py
 python scripts/smoke_e2e.py
 python scripts/smoke_exceptions.py
 python scripts/smoke_hitl.py
+python scripts/smoke_auth_async.py
 python -m app.eval.run_eval
 ```
 
@@ -318,8 +375,9 @@ Checkpoint records:
 
 - LLM planning depends on an optional external provider and always retains a
   deterministic fallback.
-- No production auth or tenant isolation.
-- No background job queue.
+- API-key auth is demo-level; there is no production identity, authorization,
+  or tenant isolation, and tenant/user context is not persisted.
+- Async execution is an in-process BackgroundTask, not a durable job queue.
 - No persistent migration framework.
 - GitHub public API mode is best-effort and may be rate-limited.
 - MCP is represented by a read-only compatible adapter, not a full MCP server.

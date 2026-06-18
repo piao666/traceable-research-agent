@@ -83,6 +83,15 @@ class TaskRunResponse(BaseModel):
     message: str | None = None
 
 
+class AsyncRunResponse(BaseModel):
+    run_id: str
+    status: str
+    status_url: str
+    trace_url: str
+    report_url: str
+    message: str
+
+
 class TaskConfirmRequest(BaseModel):
     approved: bool
     comment: str | None = None

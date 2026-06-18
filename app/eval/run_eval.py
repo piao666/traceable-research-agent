@@ -269,6 +269,29 @@ def _run_real_rag_optional_case(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_auth_async_default_case(case: dict[str, Any]) -> dict[str, Any]:
+    default_settings = Settings()
+    safe_summary = default_settings.get_safe_auth_config_summary()
+    passed = (
+        default_settings.auth_enabled is False
+        and default_settings.async_run_enabled is True
+        and safe_summary["demo_api_key_configured"] is False
+        and "demo_api_key" not in safe_summary
+    )
+    return {
+        "case_id": case["case_id"],
+        "passed": passed,
+        "run_id": None,
+        "status": "validated" if passed else "failed",
+        "planned_tools": [],
+        "trace_count": 0,
+        "trace_statuses": Counter(),
+        "trace_complete": True,
+        "report_exists": False,
+        "failure_reason": None if passed else "Default auth/async configuration is unsafe",
+    }
+
+
 def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
     try:
         mode = case.get("mode", "task_run")
@@ -284,6 +307,8 @@ def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
             return _run_rag_backend_case(case)
         if mode == "real_rag_optional":
             return _run_real_rag_optional_case(case)
+        if mode == "auth_async_default":
+            return _run_auth_async_default_case(case)
         return _run_task_case(db, case)
     except Exception as exc:
         return {

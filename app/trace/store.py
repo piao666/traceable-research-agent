@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.trace.models import AgentRun, ToolTrace
@@ -71,6 +71,22 @@ def update_agent_run_status(
     db.commit()
     db.refresh(run)
     return run
+
+
+def claim_pending_agent_run(db: Session, run_id: str) -> bool:
+    """Atomically move a pending run to running for background execution."""
+
+    result = db.execute(
+        update(AgentRun)
+        .where(AgentRun.run_id == run_id, AgentRun.status == "pending")
+        .values(
+            status="running",
+            error_message=None,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+    return result.rowcount == 1
 
 
 def update_agent_run_progress(

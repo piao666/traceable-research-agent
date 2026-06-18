@@ -12,3 +12,4 @@
 {"case_id":"llm_planner_fallback_or_success_001","mode":"llm_planner","task":"Read local docs, query database metrics, retrieve trace evidence, search GitHub repository issues, and generate a markdown report","allowed_tools":["file_reader","sql_query","rag_search","mcp_github_search","report_writer"],"expected_planner_sources":["llm","deterministic_fallback","deterministic"],"should_succeed":true,"category":"llm_planner"}
 {"case_id":"rag_backend_abstraction_default_json_001","mode":"rag_backend","should_succeed":true,"category":"rag_backend"}
 {"case_id":"real_rag_optional_chroma_001","mode":"real_rag_optional","should_succeed":true,"category":"real_rag"}
+{"case_id":"auth_async_default_disabled_001","mode":"auth_async_default","should_succeed":true,"category":"auth_async"}
