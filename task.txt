@@ -3401,3 +3401,237 @@ Not implemented:
 Next step:
 
 * Day32 final engineering checkpoint and project packaging.
+
+2026-06-18 - Post-Day31 Roadmap: ReAct Core, Hybrid RAG, Quantitative Eval, Final Packaging
+
+一、路线调整原因
+
+当前项目已经完成大量工程化增强，包括：
+
+* LLM Planner
+* Real RAG
+* Streamlit UI
+* Auth
+* Async run
+* Alembic
+* SQL parser
+* GitHub cache/retry/fallback
+* MCP read-only policy
+* Smoke/Eval/checkpoint
+
+但项目如果要达到更高水平，核心不能继续只堆工程外围，而要补齐 AI Agent 的核心能力：
+
+* 当前 planned executor 是先生成完整 plan，再按 plan 顺序执行。
+* 这已经比 rule-based planner 更强，但还不等同于真正的 ReAct Agent。
+* 下一阶段应优先实现基于 Thought / Action / Observation 的 ReAct loop。
+* 然后补齐 Hybrid RAG 和量化对比实验。
+* 最后再做最终包装。
+
+二、Day32-A：Optional ReAct Executor With Thought/Action/Observation Trace
+
+目标：
+新增可选 ReAct executor，不替换现有 planned executor。
+
+核心设计：
+
+* 增加 EXECUTION_MODE=planned|react。
+* planned 继续作为默认稳定模式。
+* react 模式中，每一步由 LLM 根据 task、available tools、observation_history 决策下一步。
+* 每一步输出结构化 JSON：
+
+  * thought
+  * action
+  * args
+  * finish_reason
+* action 可以是 tool name 或 finish。
+* action 必须经过 allowed_tools 校验。
+* args 必须经过 tool schema 或工具自身校验。
+* 每个 tool result 写入 observation_history。
+* 每个 ReAct step 写入 trace。
+* 支持 max_steps，例如 8。
+* 支持 same_tool_max_calls，例如 3。
+* 工具失败、RAG no hits、SQL rejected、GitHub fallback 等 observation 要能反馈给 LLM，用于下一步重新决策。
+* HITL 节点不能被绕过。
+* SQL parser、file path safety、GitHub read-only policy 等安全边界继续生效。
+* 如果 ReAct LLM 输出非法 JSON 或未知工具，应稳定 fallback 或 finish with limitation，不能导致 API 500。
+* Streamlit 后续需要能展示 Thought / Action / Observation trace。
+
+预期新增：
+
+* app/agent/react_executor.py 或等价模块
+* ReAct prompt 模板
+* ReAct decision schema
+* ReAct trace metadata
+* scripts/smoke_react_executor.py
+* eval cases for react mode
+* README/task 更新
+
+验收标准：
+
+* planned 模式旧流程全部通过。
+* react 模式能完成至少一个完整 research task。
+* trace 中能看到 thought/action/observation。
+* 工具失败后 react 模式能换工具、提前结束或给出合理 limitation。
+* repeated / max_steps / same_tool_max_calls 有保护。
+* HITL 不被绕过。
+* 旧 smoke/eval 全部通过。
+
+三、Day33：Hybrid RAG + Chunk Size Experiment
+
+目标：
+在现有 SentenceTransformers + ChromaDB dense retrieval 基础上，补齐 BM25 sparse retrieval、RRF hybrid fusion 和 chunk size 实验。
+
+当前已有：
+
+* deterministic/json fallback
+* SentenceTransformers backend
+* bge-small-zh-v1.5 本地模型
+* ChromaDB vector backend
+* rag_search metadata
+* real RAG smoke
+
+新增设计：
+
+* 增加 RAG_RETRIEVAL_MODE=dense|bm25|hybrid。
+* dense 模式继续使用 ChromaDB。
+* bm25 模式使用 BM25 sparse retrieval。
+* hybrid 模式将 dense top-k 和 BM25 top-k 通过 RRF 融合。
+* 增加 RAG_RRF_K，默认 60。
+* 增加 chunk_size 实验：
+
+  * 256
+  * 512
+  * 1024
+* 记录 Recall@3、Recall@5、Avg Latency。
+* 输出实验结果到 workspace/eval_outputs。
+* 生成 docs/rag_chunk_experiment.md。
+
+预期新增：
+
+* app/rag/bm25_backend.py 或等价模块
+* app/rag/hybrid_search.py 或等价模块
+* scripts/run_rag_chunk_experiment.py
+* docs/rag_chunk_experiment.md
+* smoke for hybrid rag
+* eval cases for retrieval mode
+
+验收标准：
+
+* dense 模式通过。
+* bm25 模式通过。
+* hybrid 模式通过。
+* chunk size 实验可复现。
+* README 有简要实验结果。
+* 默认 lightweight 不依赖真实模型。
+* 真实 RAG 仍可选启用。
+* 旧 smoke/eval 全部通过。
+
+四、Day34：ReAct vs Planned Quantitative Evaluation
+
+目标：
+建立量化对比实验，不只是证明系统能跑，而是证明 ReAct 对复杂任务、失败恢复和 trace 质量有提升。
+
+对比模式：
+
+* planned executor
+* react executor
+* deterministic fallback if applicable
+
+实验任务：
+
+* 设计 15-20 条 research tasks。
+* 覆盖：
+
+  * file_reader
+  * sql_query
+  * rag_search
+  * mcp_github_search
+  * report_writer
+  * RAG no-hit
+  * SQL rejected
+  * tool failure
+  * HITL
+  * GitHub fallback
+
+评价指标：
+
+* task_completion_rate
+* report_exists_rate
+* avg_steps
+* recovery_count
+* failed_tool_recovery_rate
+* trace_quality_score
+* avg_latency_ms
+* mode_used
+
+输出：
+
+* workspace/eval_outputs/react_vs_planned_results.json
+* docs/eval_react_vs_planned.md
+
+README 展示简表：
+Mode | Completion | Avg Steps | Recovery | Trace Quality
+
+验收标准：
+
+* 能跑 planned/react 对比。
+* 能输出结构化 JSON 结果。
+* 能生成 Markdown 实验报告。
+* README 有简表。
+* 旧 smoke/eval 全部通过。
+* 运行时 eval outputs 不提交。
+
+五、Day35：Final Engineering CheckPoint And Project Packaging
+
+目标：
+在 ReAct、Hybrid RAG、Quantitative Eval 完成后，再做最终包装。
+
+内容：
+
+* 重构 README 为 GitHub 展示版。
+* 新增 docs/project_feature_matrix.md。
+* 新增 docs/demo_script.md。
+* 新增 docs/final_project_summary.md。
+* 新增 docs/interview_pitch.md。
+* 新增 docs/checkpoints/day35_final_engineering_checkpoint.md。
+* 新增 scripts/smoke_final_project.py。
+* 确认全部 smoke/eval 通过。
+* 确认无运行时产物提交。
+* 项目进入 feature freeze。
+
+最终包装重点：
+
+* 项目不是普通 RAG QA。
+* 核心是 traceable, controllable, auditable Agent execution。
+* 支持 planned 和 ReAct 两种执行模式。
+* 支持真实 RAG 和 Hybrid RAG。
+* 支持工具安全边界、Trace、HITL、Auth、Async、Alembic、SQL parser、GitHub read-only。
+* 有量化对比实验和可视化 demo。
+
+六、总体优先级
+
+明确后续执行顺序：
+
+1. Day32-A：Optional ReAct Executor
+2. Day33：Hybrid RAG + Chunk Size Experiment
+3. Day34：ReAct vs Planned Quantitative Eval
+4. Day35：Final Packaging
+
+不要平均发力。
+不要先做最终包装。
+不要继续无节制增加外围工程功能。
+先补 Agent 智能性，再补 RAG 实验，再补对比评测，最后收尾。
+
+七、当前不做的事情
+
+以下内容暂不进入下一阶段：
+
+* 完整 MCP server
+* GitHub write tools
+* Celery/RQ/Arq
+* 生产级多租户隔离
+* 用户系统
+* OAuth
+* 前端重构为生产级 Web App
+* 云部署
+* 大规模 Benchmark
