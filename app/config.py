@@ -14,7 +14,7 @@ class Settings(BaseModel):
     """Small settings object; expanded later for model providers."""
 
     service_name: str = "traceable-research-agent"
-    phase: str = "day29-api-key-auth-async-run"
+    phase: str = "day31-github-cache-mcp-readonly"
     api_prefix: str = "/api"
     auth_enabled: bool = False
     demo_api_key: str | None = None
@@ -26,6 +26,16 @@ class Settings(BaseModel):
     user_header_name: str = "X-User-ID"
     default_tenant_id: str = "demo"
     default_user_id: str = "local-user"
+    github_token: str | None = None
+    github_search_cache_enabled: bool = True
+    github_search_cache_path: str = "workspace/cache/github_search_cache.json"
+    github_search_cache_ttl_seconds: int = 3600
+    github_public_api_timeout_seconds: int = 10
+    github_public_api_max_retries: int = 2
+    github_public_api_fallback_to_mock: bool = True
+    mcp_readonly_mode: bool = True
+    mcp_adapter_mode: str = "github_readonly"
+    mcp_allow_write_tools: bool = False
     llm_planner_enabled: bool = False
     llm_provider: str = "qwen"
     llm_planner_mode: str = "auto"
@@ -51,7 +61,7 @@ class Settings(BaseModel):
 
         return cls(
             service_name=os.getenv("SERVICE_NAME", "traceable-research-agent"),
-            phase=os.getenv("APP_PHASE", "day29-api-key-auth-async-run"),
+            phase=os.getenv("APP_PHASE", "day31-github-cache-mcp-readonly"),
             api_prefix=os.getenv("API_PREFIX", "/api"),
             auth_enabled=_env_bool("AUTH_ENABLED", False),
             demo_api_key=_env_optional("DEMO_API_KEY"),
@@ -72,6 +82,33 @@ class Settings(BaseModel):
             or "demo",
             default_user_id=os.getenv("DEFAULT_USER_ID", "local-user").strip()
             or "local-user",
+            github_token=_env_optional("GITHUB_TOKEN"),
+            github_search_cache_enabled=_env_bool(
+                "GITHUB_SEARCH_CACHE_ENABLED", True
+            ),
+            github_search_cache_path=os.getenv(
+                "GITHUB_SEARCH_CACHE_PATH",
+                "workspace/cache/github_search_cache.json",
+            ).strip()
+            or "workspace/cache/github_search_cache.json",
+            github_search_cache_ttl_seconds=_env_int(
+                "GITHUB_SEARCH_CACHE_TTL_SECONDS", 3600
+            ),
+            github_public_api_timeout_seconds=_env_int(
+                "GITHUB_PUBLIC_API_TIMEOUT_SECONDS", 10
+            ),
+            github_public_api_max_retries=_env_int(
+                "GITHUB_PUBLIC_API_MAX_RETRIES", 2
+            ),
+            github_public_api_fallback_to_mock=_env_bool(
+                "GITHUB_PUBLIC_API_FALLBACK_TO_MOCK", True
+            ),
+            mcp_readonly_mode=_env_bool("MCP_READONLY_MODE", True),
+            mcp_adapter_mode=os.getenv(
+                "MCP_ADAPTER_MODE", "github_readonly"
+            ).strip()
+            or "github_readonly",
+            mcp_allow_write_tools=_env_bool("MCP_ALLOW_WRITE_TOOLS", False),
             llm_planner_enabled=_env_bool("LLM_PLANNER_ENABLED", False),
             llm_provider=os.getenv("LLM_PROVIDER", "qwen").strip() or "qwen",
             llm_planner_mode=os.getenv("LLM_PLANNER_MODE", "auto").strip() or "auto",
@@ -178,6 +215,22 @@ class Settings(BaseModel):
             "user_header_name": self.user_header_name,
             "default_tenant_id": self.default_tenant_id,
             "default_user_id": self.default_user_id,
+        }
+
+    def get_safe_github_mcp_config_summary(self) -> dict:
+        """Return GitHub/MCP settings without token contents."""
+
+        return {
+            "github_token_configured": bool(self.github_token),
+            "github_search_cache_enabled": self.github_search_cache_enabled,
+            "github_search_cache_path": self.github_search_cache_path,
+            "github_search_cache_ttl_seconds": self.github_search_cache_ttl_seconds,
+            "github_public_api_timeout_seconds": self.github_public_api_timeout_seconds,
+            "github_public_api_max_retries": self.github_public_api_max_retries,
+            "github_public_api_fallback_to_mock": self.github_public_api_fallback_to_mock,
+            "mcp_readonly_mode": self.mcp_readonly_mode,
+            "mcp_adapter_mode": self.mcp_adapter_mode,
+            "mcp_allow_write_tools": self.mcp_allow_write_tools,
         }
 
     def get_safe_rag_config_summary(self) -> dict:

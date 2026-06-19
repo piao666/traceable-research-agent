@@ -21,6 +21,7 @@ venv/
 env/
 
 # Local app data
+workspace/cache/
 workspace/reports/
 workspace/*.sqlite
 workspace/*.db

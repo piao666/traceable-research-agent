@@ -100,7 +100,15 @@ def _run_direct_tool_case(db, case: dict[str, Any]) -> dict[str, Any]:
         latency_ms=0,
     )
     expected_status = case.get("expected_trace_status")
-    passed = trace.status == expected_status and result.success is case.get("should_succeed")
+    expected_metadata = case.get("expected_metadata") or {}
+    metadata_matches = all(
+        result.metadata.get(key) == value for key, value in expected_metadata.items()
+    )
+    passed = (
+        trace.status == expected_status
+        and result.success is case.get("should_succeed")
+        and metadata_matches
+    )
     return {
         "case_id": case["case_id"],
         "passed": passed,
@@ -111,7 +119,11 @@ def _run_direct_tool_case(db, case: dict[str, Any]) -> dict[str, Any]:
         "trace_statuses": Counter([trace.status]),
         "trace_complete": True,
         "report_exists": False,
-        "failure_reason": None if passed else f"expected trace status {expected_status}, got {trace.status}",
+        "failure_reason": (
+            None
+            if passed
+            else f"expected trace status {expected_status} and metadata {expected_metadata}, got {trace.status} / {result.metadata}"
+        ),
     }
 
 

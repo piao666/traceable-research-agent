@@ -179,6 +179,36 @@ Invoke-RestMethod `
   -Body '{"arguments":{"query":"traceable research agent tool registry","repo":"piao666/traceable-research-agent","limit":3,"mode":"mock"}}'
 ```
 
+## GitHub Search Cache / Retry / Fallback
+
+`mcp_github_search` defaults to deterministic `mock` mode, which requires no
+network or GitHub token. `public_api` mode uses only GitHub GET requests and
+supports a local TTL cache, bounded retry with 0.5/1 second backoff, request
+timeouts, rate-limit detection, and optional fallback to mock evidence.
+`GITHUB_TOKEN` is optional and is never written to cache or metadata.
+
+```dotenv
+GITHUB_SEARCH_CACHE_ENABLED=true
+GITHUB_SEARCH_CACHE_PATH=workspace/cache/github_search_cache.json
+GITHUB_SEARCH_CACHE_TTL_SECONDS=3600
+GITHUB_PUBLIC_API_TIMEOUT_SECONDS=10
+GITHUB_PUBLIC_API_MAX_RETRIES=2
+GITHUB_PUBLIC_API_FALLBACK_TO_MOCK=true
+```
+
+Result metadata identifies `data_source` as `mock`, `public_api`, `cache`, or
+`fallback`, and records cache hits, retry count, rate limiting, and fallback
+reason. Cache read/write errors are non-fatal. Runtime cache files under
+`workspace/cache/` are ignored by Git. No GitHub write operation is exposed.
+
+## MCP Read-only Direction
+
+The current integration is a read-only compatible adapter, not a full MCP
+server. Its fixed policy allows GET and denies POST, PUT, PATCH, and DELETE even
+if write-oriented environment settings are mistakenly enabled. See
+[MCP Read-only Direction](docs/mcp_readonly_direction.md) for the future client,
+tool-discovery, allowlist, HITL, and trace-persistence direction.
+
 ## Streamlit Demo UI
 
 The Streamlit UI is a lightweight demo layer. It only calls the FastAPI HTTP
@@ -255,6 +285,7 @@ Run local smoke and eval:
 python -m compileall app tests scripts
 python scripts/init_demo_db.py
 python scripts/build_rag_index.py
+python scripts/smoke_github_mcp.py
 python scripts/smoke_planner.py
 python scripts/smoke_e2e.py
 python scripts/smoke_exceptions.py
@@ -399,6 +430,7 @@ More detail:
 - [Trace Examples](docs/trace_examples.md)
 - [Bad Cases](docs/bad_cases.md)
 - [Interview Notes](docs/interview_notes.md)
+- [MCP Read-only Direction](docs/mcp_readonly_direction.md)
 
 Checkpoint records:
 
@@ -427,6 +459,7 @@ Checkpoint records:
 - Async execution is an in-process BackgroundTask, not a durable job queue.
 - The initial migration mirrors the current trace schema; tenant/user columns
   remain deferred to a future revision.
-- GitHub public API mode is best-effort and may be rate-limited.
+- GitHub cache is a local JSON cache, not a distributed cache; public API mode
+  remains subject to GitHub rate limits before fallback.
 - MCP is represented by a read-only compatible adapter, not a full MCP server.
 - FAISS and a multi-model selector UI are not implemented.

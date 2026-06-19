@@ -3327,3 +3327,77 @@ Docker status:
   prior build timeout and Linux Engine HTTP 500, no build was attempted and
   Docker regression is not accepted as passed. Local smoke/eval/API validation
   remains the Day30 acceptance path.
+2026-06-18 - Day31 GitHub Cache/Retry/Fallback And MCP Read-only Direction
+
+* Confirmed the Day30 migration/parser baseline and required Day31 files exist.
+* Confirmed the worktree is clean and `main` is synchronized with `origin/main`.
+* Scope is limited to offline-safe GitHub cache/retry/fallback and an explicit
+  MCP read-only policy; no GitHub write tools or full MCP server will be added.
+
+Implementation:
+
+* Added GitHub/MCP settings to `.env.example` and `app/config.py`. The safe
+  summary exposes only `github_token_configured`, never token contents.
+* Added `app/tools/github_cache.py`: SHA-256 keys cover query, repo, limit,
+  mode, and endpoint; entries contain created/expiry timestamps, results, and
+  non-secret metadata. Corrupt/read/write failures are non-fatal.
+* Enhanced `app/tools/mcp_github.py`: mock remains the offline default;
+  public_api uses only GET, configurable timeout, at most five bounded retries,
+  0.5/1 second default backoff, HTTP 403/429 rate-limit recognition, TTL cache,
+  and configurable mock fallback.
+* `metadata.data_source` now identifies `mock`, `public_api`, `cache`, or
+  `fallback`. Metadata also records cache hit, fallback, retry count, error
+  type, rate limiting, repo, and result count without request headers/token.
+* Added `app/mcp/readonly.py`. GET is the only permitted HTTP method. POST,
+  PUT, PATCH, and DELETE remain denied even if read-only or write environment
+  flags are misconfigured; ignored configuration is visible in metadata.
+* Added `docs/mcp_readonly_direction.md` covering the current adapter boundary,
+  future client/tool discovery allowlists, write denylist, HITL, and trace
+  persistence. This is not a full MCP server.
+* Added `scripts/smoke_github_mcp.py` with fully offline mock, invalid-input,
+  cache hit/corrupt-cache rebuild, retry/backoff, network fallback, rate-limit,
+  fallback-disabled, safe-summary, and read-only policy checks. Optional real
+  API smoke remains gated by `RUN_GITHUB_PUBLIC_API_SMOKE=true`.
+* Added eval case `github_mcp_mock_cache_fallback_001` and generic expected
+  metadata assertions for direct-tool eval cases.
+* Added `workspace/cache/` to `.gitignore`; all other required runtime ignore
+  rules already existed.
+
+Files added or modified:
+
+* `.env.example`, `.gitignore`, `app/config.py`
+* `app/tools/mcp_github.py`, `app/tools/github_cache.py`
+* `app/mcp/__init__.py`, `app/mcp/readonly.py`
+* `scripts/smoke_github_mcp.py`
+* `app/eval/cases.jsonl`, `app/eval/run_eval.py`
+* `docs/mcp_readonly_direction.md`, `README.md`, `task.txt`
+
+Validation:
+
+* Dependency install, compileall, demo DB/index initialization, the new GitHub
+  smoke, Alembic/SQL parser smoke, auth/async smoke, and all legacy planner,
+  E2E, exception, HITL, LLM, RAG, backend, and Streamlit smoke scripts passed.
+* `smoke_github_mcp.py` returned `github_mcp`, `mock`, `cache`, `fallback`, and
+  `read_only` as `ok`; its default path made no external GitHub request.
+* Eval passed 19/19 with failed=0, success rate 1.0, and trace completeness 1.0.
+* Manual API mock execution returned success, data_source=mock, read_only=true,
+  and write_operations_allowed=false. Task run
+  `149bdc1f2d744be6b3f828bb6097d481` completed with one successful
+  `mcp_github_search` trace and an existing report.
+* Uvicorn was stopped after manual verification; Streamlit was not started.
+
+Docker:
+
+* Docker client 29.5.2 and Compose v5.1.4 are installed.
+* Docker Desktop Linux Engine again returned HTTP 500 for `docker info`; no
+  build was attempted. Docker regression is not accepted as passed and does
+  not block the local Day31 acceptance path.
+
+Not implemented:
+
+* Full MCP server, write-capable GitHub tools, GitHub OAuth, or distributed
+  cache.
+
+Next step:
+
+* Day32 final engineering checkpoint and project packaging.
