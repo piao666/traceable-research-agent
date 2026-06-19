@@ -107,8 +107,8 @@ trace/confirm, report retrieval, and tool catalog/detail/execute endpoints.
 Core API requests accept `X-Tenant-ID` and `X-User-ID`. Values are trimmed,
 restricted to 1-80 letters, numbers, underscores, hyphens, or dots, and fall
 back to `demo` / `local-user` when absent or invalid. Day29 keeps this context
-on `request.state` only and does not change the database schema. A later
-Alembic phase can persist `tenant_id` and `user_id` on `agent_runs`.
+on `request.state` only and does not change the database schema. A future
+Alembic revision can persist `tenant_id` and `user_id` on `agent_runs`.
 
 ## Async Run
 
@@ -134,6 +134,40 @@ adapter with Celery, RQ, or Arq when multi-process delivery is required.
 Repeated calls do not queue completed, running, or waiting_human runs again,
 and waiting_human cannot bypass confirmation. The synchronous `/run` endpoint
 remains available even when async execution is disabled.
+
+## Alembic Migrations
+
+Development and demo startup still use `init_db` / SQLAlchemy `create_all`, so
+existing local workflows remain compatible. For an empty engineering-managed
+database, apply the versioned schema with:
+
+```powershell
+alembic upgrade head
+```
+
+The initial migration is
+`migrations/versions/0001_initial_trace_schema.py`; it creates `agent_runs`,
+`tool_traces`, their foreign key, and the current trace run index. Alembic does
+not automatically stamp or migrate an existing runtime database. SQLite
+runtime databases and `workspace/tmp/` migration-smoke artifacts are ignored
+and must not be committed.
+
+## SQL Read-only Parser Validation
+
+`sql_query` uses `sqlglot` to accept exactly one parsed `SELECT` or `WITH`
+query. A conservative keyword guard remains as a second defense. The tool
+rejects multiple statements, DDL, DML, `PRAGMA`, `ATTACH`, `DETACH`, and
+`VACUUM` without raising an API 500. Rejections remain visible as rejected
+tool traces for auditability.
+
+```sql
+-- allowed
+SELECT id, title FROM documents LIMIT 5;
+
+-- rejected
+DELETE FROM documents;
+SELECT 1; DROP TABLE documents;
+```
 
 Direct GitHub mock tool smoke:
 
@@ -377,7 +411,8 @@ Checkpoint records:
 ## Security Notes
 
 - `file_reader` only reads under `workspace/docs` after path resolution.
-- `sql_query` accepts only SELECT/WITH and rejects destructive SQL keywords.
+- `sql_query` accepts one parser-validated SELECT/WITH statement and retains a
+  destructive-keyword fallback guard.
 - `rag_search` reads an ignored JSON or Chroma index and rejects empty query.
 - `mcp_github_search` is read-only and uses mock mode by default.
 - HITL is a minimal confirmation flow, not production authorization.
@@ -390,7 +425,8 @@ Checkpoint records:
 - API-key auth is demo-level; there is no production identity, authorization,
   or tenant isolation, and tenant/user context is not persisted.
 - Async execution is an in-process BackgroundTask, not a durable job queue.
-- No persistent migration framework.
+- The initial migration mirrors the current trace schema; tenant/user columns
+  remain deferred to a future revision.
 - GitHub public API mode is best-effort and may be rate-limited.
 - MCP is represented by a read-only compatible adapter, not a full MCP server.
 - FAISS and a multi-model selector UI are not implemented.

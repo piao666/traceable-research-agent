@@ -2,44 +2,38 @@
 
 from __future__ import annotations
 
-import re
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from app.tools.base import ToolResult
+from app.tools.sql_safety import validate_read_only_sql
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DB_PATH = ROOT / "workspace" / "demo.sqlite"
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 100
-DANGEROUS_KEYWORDS = {
-    "INSERT",
-    "UPDATE",
-    "DELETE",
-    "DROP",
-    "ALTER",
-    "CREATE",
-    "REPLACE",
-    "TRUNCATE",
-    "ATTACH",
-    "DETACH",
-    "PRAGMA",
-    "VACUUM",
-}
 
 
-def _failure(message: str, *, error_type: str, query: str | None = None) -> ToolResult:
+def _failure(
+    message: str,
+    *,
+    error_type: str,
+    query: str | None = None,
+    parser_metadata: dict[str, Any] | None = None,
+) -> ToolResult:
+    metadata = {
+        "error_type": error_type,
+        "readonly_check": False,
+        "db_path": str(DEFAULT_DB_PATH),
+        "query": query,
+    }
+    metadata.update(parser_metadata or {})
     return ToolResult(
         success=False,
         error_message=message,
-        metadata={
-            "error_type": error_type,
-            "readonly_check": False,
-            "db_path": str(DEFAULT_DB_PATH),
-            "query": query,
-        },
+        metadata=metadata,
     )
 
 
@@ -51,44 +45,9 @@ def _coerce_limit(value: Any) -> int:
     return max(1, min(limit, MAX_LIMIT))
 
 
-def _strip_sql_comments(query: str) -> str:
-    no_block = re.sub(r"/\*.*?\*/", " ", query, flags=re.DOTALL)
-    return re.sub(r"--.*?$", " ", no_block, flags=re.MULTILINE).strip()
-
-
-def _validate_readonly(query: str) -> ToolResult | None:
-    normalized = _strip_sql_comments(query)
-    if not normalized:
-        return _failure("Missing SQL query.", error_type="invalid_args", query=query)
-    if ";" in normalized.rstrip(";"):
-        return _failure(
-            "Multiple SQL statements are not allowed.",
-            error_type="safety_rejected",
-            query=query,
-        )
-
-    first = normalized.lstrip().split(None, 1)[0].upper()
-    if first not in {"SELECT", "WITH"}:
-        return _failure(
-            "Only SELECT or WITH read-only queries are allowed.",
-            error_type="safety_rejected",
-            query=query,
-        )
-
-    tokens = set(re.findall(r"\b[A-Z_]+\b", normalized.upper()))
-    blocked = sorted(tokens & DANGEROUS_KEYWORDS)
-    if blocked:
-        return _failure(
-            f"SQL rejected because it contains dangerous keyword(s): {', '.join(blocked)}.",
-            error_type="safety_rejected",
-            query=query,
-        )
-    return None
-
-
 def _query_with_limit(query: str, limit: int) -> str:
     clean = query.strip().rstrip(";")
-    if re.search(r"\bLIMIT\b", clean, flags=re.IGNORECASE):
+    if "LIMIT" in clean.upper().split():
         return clean
     return f"{clean} LIMIT {limit}"
 
@@ -98,8 +57,20 @@ def run_query(arguments: dict[str, Any]) -> ToolResult:
 
     query = str(arguments.get("query") or "").strip()
     limit = _coerce_limit(arguments.get("limit"))
-    failure = _validate_readonly(query)
-    if failure is not None:
+    is_read_only, blocked_reason, parser_metadata = validate_read_only_sql(query)
+    if not is_read_only:
+        error_type = parser_metadata.get("error_type") or "safety_rejected"
+        message = (
+            "SQL query is invalid and could not be parsed."
+            if error_type == "invalid_sql"
+            else f"SQL query was rejected by read-only safety validation: {blocked_reason}."
+        )
+        failure = _failure(
+            message,
+            error_type=error_type,
+            query=query,
+            parser_metadata=parser_metadata,
+        )
         failure.metadata["limit"] = limit
         return failure
 
@@ -110,12 +81,16 @@ def run_query(arguments: dict[str, Any]) -> ToolResult:
             metadata={
                 "error_type": "db_not_found",
                 "readonly_check": True,
+                "parser": parser_metadata["parser"],
+                "statement_type": parser_metadata["statement_type"],
+                "read_only": True,
+                "blocked_reason": None,
                 "limit": limit,
                 "db_path": str(DEFAULT_DB_PATH),
             },
         )
 
-    final_query = _query_with_limit(query, limit)
+    final_query = _query_with_limit(parser_metadata["normalized_sql"], limit)
     try:
         with sqlite3.connect(DEFAULT_DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
@@ -127,6 +102,10 @@ def run_query(arguments: dict[str, Any]) -> ToolResult:
             metadata={
                 "error_type": "sql_error",
                 "readonly_check": True,
+                "parser": parser_metadata["parser"],
+                "statement_type": parser_metadata["statement_type"],
+                "read_only": True,
+                "blocked_reason": None,
                 "limit": limit,
                 "db_path": str(DEFAULT_DB_PATH),
                 "query": final_query,
@@ -147,6 +126,10 @@ def run_query(arguments: dict[str, Any]) -> ToolResult:
         metadata={
             "error_type": None,
             "readonly_check": True,
+            "parser": parser_metadata["parser"],
+            "statement_type": parser_metadata["statement_type"],
+            "read_only": True,
+            "blocked_reason": None,
             "limit": limit,
             "db_path": str(DEFAULT_DB_PATH),
         },

@@ -3,6 +3,8 @@ uvicorn[standard]
 pydantic
 python-dotenv
 sqlalchemy
+alembic
+sqlglot
 streamlit
 requests
 sentence-transformers

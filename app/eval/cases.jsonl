@@ -13,3 +13,6 @@
 {"case_id":"rag_backend_abstraction_default_json_001","mode":"rag_backend","should_succeed":true,"category":"rag_backend"}
 {"case_id":"real_rag_optional_chroma_001","mode":"real_rag_optional","should_succeed":true,"category":"real_rag"}
 {"case_id":"auth_async_default_disabled_001","mode":"auth_async_default","should_succeed":true,"category":"auth_async"}
+{"case_id":"sql_parser_select_allowed_001","mode":"direct_tool","tool_name":"sql_query","arguments":{"query":"WITH recent AS (SELECT id, title FROM documents) SELECT * FROM recent","limit":5},"should_succeed":true,"expected_trace_status":"success","category":"sql_parser"}
+{"case_id":"sql_parser_delete_rejected_001","mode":"direct_tool","tool_name":"sql_query","arguments":{"query":"DELETE FROM documents","limit":5},"should_succeed":false,"expected_trace_status":"rejected","category":"sql_parser"}
+{"case_id":"sql_parser_multi_statement_rejected_001","mode":"direct_tool","tool_name":"sql_query","arguments":{"query":"SELECT 1; DROP TABLE documents","limit":5},"should_succeed":false,"expected_trace_status":"rejected","category":"sql_parser"}

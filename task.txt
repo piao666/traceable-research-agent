@@ -3244,3 +3244,86 @@ Next step condition:
 
 - After this checkpoint is committed and pushed with clean artifact and secret
   audits, proceed to Day30 Alembic migration plus SQL parser validation.
+2026-06-18 - Day30 Alembic Migration And SQL Parser Read-only Validation
+
+* Confirmed the Day29-B checkpoint and required auth, async, Streamlit, SQL tool, and trace model files exist.
+* Confirmed the worktree is clean and `main` is synchronized with `origin/main` before implementation.
+* Scope is limited to Alembic migration support and parser-based read-only SQL validation; no business schema, tenant persistence, auth, async, RAG, or planner changes are planned.
+
+Implementation:
+
+* Added `alembic.ini`, `migrations/env.py`, `migrations/script.py.mako`, and
+  `migrations/versions/0001_initial_trace_schema.py`.
+* The initial revision mirrors current SQLAlchemy metadata for `agent_runs` and
+  `tool_traces`, including the run foreign key and `ix_tool_traces_run_id`.
+* Existing `init_db` / `create_all` behavior remains unchanged for development
+  and demo use. `alembic upgrade head` is the explicit clean-database path; no
+  existing runtime database is automatically stamped or migrated.
+* Added `app/tools/sql_safety.py` with single-statement `sqlglot` validation.
+  Only SELECT/WITH query expressions pass; DDL, DML, PRAGMA, ATTACH, DETACH,
+  VACUUM, parser failures, and multiple statements are rejected.
+* The existing keyword guard remains a secondary defense after AST checks.
+  `sql_query` keeps its input/output contract, limit bounds, DB error handling,
+  and rejected/failed/success trace visibility.
+* Added `scripts/smoke_alembic_sql_parser.py`. It migrates an ignored temporary
+  SQLite database, reruns upgrade idempotently, checks metadata drift and both
+  core tables, removes the temporary DB, then validates 3 allowed and 10
+  rejected SQL cases.
+* Added three eval cases for allowed WITH, rejected DELETE, and rejected
+  multi-statement input. Existing auth/async, planner, Streamlit, and RAG code
+  was not changed.
+
+Files added or modified:
+
+* `alembic.ini`
+* `migrations/env.py`
+* `migrations/script.py.mako`
+* `migrations/versions/0001_initial_trace_schema.py`
+* `app/tools/sql_safety.py`
+* `app/tools/sql_query.py`
+* `scripts/smoke_alembic_sql_parser.py`
+* `app/eval/cases.jsonl`
+* `requirements.txt`
+* `README.md`
+* `task.txt`
+
+Current limitations:
+
+* Tenant/user context is not persisted in the database.
+* Authentication remains demo-level rather than a production identity system.
+* Async execution still uses FastAPI BackgroundTasks, not Celery, RQ, or Arq.
+* A full MCP server is not implemented.
+
+Next step:
+
+* After regression, artifact audit, commit, and push, proceed to Day31 GitHub
+  cache/retry/fallback plus an MCP read-only direction, or add a Day30-B
+  checkpoint first if stabilization reveals a gap.
+
+Validation results:
+
+* `python -m pip install -r requirements.txt` installed Alembic 1.18.4,
+  SQLGlot 30.11.0, and Mako 1.3.12; no secret values were printed.
+* Compileall, demo DB initialization, deterministic RAG index build, the new
+  migration/parser smoke, and all legacy smoke scripts passed.
+* `smoke_alembic_sql_parser.py` reported Alembic `ok`, tables `agent_runs` and
+  `tool_traces`, SQL parser `ok`, allowed cases 3, and rejected cases 10.
+  Alembic upgrade was rerun at head and `alembic check` reported no new upgrade
+  operations, confirming the migration matches current model metadata.
+* Eval passed 18/18 with failed=0, task success rate 1.0, and trace complete
+  rate 1.0. Three Day30 parser cases were added without breaking the previous
+  15 cases.
+* Manual Uvicorn API validation returned health `ok`; legal SELECT succeeded
+  with five rows and parser metadata; DELETE was rejected with
+  `safety_rejected` / `dangerous_statement:DELETE`; the SELECT+DROP payload was
+  rejected with `safety_rejected` / `multiple_statements`. No API 500 occurred.
+* Uvicorn was stopped after manual validation. No Streamlit service was started
+  during Day30.
+
+Docker status:
+
+* Docker client 29.5.2 and Compose v5.1.4 are installed.
+* `docker info` did not return within the 15-second daemon probe. Given the
+  prior build timeout and Linux Engine HTTP 500, no build was attempted and
+  Docker regression is not accepted as passed. Local smoke/eval/API validation
+  remains the Day30 acceptance path.
