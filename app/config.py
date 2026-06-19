@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from dotenv import load_dotenv
 
 
@@ -14,7 +14,7 @@ class Settings(BaseModel):
     """Small settings object; expanded later for model providers."""
 
     service_name: str = "traceable-research-agent"
-    phase: str = "day31-github-cache-mcp-readonly"
+    phase: str = "day32a-optional-react-executor"
     api_prefix: str = "/api"
     auth_enabled: bool = False
     demo_api_key: str | None = None
@@ -36,6 +36,15 @@ class Settings(BaseModel):
     mcp_readonly_mode: bool = True
     mcp_adapter_mode: str = "github_readonly"
     mcp_allow_write_tools: bool = False
+    execution_mode: str = "planned"
+    react_enabled: bool = True
+    react_max_steps: int = 8
+    react_same_tool_max_calls: int = 3
+    react_llm_provider: str = "qwen"
+    react_llm_model: str = "qwen-plus"
+    react_decision_strict_json: bool = True
+    react_fallback_to_planned: bool = True
+    react_finish_on_invalid_decision: bool = True
     llm_planner_enabled: bool = False
     llm_provider: str = "qwen"
     llm_planner_mode: str = "auto"
@@ -55,13 +64,37 @@ class Settings(BaseModel):
     rag_normalize_embeddings: bool = True
     rag_real_backend_enabled: bool = False
 
+    @field_validator("execution_mode", mode="before")
+    @classmethod
+    def validate_execution_mode(cls, value: object) -> str:
+        normalized = str(value or "planned").strip().lower()
+        return normalized if normalized in {"planned", "react"} else "planned"
+
+    @field_validator("react_max_steps", mode="before")
+    @classmethod
+    def validate_react_max_steps(cls, value: object) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 8
+        return min(max(parsed, 1), 20)
+
+    @field_validator("react_same_tool_max_calls", mode="before")
+    @classmethod
+    def validate_react_same_tool_max_calls(cls, value: object) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 3
+        return min(max(parsed, 1), 10)
+
     @classmethod
     def from_env(cls) -> "Settings":
         """Build settings from environment without exposing secret values."""
 
         return cls(
             service_name=os.getenv("SERVICE_NAME", "traceable-research-agent"),
-            phase=os.getenv("APP_PHASE", "day31-github-cache-mcp-readonly"),
+            phase=os.getenv("APP_PHASE", "day32a-optional-react-executor"),
             api_prefix=os.getenv("API_PREFIX", "/api"),
             auth_enabled=_env_bool("AUTH_ENABLED", False),
             demo_api_key=_env_optional("DEMO_API_KEY"),
@@ -109,6 +142,27 @@ class Settings(BaseModel):
             ).strip()
             or "github_readonly",
             mcp_allow_write_tools=_env_bool("MCP_ALLOW_WRITE_TOOLS", False),
+            execution_mode=_env_choice(
+                "EXECUTION_MODE", "planned", {"planned", "react"}
+            ),
+            react_enabled=_env_bool("REACT_ENABLED", True),
+            react_max_steps=_env_bounded_int("REACT_MAX_STEPS", 8, 1, 20),
+            react_same_tool_max_calls=_env_bounded_int(
+                "REACT_SAME_TOOL_MAX_CALLS", 3, 1, 10
+            ),
+            react_llm_provider=os.getenv("REACT_LLM_PROVIDER", "qwen").strip().lower()
+            or "qwen",
+            react_llm_model=os.getenv("REACT_LLM_MODEL", "qwen-plus").strip()
+            or "qwen-plus",
+            react_decision_strict_json=_env_bool(
+                "REACT_DECISION_STRICT_JSON", True
+            ),
+            react_fallback_to_planned=_env_bool(
+                "REACT_FALLBACK_TO_PLANNED", True
+            ),
+            react_finish_on_invalid_decision=_env_bool(
+                "REACT_FINISH_ON_INVALID_DECISION", True
+            ),
             llm_planner_enabled=_env_bool("LLM_PLANNER_ENABLED", False),
             llm_provider=os.getenv("LLM_PROVIDER", "qwen").strip() or "qwen",
             llm_planner_mode=os.getenv("LLM_PLANNER_MODE", "auto").strip() or "auto",
@@ -199,6 +253,15 @@ class Settings(BaseModel):
             "llm_timeout_seconds": self.llm_timeout_seconds,
             "llm_max_retries": self.llm_max_retries,
             "llm_strict_json": self.llm_strict_json,
+            "execution_mode": self.execution_mode,
+            "react_enabled": self.react_enabled,
+            "react_max_steps": self.react_max_steps,
+            "react_same_tool_max_calls": self.react_same_tool_max_calls,
+            "react_llm_provider": self.react_llm_provider,
+            "react_llm_model": self.react_llm_model,
+            "react_decision_strict_json": self.react_decision_strict_json,
+            "react_fallback_to_planned": self.react_fallback_to_planned,
+            "react_finish_on_invalid_decision": self.react_finish_on_invalid_decision,
         }
 
     def get_safe_auth_config_summary(self) -> dict:
@@ -273,6 +336,15 @@ def _env_int(name: str, default: int) -> int:
         return int(value.strip())
     except ValueError:
         return default
+
+
+def _env_bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    return min(max(_env_int(name, default), minimum), maximum)
+
+
+def _env_choice(name: str, default: str, choices: set[str]) -> str:
+    value = os.getenv(name, default).strip().lower()
+    return value if value in choices else default
 
 
 settings = Settings.from_env()

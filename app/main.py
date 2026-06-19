@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Traceable Research Agent",
     version="0.1.0",
-    description="Day 29 traceable Agent API with optional auth and async execution.",
+    description="Traceable Agent API with planned and optional ReAct execution.",
     lifespan=lifespan,
 )
 
@@ -36,6 +36,8 @@ async def health() -> HealthResponse:
         status="ok",
         service=settings.service_name,
         phase=settings.phase,
+        execution_mode=settings.execution_mode,
+        react_enabled=settings.react_enabled,
     )
 
 

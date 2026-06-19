@@ -3635,3 +3635,105 @@ Mode | Completion | Avg Steps | Recovery | Trace Quality
 * 前端重构为生产级 Web App
 * 云部署
 * 大规模 Benchmark
+
+2026-06-18 - Day32-A Optional ReAct Executor With Thought/Action/Observation Trace
+
+Start:
+
+* Confirmed the Day31 baseline and all required Day32-A files exist.
+* Confirmed the worktree is clean and `main` is synchronized with `origin/main`.
+* Day32-A adds an optional observation-driven ReAct executor while preserving
+  the planned executor as the default stable path.
+* ReAct runtime state will be stored inside existing `plan_json`; no database
+  schema or Alembic migration will be added.
+
+Implementation:
+
+* Added `EXECUTION_MODE=planned|react`; planned remains the default. ReAct is
+  controlled by bounded max-step, per-tool call, provider/model, strict JSON,
+  planned fallback, and invalid-decision settings.
+* Added `app/agent/react_schema.py` for plain/fenced/mixed JSON extraction,
+  normalized decisions, finish detection, and allowed/enabled tool validation.
+* Added `app/agent/react_prompt.py`. It supplies task, run id, allowed tools,
+  enabled Tool Registry descriptions, compact observation history, safety
+  boundaries, and a strict JSON decision schema. Thought is explicitly a short
+  decision rationale, not a raw chain-of-thought dump.
+* Added `app/agent/react_executor.py`. The bounded loop executes one registered
+  tool per decision, persists concise Thought/Action/Observation metadata,
+  feeds failures/no-hit/rejections/fallbacks into the next decision, and writes
+  evidence plus resumable state under existing `plan_json.react_state`.
+* Added `app/agent/dispatcher.py`; synchronous run, BackgroundTasks async run,
+  and confirmation resume use the same planned/react dispatch. Task creation
+  still only creates a pending run and persisted plan.
+* ReAct actions must be in both `allowed_tools` and the enabled Tool Registry.
+  Arguments continue through existing handlers, preserving file path safety,
+  SQL read-only parsing, GitHub read-only policy, and stable tool errors.
+* `REACT_MAX_STEPS` is clamped to 1-20 and
+  `REACT_SAME_TOOL_MAX_CALLS` to 1-10. Repeated calls finish with a structured
+  limitation instead of looping.
+* Invalid JSON, unknown/disallowed tools, invalid args, and unavailable LLMs
+  produce structured trace events. A first-decision failure can fall back to
+  the persisted planned executor; later failures finish with a limitation to
+  avoid replaying already-executed tools.
+* ReAct report_writer decisions inherit the persisted planned HITL policy.
+  Pending decisions are saved in `react_state`, remain `waiting_human`, and
+  resume only after the existing confirmation endpoint records approval.
+* Reporter now shows execution mode, requested mode, fallback state, ReAct
+  decision steps, observations, errors, and completed-with-limitation status.
+* Streamlit now shows an Execution Mode control, backend mode, and dedicated
+  ReAct Thought / Action / Observation expanders while preserving existing
+  Plan, RAG metadata, HITL, auth, async, trace, and report UI.
+* Trace serialization now retains tool metadata alongside success and failure
+  outputs. This fixes missing ReAct metadata on failed tool calls without a DB
+  schema change.
+
+Files added or modified:
+
+* Added: `app/agent/react_schema.py`, `app/agent/react_prompt.py`,
+  `app/agent/react_executor.py`, `app/agent/dispatcher.py`, and
+  `scripts/smoke_react_executor.py`.
+* Modified: `.env.example`, `app/config.py`, `app/llm/providers.py`,
+  `app/agent/executor.py`, `app/agent/reporter.py`, `app/api/tasks.py`,
+  `app/schemas.py`, `app/main.py`, `app/trace/logger.py`,
+  `frontend/streamlit_app.py`, `scripts/smoke_streamlit_frontend.py`,
+  `app/eval/cases.jsonl`, `app/eval/run_eval.py`, `README.md`, and `task.txt`.
+
+Validation:
+
+* `smoke_react_executor.py` passed planned default, basic ReAct, failure
+  recovery, invalid decision fallback, same-tool limit, and HITL guard checks.
+  The smoke uses a scripted local LLM and requires no network or real key.
+* Dependency install, compileall, DB/index initialization, GitHub/MCP,
+  Alembic/SQL parser, auth/async, planner, E2E, exceptions, HITL, LLM, RAG,
+  backend, and Streamlit smoke scripts all passed.
+* Eval passed 22/22 with failed=0 after adding three deterministic ReAct cases:
+  basic file/RAG/report, invalid-decision fallback, and tool-failure recovery.
+* Planned manual API run `af784362cbda45b19cad7aaa712a5fd4` completed
+  with execution_mode=planned, two traces, and an existing report.
+* Real Qwen ReAct API run `290641a7e29e47c39fc46ff8d2218f14`
+  completed with execution_mode=react and no planned fallback. It recorded a
+  file failure, two successful RAG observations, then enforced the configured
+  same-tool limit and generated a report with a limitation instead of looping.
+* Streamlit AppTest loaded in React mode with no exceptions. It verified the
+  auth/tenant/user/async controls, Execution Mode=react, Trace and Report
+  panels, three ReAct trace expanders, and the rendered report.
+* Uvicorn and Streamlit were stopped after manual validation.
+
+Docker:
+
+* Docker client 29.5.2 and Compose v5.1.4 are installed.
+* Docker Desktop Linux Engine pipe was absent, so the daemon was unavailable
+  and no build was attempted. Docker regression is not accepted as passed and
+  does not block the completed local smoke/eval/API/Streamlit checks.
+
+Current limitations:
+
+* No Hybrid RAG or chunk-size experiment is implemented.
+* No ReAct vs Planned quantitative benchmark is implemented.
+* Dedicated ReAct database columns are not added; state and metadata use the
+  current plan and trace JSON fields.
+* Final project packaging remains deferred.
+
+Next step:
+
+* Day33 Hybrid RAG + Chunk Size Experiment.

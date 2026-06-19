@@ -50,7 +50,14 @@ def record_tool_result(
 ) -> ToolTrace:
     """Persist one tool execution result as a trace row."""
 
-    output_payload = result.output if result.output is not None else result.metadata
+    if isinstance(result.output, dict):
+        output_payload = dict(result.output)
+        if result.metadata:
+            output_payload["metadata"] = result.metadata
+    elif result.output is None:
+        output_payload = {"metadata": result.metadata}
+    else:
+        output_payload = {"result": result.output, "metadata": result.metadata}
     now = datetime.now(timezone.utc)
     trace = ToolTrace(
         trace_id=uuid4().hex,
@@ -64,6 +71,42 @@ def record_tool_result(
         status=_trace_status(result),
         latency_ms=latency_ms,
         error_message=result.error_message,
+        created_at=now,
+        finished_at=now,
+    )
+    db.add(trace)
+    db.commit()
+    db.refresh(trace)
+    return trace
+
+
+def record_trace_event(
+    db: Session,
+    run_id: str,
+    step_no: int,
+    tool_name: str,
+    status: str,
+    input_data: dict[str, Any],
+    output_summary: str,
+    output_data: dict[str, Any],
+    error_message: str | None = None,
+    latency_ms: int | None = None,
+) -> ToolTrace:
+    """Persist a non-tool executor event such as finish, fallback, or HITL wait."""
+
+    now = datetime.now(timezone.utc)
+    trace = ToolTrace(
+        trace_id=uuid4().hex,
+        run_id=run_id,
+        step_no=step_no,
+        tool_name=tool_name,
+        input_summary=_summarize_input(input_data),
+        input_json=_safe_json(input_data),
+        output_summary=output_summary,
+        output_json=_safe_json(output_data),
+        status=status,
+        latency_ms=latency_ms,
+        error_message=error_message,
         created_at=now,
         finished_at=now,
     )

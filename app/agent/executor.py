@@ -26,6 +26,17 @@ def _parse_plan(run: AgentRun) -> dict[str, Any]:
 
 
 def _summary(run: AgentRun) -> dict[str, Any]:
+    plan: dict[str, Any] = {}
+    if run.plan_json:
+        try:
+            parsed = json.loads(run.plan_json)
+            if isinstance(parsed, dict):
+                plan = parsed
+        except json.JSONDecodeError:
+            pass
+    react_state = plan.get("react_state")
+    if not isinstance(react_state, dict):
+        react_state = {}
     return {
         "run_id": run.run_id,
         "status": run.status,
@@ -36,6 +47,10 @@ def _summary(run: AgentRun) -> dict[str, Any]:
         "trace_url": f"/api/tasks/{run.run_id}/trace",
         "error_message": run.error_message,
         "message": None,
+        "execution_mode": plan.get("execution_mode") or "planned",
+        "planner_source": plan.get("planner_source"),
+        "llm_provider": react_state.get("llm_provider") or plan.get("llm_provider"),
+        "llm_model": react_state.get("llm_model") or plan.get("llm_model"),
     }
 
 

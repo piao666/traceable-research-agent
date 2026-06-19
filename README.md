@@ -285,6 +285,7 @@ Run local smoke and eval:
 python -m compileall app tests scripts
 python scripts/init_demo_db.py
 python scripts/build_rag_index.py
+python scripts/smoke_react_executor.py
 python scripts/smoke_github_mcp.py
 python scripts/smoke_planner.py
 python scripts/smoke_e2e.py
@@ -342,6 +343,54 @@ creates a pending run and persisted plan.
 Reporter Runtime Limitations is generated from the persisted `planner_source`,
 so LLM, deterministic fallback, and deterministic runs describe their actual
 planning path.
+
+## Optional ReAct Executor
+
+The planned executor remains the default stable mode:
+
+```text
+create task -> inspect persisted plan -> run plan -> trace -> report
+```
+
+The optional ReAct executor makes one bounded decision at a time:
+
+```text
+task -> Thought (short rationale) -> Action -> Observation -> repeat -> finish
+```
+
+Each decision is strict JSON with `thought`, `action`, `args`, and
+`finish_reason`. The LLM receives the prior observation history, including tool
+failure, empty RAG evidence, SQL safety rejection, and GitHub fallback metadata,
+before selecting the next action. Raw provider responses are not persisted.
+
+ReAct remains inside the same safety boundaries as planned execution:
+
+- actions must be in both `allowed_tools` and the enabled Tool Registry;
+- tool handlers validate arguments and keep SQL read-only, file paths scoped,
+  and GitHub operations GET-only;
+- report steps that require human approval stop at `waiting_human`;
+- `REACT_MAX_STEPS` and `REACT_SAME_TOOL_MAX_CALLS` prevent loops;
+- invalid JSON, unknown tools, or provider unavailability produce structured
+  trace events and can fall back to the persisted planned executor.
+
+Configuration:
+
+```env
+EXECUTION_MODE=react
+REACT_ENABLED=true
+REACT_MAX_STEPS=8
+REACT_SAME_TOOL_MAX_CALLS=3
+REACT_LLM_PROVIDER=qwen
+REACT_LLM_MODEL=qwen-plus
+REACT_FALLBACK_TO_PLANNED=true
+```
+
+`POST /api/tasks` still creates only a pending run and plan. Both synchronous
+`/run` and BackgroundTasks-based `/run_async` dispatch through the configured
+execution mode. ReAct observations are stored in existing `plan_json` and trace
+JSON fields, so Day32-A does not change the database schema or Alembic baseline.
+The report and Streamlit trace viewer expose concise Thought / Action /
+Observation summaries and whether a planned fallback was used.
 
 ## RAG Backend Configuration
 

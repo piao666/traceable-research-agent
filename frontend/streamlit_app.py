@@ -29,6 +29,18 @@ RAG_METADATA_FIELDS = [
     "persist_dir",
     "collection_name",
 ]
+REACT_METADATA_FIELDS = [
+    "execution_mode",
+    "thought",
+    "action",
+    "finish_reason",
+    "observation_summary",
+    "tool_call_count",
+    "llm_provider",
+    "llm_model",
+    "fallback_used",
+    "error_type",
+]
 
 DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
     "Normal file/sql/rag/report": {
@@ -61,6 +73,7 @@ def init_state() -> None:
         "tenant_id": "demo",
         "user_id": "local-user",
         "use_async_run": False,
+        "execution_mode_display": os.environ.get("EXECUTION_MODE", "planned"),
         "run_id": "",
         "last_task_response": None,
         "last_run_response": None,
@@ -164,6 +177,23 @@ def extract_trace_metadata(trace: dict[str, Any]) -> dict[str, Any]:
     return selected
 
 
+def extract_react_metadata(trace: dict[str, Any]) -> dict[str, Any]:
+    """Return concise Thought/Action/Observation fields from a trace."""
+
+    output = trace.get("output")
+    candidates = [trace.get("metadata")]
+    if isinstance(output, dict):
+        candidates.append(output.get("metadata"))
+    selected: dict[str, Any] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for field in REACT_METADATA_FIELDS:
+            if field in candidate and candidate[field] is not None:
+                selected[field] = candidate[field]
+    return selected
+
+
 def render_json(data: Any) -> None:
     st.json(data, expanded=False)
 
@@ -229,6 +259,14 @@ def render_sidebar() -> None:
         st.text_input("Tenant ID", key="tenant_id")
         st.text_input("User ID", key="user_id")
         st.checkbox("Use async run", key="use_async_run")
+        selected_execution_mode = st.selectbox(
+            "Execution Mode",
+            ["planned", "react"],
+            key="execution_mode_display",
+            help="Display preference only. The backend EXECUTION_MODE environment setting is authoritative.",
+        )
+        if selected_execution_mode == "react":
+            st.caption("ReAct requires an available backend LLM provider key; credentials are never displayed.")
         if st.button("Health Check", use_container_width=True):
             try:
                 st.session_state.health = api_get("/health")
@@ -269,6 +307,10 @@ def render_health_panel() -> None:
     cols[0].metric("status", health.get("status", "unknown"))
     cols[1].metric("service", health.get("service", "unknown"))
     cols[2].metric("phase", health.get("phase", "unknown"))
+    st.caption(
+        "Backend execution mode: "
+        f"{health.get('execution_mode', 'planned')} (react_enabled={health.get('react_enabled', True)})"
+    )
 
 
 def render_task_creation() -> None:
@@ -381,6 +423,9 @@ def render_run_executor() -> None:
         st.info("Create or paste a run_id first.")
         return
 
+    if st.session_state.get("execution_mode_display") == "react":
+        st.info("The backend must be started with EXECUTION_MODE=react; an LLM key may be required.")
+
     if st.button("Run Task", type="primary"):
         try:
             run_path = (
@@ -441,6 +486,10 @@ def render_status_panel() -> None:
             "total_latency_ms",
             "report_path",
             "error_message",
+            "execution_mode",
+            "planner_source",
+            "llm_provider",
+            "llm_model",
         ]
     }
     render_json(fields)
@@ -499,6 +548,24 @@ def render_trace_viewer() -> None:
         col.markdown(status_badge(status), unsafe_allow_html=True)
         col.metric("count", count)
 
+    react_traces = []
+    for trace in traces:
+        metadata = extract_react_metadata(trace)
+        if metadata.get("execution_mode") == "react":
+            react_traces.append((trace, metadata))
+    if react_traces:
+        st.markdown("### ReAct Trace")
+        for trace, metadata in react_traces:
+            label = (
+                f"Step {trace.get('step_no')}: "
+                f"{metadata.get('action') or trace.get('tool_name')} [{trace.get('status')}]"
+            )
+            with st.expander(label):
+                st.write("Thought", metadata.get("thought") or "<none>")
+                st.write("Action", metadata.get("action") or trace.get("tool_name"))
+                st.write("Observation", metadata.get("observation_summary") or trace.get("output_summary"))
+                st.write("Status", trace.get("status"))
+
     rows = [
         {
             "step_no": trace.get("step_no"),
@@ -522,6 +589,10 @@ def render_trace_viewer() -> None:
             if metadata:
                 st.caption("RAG backend metadata")
                 st.dataframe([metadata], use_container_width=True, hide_index=True)
+            react_metadata = extract_react_metadata(trace)
+            if react_metadata:
+                st.caption("ReAct Thought / Action / Observation")
+                render_json(react_metadata)
             render_json(trace)
 
 

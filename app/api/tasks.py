@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.agent.executor import run_plan
+from app.agent.dispatcher import run_task_by_mode
 from app.agent.planner import plan_task
 from app.config import settings
 from app.database import SessionLocal, get_db
@@ -33,6 +33,7 @@ router = APIRouter(
 
 
 def _task_status_response(run: AgentRun) -> TaskStatusResponse:
+    plan_meta = _plan_metadata(run)
     return TaskStatusResponse(
         run_id=run.run_id,
         task=run.task,
@@ -48,6 +49,10 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
         estimated_cost=run.estimated_cost,
         created_at=run.created_at,
         updated_at=run.updated_at,
+        execution_mode=plan_meta["execution_mode"],
+        planner_source=plan_meta.get("planner_source"),
+        llm_provider=plan_meta.get("llm_provider"),
+        llm_model=plan_meta.get("llm_model"),
     )
 
 
@@ -62,10 +67,15 @@ def _task_run_response(summary: dict) -> TaskRunResponse:
         trace_url=summary["trace_url"],
         error_message=summary.get("error_message"),
         message=summary.get("message"),
+        execution_mode=summary.get("execution_mode", "planned"),
+        planner_source=summary.get("planner_source"),
+        llm_provider=summary.get("llm_provider"),
+        llm_model=summary.get("llm_model"),
     )
 
 
 def _run_summary(run: AgentRun, message: str | None = None) -> dict:
+    plan_meta = _plan_metadata(run)
     return {
         "run_id": run.run_id,
         "status": run.status,
@@ -76,10 +86,12 @@ def _run_summary(run: AgentRun, message: str | None = None) -> dict:
         "trace_url": f"/api/tasks/{run.run_id}/trace",
         "error_message": run.error_message,
         "message": message,
+        **plan_meta,
     }
 
 
 def _async_run_response(run: AgentRun, message: str) -> AsyncRunResponse:
+    plan_meta = _plan_metadata(run)
     return AsyncRunResponse(
         run_id=run.run_id,
         status=run.status,
@@ -87,7 +99,28 @@ def _async_run_response(run: AgentRun, message: str) -> AsyncRunResponse:
         trace_url=f"/api/tasks/{run.run_id}/trace",
         report_url=f"/api/reports/{run.run_id}",
         message=message,
+        execution_mode=plan_meta["execution_mode"],
     )
+
+
+def _plan_metadata(run: AgentRun) -> dict:
+    plan: dict = {}
+    if run.plan_json:
+        try:
+            parsed = json.loads(run.plan_json)
+            if isinstance(parsed, dict):
+                plan = parsed
+        except json.JSONDecodeError:
+            pass
+    react_state = plan.get("react_state")
+    if not isinstance(react_state, dict):
+        react_state = {}
+    return {
+        "execution_mode": plan.get("execution_mode") or "planned",
+        "planner_source": plan.get("planner_source"),
+        "llm_provider": react_state.get("llm_provider") or plan.get("llm_provider"),
+        "llm_model": react_state.get("llm_model") or plan.get("llm_model"),
+    }
 
 
 def _run_task_in_background(run_id: str) -> None:
@@ -95,7 +128,7 @@ def _run_task_in_background(run_id: str) -> None:
 
     with SessionLocal() as db:
         try:
-            run_plan(db, run_id)
+            run_task_by_mode(db, run_id)
         except Exception as exc:
             try:
                 store.update_agent_run_status(db, run_id, "failed", str(exc))
@@ -171,6 +204,8 @@ async def create_task(
         allowed_tools=request.allowed_tools,
         source_mode=request.source_mode,
     )
+    plan["requested_execution_mode"] = settings.execution_mode
+    plan["execution_mode"] = settings.execution_mode
     run = store.update_agent_run_plan(db, run.run_id, plan)
     return TaskCreateResponse(
         run_id=run.run_id,
@@ -240,7 +275,7 @@ async def run_task(
     if run.status == "failed":
         raise HTTPException(status_code=409, detail="Failed runs cannot be rerun in Day13-15")
 
-    summary = run_plan(db, run_id)
+    summary = run_task_by_mode(db, run_id)
     return _task_run_response(summary)
 
 
@@ -314,12 +349,19 @@ async def confirm_task(
 
     required_step_no = None
     required_tool_name = None
-    for step in plan.get("steps") or []:
-        step_no = int(step.get("step_no") or 0)
-        if step_no > run.current_step and step.get("requires_confirmation"):
-            required_step_no = step_no
-            required_tool_name = step.get("tool_name")
-            break
+    react_state = plan.get("react_state")
+    pending = react_state.get("pending_confirmation") if isinstance(react_state, dict) else None
+    if isinstance(pending, dict):
+        decision = pending.get("decision") or {}
+        required_step_no = int(pending.get("step_no") or run.current_step + 1)
+        required_tool_name = decision.get("action")
+    else:
+        for step in plan.get("steps") or []:
+            step_no = int(step.get("step_no") or 0)
+            if step_no > run.current_step and step.get("requires_confirmation"):
+                required_step_no = step_no
+                required_tool_name = step.get("tool_name")
+                break
 
     plan["confirmation"] = {
         "required_step_no": required_step_no,
@@ -359,7 +401,8 @@ async def confirm_task(
             run_result=None,
         )
 
-    summary = run_plan(db, run_id)
+    store.update_agent_run_status(db, run_id, "pending", None)
+    summary = run_task_by_mode(db, run_id)
     run_result = _task_run_response(summary)
     return TaskConfirmResponse(
         run_id=run_id,

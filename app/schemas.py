@@ -10,6 +10,8 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     phase: str
+    execution_mode: str = "planned"
+    react_enabled: bool = True
 
 
 class TaskCreateRequest(BaseModel):
@@ -44,6 +46,10 @@ class TaskStatusResponse(BaseModel):
     estimated_cost: float
     created_at: datetime
     updated_at: datetime
+    execution_mode: str = "planned"
+    planner_source: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 class PlanStepResponse(BaseModel):
@@ -69,6 +75,9 @@ class TaskPlanResponse(BaseModel):
     planner_source: str | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
+    execution_mode: str | None = None
+    requested_execution_mode: str | None = None
+    react_state: dict[str, Any] | None = None
 
 
 class TaskRunResponse(BaseModel):
@@ -81,6 +90,10 @@ class TaskRunResponse(BaseModel):
     trace_url: str
     error_message: str | None = None
     message: str | None = None
+    execution_mode: str = "planned"
+    planner_source: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
 
 class AsyncRunResponse(BaseModel):
@@ -90,6 +103,7 @@ class AsyncRunResponse(BaseModel):
     trace_url: str
     report_url: str
     message: str
+    execution_mode: str = "planned"
 
 
 class TaskConfirmRequest(BaseModel):

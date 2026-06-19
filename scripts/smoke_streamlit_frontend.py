@@ -54,9 +54,11 @@ def main() -> None:
     missing_metadata = [field for field in metadata_fields if field not in source]
     assert_true(not missing_metadata, f"missing RAG metadata display fields: {missing_metadata}")
     assert_true("Trace details:" in source, "trace details expander missing")
-    for control in ["API Key", "Tenant ID", "User ID", "Use async run"]:
+    for control in ["API Key", "Tenant ID", "User ID", "Use async run", "Execution Mode"]:
         assert_true(control in source, f"missing Streamlit control: {control}")
     assert_true('type="password"' in source, "API key input is not password protected")
+    for react_field in ["Thought", "Action", "Observation", "ReAct Trace"]:
+        assert_true(react_field in source, f"missing ReAct trace display: {react_field}")
 
     forbidden_patterns = [
         r"QWEN_API_KEY\s*=",

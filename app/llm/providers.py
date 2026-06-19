@@ -137,7 +137,11 @@ class OpenAICompatibleLLMClient(LLMClient):
         )
 
 
-def create_llm_client(settings: Settings, provider: str | None = None) -> LLMClient:
+def create_llm_client(
+    settings: Settings,
+    provider: str | None = None,
+    model: str | None = None,
+) -> LLMClient:
     """Create a non-secret LLM client for the selected provider."""
 
     selected = (provider or settings.llm_provider or "qwen").lower()
@@ -159,13 +163,13 @@ def create_llm_client(settings: Settings, provider: str | None = None) -> LLMCli
     if not api_key:
         return UnavailableLLMClient(
             provider=selected,
-            model=provider_config["model"],
+            model=model or provider_config["model"],
             reason=f"{provider_config['api_key_env_name']} is not configured",
         )
 
     return OpenAICompatibleLLMClient(
         provider=selected,
-        model=provider_config["model"],
+        model=model or provider_config["model"],
         base_url=provider_config["base_url"],
         api_key=api_key,
         timeout_seconds=settings.llm_timeout_seconds,

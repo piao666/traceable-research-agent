@@ -78,6 +78,17 @@ def _runtime_limitations(plan: dict[str, Any]) -> list[str]:
             "no LLM planning is active for this run.",
             "generated report is based on tool observations and traces.",
         ]
+    execution_mode = plan.get("execution_mode") or "planned"
+    react_state = plan.get("react_state") if isinstance(plan.get("react_state"), dict) else {}
+    if execution_mode == "react":
+        planner_lines += [
+            "ReAct decisions are bounded by max_steps and same_tool_max_calls.",
+            "Decision rationale is stored as a concise summary rather than raw model output.",
+        ]
+    if react_state.get("fallback_used"):
+        planner_lines.append("ReAct fallback_used=true; the persisted planned executor completed the run.")
+    if react_state.get("completed_with_limitation"):
+        planner_lines.append("The ReAct run completed with a recorded runtime limitation.")
     return planner_lines + [
         "GitHub/MCP path is read-only and defaults to deterministic mock mode.",
         "HITL is a minimal status and confirmation flow, not production auth.",
@@ -110,6 +121,9 @@ def generate_markdown_report(
         f"* planner_source: `{plan.get('planner_source') or 'unknown'}`",
         f"* llm_provider: `{plan.get('llm_provider') or '<none>'}`",
         f"* llm_model: `{plan.get('llm_model') or '<none>'}`",
+        f"* execution_mode: `{plan.get('execution_mode') or 'planned'}`",
+        f"* requested_execution_mode: `{plan.get('requested_execution_mode') or plan.get('execution_mode') or 'planned'}`",
+        f"* fallback_used: `{bool((plan.get('react_state') or {}).get('fallback_used'))}`",
         "",
         "## Plan",
         "",
@@ -150,27 +164,56 @@ def generate_markdown_report(
             ]
         )
 
+    react_state = plan.get("react_state")
+    react_observations = (
+        react_state.get("observation_history")
+        if isinstance(react_state, dict)
+        else None
+    )
+    if react_observations:
+        lines.extend(["## ReAct Steps / Decision Trace", ""])
+        for observation in react_observations:
+            lines.extend(
+                [
+                    f"### ReAct Step {observation.get('step_no')}",
+                    "",
+                    f"* thought: {str(observation.get('thought') or '<none>')[:500]}",
+                    f"* action: `{observation.get('action') or '<none>'}`",
+                    f"* observation: {observation.get('observation_summary') or '<none>'}",
+                    f"* success: `{observation.get('success')}`",
+                    f"* error: {observation.get('error_message') or '<none>'}",
+                    "",
+                ]
+            )
+
     lines.extend(["## Evidence And Observations", ""])
     if observations:
         for observation in observations:
+            tool_name = str(
+                observation.get("tool_name") or observation.get("action") or "unknown"
+            )
+            output_summary = (
+                observation.get("output_summary")
+                or observation.get("observation_summary")
+            )
             lines.extend(
                 [
-                    f"### Step {observation.get('step_no')}: {observation.get('tool_name')}",
+                    f"### Step {observation.get('step_no')}: {tool_name}",
                     "",
                     f"* success: `{observation.get('success')}`",
-                    f"* output_summary: {observation.get('output_summary') or '<none>'}",
+                    f"* output_summary: {output_summary or '<none>'}",
                     f"* error_message: {observation.get('error_message') or '<none>'}",
                     "",
                     "```text",
                     _selected_evidence(
-                        str(observation.get("tool_name") or ""),
+                        tool_name,
                         observation.get("output"),
                     ),
                     "```",
                     "",
                 ]
             )
-            metadata = observation.get("metadata")
+            metadata = observation.get("metadata") or observation.get("tool_result_metadata")
             if isinstance(metadata, dict) and metadata:
                 lines.extend(
                     [

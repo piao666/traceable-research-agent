@@ -11,11 +11,13 @@ from typing import Any
 
 from app.agent.executor import run_plan
 from app.agent.planner import plan_task
+from app.agent.react_executor import run_react_task
 from app.database import SessionLocal, init_db
 from app.rag.build_index import build_local_index
 from app.rag.embedding_backends import create_embedding_backend
 from app.rag.vector_backends import create_vector_backend
 from app.config import Settings, settings
+from app.llm.base import LLMClient, LLMMessage, LLMResponse
 from app.tools.registry import execute_tool
 from app.tools.defaults import register_default_tools
 from app.trace import store
@@ -26,6 +28,32 @@ ROOT = Path(__file__).resolve().parents[2]
 CASES_PATH = Path(__file__).with_name("cases.jsonl")
 OUTPUT_DIR = ROOT / "workspace" / "eval_outputs"
 OUTPUT_PATH = OUTPUT_DIR / "eval_report.json"
+
+
+class _EvalReactClient(LLMClient):
+    def __init__(self, decisions: list[Any]):
+        self.decisions = list(decisions)
+
+    def is_available(self) -> bool:
+        return True
+
+    def describe(self) -> dict[str, Any]:
+        return {"provider": "eval_scripted", "model": "react-eval", "available": True}
+
+    def complete(
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.0,
+        max_tokens: int = 2000,
+    ) -> LLMResponse:
+        decision = self.decisions.pop(0) if self.decisions else {
+            "thought": "Evaluation actions are complete.",
+            "action": "finish",
+            "args": {"summary": "Evaluation complete."},
+            "finish_reason": "completed",
+        }
+        content = decision if isinstance(decision, str) else json.dumps(decision)
+        return LLMResponse(success=True, content=content, provider="eval_scripted", model="react-eval")
 
 
 def _load_cases() -> list[dict[str, Any]]:
@@ -304,6 +332,59 @@ def _run_auth_async_default_case(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_react_case(db, case: dict[str, Any]) -> dict[str, Any]:
+    run = store.create_agent_run(
+        db,
+        case["task"],
+        "summary",
+        "mock",
+        case.get("allowed_tools"),
+    )
+    plan = plan_task(case["task"], case.get("allowed_tools"), "mock", planner_mode="deterministic")
+    plan["requested_execution_mode"] = "react"
+    plan["execution_mode"] = "react"
+    store.update_agent_run_plan(db, run.run_id, plan)
+    react_settings = Settings(
+        execution_mode="react",
+        react_enabled=True,
+        react_max_steps=case.get("max_steps", 5),
+        react_same_tool_max_calls=case.get("same_tool_max_calls", 2),
+        react_fallback_to_planned=True,
+    )
+    summary = run_react_task(
+        db,
+        run.run_id,
+        react_settings,
+        _EvalReactClient(case.get("decisions") or []),
+    )
+    final_run = store.get_agent_run(db, run.run_id)
+    final_plan = json.loads(final_run.plan_json)
+    traces = store.list_tool_traces(db, run.run_id)
+    traced_tools = {trace.tool_name for trace in traces}
+    expected_tools = set(case.get("expected_trace_tools") or [])
+    report_exists = bool(final_run.report_path and (ROOT / final_run.report_path).exists())
+    fallback_used = bool((final_plan.get("react_state") or {}).get("fallback_used"))
+    expected_fallback = bool(case.get("expected_fallback", False))
+    passed = (
+        summary["status"] == case.get("expected_status", "completed")
+        and expected_tools.issubset(traced_tools)
+        and fallback_used is expected_fallback
+        and (not case.get("report_exists", True) or report_exists)
+    )
+    return {
+        "case_id": case["case_id"],
+        "passed": passed,
+        "run_id": run.run_id,
+        "status": summary["status"],
+        "planned_tools": [step.get("tool_name") for step in plan.get("steps") or []],
+        "trace_count": len(traces),
+        "trace_statuses": Counter(trace.status for trace in traces),
+        "trace_complete": expected_tools.issubset(traced_tools),
+        "report_exists": report_exists,
+        "failure_reason": None if passed else "ReAct eval checks did not match expectations",
+    }
+
+
 def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
     try:
         mode = case.get("mode", "task_run")
@@ -321,6 +402,8 @@ def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
             return _run_real_rag_optional_case(case)
         if mode == "auth_async_default":
             return _run_auth_async_default_case(case)
+        if mode == "react_scripted":
+            return _run_react_case(db, case)
         return _run_task_case(db, case)
     except Exception as exc:
         return {
