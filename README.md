@@ -98,6 +98,10 @@ Send the configured value using either `X-API-Key: your-local-demo-key` or
 committed. This is demo-level API-key authentication, not a complete
 production user or authorization system. `/health` remains public.
 
+When enabled, authentication covers task create/status/plan/run/run_async/
+trace/confirm, report retrieval, and tool catalog/detail/execute endpoints.
+`/health` is intentionally exempt for readiness checks.
+
 ## Tenant Context
 
 Core API requests accept `X-Tenant-ID` and `X-User-ID`. Values are trimmed,
@@ -127,6 +131,9 @@ GET  /api/reports/{run_id}
 Clients poll the GET endpoints for completion. Day29 uses in-process FastAPI
 `BackgroundTasks`; it is not a durable queue. A later phase can replace this
 adapter with Celery, RQ, or Arq when multi-process delivery is required.
+Repeated calls do not queue completed, running, or waiting_human runs again,
+and waiting_human cannot bypass confirmation. The synchronous `/run` endpoint
+remains available even when async execution is disabled.
 
 Direct GitHub mock tool smoke:
 
@@ -201,6 +208,10 @@ docker compose down
 
 `GITHUB_TOKEN` is optional. The default GitHub tool mode is `mock` and does not
 need network or credentials.
+
+If Docker Desktop Linux Engine is unstable, Docker is not counted as passed;
+local smoke, eval, API, and Streamlit verification remain the accepted local
+checks.
 
 ## Eval
 
@@ -361,6 +372,7 @@ Checkpoint records:
 - [Phase 3 Day10-15](docs/checkpoints/phase3_day10_15_checkpoint.md)
 - [Phase 4 Day16-19](docs/checkpoints/phase4_day16_19_checkpoint.md)
 - [Day28 Real RAG + Streamlit](docs/checkpoints/day28_real_rag_streamlit_checkpoint.md)
+- [Day29 Auth + Async](docs/checkpoints/day29_auth_async_checkpoint.md)
 
 ## Security Notes
 

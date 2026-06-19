@@ -3164,3 +3164,83 @@ Not implemented in Day29:
 Next step:
 
 - Day30 Alembic migration plus SQL parser validation.
+
+2026-06-18 - Day29-B Auth/Async Stabilization And CheckPoint
+
+Why Day30 was not started:
+
+- Day29 introduced authentication and execution-state behavior that required a
+  focused coverage and documentation checkpoint before database migrations or
+  SQL parser work.
+- This round stayed within Day29 boundaries and made no database schema,
+  Alembic, SQL parser, queue, FAISS, or MCP server changes.
+
+Review and fix:
+
+- Router-level authentication was already attached to all task, report, and
+  tool API routers; no auth implementation defect was found.
+- The stability gap was test coverage: the original auth/async smoke checked
+  only the tools catalog and completed repeated-run behavior.
+- `scripts/smoke_auth_async.py` was expanded to cover all protected endpoint
+  types, health exemption, auth-disabled compatibility, running/completed/
+  waiting_human guards, HITL resume, and disabled-async synchronous fallback.
+
+Authentication validation:
+
+- `AUTH_ENABLED=false`: task create/status/plan/run/run_async/trace/confirm,
+  reports, tool catalog/detail/execute, and health remain credential-free.
+- `AUTH_ENABLED=true`: all 11 protected endpoint shapes returned 401 for a
+  missing key and 403 for an invalid key before endpoint logic.
+- A configured `X-API-Key` was accepted across protected endpoints; configured
+  Authorization Bearer access was also accepted. `/health` remained public.
+- No credential value was printed or written to a repository file.
+
+Tenant/User context:
+
+- Explicit Tenant/User headers, default fallbacks, and invalid-character
+  fallbacks passed function-level smoke checks.
+- Context remains request-only on `request.state`; persistence is reserved for
+  a later Alembic phase.
+
+Async state validation:
+
+- Pending async runs returned running and reached completed or waiting_human.
+- Running and completed repeated calls did not queue work or add traces.
+- waiting_human remained blocked until approved confirmation with resume.
+- `ASYNC_RUN_ENABLED=false` returned HTTP 400 with the stable disabled message,
+  while synchronous `/run` still completed successfully.
+- Manual auth-enabled run ID `08e11beff06c4136bd98abc8bffe0925`
+  completed with two traces and an existing report; its repeated async call did
+  not change the trace count.
+
+Streamlit review:
+
+- Static source and smoke checks confirmed password-masked API Key, Tenant ID,
+  User ID, and async checkbox controls; shared headers; separate `/run` and
+  `/run_async` branches; and the async Refresh instruction.
+- The API key remains session-only and is not displayed, printed, or persisted.
+
+Regression:
+
+- Dependencies were satisfied; compileall, demo DB/index build, all legacy
+  smoke scripts, Streamlit smoke, and enhanced auth/async smoke passed.
+- Enhanced auth/async smoke returned 11 `ok` checks.
+- Eval passed 15/15 with failed=0, success rate 1.0, and trace complete rate
+  1.0. The only warning was the TestClient future `httpx2` migration warning.
+
+Docker:
+
+- Docker client 29.5.2 and Compose v5.1.4 were installed.
+- Day29's full build had already timed out after 10 minutes and the Linux
+  Engine subsequently returned HTTP 500.
+- During Day29-B, `docker info` again timed out after 15 seconds. No new build
+  was attempted. Docker regression was attempted but not accepted as passed.
+
+Checkpoint:
+
+- `docs/checkpoints/day29_auth_async_checkpoint.md`
+
+Next step condition:
+
+- After this checkpoint is committed and pushed with clean artifact and secret
+  audits, proceed to Day30 Alembic migration plus SQL parser validation.
