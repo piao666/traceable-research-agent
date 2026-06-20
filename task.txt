@@ -3975,3 +3975,28 @@ Next steps:
   and 5/10-minute demo.
 * Optionally generate a polished DOCX/PDF project brief from the committed
   summary and interview materials.
+
+2026-06-20 - Final README Rewrite And GitHub Presentation Polish
+
+* Rewrote `README.md` as the final GitHub presentation page for interviewers,
+  recruiters, and repository visitors.
+* The README now covers project overview, architecture, key features,
+  technology stack, planned/ReAct execution, Real/Hybrid RAG, tool safety, API
+  overview, Quick Start, Streamlit, lightweight Docker, smoke/eval evidence,
+  project documents, directory structure, limitations, future work, and a
+  resume summary.
+* Included the measured planned/ReAct comparison: both completion rates 100%,
+  planned recovery 1/7 and ReAct recovery 6/7, trace quality 3.889 versus
+  4.278, and average latency 826.514 ms versus 1299.416 ms.
+* Included the Day33 chunk experiment and the recommended default chunk size
+  512.
+* Recorded the verified lightweight Docker result: compose build, up, health,
+  and down all passed using `requirements-docker-light.txt`.
+* Recorded final validation evidence: final smoke 16/16, application eval
+  27/27 with failed=0, trace completeness 1.0, and optional Real/Hybrid RAG
+  validation passed.
+* Only `README.md` and `task.txt` were modified. No source code, test script,
+  configuration, migration, or runtime artifact was changed.
+* The project remains in feature freeze.
+* Next step: prepare the final resume project description, interview talk
+  track, and optional polished project brief.
