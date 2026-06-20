@@ -435,6 +435,34 @@ Raw JSON is written to ignored
 committed. The small demo corpus is an engineering regression experiment, not
 a production benchmark. Chunk size 512 remains the conservative default.
 
+## ReAct vs Planned Evaluation
+
+The planned executor creates a complete plan and executes its steps in order.
+The optional ReAct executor selects each next action from a bounded
+Thought/Action/Observation loop. Day34 compares both modes across 18 offline,
+reproducible cases covering normal tool use, RAG no-hit, SQL safety rejection,
+GitHub fallback, HITL, repeated-tool protection, and max-step limits.
+
+| Mode | Completion | Avg Steps | Recovery | Trace Quality | Avg Latency |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Planned | 100.0% | 1.278 | 1 / 7 | 3.889 | 826.514 ms |
+| ReAct | 100.0% | 2.611 | 6 / 7 | 4.278 | 1299.416 ms |
+
+The default evaluation uses a fake deterministic ReAct decision client, so it
+requires no network, GitHub access, or LLM key. Set
+`RUN_REACT_REAL_LLM_EVAL=true` to request an optional Qwen/DeepSeek run. When
+the configured provider is unavailable, the harness safely keeps the
+deterministic path and records that the real run was not executed. The complete
+metric definitions, scenario table, trade-offs, and limitations are in
+[ReAct vs Planned Quantitative Evaluation](docs/eval_react_vs_planned.md).
+
+```powershell
+python scripts/run_react_vs_planned_eval.py
+```
+
+The structured result is written to the ignored path
+`workspace/eval_outputs/react_vs_planned_results.json`.
+
 ## RAG Backend Configuration
 
 The project keeps its original lightweight path as the default:

@@ -3828,3 +3828,89 @@ Next step:
 
 * After full regression, API validation, artifact audit, commit, and push,
   proceed to Day34 ReAct vs Planned Quantitative Eval.
+
+2026-06-18 - Day34 ReAct vs Planned Quantitative Evaluation
+
+Rationale:
+
+* Day34 adds measurement rather than another business feature. The planned
+  executor remains the stable sequential baseline, while ReAct is measured for
+  observation-driven recovery, trace structure, and its latency/step trade-off.
+* The default benchmark is deterministic and offline. It does not require a
+  GitHub connection, real embedding model, Qwen/DeepSeek key, or provider
+  availability.
+
+Files added or modified:
+
+* Added `app/eval/react_vs_planned_cases.jsonl` with 18 comparison cases.
+* Added `app/eval/fake_react_llm.py` and
+  `app/eval/react_vs_planned.py` for deterministic decisions, execution,
+  metrics, and Markdown rendering.
+* Added `scripts/run_react_vs_planned_eval.py`,
+  `scripts/smoke_react_vs_planned_eval.py`, and
+  `docs/eval_react_vs_planned.md`.
+* Updated `app/eval/cases.jsonl`, `app/eval/run_eval.py`, `README.md`, and
+  `task.txt`.
+
+Case and metric design:
+
+* Cases cover normal file/RAG/SQL/GitHub flows, dense/BM25/hybrid retrieval,
+  RAG no-hit, SQL safety rejection, GitHub public-API fallback, missing files,
+  HITL confirmation, repeated-tool protection, max steps, invalid decisions,
+  mixed tools, safe WITH SQL, and restricted-tool limitations.
+* The fake ReAct client emits the existing structured decision schema from a
+  fixed per-case policy. Production ReAct/provider dispatch is unchanged.
+* Both modes execute the existing `run_plan` or `run_react_task` against the
+  actual Tool Registry, trace store, reporter, and SQLite runtime. Deterministic
+  fault handlers are installed only inside the eval process and restored after
+  evaluation.
+* Metrics are calculated from persisted status, report content, trace rows,
+  trace metadata, and wall-clock time: completion, report existence, average
+  steps, recovery count/rate, rule-based trace quality (1-5), average latency,
+  fallback count, and HITL success rate.
+
+Measured default results:
+
+* Planned: completion 100%, report existence 100%, 1.278 average steps,
+  recovery 1/7 (14.3%), trace quality 3.889, and 826.514 ms average latency.
+* ReAct: completion 100%, report existence 100%, 2.611 average steps,
+  recovery 6/7 (85.7%), trace quality 4.278, and 1299.416 ms average latency.
+* ReAct adapted after RAG no-hit, SQL rejection, a missing file, GitHub
+  fallback, repeated-tool protection, and invalid decision fallback. The
+  planned path was shorter and faster for normal cases. The max-step case
+  produced a bounded limitation but did not satisfy the stricter recovery
+  predicate, so it remains visible rather than being counted as a success.
+* The full report is `docs/eval_react_vs_planned.md`; raw JSON is written to
+  ignored `workspace/eval_outputs/react_vs_planned_results.json`.
+
+Validation:
+
+* `smoke_react_vs_planned_eval.py` passed with 18 cases, a five-case subset,
+  valid metrics, and report generation.
+* The full comparison completed with `decision_source=fake_deterministic`.
+* The main eval gained one lightweight structural case; the full 18-case
+  comparison remains a separate command to keep routine eval bounded.
+* Full regression passed dependency installation, compileall, DB/index setup,
+  the new smoke/full comparison, all existing smoke scripts, and main eval.
+  Main eval passed 27/27 with failed=0.
+* Optional real LLM evaluation was not run because it requires an explicit
+  opt-in and local provider credentials; no key value is read or printed by the
+  default benchmark.
+* Docker client 29.5.2 and Compose v5.1.4 are installed, but the Docker Desktop
+  Linux Engine pipe is absent. No build was attempted and Docker regression is
+  not accepted as passed; local smoke/eval remains the validation basis.
+
+Current limitations:
+
+* Default results use a reproducible fake/mock ReAct policy rather than a live
+  provider.
+* Eighteen cases are useful for engineering comparison but are not a
+  large-scale benchmark.
+* Trace quality is a deterministic structural score, not a blinded human
+  evaluation.
+* Real-provider latency and decision variance are not represented in the
+  default numbers.
+
+Next step:
+
+* Day35 Final Engineering CheckPoint And Project Packaging.

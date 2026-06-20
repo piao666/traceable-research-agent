@@ -18,6 +18,8 @@ from app.rag.embedding_backends import create_embedding_backend
 from app.rag.vector_backends import create_vector_backend
 from app.config import Settings, settings
 from app.llm.base import LLMClient, LLMMessage, LLMResponse
+from app.eval.fake_react_llm import validate_fake_decisions
+from app.eval.react_vs_planned import load_cases as load_react_vs_planned_cases
 from app.tools.registry import execute_tool
 from app.tools.defaults import register_default_tools
 from app.trace import store
@@ -354,6 +356,41 @@ def _run_auth_async_default_case(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_react_vs_planned_smoke_case(case: dict[str, Any]) -> dict[str, Any]:
+    comparison_cases = load_react_vs_planned_cases()
+    required_scenarios = {
+        "normal_file_report",
+        "rag_no_hit_recovery",
+        "sql_rejected_recovery",
+        "github_fallback_recovery",
+        "hitl_report",
+        "repeated_tool_limit",
+        "max_steps_limit",
+    }
+    scenarios = {item.get("scenario") for item in comparison_cases}
+    decisions_valid = all(
+        validate_fake_decisions(item.get("react_decisions") or [])
+        for item in comparison_cases
+    )
+    passed = (
+        len(comparison_cases) >= 15
+        and required_scenarios.issubset(scenarios)
+        and decisions_valid
+    )
+    return {
+        "case_id": case["case_id"],
+        "passed": passed,
+        "run_id": None,
+        "status": "validated" if passed else "failed",
+        "planned_tools": [],
+        "trace_count": 0,
+        "trace_statuses": Counter(),
+        "trace_complete": True,
+        "report_exists": False,
+        "failure_reason": None if passed else "Day34 comparison dataset is incomplete",
+    }
+
+
 def _run_react_case(db, case: dict[str, Any]) -> dict[str, Any]:
     run = store.create_agent_run(
         db,
@@ -426,6 +463,8 @@ def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
             return _run_real_rag_optional_case(case)
         if mode == "auth_async_default":
             return _run_auth_async_default_case(case)
+        if mode == "react_vs_planned_eval_smoke":
+            return _run_react_vs_planned_smoke_case(case)
         if mode == "react_scripted":
             return _run_react_case(db, case)
         return _run_task_case(db, case)
