@@ -3914,3 +3914,64 @@ Current limitations:
 Next step:
 
 * Day35 Final Engineering CheckPoint And Project Packaging.
+
+2026-06-18 - Day35 Final Engineering CheckPoint And Project Packaging
+
+Scope and freeze decision:
+
+* Day35 adds no business feature. It packages the completed planned/ReAct,
+  Trace, RAG, security, async, migration, GitHub/MCP, and evaluation work for
+  GitHub, resume, demo, and interview use.
+* The project enters feature freeze after final validation. Productionization
+  work should use a separate branch and explicit scope.
+
+Files added or modified:
+
+* Rebuilt `README.md` as a GitHub-facing overview with architecture, execution
+  modes, measured Day34 results, verified Quick Start, Streamlit demo, RAG,
+  security/migration, GitHub/MCP, smoke/eval, documentation, limitations, and
+  runtime artifact guidance.
+* Added `docs/project_feature_matrix.md`, `docs/demo_script.md`,
+  `docs/final_project_summary.md`, `docs/interview_pitch.md`, and
+  `docs/checkpoints/day35_final_engineering_checkpoint.md`.
+* Added `scripts/smoke_final_project.py`, which calls the existing smoke/eval
+  suite through subprocess without duplicating business test logic or printing
+  child-process environment/secrets.
+
+Final validation:
+
+* Requirements were satisfied; compileall passed for app/tests/scripts/frontend.
+* Demo DB initialization and lightweight dense/BM25/hybrid index build passed.
+* `smoke_final_project.py` passed 16/16 aggregated checks with
+  `final_project_smoke=ok`, failed_scripts=0, and eval=passed.
+* Main eval passed 27/27 with failed=0, task success rate=1.0, and trace
+  completeness=1.0.
+* Optional local real RAG passed with SentenceTransformers/Chroma,
+  `bge-small-zh-v1.5`, dimension 512, 3 chunks, 3 hits, and no fallback.
+* Optional Hybrid RAG smoke passed BM25, dense regression, RRF hybrid,
+  missing-index fallback, and chunk experiment checks.
+* README Quick Start manual verification returned backend health `ok` and
+  Streamlit HTTP 200. Uvicorn and Streamlit were stopped; no 8000/8501 listener
+  remained.
+
+Docker:
+
+* Docker client 29.5.2 and Compose v5.1.4 are installed.
+* Docker Desktop Linux Engine pipe is missing, so no build was attempted.
+  Docker regression is not accepted as passed and does not block the completed
+  local Python/Streamlit validation.
+
+Runtime artifact audit:
+
+* `.env`, real API keys/tokens, `E:\Models`, cache, Chroma, indexes, reports,
+  SQLite databases, eval outputs, and runtime logs remain ignored/untracked.
+* Workspace tracked files remain only `workspace/data/.gitkeep` and
+  `workspace/docs/demo_research_note.md`.
+
+Next steps:
+
+* Do not continue adding large features to the frozen demo baseline.
+* Prepare the final resume project description and rehearse the interview pitch
+  and 5/10-minute demo.
+* Optionally generate a polished DOCX/PDF project brief from the committed
+  summary and interview materials.
