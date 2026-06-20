@@ -48,6 +48,10 @@ def main() -> None:
         "embedding_backend",
         "vector_backend",
         "fallback_used",
+        "retrieval_mode",
+        "dense_hit_count",
+        "bm25_hit_count",
+        "rrf_k",
         "dimension",
         "collection_name",
     ]

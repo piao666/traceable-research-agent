@@ -3737,3 +3737,94 @@ Current limitations:
 Next step:
 
 * Day33 Hybrid RAG + Chunk Size Experiment.
+
+2026-06-18 - Day33 Hybrid RAG And Chunk Size Experiment
+
+Start and rationale:
+
+* Confirmed the Day32-A baseline files exist, the worktree was clean, and
+  `main` was synchronized with `origin/main` before implementation.
+* Dense semantic retrieval remains useful, but lexical identifiers and exact
+  phrases benefit from sparse retrieval. Day33 adds BM25 and RRF fusion without
+  changing the planned/ReAct executors or the default dense mode.
+
+Implementation:
+
+* Added `rank-bm25` and a persisted JSON `BM25RetrievalBackend`. The tokenizer
+  lowercases English words/numbers and emits CJK unigrams plus adjacent
+  bigrams, avoiding a separate segmentation dependency.
+* Added reciprocal-rank fusion. Dense and BM25 candidates are deduplicated by
+  source/chunk ID and scored with `sum(1 / (k + rank))`; hit metadata retains
+  dense/BM25 ranks and scores plus the final RRF score.
+* Added `RAG_RETRIEVAL_MODE=dense|bm25|hybrid`, BM25/hybrid enable flags,
+  bounded RRF K, bounded candidate multipliers, and chunk-experiment settings.
+  Dense remains the default and invalid modes fall back to dense.
+* Extended index building so the same chunks feed the existing dense backend
+  and an ignored BM25 JSON index. Build summaries list corpus size, BM25 path,
+  chunk size, and available retrieval modes.
+* `rag_search` keeps the existing query/top-k/hits output contract and accepts
+  an optional retrieval mode. Hybrid falls back to dense or BM25 with explicit
+  metadata if one side is unavailable; directly requested unavailable BM25
+  returns a structured failure rather than an API 500.
+* Reporter and Streamlit now expose retrieval mode, dense/BM25 candidate
+  counts, RRF K/score, tokenizer, fallback reason, and index paths while
+  retaining planned/ReAct/Auth/Async/HITL views.
+* Added an offline reproducible experiment over eight fixed demo-document
+  queries. Raw results are written to ignored `workspace/eval_outputs`; the
+  committed Markdown report recommends 512 as a conservative default while
+  explicitly describing the small-corpus limitation.
+
+Files added or modified:
+
+* Added `app/rag/bm25_backend.py`, `app/rag/hybrid_search.py`,
+  `app/tools/rag_retrieval.py`, `scripts/run_rag_chunk_experiment.py`,
+  `scripts/smoke_hybrid_rag.py`, and `docs/rag_chunk_experiment.md`.
+* Modified `requirements.txt`, `.env.example`, `.gitignore`, `app/config.py`,
+  `app/rag/build_index.py`, `app/rag/vector_backends.py`,
+  `app/tools/rag_search.py`, `app/tools/defaults.py`, `app/agent/reporter.py`,
+  `frontend/streamlit_app.py`, `app/eval/cases.jsonl`,
+  `app/eval/run_eval.py`, `scripts/smoke_streamlit_frontend.py`, `README.md`,
+  and `task.txt`.
+
+Validation results:
+
+* `rank-bm25 0.2.2` installed successfully.
+* Targeted compileall, lightweight index build, `smoke_hybrid_rag.py`, and eval
+  passed. The smoke reported BM25, dense regression, hybrid, missing-index
+  fallback, and chunk experiment as `ok`.
+* Eval passed 26/26 with failed=0 after adding dense, BM25, hybrid, and chunk
+  experiment cases; the previous 22 cases remained green in this targeted run.
+* Final chunk experiment results: 256 => Recall@3 1.0, Recall@5 1.0, 2.098 ms;
+  512 => 1.0, 1.0, 1.588 ms; 1024 => 1.0, 1.0, 1.814 ms. Latency is
+  machine/run specific and the small corpus makes recall saturated.
+* After explicit cleanup of stale SQLite/Git lock files, the full requested
+  lightweight suite passed: dependency install, compileall, DB/index setup,
+  all 14 smoke scripts, and eval. Eval passed 26/26 with failed=0, task success
+  rate 1.0, and trace completeness 1.0.
+* Optional local-model validation passed with `bge-small-zh-v1.5`,
+  SentenceTransformers, and Chroma: dimension 512, three chunks, three hits,
+  fallback_used=false. Rebuilding BM25 from the same chunks and the hybrid
+  smoke also passed.
+* Actual Uvicorn HTTP validation returned health `ok`; dense, BM25, and hybrid
+  tool executions each returned success=true, three hits, the requested mode,
+  and fallback_used=false. Hybrid exposed `rrf_k=60` and three candidates from
+  each backend. Uvicorn was stopped and no port 8000/8501 listener remained.
+
+Docker:
+
+* Docker client 29.5.2 and Compose v5.1.4 are installed.
+* Docker Desktop Linux Engine pipe is absent, so the daemon is unavailable.
+  Docker build was not attempted and is not accepted as passed.
+
+Current limitations:
+
+* This is not a large-scale RAG benchmark; no reranker or production vector DB
+  cluster is included.
+* The default experiment uses deterministic dense embeddings so it remains
+  offline-safe. Real-model comparison remains optional.
+* Day34 ReAct vs Planned quantitative evaluation is not implemented here.
+
+Next step:
+
+* After full regression, API validation, artifact audit, commit, and push,
+  proceed to Day34 ReAct vs Planned Quantitative Eval.

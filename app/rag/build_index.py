@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings, settings
+from app.rag.bm25_backend import BM25RetrievalBackend
 from app.rag.chunker import chunk_documents
 from app.rag.embedding_backends import (
     DeterministicEmbeddingBackend,
@@ -19,12 +20,16 @@ def build_local_index(
     docs_dir: str | Path = "workspace/docs",
     index_path: str | Path = "workspace/index/rag_index.json",
     settings_obj: Settings | None = None,
+    chunk_size: int = 500,
+    chunk_overlap: int | None = None,
+    bm25_index_path: str | Path = "workspace/index/bm25_index.json",
 ) -> dict[str, Any]:
     """Load local docs, chunk them, build vectors, and persist an index."""
 
     active_settings = settings_obj or settings
     documents = load_documents(docs_dir)
-    chunks = chunk_documents(documents)
+    overlap = chunk_overlap if chunk_overlap is not None else min(80, max(0, chunk_size // 5))
+    chunks = chunk_documents(documents, chunk_size=chunk_size, chunk_overlap=overlap)
     requested_embedding = active_settings.rag_embedding_backend.strip().lower()
     requested_vector = active_settings.rag_vector_backend.strip().lower()
     embedding_backend = create_embedding_backend(active_settings)
@@ -83,6 +88,7 @@ def build_local_index(
         embedding_result.vectors,
         persist_path,
     )
+    bm25_summary = _build_bm25(active_settings, chunks, bm25_index_path)
     return _summary(
         active_settings,
         success=index_result.success,
@@ -97,7 +103,24 @@ def build_local_index(
         error_message=index_result.error_message,
         dimension=embedding_result.dimension,
         persist_dir=index_result.metadata.get("persist_dir"),
+        bm25_summary=bm25_summary,
+        chunk_size=chunk_size,
     )
+
+
+def _build_bm25(
+    active_settings: Settings,
+    chunks: list[dict[str, Any]],
+    index_path: str | Path,
+) -> dict[str, Any]:
+    if not active_settings.rag_bm25_enabled:
+        return {"success": True, "enabled": False, "index_path": str(index_path), "corpus_size": 0}
+    backend = BM25RetrievalBackend(index_path)
+    built = backend.build(chunks)
+    if not built.get("success"):
+        return {**built, "enabled": True}
+    saved = backend.save(index_path)
+    return {**saved, "enabled": True}
 
 
 def _summary(
@@ -115,11 +138,24 @@ def _summary(
     error_message: str | None,
     dimension: int | None = None,
     persist_dir: str | None = None,
+    bm25_summary: dict[str, Any] | None = None,
+    chunk_size: int = 500,
 ) -> dict[str, Any]:
     path = Path(index_path)
     resolved_persist_dir = persist_dir or (
         active_settings.rag_chroma_dir if vector_backend == "chroma" else str(path.parent)
     )
+    bm25 = bm25_summary or {
+        "success": not active_settings.rag_bm25_enabled,
+        "enabled": active_settings.rag_bm25_enabled,
+        "index_path": str(path.parent / "bm25_index.json"),
+        "corpus_size": 0,
+    }
+    available_modes = ["dense"]
+    if bm25.get("success") and bm25.get("enabled"):
+        available_modes.append("bm25")
+        if active_settings.rag_hybrid_enabled:
+            available_modes.append("hybrid")
     return {
         "success": success,
         "documents": documents,
@@ -135,4 +171,11 @@ def _summary(
         "persist_dir": resolved_persist_dir,
         "dimension": dimension,
         "error_message": error_message,
+        "chunk_size": chunk_size,
+        "bm25_enabled": active_settings.rag_bm25_enabled,
+        "bm25_success": bool(bm25.get("success")),
+        "bm25_index_path": bm25.get("index_path"),
+        "bm25_corpus_size": bm25.get("corpus_size", 0),
+        "bm25_error_message": bm25.get("error_message"),
+        "retrieval_modes_available": available_modes,
     }

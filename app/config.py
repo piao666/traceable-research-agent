@@ -14,7 +14,7 @@ class Settings(BaseModel):
     """Small settings object; expanded later for model providers."""
 
     service_name: str = "traceable-research-agent"
-    phase: str = "day32a-optional-react-executor"
+    phase: str = "day33-hybrid-rag"
     api_prefix: str = "/api"
     auth_enabled: bool = False
     demo_api_key: str | None = None
@@ -63,6 +63,30 @@ class Settings(BaseModel):
     rag_device: str = "cpu"
     rag_normalize_embeddings: bool = True
     rag_real_backend_enabled: bool = False
+    rag_retrieval_mode: str = "dense"
+    rag_bm25_enabled: bool = True
+    rag_hybrid_enabled: bool = True
+    rag_rrf_k: int = 60
+    rag_dense_candidate_multiplier: int = 2
+    rag_bm25_candidate_multiplier: int = 2
+    rag_chunk_experiment_sizes: str = "256,512,1024"
+    rag_chunk_experiment_output: str = "workspace/eval_outputs/rag_chunk_experiment_results.json"
+
+    @field_validator("rag_retrieval_mode", mode="before")
+    @classmethod
+    def validate_rag_retrieval_mode(cls, value: object) -> str:
+        normalized = str(value or "dense").strip().lower()
+        return normalized if normalized in {"dense", "bm25", "hybrid"} else "dense"
+
+    @field_validator("rag_rrf_k", mode="before")
+    @classmethod
+    def validate_rag_rrf_k(cls, value: object) -> int:
+        return _bounded_value(value, 60, 1, 1000)
+
+    @field_validator("rag_dense_candidate_multiplier", "rag_bm25_candidate_multiplier", mode="before")
+    @classmethod
+    def validate_rag_candidate_multiplier(cls, value: object) -> int:
+        return _bounded_value(value, 2, 1, 10)
 
     @field_validator("execution_mode", mode="before")
     @classmethod
@@ -94,7 +118,7 @@ class Settings(BaseModel):
 
         return cls(
             service_name=os.getenv("SERVICE_NAME", "traceable-research-agent"),
-            phase=os.getenv("APP_PHASE", "day32a-optional-react-executor"),
+            phase=os.getenv("APP_PHASE", "day33-hybrid-rag"),
             api_prefix=os.getenv("API_PREFIX", "/api"),
             auth_enabled=_env_bool("AUTH_ENABLED", False),
             demo_api_key=_env_optional("DEMO_API_KEY"),
@@ -190,6 +214,27 @@ class Settings(BaseModel):
             rag_device=os.getenv("RAG_DEVICE", "cpu").strip() or "cpu",
             rag_normalize_embeddings=_env_bool("RAG_NORMALIZE_EMBEDDINGS", True),
             rag_real_backend_enabled=_env_bool("RAG_REAL_BACKEND_ENABLED", False),
+            rag_retrieval_mode=_env_choice(
+                "RAG_RETRIEVAL_MODE", "dense", {"dense", "bm25", "hybrid"}
+            ),
+            rag_bm25_enabled=_env_bool("RAG_BM25_ENABLED", True),
+            rag_hybrid_enabled=_env_bool("RAG_HYBRID_ENABLED", True),
+            rag_rrf_k=_env_bounded_int("RAG_RRF_K", 60, 1, 1000),
+            rag_dense_candidate_multiplier=_env_bounded_int(
+                "RAG_DENSE_CANDIDATE_MULTIPLIER", 2, 1, 10
+            ),
+            rag_bm25_candidate_multiplier=_env_bounded_int(
+                "RAG_BM25_CANDIDATE_MULTIPLIER", 2, 1, 10
+            ),
+            rag_chunk_experiment_sizes=os.getenv(
+                "RAG_CHUNK_EXPERIMENT_SIZES", "256,512,1024"
+            ).strip()
+            or "256,512,1024",
+            rag_chunk_experiment_output=os.getenv(
+                "RAG_CHUNK_EXPERIMENT_OUTPUT",
+                "workspace/eval_outputs/rag_chunk_experiment_results.json",
+            ).strip()
+            or "workspace/eval_outputs/rag_chunk_experiment_results.json",
         )
 
     def get_llm_api_key(self, provider: str) -> str | None:
@@ -310,6 +355,14 @@ class Settings(BaseModel):
             "device": self.rag_device,
             "normalize_embeddings": self.rag_normalize_embeddings,
             "real_backend_enabled": self.rag_real_backend_enabled,
+            "retrieval_mode": self.rag_retrieval_mode,
+            "bm25_enabled": self.rag_bm25_enabled,
+            "hybrid_enabled": self.rag_hybrid_enabled,
+            "rrf_k": self.rag_rrf_k,
+            "dense_candidate_multiplier": self.rag_dense_candidate_multiplier,
+            "bm25_candidate_multiplier": self.rag_bm25_candidate_multiplier,
+            "chunk_experiment_sizes": self.rag_chunk_experiment_sizes,
+            "chunk_experiment_output": self.rag_chunk_experiment_output,
         }
 
 
@@ -340,6 +393,14 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return min(max(_env_int(name, default), minimum), maximum)
+
+
+def _bounded_value(value: object, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, minimum), maximum)
 
 
 def _env_choice(name: str, default: str, choices: set[str]) -> str:

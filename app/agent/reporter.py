@@ -32,16 +32,34 @@ def _selected_evidence(tool_name: str, output: Any) -> str:
         return _json_preview({"columns": columns, "rows": rows[:5]}, max_chars=900)
     if tool_name == "rag_search":
         hits = output.get("hits") or []
+        rag_metadata = output.get("metadata") if isinstance(output.get("metadata"), dict) else {}
         selected = [
             {
                 "source": hit.get("source"),
                 "chunk_id": hit.get("chunk_id"),
                 "score": hit.get("score"),
                 "text": str(hit.get("text") or "")[:240],
+                "rrf_score": (hit.get("metadata") or {}).get("rrf_score"),
             }
             for hit in hits[:5]
         ]
-        return _json_preview(selected, max_chars=1200)
+        return _json_preview(
+            {
+                "retrieval": {
+                    key: rag_metadata.get(key)
+                    for key in (
+                        "retrieval_mode",
+                        "dense_hit_count",
+                        "bm25_hit_count",
+                        "rrf_k",
+                        "fallback_used",
+                    )
+                    if key in rag_metadata
+                },
+                "hits": selected,
+            },
+            max_chars=1400,
+        )
     if tool_name == "mcp_github_search":
         results = output.get("results") or []
         selected = [

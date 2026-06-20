@@ -164,7 +164,7 @@ class JsonVectorBackend(VectorBackend):
                     )
                 )
             hits.sort(key=lambda item: item.score, reverse=True)
-            limit = max(1, min(int(top_k), 10))
+            limit = max(1, min(int(top_k), 100))
             return VectorSearchResult(
                 success=True,
                 hits=hits[:limit],
@@ -304,7 +304,7 @@ class ChromaVectorBackend(VectorBackend):
                     backend=self.name,
                     metadata={**self._metadata(), "collection_count": 0},
                 )
-            limit = min(max(1, int(top_k)), 10, count)
+            limit = min(max(1, int(top_k)), 100, count)
             result = collection.query(
                 query_embeddings=[query_vector],
                 n_results=limit,

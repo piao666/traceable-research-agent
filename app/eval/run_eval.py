@@ -22,6 +22,7 @@ from app.tools.registry import execute_tool
 from app.tools.defaults import register_default_tools
 from app.trace import store
 from app.trace.logger import record_tool_result
+from scripts.run_rag_chunk_experiment import run_experiment
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -262,6 +263,27 @@ def _run_rag_backend_case(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_rag_chunk_experiment_case(case: dict[str, Any]) -> dict[str, Any]:
+    payload = run_experiment()
+    results = payload.get("results") or []
+    passed = (
+        [result.get("chunk_size") for result in results] == [256, 512, 1024]
+        and all("recall_at_3" in result and "recall_at_5" in result for result in results)
+    )
+    return {
+        "case_id": case["case_id"],
+        "passed": passed,
+        "run_id": None,
+        "status": "validated" if passed else "failed",
+        "planned_tools": ["rag_search"],
+        "trace_count": 0,
+        "trace_statuses": Counter(),
+        "trace_complete": True,
+        "report_exists": False,
+        "failure_reason": None if passed else "Chunk experiment did not return all configured sizes",
+    }
+
+
 def _run_real_rag_optional_case(case: dict[str, Any]) -> dict[str, Any]:
     enabled = os.getenv("RUN_REAL_RAG_EVAL", "false").strip().lower() in {
         "1",
@@ -398,6 +420,8 @@ def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
             return _run_llm_planner_case(case)
         if mode == "rag_backend":
             return _run_rag_backend_case(case)
+        if mode == "rag_chunk_experiment":
+            return _run_rag_chunk_experiment_case(case)
         if mode == "real_rag_optional":
             return _run_real_rag_optional_case(case)
         if mode == "auth_async_default":

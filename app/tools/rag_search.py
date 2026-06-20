@@ -12,6 +12,7 @@ from app.rag.embedding_backends import (
 )
 from app.rag.vector_backends import JsonVectorBackend, create_vector_backend
 from app.tools.base import ToolResult
+from app.tools.rag_retrieval import search_rag as search_rag_with_mode
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -51,8 +52,8 @@ def _coerce_top_k(value: Any) -> int:
     return max(1, min(top_k, MAX_TOP_K))
 
 
-def search_rag(arguments: dict[str, Any]) -> ToolResult:
-    """Search the configured RAG backend and return compatible top-k chunks."""
+def _legacy_dense_search(arguments: dict[str, Any]) -> ToolResult:
+    """Retain the Day27 dense implementation for compatibility reference."""
 
     query = str(arguments.get("query") or "").strip()
     top_k = _coerce_top_k(arguments.get("top_k"))
@@ -211,3 +212,9 @@ def _backend_metadata(
         "collection_name": settings.rag_collection_name,
         "dimension": dimension,
     }
+
+
+def search_rag(arguments: dict[str, Any]) -> ToolResult:
+    """Dispatch to the Day33 dense/BM25/hybrid retrieval implementation."""
+
+    return search_rag_with_mode(arguments)

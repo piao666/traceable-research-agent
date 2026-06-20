@@ -39,8 +39,8 @@ def register_default_tools() -> None:
     register_tool(
         ToolSpec(
             name="rag_search",
-            description="Search local vector index and return top-k chunks.",
-            input_schema={"query": "string", "top_k": "integer"},
+            description="Search local evidence using dense, BM25, or read-only RRF hybrid retrieval.",
+            input_schema={"query": "string", "top_k": "integer", "retrieval_mode": "dense|bm25|hybrid"},
             output_schema={"query": "string", "top_k": "integer", "hits": "array"},
             risk_level=RiskLevel.LOW,
             tags=["rag", "search", "read-only"],

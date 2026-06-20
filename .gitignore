@@ -24,6 +24,7 @@ env/
 workspace/cache/
 workspace/reports/
 workspace/*.sqlite
+workspace/*.sqlite-journal
 workspace/*.db
 workspace/tmp/
 workspace/index/

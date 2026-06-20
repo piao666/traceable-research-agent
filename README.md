@@ -392,6 +392,49 @@ JSON fields, so Day32-A does not change the database schema or Alembic baseline.
 The report and Streamlit trace viewer expose concise Thought / Action /
 Observation summaries and whether a planned fallback was used.
 
+## Hybrid RAG
+
+`rag_search` supports three compatible retrieval modes:
+
+- `dense`: the existing SentenceTransformers/Chroma path or deterministic/JSON fallback.
+- `bm25`: lightweight sparse lexical retrieval through `rank-bm25`.
+- `hybrid`: dense and BM25 candidate lists fused with reciprocal rank fusion (RRF).
+
+Dense remains the default to preserve existing behavior:
+
+```env
+RAG_RETRIEVAL_MODE=hybrid
+RAG_BM25_ENABLED=true
+RAG_HYBRID_ENABLED=true
+RAG_RRF_K=60
+RAG_DENSE_CANDIDATE_MULTIPLIER=2
+RAG_BM25_CANDIDATE_MULTIPLIER=2
+```
+
+The BM25 tokenizer lowercases Latin words/numbers and adds CJK unigrams and
+bigrams without a separate segmentation service. Hybrid retrieval deduplicates
+by source/chunk ID and exposes `dense_hit_count`, `bm25_hit_count`, `rrf_k`,
+per-hit RRF ranks/scores, and `fallback_used`. If one hybrid side is missing,
+the available side is returned with explicit fallback metadata rather than an
+API 500. A directly requested unavailable BM25 index returns a structured
+failure.
+
+## Chunk Size Experiment
+
+Day33 compares character chunk sizes 256, 512, and 1024 on eight fixed demo
+queries. Metrics are Recall@3, Recall@5, and average in-process latency. The
+reproducible lightweight result and limitations are documented in
+[RAG Chunk Size Experiment](docs/rag_chunk_experiment.md). Run it with:
+
+```powershell
+python scripts/run_rag_chunk_experiment.py
+```
+
+Raw JSON is written to ignored
+`workspace/eval_outputs/rag_chunk_experiment_results.json`; it is never
+committed. The small demo corpus is an engineering regression experiment, not
+a production benchmark. Chunk size 512 remains the conservative default.
+
 ## RAG Backend Configuration
 
 The project keeps its original lightweight path as the default:
