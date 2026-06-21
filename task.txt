@@ -4000,3 +4000,306 @@ Next steps:
 * The project remains in feature freeze.
 * Next step: prepare the final resume project description, interview talk
   track, and optional polished project brief.
+
+2026-06-20 - Post-Freeze RAG Chunk Experiment Correction Plan
+
+I. Problem background
+
+* The project has entered feature freeze, but the Day33 RAG chunk experiment
+  still has experiment-credibility issues that require correction.
+* `RUN_REAL_RAG_CHUNK_EXPERIMENT` is mentioned in the documentation, but the
+  experiment code does not currently implement or read the switch.
+* This creates a mismatch between documented behavior and executable behavior.
+* The current `workspace/docs` corpus is too small: it contains only the roughly
+  1.2 KB `demo_research_note.md`, so the chunk-size experiment cannot expose
+  meaningful differences between chunking strategies.
+* The previous 256/512/1024 results all reached Recall@3=1.0 and Recall@5=1.0.
+  This does not prove that 512 is universally better; it only shows that the
+  current tiny corpus and queries are too easy. The latency comparison alone is
+  insufficient evidence for a retrieval-quality recommendation.
+* A post-freeze experiment-credibility correction is therefore required. This
+  is not a new major feature; it is a correction and completion of an existing
+  RAG experiment and its documentation contract.
+
+II. Correction goals
+
+1. Implement the `RUN_REAL_RAG_CHUNK_EXPERIMENT` switch in
+   `scripts/run_rag_chunk_experiment.py`.
+2. Reuse `create_embedding_backend(settings)` from
+   `app/rag/embedding_backends.py`.
+3. Keep deterministic embeddings as the default baseline when
+   `RUN_REAL_RAG_CHUNK_EXPERIMENT=false`, preserving CI and default experiment
+   stability.
+4. When the switch is true, run the experiment with the SentenceTransformers
+   backend and the existing local-model configuration.
+5. Expand the committed `workspace/docs` experiment corpus to at least 5-8
+   documents with different topics, lengths, and structures.
+6. Expand query/reference cases to at least 15-20 cases.
+7. Run both the deterministic baseline and real-embedding experiment.
+8. Update `docs/rag_chunk_experiment.md` to show deterministic and real
+   SentenceTransformers results together.
+9. Keep raw result JSON under ignored `workspace/eval_outputs`; never commit
+   runtime result JSON.
+10. Keep default smoke/eval independent of a real model and external network.
+11. Preserve existing dense/BM25/hybrid RAG behavior.
+12. Preserve ReAct, planned execution, Streamlit, Auth, Async, SQL Parser,
+    GitHub/MCP, and lightweight Docker behavior.
+
+III. Step 1 - Implement the real embedding branch
+
+* Modify only the experiment-facing implementation in
+  `scripts/run_rag_chunk_experiment.py` unless a narrowly scoped shared helper
+  is demonstrably required.
+* Add or complete `_build_embedding_backend(use_real: bool, settings_obj:
+  Settings)`.
+* With `use_real=false`, instantiate/use `DeterministicEmbeddingBackend`.
+* With `use_real=true`, call `create_embedding_backend(settings_obj)` instead
+  of creating a separate SentenceTransformers loading path.
+* If the requested real backend is unavailable, fail with a clear error that
+  points to the actual model-path field in the current `Settings` model (for
+  example `rag_model_path`; confirm the real field name during implementation).
+* Do not hardcode `E:\Models`; prefer the existing Settings/environment model
+  configuration.
+* Add `use_real_embedding: bool` to `run_experiment`.
+* In `main`, recognize `RUN_REAL_RAG_CHUNK_EXPERIMENT=true` using the same
+  stable boolean semantics used elsewhere in the project.
+* The output payload must record `embedding_backend`, `use_real_embedding`,
+  non-sensitive `model_path` or `model_name` metadata, `retrieval_mode`,
+  `chunk_sizes`, `total_documents`, and `total_queries`.
+* Do not print or read any LLM API key. This experiment needs embeddings only
+  and must not call Qwen or DeepSeek.
+
+IV. Step 2 - Expand the test corpus
+
+* Add 5-8 committed Markdown documents under `workspace/docs`. These files are
+  demo/evaluation corpus and are not runtime artifacts.
+* Proposed corpus:
+  1. `traceable_agent_architecture.md`: medium/long Agent architecture, Trace,
+     Planner, and Executor content.
+  2. `rag_retrieval_notes.md`: dense, BM25, hybrid, RRF, and chunk-size notes.
+  3. `sql_safety_notes.md`: SQLGlot, SELECT/WITH, DDL/DML rejection, and
+     multi-statement blocking.
+  4. `github_mcp_readonly_notes.md`: public API, cache, retry, fallback, and
+     read-only policy.
+  5. `streamlit_demo_notes.md`: Streamlit UI, Trace Viewer, reports, and HITL.
+  6. `react_execution_notes.md`: Thought/Action/Observation, max steps,
+     same-tool limits, and failure recovery.
+  7. `evaluation_notes.md`: smoke/eval, planned versus ReAct, and
+     `trace_quality_score`.
+  8. `optional_long_mixed_document.md`: more than 3,000 Chinese characters or
+     equivalent long-form content spanning several topics and long paragraphs.
+* Intentionally place some relevant facts across paragraphs or near likely
+  chunk boundaries so 256/512/1024 can exhibit meaningful trade-offs.
+* Do not add secrets, API keys, personal data, or copied private material.
+* Track the new corpus documents in Git; do not place them under ignored
+  runtime directories.
+
+V. Step 3 - Expand query/reference cases
+
+* Expand the experiment from its current small set to at least 15-20 cases.
+* Each case must include `query`, `expected_keywords`, `topic`, and
+  `expected_source` or `expected_doc`.
+* Cover Agent architecture, ReAct execution, Trace persistence, SQL safety,
+  Hybrid RAG, RRF fusion, GitHub fallback, MCP read-only policy, Streamlit,
+  HITL, eval metrics, and lightweight Docker.
+* Include cases that require cross-sentence or cross-paragraph context, so the
+  cases do not trivially saturate all chunk sizes.
+* Score retrieved hits using actual `expected_keywords` and/or expected source
+  evidence. Never hardcode the desired result or preferred chunk size.
+
+VI. Step 4 - Run both experiments and update the report
+
+Default deterministic baseline:
+
+```powershell
+python scripts/run_rag_chunk_experiment.py
+```
+
+Explicit real embedding run:
+
+```powershell
+$env:RUN_REAL_RAG_CHUNK_EXPERIMENT="true"
+python scripts/run_rag_chunk_experiment.py
+Remove-Item Env:RUN_REAL_RAG_CHUNK_EXPERIMENT -ErrorAction SilentlyContinue
+```
+
+* If the real model is unavailable, fail clearly and document the real run as
+  `not executed`; do not fabricate or copy results.
+* If available, `docs/rag_chunk_experiment.md` must show two result sections:
+  `Results - Real SentenceTransformers Embedding` and
+  `Results - Deterministic Embedding, for CI reproducibility`.
+* Each table must include Chunk Size, Recall@3, Recall@5, Avg Latency, Total
+  Cases, and Embedding Backend.
+* The report must explain why the old experiment saturated at 1.0, how the new
+  corpus improves experimental discrimination, how real and deterministic
+  embeddings differ, the evidence behind any recommended chunk size, and why
+  the result is still a small demo-corpus experiment rather than a public
+  large-scale benchmark.
+
+VII. Step 5 - Add or update smoke coverage
+
+* Update `scripts/smoke_hybrid_rag.py` or add the narrowly scoped
+  `scripts/smoke_rag_chunk_real_switch.py`.
+* Default smoke must not run real embeddings.
+* Default smoke must verify that the environment switch is recognized, the
+  false path uses deterministic embeddings, the true path with unavailable or
+  fake settings raises a clear unavailable error instead of silently ignoring
+  the switch, and the payload includes `embedding_backend`.
+* Optional real-embedding smoke runs only when
+  `RUN_REAL_RAG_CHUNK_EXPERIMENT=true` and the configured local model exists.
+* Keep `python -m app.eval.run_eval` independent of a real model and preserve
+  the existing 27/27 baseline.
+
+VIII. Acceptance criteria
+
+1. `RUN_REAL_RAG_CHUNK_EXPERIMENT` changes executable behavior.
+2. Documentation no longer claims a switch that is not wired in code.
+3. `workspace/docs` contains at least 5-8 experiment corpus documents.
+4. The chunk experiment contains at least 15-20 query/reference cases.
+5. The deterministic baseline runs by default.
+6. The real embedding experiment can be explicitly selected by environment.
+7. `docs/rag_chunk_experiment.md` records both deterministic and real results,
+   or clearly records why the real run was not executed.
+8. Default smoke/eval remains fully passing and independent of a real model.
+9. No `workspace/eval_outputs` JSON is committed.
+10. No model file is committed.
+11. No `.env`, API key, or token is committed.
+12. Any later README change is limited to correcting the experiment
+    description and conclusion; core project positioning remains unchanged.
+
+IX. Risks and cautions
+
+* The real embedding experiment depends on the configured local model and
+  installed SentenceTransformers/Chroma dependencies.
+* Real embedding runs take longer and must not enter default CI or smoke.
+* Expanded corpus/results do not have to force Recall below 1.0. The important
+  requirement is a credible corpus and case design with honestly computed
+  results.
+* If all chunk sizes still score 1.0, document the reason and other trade-offs
+  instead of manufacturing a difference.
+* Under feature freeze, this work is classified as an experiment-credibility
+  correction, not continued feature expansion.
+
+X. Recommended execution split
+
+Day36-A - RAG Chunk Experiment Real Embedding Switch And Corpus Expansion
+
+* Implement `RUN_REAL_RAG_CHUNK_EXPERIMENT`.
+* Expand the committed `workspace/docs` corpus.
+* Expand query/reference cases.
+* Add/update switch and deterministic-path smoke coverage.
+* Keep the default deterministic experiment passing.
+
+Day36-B - Run Real Embedding Experiment And Update RAG Experiment Report
+
+* Run the deterministic baseline.
+* Run the real SentenceTransformers embedding experiment.
+* Update `docs/rag_chunk_experiment.md` with actual results and limitations.
+* Correct only the relevant README/task experiment conclusions.
+* Audit artifacts, commit, and push.
+
+XI. Planning-only change boundary
+
+* This planning commit modifies only `task.txt`.
+* It does not modify RAG code, smoke/eval scripts, README, corpus, or
+  experiment documentation.
+* It does not run either experiment and does not create runtime outputs.
+
+2026-06-20 - Day36-A RAG Chunk Experiment Real Embedding Switch And Corpus Expansion
+
+Scope and correction:
+
+* Corrected the Day33 documentation/implementation mismatch by wiring
+  `RUN_REAL_RAG_CHUNK_EXPERIMENT` into executable behavior.
+* The deterministic embedding baseline remains the default and requires no
+  model or external network.
+* The explicit real branch copies the active Settings, forces the existing
+  `sentence_transformers` backend selection for the experiment, and calls
+  `create_embedding_backend(settings)` so model path, device, and normalization
+  continue to use shared configuration.
+* A requested real backend that is unavailable raises a clear RuntimeError
+  containing the backend reason and non-sensitive model-path context. It does
+  not silently fall back to deterministic embeddings.
+
+Corpus and cases:
+
+* Expanded `workspace/docs` from 1 to 9 Markdown documents by adding 8
+  topic-specific files. The corpus now covers Agent architecture, ReAct,
+  retrieval, SQL safety, GitHub/MCP, Streamlit/HITL, evaluation/Docker, and a
+  long mixed document with boundary-sensitive evidence.
+* Added `app/eval/rag_chunk_experiment_cases.jsonl` with 20 unique cases.
+  Every case records case ID, query, expected keywords, expected source, topic,
+  and notes.
+* Cases cover architecture, planned/ReAct execution, Thought/Action/Observation,
+  Trace persistence, Tool Registry, SQL parser/multi-statement rejection,
+  Dense/BM25/RRF/chunk size, GitHub fallback, MCP read-only policy, Streamlit,
+  HITL, Agent evaluation, trace quality, Docker lightweight, and transparent
+  limitation.
+
+Files added or modified:
+
+* Modified `scripts/run_rag_chunk_experiment.py`, `app/eval/run_eval.py`,
+  `app/eval/cases.jsonl`, `docs/rag_chunk_experiment.md`, and `task.txt`.
+* Added `app/eval/rag_chunk_experiment_cases.jsonl` and
+  `scripts/smoke_rag_chunk_real_switch.py`.
+* Added `workspace/docs/traceable_agent_architecture.md`,
+  `workspace/docs/react_execution_notes.md`,
+  `workspace/docs/rag_retrieval_notes.md`,
+  `workspace/docs/sql_safety_notes.md`,
+  `workspace/docs/github_mcp_readonly_notes.md`,
+  `workspace/docs/streamlit_demo_notes.md`,
+  `workspace/docs/evaluation_notes.md`, and
+  `workspace/docs/optional_long_mixed_document.md`.
+
+Experiment behavior and deterministic result:
+
+* Each size loads all 9 documents, chunks with overlap, embeds through the
+  selected backend, builds a temporary JSON dense index and BM25 index, fuses
+  candidates with RRF, evaluates all 20 cases, and records recall/latency and
+  document/chunk counts.
+* The payload now includes experiment name, real-mode flag, backend name,
+  non-sensitive model metadata, retrieval mode, chunk sizes, document/query
+  counts, corpus files, generated time, measured results, and a computed
+  recommendation.
+* Final deterministic baseline in this run: 256 => Recall@3/5 1.0/1.0,
+  4.245 ms, 135 chunks; 512 => 1.0/1.0, 3.311 ms, 67 chunks; 1024 =>
+  1.0/1.0, 3.513 ms, 34 chunks. All metrics are actual measurements and no
+  difference was manufactured. With recall tied, the measured baseline
+  recommends 512 by latency for this run.
+* `docs/rag_chunk_experiment.md` explains why the former one-document/eight-case
+  experiment saturated, documents the expanded baseline, confirms the switch
+  is wired, and marks real SentenceTransformers results as pending Day36-B.
+
+Smoke and eval:
+
+* Added `smoke_rag_chunk_real_switch.py`. It passed environment-switch parsing,
+  deterministic execution, strict real-unavailable error behavior, corpus
+  validation, case validation, and payload validation.
+* Smoke summary: `rag_chunk_real_switch=ok`, `deterministic_path=ok`,
+  `real_switch_detected=ok`, `real_unavailable_error=ok`, corpus_docs=9,
+  cases=20.
+* Full requested Day36-A validation passed: dependency check, compileall,
+  switch smoke, deterministic experiment, Hybrid RAG smoke, ReAct smoke,
+  ReAct/planned comparison smoke, and application eval.
+* Application eval now passes 29/29 with failed=0, task success rate=1.0, and
+  trace completeness=1.0. Default smoke/eval does not load a real model.
+
+Runtime and boundaries:
+
+* Deterministic experiment JSON was generated under ignored
+  `workspace/eval_outputs`; it remains untracked and must not be committed.
+* Temporary dense/BM25 indexes remain under ignored runtime paths.
+* No README, Docker, planned/ReAct, Streamlit, Auth/Async, SQL, or GitHub/MCP
+  implementation was changed.
+* No `.env`, key, model, database, runtime cache/index/report, or eval JSON is
+  intended for commit.
+* No commit or push was performed in Day36-A, as requested.
+
+Not completed in Day36-A:
+
+* The real SentenceTransformers chunk experiment was not executed.
+* README and final real-embedding conclusions were not updated.
+
+Next step:
+
+* Day36-B - Run Real Embedding Experiment And Update RAG Experiment Report.

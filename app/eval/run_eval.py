@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from inspect import signature
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,11 @@ from app.tools.registry import execute_tool
 from app.tools.defaults import register_default_tools
 from app.trace import store
 from app.trace.logger import record_tool_result
-from scripts.run_rag_chunk_experiment import run_experiment
+from scripts.run_rag_chunk_experiment import (
+    load_experiment_cases,
+    real_embedding_requested,
+    run_experiment,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -271,6 +276,10 @@ def _run_rag_chunk_experiment_case(case: dict[str, Any]) -> dict[str, Any]:
     passed = (
         [result.get("chunk_size") for result in results] == [256, 512, 1024]
         and all("recall_at_3" in result and "recall_at_5" in result for result in results)
+        and payload.get("embedding_backend") == "deterministic"
+        and payload.get("use_real_embedding") is False
+        and payload.get("total_documents", 0) >= 5
+        and payload.get("total_queries", 0) >= 15
     )
     return {
         "case_id": case["case_id"],
@@ -283,6 +292,51 @@ def _run_rag_chunk_experiment_case(case: dict[str, Any]) -> dict[str, Any]:
         "trace_complete": True,
         "report_exists": False,
         "failure_reason": None if passed else "Chunk experiment did not return all configured sizes",
+    }
+
+
+def _run_rag_chunk_real_switch_case(case: dict[str, Any]) -> dict[str, Any]:
+    parameters = signature(run_experiment).parameters
+    passed = (
+        "use_real_embedding" in parameters
+        and real_embedding_requested("true")
+        and not real_embedding_requested("false")
+    )
+    return {
+        "case_id": case["case_id"],
+        "passed": passed,
+        "run_id": None,
+        "status": "validated" if passed else "failed",
+        "planned_tools": ["rag_search"],
+        "trace_count": 0,
+        "trace_statuses": Counter(),
+        "trace_complete": True,
+        "report_exists": False,
+        "failure_reason": None if passed else "Real chunk experiment switch is not wired",
+    }
+
+
+def _run_rag_chunk_corpus_case(case: dict[str, Any]) -> dict[str, Any]:
+    cases = load_experiment_cases()
+    docs = list((ROOT / "workspace" / "docs").glob("*.md"))
+    long_doc = ROOT / "workspace" / "docs" / "optional_long_mixed_document.md"
+    passed = (
+        len(docs) >= 5
+        and len(cases) >= 15
+        and long_doc.exists()
+        and len(long_doc.read_text(encoding="utf-8")) > 3000
+    )
+    return {
+        "case_id": case["case_id"],
+        "passed": passed,
+        "run_id": None,
+        "status": "validated" if passed else "failed",
+        "planned_tools": ["rag_search"],
+        "trace_count": 0,
+        "trace_statuses": Counter(),
+        "trace_complete": True,
+        "report_exists": False,
+        "failure_reason": None if passed else "Expanded RAG corpus or cases are incomplete",
     }
 
 
@@ -459,6 +513,10 @@ def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
             return _run_rag_backend_case(case)
         if mode == "rag_chunk_experiment":
             return _run_rag_chunk_experiment_case(case)
+        if mode == "rag_chunk_real_switch":
+            return _run_rag_chunk_real_switch_case(case)
+        if mode == "rag_chunk_corpus":
+            return _run_rag_chunk_corpus_case(case)
         if mode == "real_rag_optional":
             return _run_real_rag_optional_case(case)
         if mode == "auth_async_default":

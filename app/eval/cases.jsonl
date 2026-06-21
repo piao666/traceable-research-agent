@@ -25,3 +25,5 @@
 {"case_id":"rag_hybrid_search_001","mode":"direct_tool","tool_name":"rag_search","arguments":{"query":"trace persistence tool registry","top_k":3,"retrieval_mode":"hybrid"},"should_succeed":true,"expected_trace_status":"success","expected_metadata":{"retrieval_mode":"hybrid","fallback_used":false},"category":"hybrid_rag"}
 {"case_id":"rag_chunk_experiment_smoke_001","mode":"rag_chunk_experiment","should_succeed":true,"category":"hybrid_rag"}
 {"case_id":"react_vs_planned_eval_smoke_001","mode":"react_vs_planned_eval_smoke","should_succeed":true,"category":"quantitative_eval"}
+{"case_id":"rag_chunk_real_switch_smoke_001","mode":"rag_chunk_real_switch","should_succeed":true,"category":"rag_chunk_correction"}
+{"case_id":"rag_chunk_corpus_expansion_001","mode":"rag_chunk_corpus","should_succeed":true,"category":"rag_chunk_correction"}
