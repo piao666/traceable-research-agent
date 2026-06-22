@@ -57,12 +57,35 @@ def main() -> None:
     ]
     missing_metadata = [field for field in metadata_fields if field not in source]
     assert_true(not missing_metadata, f"missing RAG metadata display fields: {missing_metadata}")
-    assert_true("Trace details:" in source, "trace details expander missing")
-    for control in ["API Key", "Tenant ID", "User ID", "Use async run", "Execution Mode"]:
-        assert_true(control in source, f"missing Streamlit control: {control}")
+    assert_true(
+        "执行元信息" in source or "Trace details:" in source,
+        "trace details display missing",
+    )
+    controls = {
+        "API Key": ["API Key"],
+        "Tenant ID": ["Tenant ID"],
+        "User ID": ["User ID"],
+        "async run": ["异步执行", "Use async run"],
+        "execution mode": ["执行模式", "Execution Mode"],
+        "external source": ["外部数据源"],
+    }
+    for control, labels in controls.items():
+        assert_true(
+            any(label in source for label in labels),
+            f"missing Streamlit control: {control}",
+        )
     assert_true('type="password"' in source, "API key input is not password protected")
-    for react_field in ["Thought", "Action", "Observation", "ReAct Trace"]:
+    for react_field in ["Thought", "Action", "Observation"]:
         assert_true(react_field in source, f"missing ReAct trace display: {react_field}")
+    assert_true(
+        "ReAct 思考链" in source or "ReAct Trace" in source,
+        "missing ReAct trace section",
+    )
+    assert_true('"source_mode": "real"' in source, "real source mode is not the default")
+    assert_true(
+        '"source_mode": st.session_state.source_mode' in source,
+        "task payload does not use selected source mode",
+    )
 
     forbidden_patterns = [
         r"QWEN_API_KEY\s*=",

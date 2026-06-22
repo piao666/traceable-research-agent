@@ -134,6 +134,50 @@ def _cache_smoke() -> None:
     json.loads(CACHE_PATH.read_text(encoding="utf-8"))
 
 
+def _repository_public_api_smoke() -> None:
+    payload = {
+        "items": [
+            {
+                "full_name": "example/most-starred",
+                "name": "most-starred",
+                "html_url": "https://github.com/example/most-starred",
+                "stargazers_count": 12345,
+                "description": "A real repository-shaped fake response.",
+                "language": "Python",
+                "updated_at": "2026-06-20T00:00:00Z",
+            }
+        ]
+    }
+
+    def repository_opener(request, **_kwargs):
+        assert request.get_method() == "GET"
+        assert "/search/repositories?" in request.full_url
+        assert "sort=stars" in request.full_url and "order=desc" in request.full_url
+        return FakeResponse(payload)
+
+    result = github_search(
+        {
+            "query": "LLM agent",
+            "search_type": "repositories",
+            "sort": "stars",
+            "order": "desc",
+            "limit": 5,
+        },
+        settings_obj=_settings(
+            github_search_cache_enabled=False,
+            github_public_api_fallback_to_mock=False,
+        ),
+        opener=repository_opener,
+        sleeper=lambda _seconds: None,
+    )
+    assert result.success and result.metadata["data_source"] == "public_api"
+    assert result.output["mode"] == "public_api"
+    repository = result.output["results"][0]
+    assert repository["full_name"] == "example/most-starred"
+    assert repository["stars"] == 12345
+    assert repository["language"] == "Python"
+
+
 def _fallback_smoke() -> None:
     attempts: list[int] = []
     backoffs: list[float] = []
@@ -220,6 +264,7 @@ def main() -> None:
     try:
         _mock_and_validation_smoke()
         _cache_smoke()
+        _repository_public_api_smoke()
         _fallback_smoke()
         _readonly_smoke()
         _optional_public_api_smoke()
@@ -233,6 +278,7 @@ def main() -> None:
                 "github_mcp": "ok",
                 "mock": "ok",
                 "cache": "ok",
+                "repository_public_api": "ok",
                 "fallback": "ok",
                 "read_only": "ok",
             },

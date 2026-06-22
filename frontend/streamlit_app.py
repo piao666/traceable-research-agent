@@ -1,86 +1,130 @@
-"""Streamlit demo UI for the Traceable Research Agent FastAPI backend."""
+"""Traceable Research Agent — 中文演示界面"""
 
 from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 import requests
 import streamlit as st
 
+# 自动加载项目根目录的 .env（若存在），优先级低于已有环境变量
+_env_path = Path(__file__).parent.parent / ".env"
+if _env_path.exists():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_env_path, override=False)
+    except ImportError:
+        pass  # python-dotenv 未安装时静默跳过，不影响运行
 
+# ── 常量 ──────────────────────────────────────────────────────────
 DEFAULT_API_BASE_URL = "http://127.0.0.1:8000"
 ALL_TOOLS = [
     "file_reader",
     "sql_query",
     "rag_search",
     "mcp_github_search",
+    "tavily_search",
     "report_writer",
 ]
-RAG_METADATA_FIELDS = [
-    "retrieval_mode",
-    "requested_retrieval_mode",
-    "embedding_backend",
-    "vector_backend",
-    "requested_embedding_backend",
-    "requested_vector_backend",
-    "fallback_used",
-    "fallback_reason",
-    "dense_hit_count",
-    "bm25_hit_count",
-    "rrf_k",
-    "tokenizer",
-    "index_paths",
-    "dimension",
-    "model_path",
-    "persist_dir",
-    "collection_name",
-]
-REACT_METADATA_FIELDS = [
-    "execution_mode",
-    "thought",
-    "action",
-    "finish_reason",
-    "observation_summary",
-    "tool_call_count",
-    "llm_provider",
-    "llm_model",
-    "fallback_used",
-    "error_type",
-]
+
+TOOL_ICON = {
+    "file_reader":      "📄",
+    "sql_query":        "🗄️",
+    "rag_search":       "🔍",
+    "mcp_github_search":"🐙",
+    "tavily_search":   "🌐",
+    "report_writer":    "📝",
+}
+TOOL_CN = {
+    "file_reader":      "本地文件读取",
+    "sql_query":        "数据库查询",
+    "rag_search":       "RAG 向量检索",
+    "mcp_github_search":"GitHub 只读调研",
+    "tavily_search":   "Tavily 真实网络搜索",
+    "report_writer":    "Markdown 报告生成",
+}
+RISK_COLOR = {"low": "#15803D", "medium": "#B45309", "high": "#B91C1C"}
 
 DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
-    "Normal file/sql/rag/report": {
+    "📄 标准调研（文件+SQL+RAG+报告）": {
         "task": "Read local docs, query database metrics, retrieve trace evidence, and generate a markdown report",
         "allowed_tools": ["file_reader", "sql_query", "rag_search", "report_writer"],
     },
-    "GitHub mock report": {
+    "🐙 GitHub 只读调研报告": {
         "task": "Search GitHub repository issues about traceable research agent and generate a markdown report",
         "allowed_tools": ["mcp_github_search", "report_writer"],
     },
-    "HITL report": {
+    "✋ HITL 人工确认流程": {
         "task": "Read local docs, retrieve trace evidence, and generate a markdown report with human approval",
         "allowed_tools": ["file_reader", "rag_search", "report_writer"],
     },
-    "LLM planner full tools": {
+    "⚡ LLM 规划器（全工具）": {
         "task": "Read local docs, query database metrics, retrieve trace evidence, search GitHub repository issues, and generate a markdown report",
         "allowed_tools": ALL_TOOLS,
     },
 }
 
+STATUS_CN = {
+    "pending":       ("⏳", "待执行", "#6B7280"),
+    "running":       ("🔄", "执行中", "#2563EB"),
+    "waiting_human": ("✋", "等待确认", "#B45309"),
+    "completed":     ("✅", "已完成", "#15803D"),
+    "failed":        ("❌", "执行失败", "#B91C1C"),
+    "success":       ("✅", "成功", "#15803D"),
+    "rejected":      ("🚫", "已拒绝", "#B91C1C"),
+}
 
+RAG_METADATA_FIELDS = [
+    "retrieval_mode", "embedding_backend", "vector_backend",
+    "fallback_used", "dense_hit_count", "bm25_hit_count", "rrf_k",
+    "dimension", "collection_name",
+]
+
+# ── 全局 CSS（极简深色调） ────────────────────────────────────────
+GLOBAL_CSS = """
+<style>
+.step-card {
+    border-left: 3px solid #3B82F6;
+    padding: 10px 14px;
+    margin: 8px 0;
+    border-radius: 0 8px 8px 0;
+    background: rgba(59,130,246,0.07);
+}
+.step-card-success { border-left-color: #15803D; background: rgba(21,128,61,0.07); }
+.step-card-failed  { border-left-color: #B91C1C; background: rgba(185,28,28,0.07); }
+.step-card-rejected{ border-left-color: #B91C1C; background: rgba(185,28,28,0.07); }
+.step-header { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.step-meta   { font-size: 12px; opacity: 0.7; }
+.risk-badge  { display:inline-block; padding:1px 8px; border-radius:10px;
+               font-size:11px; color:white; margin-left:6px; }
+.section-tip { font-size:12px; color:#888; margin:-8px 0 10px; padding-left:2px; }
+.metric-row  { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+.metric-box  { flex:1; min-width:90px; background:rgba(255,255,255,0.04);
+               border:0.5px solid rgba(255,255,255,0.12); border-radius:8px;
+               padding:10px 14px; }
+.metric-label{ font-size:11px; opacity:0.6; margin-bottom:2px; }
+.metric-value{ font-size:20px; font-weight:600; }
+</style>
+"""
+
+
+# ── API helpers ───────────────────────────────────────────────────
 class ApiError(Exception):
-    """User-facing API error for Streamlit rendering."""
+    pass
 
 
 def init_state() -> None:
     defaults = {
         "api_base_url": os.environ.get("STREAMLIT_API_BASE_URL", DEFAULT_API_BASE_URL),
-        "api_key": "",
-        "tenant_id": "demo",
-        "user_id": "local-user",
+        # AUTH_ENABLED=false 时 API Key 为空即可；若后端开启鉴权，从 DEMO_API_KEY 自动填充
+        "api_key":      os.environ.get("DEMO_API_KEY", ""),
+        "tenant_id":    os.environ.get("DEFAULT_TENANT_ID", "demo"),
+        "user_id":      os.environ.get("DEFAULT_USER_ID", "local-user"),
         "use_async_run": False,
+        # EXECUTION_MODE 由后端 .env 控制，这里只做显示用
         "execution_mode_display": os.environ.get("EXECUTION_MODE", "planned"),
         "run_id": "",
         "last_task_response": None,
@@ -89,579 +133,455 @@ def init_state() -> None:
         "last_plan": None,
         "last_trace": [],
         "last_report": None,
-        "selected_template": "Normal file/sql/rag/report",
-        "task_text": DEMO_TEMPLATES["Normal file/sql/rag/report"]["task"],
-        "allowed_tools": DEMO_TEMPLATES["Normal file/sql/rag/report"]["allowed_tools"],
+        "selected_template": list(DEMO_TEMPLATES.keys())[0],
+        "task_text": list(DEMO_TEMPLATES.values())[0]["task"],
+        "allowed_tools": list(DEMO_TEMPLATES.values())[0]["allowed_tools"],
         "report_type": "summary",
-        "source_mode": "mock",
+        "source_mode": "real",
     }
-    for key, value in defaults.items():
-        st.session_state.setdefault(key, value)
+    for k, v in defaults.items():
+        st.session_state.setdefault(k, v)
 
 
 def api_url(path: str) -> str:
-    base = st.session_state.api_base_url.rstrip("/")
-    return f"{base}{path}"
-
-
-def api_get(path: str) -> Any:
-    return api_request("GET", path)
-
-
-def api_post(path: str, payload: dict[str, Any] | None = None) -> Any:
-    return api_request("POST", path, payload or {})
+    return st.session_state.api_base_url.rstrip("/") + path
 
 
 def request_headers() -> dict[str, str]:
-    """Build request-scoped headers without rendering or persisting credentials."""
-
-    headers: dict[str, str] = {}
-    api_key = st.session_state.get("api_key", "").strip()
-    tenant_id = st.session_state.get("tenant_id", "").strip()
-    user_id = st.session_state.get("user_id", "").strip()
-    if api_key:
-        headers["X-API-Key"] = api_key
-    if tenant_id:
-        headers["X-Tenant-ID"] = tenant_id
-    if user_id:
-        headers["X-User-ID"] = user_id
-    return headers
+    h: dict[str, str] = {}
+    if (k := st.session_state.get("api_key", "").strip()):
+        h["X-API-Key"] = k
+    if (t := st.session_state.get("tenant_id", "").strip()):
+        h["X-Tenant-ID"] = t
+    if (u := st.session_state.get("user_id", "").strip()):
+        h["X-User-ID"] = u
+    return h
 
 
-def api_request(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+def api_request(method: str, path: str, payload: dict | None = None) -> Any:
     try:
-        response = requests.request(
-            method,
-            api_url(path),
-            json=payload,
-            headers=request_headers(),
-            timeout=30,
-        )
-    except requests.ConnectionError as exc:
-        raise ApiError(
-            "Backend is not reachable. Please start FastAPI first: "
-            "python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
-        ) from exc
-    except requests.Timeout as exc:
-        raise ApiError("Backend request timed out.") from exc
-    except requests.RequestException as exc:
-        raise ApiError(f"Backend request failed: {exc}") from exc
-
+        r = requests.request(method, api_url(path), json=payload, headers=request_headers(), timeout=30)
+    except requests.ConnectionError:
+        raise ApiError("⚠️ 后端未启动，请先运行 FastAPI：python -m uvicorn app.main:app --port 8000")
+    except requests.Timeout:
+        raise ApiError("⚠️ 请求超时，请检查后端是否正常响应")
+    except requests.RequestException as e:
+        raise ApiError(f"⚠️ 请求失败：{e}")
     try:
-        data = response.json()
-    except ValueError as exc:
-        raise ApiError(f"Backend returned non-JSON response with status {response.status_code}.") from exc
-
-    if response.status_code >= 400:
+        data = r.json()
+    except ValueError:
+        raise ApiError(f"⚠️ 后端返回非 JSON（HTTP {r.status_code}）")
+    if r.status_code >= 400:
         detail = data.get("detail") if isinstance(data, dict) else data
-        raise ApiError(f"HTTP {response.status_code}: {detail}")
+        raise ApiError(f"HTTP {r.status_code}：{detail}")
     return data
 
 
-def normalize_trace_response(data: Any) -> list[dict[str, Any]]:
-    if data is None:
-        return []
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-    if isinstance(data, dict):
-        return [data]
+def api_get(path: str) -> Any:  return api_request("GET", path)
+def api_post(path: str, payload: dict | None = None) -> Any:  return api_request("POST", path, payload or {})
+
+
+def normalize_trace(data: Any) -> list[dict]:
+    if not data:    return []
+    if isinstance(data, list): return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict): return data.get("traces") or [data]
     return []
 
 
-def extract_trace_metadata(trace: dict[str, Any]) -> dict[str, Any]:
-    """Extract backend metadata from current and backward-compatible trace shapes."""
-
-    candidates = [trace.get("metadata"), trace.get("output")]
-    output = trace.get("output")
-    if isinstance(output, dict):
-        candidates.insert(1, output.get("metadata"))
-    selected: dict[str, Any] = {}
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        for field in RAG_METADATA_FIELDS:
-            if field in candidate and candidate[field] is not None:
-                selected[field] = candidate[field]
-    return selected
-
-
-def extract_react_metadata(trace: dict[str, Any]) -> dict[str, Any]:
-    """Return concise Thought/Action/Observation fields from a trace."""
-
-    output = trace.get("output")
-    candidates = [trace.get("metadata")]
-    if isinstance(output, dict):
-        candidates.append(output.get("metadata"))
-    selected: dict[str, Any] = {}
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        for field in REACT_METADATA_FIELDS:
-            if field in candidate and candidate[field] is not None:
-                selected[field] = candidate[field]
-    return selected
-
-
-def render_json(data: Any) -> None:
-    st.json(data, expanded=False)
-
-
-def status_badge(status: str | None) -> str:
-    status = status or "unknown"
-    colors = {
-        "pending": "#6b7280",
-        "running": "#2563eb",
-        "waiting_human": "#b45309",
-        "completed": "#15803d",
-        "failed": "#b91c1c",
-        "success": "#15803d",
-        "rejected": "#b91c1c",
-    }
-    color = colors.get(status, "#374151")
-    return (
-        f"<span style='display:inline-block;padding:0.18rem 0.45rem;"
-        f"border-radius:0.35rem;background:{color};color:white;"
-        f"font-size:0.82rem'>{status}</span>"
-    )
-
-
-def show_api_error(error: Exception) -> None:
-    st.error(str(error))
-
-
-def refresh_current_run(show_errors: bool = True) -> None:
+def refresh_all(show_errors: bool = True) -> None:
     run_id = st.session_state.get("run_id")
-    if not run_id:
-        return
+    if not run_id:  return
     try:
         st.session_state.last_status = api_get(f"/api/tasks/{run_id}")
-        st.session_state.last_plan = api_get(f"/api/tasks/{run_id}/plan")
-        st.session_state.last_trace = normalize_trace_response(api_get(f"/api/tasks/{run_id}/trace"))
+        st.session_state.last_plan   = api_get(f"/api/tasks/{run_id}/plan")
+        st.session_state.last_trace  = normalize_trace(api_get(f"/api/tasks/{run_id}/trace"))
         st.session_state.last_report = api_get(f"/api/reports/{run_id}")
     except ApiError as exc:
-        if show_errors:
-            show_api_error(exc)
+        if show_errors: st.error(str(exc))
 
 
-def apply_template(template_name: str) -> None:
-    template = DEMO_TEMPLATES[template_name]
-    st.session_state.task_text = template["task"]
-    st.session_state.allowed_tools = list(template["allowed_tools"])
-    st.session_state.selected_template = template_name
+def apply_template(name: str) -> None:
+    t = DEMO_TEMPLATES[name]
+    st.session_state.task_text        = t["task"]
+    st.session_state.allowed_tools    = list(t["allowed_tools"])
+    st.session_state.selected_template = name
 
 
+# ── UI helpers ────────────────────────────────────────────────────
+def status_chip(status: str | None) -> str:
+    icon, label, color = STATUS_CN.get(status or "", ("❓", status or "未知", "#6B7280"))
+    return (f"<span style='padding:2px 10px;border-radius:10px;background:{color};"
+            f"color:white;font-size:12px'>{icon} {label}</span>")
+
+
+def risk_badge(level: str) -> str:
+    c = RISK_COLOR.get(level, "#6B7280")
+    cn = {"low": "低", "medium": "中", "high": "高"}.get(level, level)
+    return f"<span class='risk-badge' style='background:{c}'>风险 {cn}</span>"
+
+
+def plan_step_card(step: dict) -> None:
+    tool  = step.get("tool_name", "")
+    icon  = TOOL_ICON.get(tool, "🔧")
+    cn    = TOOL_CN.get(tool, tool)
+    goal  = step.get("goal", "")
+    risk  = step.get("risk_level", "low")
+    st.markdown(
+        f"<div class='step-card'>"
+        f"<div class='step-header'>"
+        f"步骤 {step.get('step_no')} &nbsp; {icon} {cn}"
+        f"{risk_badge(risk)}"
+        f"</div>"
+        f"<div class='step-meta'>{goal}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    if step.get("arguments"):
+        with st.expander("📎 调用参数", expanded=False):
+            st.json(step["arguments"])
+
+
+def trace_step_card(trace: dict) -> None:
+    tool   = trace.get("tool_name", "")
+    status = trace.get("status", "unknown")
+    icon   = TOOL_ICON.get(tool, "🔧")
+    cn     = TOOL_CN.get(tool, tool)
+    css    = f"step-card-{status}" if status in ("success", "completed", "failed", "rejected") else ""
+    s_icon, _, _ = STATUS_CN.get(status, ("❓", status, "#6B7280"))
+
+    latency = trace.get("latency_ms")
+    lat_str = f"&nbsp;·&nbsp;{latency} ms" if latency is not None else ""
+
+    st.markdown(
+        f"<div class='step-card {css}'>"
+        f"<div class='step-header'>"
+        f"步骤 {trace.get('step_no')} &nbsp; {icon} {cn} &nbsp; {s_icon}"
+        f"{lat_str}"
+        f"</div>"
+        f"<div class='step-meta'>"
+        f"输入：{trace.get('input_summary','—')}<br>"
+        f"输出：{trace.get('output_summary','—')}"
+        + (f"<br>⚠️ {trace.get('error_message')}" if trace.get("error_message") else "")
+        + f"</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    # ReAct 思考链
+    out = trace.get("output") or {}
+    if isinstance(out, dict):
+        thought = out.get("thought") or (out.get("metadata") or {}).get("thought")
+        if thought:
+            with st.expander(f"🧠 ReAct 思考链（步骤 {trace.get('step_no')}）"):
+                st.write(f"**Thought：** {thought}")
+                st.write(f"**Action：**  {out.get('action', tool)}")
+                obs = out.get("observation_summary") or trace.get("output_summary", "")
+                st.write(f"**Observation：** {obs}")
+
+    # RAG 检索元数据
+    meta_src = (out if isinstance(out, dict) else {}) or {}
+    meta = {k: meta_src.get(k) for k in RAG_METADATA_FIELDS if meta_src.get(k) is not None}
+    if not meta:
+        raw_meta = trace.get("metadata") or {}
+        if isinstance(raw_meta, str):
+            try: raw_meta = json.loads(raw_meta)
+            except Exception: raw_meta = {}
+        meta = {k: raw_meta.get(k) for k in RAG_METADATA_FIELDS if raw_meta.get(k) is not None}
+
+    if meta:
+        with st.expander(f"🔍 RAG 检索详情（步骤 {trace.get('step_no')}）"):
+            cols = st.columns(3)
+            cols[0].metric("检索模式", meta.get("retrieval_mode", "—"))
+            cols[1].metric("稠密命中", meta.get("dense_hit_count", "—"))
+            cols[2].metric("BM25 命中", meta.get("bm25_hit_count", "—"))
+            cols2 = st.columns(3)
+            cols2[0].metric("Embedding", meta.get("embedding_backend", "—"))
+            cols2[1].metric("是否 Fallback", "是" if meta.get("fallback_used") else "否")
+            cols2[2].metric("RRF-k", meta.get("rrf_k", "—"))
+            cols3 = st.columns(3)
+            cols3[0].metric("向量后端", meta.get("vector_backend", "—"))
+            cols3[1].metric("向量维度", meta.get("dimension", "—"))
+            cols3[2].metric("Collection", meta.get("collection_name", "—"))
+
+
+# ── 侧边栏 ────────────────────────────────────────────────────────
 def render_sidebar() -> None:
     with st.sidebar:
-        st.header("Controls")
-        st.session_state.api_base_url = st.text_input(
-            "API Base URL",
-            value=st.session_state.api_base_url,
-            help="FastAPI backend URL. This UI only calls HTTP APIs.",
-        )
-        st.text_input(
-            "API Key",
-            key="api_key",
-            type="password",
-            help="Optional. Kept only in this Streamlit session and sent as X-API-Key.",
-        )
-        st.text_input("Tenant ID", key="tenant_id")
-        st.text_input("User ID", key="user_id")
-        st.checkbox("Use async run", key="use_async_run")
-        selected_execution_mode = st.selectbox(
-            "Execution Mode",
-            ["planned", "react"],
-            key="execution_mode_display",
-            help="Display preference only. The backend EXECUTION_MODE environment setting is authoritative.",
-        )
-        if selected_execution_mode == "react":
-            st.caption("ReAct requires an available backend LLM provider key; credentials are never displayed.")
-        if st.button("Health Check", use_container_width=True):
-            try:
-                st.session_state.health = api_get("/health")
-            except ApiError as exc:
-                show_api_error(exc)
+        st.markdown("## 🕹️ 演示控制台")
 
+        # 健康检查
+        if st.button("🩺 检查后端连接", use_container_width=True):
+            try:
+                h = api_get("/health")
+                st.session_state.health = h
+                st.success(f"✅ 连接正常  ·  模式：{h.get('execution_mode','planned')}")
+            except ApiError as e:
+                st.error(str(e))
+
+        st.divider()
+        st.markdown("**📋 场景模板**")
         selected = st.selectbox(
-            "Demo Template",
-            list(DEMO_TEMPLATES),
-            index=list(DEMO_TEMPLATES).index(st.session_state.selected_template),
+            "选择演示场景",
+            list(DEMO_TEMPLATES.keys()),
+            index=list(DEMO_TEMPLATES.keys()).index(st.session_state.selected_template),
+            label_visibility="collapsed",
         )
         if selected != st.session_state.selected_template:
             apply_template(selected)
             st.rerun()
 
-        st.text_input("Current run_id", value=st.session_state.get("run_id", ""), disabled=True)
-        if st.button("Refresh", use_container_width=True):
-            refresh_current_run()
-        if st.button("Clear Session", use_container_width=True):
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
+        st.divider()
+        st.markdown("**⚙️ 执行模式**")
+        mode = st.selectbox(
+            "执行模式",
+            ["planned", "react"],
+            index=["planned","react"].index(st.session_state.execution_mode_display),
+            format_func=lambda x: "📋 Planned（固定计划）" if x=="planned" else "🤖 ReAct（动态决策）",
+            key="execution_mode_display",
+            label_visibility="collapsed",
+        )
+        if mode == "react":
+            st.caption("💡 ReAct 由后端 `.env` 里 `EXECUTION_MODE=react` 控制，此处仅作提示。需配置 `QWEN_API_KEY` 或 `DEEPSEEK_API_KEY`。")
+        else:
+            st.caption("💡 当前模式由后端 `.env` 决定，此处选项不改变实际行为。")
+
+        st.divider()
+        st.markdown("**🌐 外部数据源**")
+        st.selectbox(
+            "外部数据源",
+            ["real", "mock"],
+            key="source_mode",
+            format_func=lambda value: (
+                "real（真实 GitHub / Tavily API）"
+                if value == "real"
+                else "mock（离线演示数据）"
+            ),
+            label_visibility="collapsed",
+        )
+        if st.session_state.source_mode == "real":
+            st.caption(
+                "real：使用真实 GitHub/Tavily API，可能受网络、GitHub rate limit "
+                "和 Tavily API key 配置限制；未配置 Tavily key 时会返回 missing_api_key。"
+            )
+        else:
+            st.caption("mock：仅用于离线演示、CI 和 smoke，不代表真实搜索结果或排名。")
+
+        st.divider()
+        with st.expander("🔧 高级配置（API 连接）"):
+            st.session_state.api_base_url = st.text_input(
+                "API Base URL", value=st.session_state.api_base_url
+            )
+            st.text_input("API Key", key="api_key", type="password")
+            st.text_input("Tenant ID", key="tenant_id")
+            st.text_input("User ID",   key="user_id")
+            st.checkbox("异步执行", key="use_async_run")
+
+        st.divider()
+        if st.session_state.get("run_id"):
+            st.code(st.session_state.run_id[:16] + "…", language=None)
+            if st.button("🔄 刷新全部", use_container_width=True):
+                refresh_all()
+                st.rerun()
+        if st.button("🗑️ 清空会话", use_container_width=True):
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
             init_state()
             st.rerun()
 
 
-def render_health_panel() -> None:
-    st.subheader("Backend Health")
-    health = st.session_state.get("health")
-    if health is None:
-        try:
-            health = api_get("/health")
-            st.session_state.health = health
-        except ApiError as exc:
-            show_api_error(exc)
-            return
+# ── Tab 1：任务与规划 ─────────────────────────────────────────────
+def tab_task() -> None:
+    st.markdown("#### 📝 调研任务描述")
+    st.markdown('<p class="section-tip">系统会将自然语言任务转化为结构化执行计划，每一步工具调用都有明确的目标和风险等级。</p>', unsafe_allow_html=True)
 
-    cols = st.columns(3)
-    cols[0].metric("status", health.get("status", "unknown"))
-    cols[1].metric("service", health.get("service", "unknown"))
-    cols[2].metric("phase", health.get("phase", "unknown"))
-    st.caption(
-        "Backend execution mode: "
-        f"{health.get('execution_mode', 'planned')} (react_enabled={health.get('react_enabled', True)})"
+    st.text_area(
+        "任务内容",
+        height=90,
+        key="task_text",
+        label_visibility="collapsed",
     )
+    task_text = st.session_state.task_text  # 从 session state 读取，避免 value= 与 key= 冲突
 
-
-def render_task_creation() -> None:
-    st.subheader("Create Task")
-    st.text_area("Task", key="task_text", height=110)
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([1, 1])
     with col1:
-        st.text_input("report_type", key="report_type")
-    with col2:
-        st.text_input("source_mode", key="source_mode")
-
-    st.multiselect(
-        "allowed_tools",
-        ALL_TOOLS,
-        key="allowed_tools",
-    )
-
-    if st.button("Create Task", type="primary"):
-        payload = {
-            "task": st.session_state.task_text,
-            "report_type": st.session_state.report_type,
-            "source_mode": st.session_state.source_mode,
-            "allowed_tools": st.session_state.allowed_tools,
-        }
-        try:
-            response = api_post("/api/tasks", payload)
-            st.session_state.last_task_response = response
-            st.session_state.run_id = response["run_id"]
-            st.success(f"Created task: {response['run_id']}")
-            render_json(response)
-            refresh_current_run(show_errors=False)
-            st.rerun()
-        except ApiError as exc:
-            show_api_error(exc)
-
-    if st.session_state.get("last_task_response"):
-        st.caption("Latest create response")
-        render_json(st.session_state.last_task_response)
-
-
-def render_plan_viewer() -> None:
-    st.subheader("Plan")
-    run_id = st.session_state.get("run_id")
-    if not run_id:
-        st.info("Create or paste a run_id first.")
-        return
-
-    if st.button("Refresh Plan"):
-        try:
-            st.session_state.last_plan = api_get(f"/api/tasks/{run_id}/plan")
-        except ApiError as exc:
-            show_api_error(exc)
-            return
-
-    plan = st.session_state.get("last_plan")
-    if not plan:
-        st.info("No plan loaded yet.")
-        return
-
-    planner_source = plan.get("planner_source") or "deterministic"
-    if planner_source == "llm":
-        st.success("LLM Planner active")
-    elif planner_source == "deterministic_fallback":
-        st.warning("LLM Planner fallback to deterministic")
-    else:
-        st.info("Deterministic planner mode")
-
-    cols = st.columns(4)
-    cols[0].metric("planner_source", planner_source)
-    cols[1].metric("llm_provider", plan.get("llm_provider") or "-")
-    cols[2].metric("llm_model", plan.get("llm_model") or "-")
-    cols[3].metric("steps", len(plan.get("steps") or []))
-
-    st.write(
-        {
-            "run_id": plan.get("run_id"),
-            "version": plan.get("version"),
-            "source_mode": plan.get("source_mode"),
-            "allowed_tools": plan.get("allowed_tools"),
-            "notes": plan.get("notes"),
-            "confirmation": plan.get("confirmation"),
-        }
-    )
-
-    steps = plan.get("steps") or []
-    if steps:
-        table_rows = [
-            {
-                "step_no": step.get("step_no"),
-                "tool_name": step.get("tool_name"),
-                "goal": step.get("goal"),
-                "risk_level": step.get("risk_level"),
-                "requires_confirmation": step.get("requires_confirmation"),
-                "completion_criteria": step.get("completion_criteria"),
+        if st.button("① 创建任务", type="primary", use_container_width=True):
+            payload = {
+                "task": task_text,
+                "allowed_tools": st.session_state.allowed_tools,
+                "report_type": "summary",
+                "source_mode": st.session_state.source_mode,
             }
-            for step in steps
-        ]
-        st.dataframe(table_rows, use_container_width=True, hide_index=True)
-        for step in steps:
-            with st.expander(f"Step {step.get('step_no')}: {step.get('tool_name')} arguments"):
-                render_json(step.get("arguments") or {})
-    else:
-        st.warning("Plan has no executable steps.")
+            try:
+                resp = api_post("/api/tasks", payload)
+                st.session_state.last_task_response = resp
+                st.session_state.run_id = resp.get("run_id", "")
+                refresh_all(show_errors=False)
+                st.rerun()
+            except ApiError as exc:
+                st.error(str(exc))
 
-
-def render_run_executor() -> None:
-    st.subheader("Run")
-    run_id = st.session_state.get("run_id")
-    if not run_id:
-        st.info("Create or paste a run_id first.")
-        return
-
-    if st.session_state.get("execution_mode_display") == "react":
-        st.info("The backend must be started with EXECUTION_MODE=react; an LLM key may be required.")
-
-    if st.button("Run Task", type="primary"):
-        try:
+    with col2:
+        run_id = st.session_state.get("run_id", "")
+        if run_id and st.button("② 执行任务 ▶", type="primary", use_container_width=True):
             run_path = (
                 f"/api/tasks/{run_id}/run_async"
                 if st.session_state.use_async_run
                 else f"/api/tasks/{run_id}/run"
             )
-            response = api_post(run_path, {})
-            st.session_state.last_run_response = response
-            st.markdown(status_badge(response.get("status")), unsafe_allow_html=True)
-            render_json(response)
-            if st.session_state.use_async_run and response.get("status") == "running":
-                st.info("Async run started. Use Refresh to poll status, trace, and report.")
-            refresh_current_run(show_errors=False)
-            st.rerun()
-        except ApiError as exc:
-            show_api_error(exc)
+            try:
+                resp = api_post(run_path, {})
+                st.session_state.last_run_response = resp
+                refresh_all(show_errors=False)
+                st.rerun()
+            except ApiError as exc:
+                st.error(str(exc))
 
-    if st.session_state.get("last_run_response"):
-        response = st.session_state.last_run_response
-        status = response.get("status")
-        if status == "completed":
-            st.success("Run completed.")
-        elif status == "waiting_human":
-            st.warning("Run is waiting for human confirmation.")
-        elif status == "failed":
-            st.error("Run failed.")
+    # 当前状态摘要
+    status_obj = st.session_state.get("last_status")
+    if status_obj:
+        cur = status_obj.get("status", "unknown")
+        st.markdown(status_chip(cur), unsafe_allow_html=True)
+        if cur == "waiting_human":
+            _render_hitl()
+
+    st.divider()
+
+    # 计划可视化
+    plan = st.session_state.get("last_plan")
+    if plan:
+        ps = plan.get("planner_source", "deterministic")
+        if ps == "llm":
+            st.success("🤖 LLM 规划器已激活")
+        elif ps == "deterministic_fallback":
+            st.warning("⚠️ LLM 规划器降级为确定性模式")
         else:
-            st.info(f"Run status: {status}")
-        render_json(response)
+            st.info("📋 当前使用确定性规划器（无 LLM 调用）")
+
+        steps = plan.get("steps") or []
+        st.markdown(f"#### 📋 执行计划  ·  共 {len(steps)} 步")
+        st.markdown('<p class="section-tip">计划由 Planner 根据任务描述和可用工具生成，每步有固定的 goal、参数和风险等级。</p>', unsafe_allow_html=True)
+        for step in steps:
+            plan_step_card(step)
+    elif st.session_state.get("run_id"):
+        st.info("计划加载中…点击侧边栏「刷新全部」获取最新状态。")
 
 
-def render_status_panel() -> None:
-    st.subheader("Status")
-    run_id = st.session_state.get("run_id")
-    if not run_id:
-        st.info("No active run.")
-        return
-    if st.button("Refresh Status"):
-        try:
-            st.session_state.last_status = api_get(f"/api/tasks/{run_id}")
-        except ApiError as exc:
-            show_api_error(exc)
-            return
-    status = st.session_state.get("last_status")
-    if not status:
-        st.info("No status loaded yet.")
-        return
-    st.markdown(status_badge(status.get("status")), unsafe_allow_html=True)
-    fields = {
-        key: status.get(key)
-        for key in [
-            "run_id",
-            "status",
-            "current_step",
-            "total_steps",
-            "total_tool_calls",
-            "total_latency_ms",
-            "report_path",
-            "error_message",
-            "execution_mode",
-            "planner_source",
-            "llm_provider",
-            "llm_model",
-        ]
-    }
-    render_json(fields)
-
-
-def render_hitl_panel() -> None:
-    status = st.session_state.get("last_status") or {}
-    run_response = st.session_state.get("last_run_response") or {}
-    current_status = status.get("status") or run_response.get("status")
-    if current_status != "waiting_human":
-        return
-
-    st.subheader("Human Confirmation")
-    approved = st.checkbox("approved", value=True)
-    resume = st.checkbox("resume", value=True)
-    comment = st.text_input("comment", value="Approved from Streamlit UI.")
-    if st.button("Confirm"):
+def _render_hitl() -> None:
+    st.warning("✋ 任务正在等待人工确认，请确认后继续执行。")
+    approved = st.checkbox("批准执行", value=True)
+    comment  = st.text_input("备注", value="Streamlit 界面已确认")
+    if st.button("提交确认"):
         run_id = st.session_state.get("run_id")
-        payload = {"approved": approved, "resume": resume, "comment": comment}
         try:
-            response = api_post(f"/api/tasks/{run_id}/confirm", payload)
-            st.success("Confirmation submitted.")
-            render_json(response)
-            st.session_state.last_run_response = response.get("run_result") or response
-            refresh_current_run(show_errors=False)
+            resp = api_post(f"/api/tasks/{run_id}/confirm",
+                            {"approved": approved, "resume": True, "comment": comment})
+            st.success("✅ 确认已提交")
+            st.session_state.last_run_response = resp.get("run_result") or resp
+            refresh_all(show_errors=False)
             st.rerun()
         except ApiError as exc:
-            show_api_error(exc)
+            st.error(str(exc))
 
 
-def render_trace_viewer() -> None:
-    st.subheader("Trace")
-    run_id = st.session_state.get("run_id")
-    if not run_id:
-        st.info("No active run.")
-        return
-    if st.button("Refresh Trace"):
-        try:
-            st.session_state.last_trace = normalize_trace_response(api_get(f"/api/tasks/{run_id}/trace"))
-        except ApiError as exc:
-            show_api_error(exc)
-            return
+# ── Tab 2：执行追踪 ───────────────────────────────────────────────
+def tab_trace() -> None:
+    st.markdown("#### 🔍 工具调用追踪")
+    st.markdown('<p class="section-tip">每次工具调用都记录在 Trace Store（SQLite）中，包含输入摘要、输出摘要、延迟和结构化元数据。这是项目"可追踪"能力的核心体现。</p>', unsafe_allow_html=True)
 
     traces = st.session_state.get("last_trace") or []
+    status_obj = st.session_state.get("last_status") or {}
+
     if not traces:
-        st.info("No trace yet.")
+        st.info("暂无 Trace，请先创建并执行任务。")
         return
 
-    counts: dict[str, int] = {}
+    # 汇总指标
+    total   = len(traces)
+    success = sum(1 for t in traces if t.get("status") in ("success", "completed"))
+    failed  = sum(1 for t in traces if t.get("status") in ("failed", "rejected"))
+    avg_lat = (sum(t.get("latency_ms", 0) or 0 for t in traces) / total) if total else 0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("总步骤数", total)
+    c2.metric("成功", success, delta=None)
+    c3.metric("失败", failed, delta=None)
+    c4.metric("平均延迟", f"{avg_lat:.0f} ms")
+
+    st.markdown("---")
+    st.markdown("**工具调用时间线**")
     for trace in traces:
-        status = trace.get("status") or "unknown"
-        counts[status] = counts.get(status, 0) + 1
+        trace_step_card(trace)
 
-    cols = st.columns(max(1, len(counts)))
-    for col, (status, count) in zip(cols, counts.items()):
-        col.markdown(status_badge(status), unsafe_allow_html=True)
-        col.metric("count", count)
-
-    react_traces = []
-    for trace in traces:
-        metadata = extract_react_metadata(trace)
-        if metadata.get("execution_mode") == "react":
-            react_traces.append((trace, metadata))
-    if react_traces:
-        st.markdown("### ReAct Trace")
-        for trace, metadata in react_traces:
-            label = (
-                f"Step {trace.get('step_no')}: "
-                f"{metadata.get('action') or trace.get('tool_name')} [{trace.get('status')}]"
-            )
-            with st.expander(label):
-                st.write("Thought", metadata.get("thought") or "<none>")
-                st.write("Action", metadata.get("action") or trace.get("tool_name"))
-                st.write("Observation", metadata.get("observation_summary") or trace.get("output_summary"))
-                st.write("Status", trace.get("status"))
-
-    rows = [
-        {
-            "step_no": trace.get("step_no"),
-            "tool_name": trace.get("tool_name"),
-            "status": trace.get("status"),
-            "input_summary": trace.get("input_summary"),
-            "output_summary": trace.get("output_summary"),
-            "error_message": trace.get("error_message"),
-            "latency_ms": trace.get("latency_ms"),
-            "created_at": trace.get("created_at"),
-            "finished_at": trace.get("finished_at"),
-        }
-        for trace in traces
-    ]
-    st.dataframe(rows, use_container_width=True, hide_index=True)
-    for trace in traces:
-        with st.expander(
-            f"Trace details: {trace.get('step_no')} - {trace.get('tool_name')}"
-        ):
-            metadata = extract_trace_metadata(trace)
-            if metadata:
-                st.caption("RAG backend metadata")
-                st.dataframe([metadata], use_container_width=True, hide_index=True)
-            react_metadata = extract_react_metadata(trace)
-            if react_metadata:
-                st.caption("ReAct Thought / Action / Observation")
-                render_json(react_metadata)
-            render_json(trace)
+    st.divider()
+    # 执行元数据摘要
+    plan_source = status_obj.get("planner_source", "—")
+    exec_mode   = status_obj.get("execution_mode", "planned")
+    with st.expander("📊 执行元信息（点击展开）", expanded=False):
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("规划器来源", plan_source)
+        mc2.metric("执行模式",   exec_mode)
+        mc3.metric("总延迟",     f"{status_obj.get('total_latency_ms', '—')} ms")
+        if status_obj.get("llm_provider"):
+            mc1.metric("LLM 提供商", status_obj.get("llm_provider"))
+            mc2.metric("LLM 模型",   status_obj.get("llm_model", "—"))
 
 
-def render_report_viewer() -> None:
-    st.subheader("Report")
-    run_id = st.session_state.get("run_id")
-    if not run_id:
-        st.info("No active run.")
-        return
-    if st.button("Refresh Report"):
-        try:
-            st.session_state.last_report = api_get(f"/api/reports/{run_id}")
-        except ApiError as exc:
-            show_api_error(exc)
-            return
+# ── Tab 3：研究报告 ───────────────────────────────────────────────
+def tab_report() -> None:
+    st.markdown("#### 📝 Markdown 研究报告")
+    st.markdown('<p class="section-tip">Reporter 根据 Trace 记录和工具返回结果组织报告，包含任务、执行计划、证据来源、Trace 汇总和运行时限制说明。</p>', unsafe_allow_html=True)
 
     report = st.session_state.get("last_report")
     if not report:
-        st.info("No report loaded yet.")
+        st.info("尚未生成报告，请先执行任务。")
         return
 
-    st.write(
-        {
-            "exists": report.get("exists"),
-            "report_path": report.get("report_path"),
-            "message": report.get("message"),
-        }
+    if not report.get("exists"):
+        st.warning(report.get("message") or "报告文件尚未生成。")
+        return
+
+    md = report.get("markdown") or ""
+
+    # 报告存在：展示状态摘要
+    status_obj = st.session_state.get("last_status") or {}
+    steps_done = status_obj.get("total_tool_calls", len(st.session_state.get("last_trace") or []))
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("执行步骤数", steps_done)
+    col2.metric("任务状态", status_obj.get("status", "completed"))
+    col3.metric("规划器", status_obj.get("planner_source", "—"))
+
+    st.divider()
+    st.markdown(md)
+    st.download_button(
+        "⬇️ 下载 Markdown 报告",
+        data=md,
+        file_name=f"research_report_{st.session_state.get('run_id','')[:8]}.md",
+        mime="text/markdown",
     )
-    markdown = report.get("markdown") or ""
-    if report.get("exists"):
-        st.markdown(markdown)
-        st.download_button(
-            "Download Markdown",
-            data=markdown,
-            file_name=f"traceable_report_{run_id}.md",
-            mime="text/markdown",
-        )
-    else:
-        st.info(report.get("message") or "Report has not been generated yet.")
 
 
+# ── 主入口 ────────────────────────────────────────────────────────
 def main() -> None:
-    st.set_page_config(page_title="Traceable Research Agent", layout="wide")
+    st.set_page_config(
+        page_title="Traceable Research Agent",
+        page_icon="🔬",
+        layout="wide",
+    )
+    st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
     init_state()
     render_sidebar()
 
-    st.title("Traceable Research Agent Demo")
-    st.caption("Create task -> inspect plan -> run -> trace -> report")
+    st.markdown("# 🔬 Traceable Research Agent")
+    st.markdown(
+        "可追踪调研智能体后端 &nbsp;·&nbsp; "
+        "任务创建 → 规划 → 工具执行 → Trace 记录 → 研究报告"
+    )
+    st.divider()
 
-    render_health_panel()
-    left, right = st.columns([0.95, 1.05])
-    with left:
-        render_task_creation()
-        render_plan_viewer()
-    with right:
-        render_status_panel()
-        render_run_executor()
-        render_hitl_panel()
-
-    render_trace_viewer()
-    render_report_viewer()
+    tab1, tab2, tab3 = st.tabs(["⚡ 任务与规划", "🔍 执行追踪", "📝 研究报告"])
+    with tab1:  tab_task()
+    with tab2:  tab_trace()
+    with tab3:  tab_report()
 
 
 if __name__ == "__main__":

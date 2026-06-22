@@ -26,15 +26,26 @@ class Settings(BaseModel):
     user_header_name: str = "X-User-ID"
     default_tenant_id: str = "demo"
     default_user_id: str = "local-user"
+    external_tools_default_mode: str = "real"
+    offline_mode: bool = False
+    allow_mock_fallback: bool = False
+    github_tool_default_mode: str = "public_api"
     github_token: str | None = None
+    github_public_api_enabled: bool = True
     github_search_cache_enabled: bool = True
     github_search_cache_path: str = "workspace/cache/github_search_cache.json"
     github_search_cache_ttl_seconds: int = 3600
     github_public_api_timeout_seconds: int = 10
     github_public_api_max_retries: int = 2
-    github_public_api_fallback_to_mock: bool = True
+    github_public_api_fallback_to_mock: bool = False
+    tavily_api_key: str | None = None
+    tavily_search_enabled: bool = True
+    tavily_default_max_results: int = 5
+    tavily_timeout_seconds: int = 15
+    tavily_max_retries: int = 2
+    tavily_fallback_to_mock: bool = False
     mcp_readonly_mode: bool = True
-    mcp_adapter_mode: str = "github_readonly"
+    mcp_adapter_mode: str = "github_tavily_readonly"
     mcp_allow_write_tools: bool = False
     execution_mode: str = "planned"
     react_enabled: bool = True
@@ -71,6 +82,18 @@ class Settings(BaseModel):
     rag_bm25_candidate_multiplier: int = 2
     rag_chunk_experiment_sizes: str = "256,512,1024"
     rag_chunk_experiment_output: str = "workspace/eval_outputs/rag_chunk_experiment_results.json"
+
+    @field_validator("external_tools_default_mode", mode="before")
+    @classmethod
+    def validate_external_tools_default_mode(cls, value: object) -> str:
+        normalized = str(value or "real").strip().lower()
+        return normalized if normalized in {"real", "mock"} else "real"
+
+    @field_validator("github_tool_default_mode", mode="before")
+    @classmethod
+    def validate_github_tool_default_mode(cls, value: object) -> str:
+        normalized = str(value or "public_api").strip().lower()
+        return normalized if normalized in {"public_api", "mock"} else "public_api"
 
     @field_validator("rag_retrieval_mode", mode="before")
     @classmethod
@@ -139,7 +162,16 @@ class Settings(BaseModel):
             or "demo",
             default_user_id=os.getenv("DEFAULT_USER_ID", "local-user").strip()
             or "local-user",
+            external_tools_default_mode=_env_choice(
+                "EXTERNAL_TOOLS_DEFAULT_MODE", "real", {"real", "mock"}
+            ),
+            offline_mode=_env_bool("OFFLINE_MODE", False),
+            allow_mock_fallback=_env_bool("ALLOW_MOCK_FALLBACK", False),
+            github_tool_default_mode=_env_choice(
+                "GITHUB_TOOL_DEFAULT_MODE", "public_api", {"public_api", "mock"}
+            ),
             github_token=_env_optional("GITHUB_TOKEN"),
+            github_public_api_enabled=_env_bool("GITHUB_PUBLIC_API_ENABLED", True),
             github_search_cache_enabled=_env_bool(
                 "GITHUB_SEARCH_CACHE_ENABLED", True
             ),
@@ -158,13 +190,23 @@ class Settings(BaseModel):
                 "GITHUB_PUBLIC_API_MAX_RETRIES", 2
             ),
             github_public_api_fallback_to_mock=_env_bool(
-                "GITHUB_PUBLIC_API_FALLBACK_TO_MOCK", True
+                "GITHUB_PUBLIC_API_FALLBACK_TO_MOCK", False
             ),
+            tavily_api_key=_env_optional("TAVILY_API_KEY"),
+            tavily_search_enabled=_env_bool("TAVILY_SEARCH_ENABLED", True),
+            tavily_default_max_results=_env_bounded_int(
+                "TAVILY_DEFAULT_MAX_RESULTS", 5, 1, 20
+            ),
+            tavily_timeout_seconds=_env_bounded_int(
+                "TAVILY_TIMEOUT_SECONDS", 15, 1, 120
+            ),
+            tavily_max_retries=_env_bounded_int("TAVILY_MAX_RETRIES", 2, 0, 5),
+            tavily_fallback_to_mock=_env_bool("TAVILY_FALLBACK_TO_MOCK", False),
             mcp_readonly_mode=_env_bool("MCP_READONLY_MODE", True),
             mcp_adapter_mode=os.getenv(
-                "MCP_ADAPTER_MODE", "github_readonly"
+                "MCP_ADAPTER_MODE", "github_tavily_readonly"
             ).strip()
-            or "github_readonly",
+            or "github_tavily_readonly",
             mcp_allow_write_tools=_env_bool("MCP_ALLOW_WRITE_TOOLS", False),
             execution_mode=_env_choice(
                 "EXECUTION_MODE", "planned", {"planned", "react"}
@@ -329,13 +371,24 @@ class Settings(BaseModel):
         """Return GitHub/MCP settings without token contents."""
 
         return {
+            "external_tools_default_mode": self.external_tools_default_mode,
+            "offline_mode": self.offline_mode,
+            "allow_mock_fallback": self.allow_mock_fallback,
+            "github_tool_default_mode": self.github_tool_default_mode,
             "github_token_configured": bool(self.github_token),
+            "github_public_api_enabled": self.github_public_api_enabled,
             "github_search_cache_enabled": self.github_search_cache_enabled,
             "github_search_cache_path": self.github_search_cache_path,
             "github_search_cache_ttl_seconds": self.github_search_cache_ttl_seconds,
             "github_public_api_timeout_seconds": self.github_public_api_timeout_seconds,
             "github_public_api_max_retries": self.github_public_api_max_retries,
             "github_public_api_fallback_to_mock": self.github_public_api_fallback_to_mock,
+            "tavily_configured": bool(self.tavily_api_key),
+            "tavily_search_enabled": self.tavily_search_enabled,
+            "tavily_default_max_results": self.tavily_default_max_results,
+            "tavily_timeout_seconds": self.tavily_timeout_seconds,
+            "tavily_max_retries": self.tavily_max_retries,
+            "tavily_fallback_to_mock": self.tavily_fallback_to_mock,
             "mcp_readonly_mode": self.mcp_readonly_mode,
             "mcp_adapter_mode": self.mcp_adapter_mode,
             "mcp_allow_write_tools": self.mcp_allow_write_tools,

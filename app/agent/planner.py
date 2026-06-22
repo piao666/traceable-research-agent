@@ -16,6 +16,7 @@ DEFAULT_TOOL_ORDER = [
     "sql_query",
     "rag_search",
     "mcp_github_search",
+    "tavily_search",
     "report_writer",
 ]
 
@@ -64,6 +65,28 @@ GITHUB_KEYWORDS = {
     "code search",
     "\u4ed3\u5e93",
     "\u4ee3\u7801\u4ed3\u5e93",
+}
+WEB_SEARCH_KEYWORDS = {
+    "latest",
+    "web search",
+    "internet search",
+    "external sources",
+    "tavily",
+    "online research",
+    "最新资料",
+    "网络搜索",
+    "外部资料",
+    "互联网搜索",
+    "联网搜索",
+}
+GITHUB_REPOSITORY_RANKING_KEYWORDS = {
+    "stars",
+    "star ranking",
+    "top repositories",
+    "most starred",
+    "仓库排名",
+    "star 排名",
+    "最受欢迎仓库",
 }
 REPORT_KEYWORDS = {
     "report",
@@ -117,15 +140,30 @@ def _step_template(
             "requires_confirmation": False,
         },
         "mcp_github_search": {
-            "goal": "Collect read-only GitHub-style evidence through the mock/public adapter.",
+            "goal": "Collect real read-only GitHub evidence through the Public API adapter.",
             "arguments": {
                 "query": task,
-                "repo": "piao666/traceable-research-agent",
+                "repo": None,
                 "limit": 5,
-                "mode": "mock",
+                "mode": "public_api",
+                "search_type": "issues",
             },
-            "expected_output": "Mock or public read-only GitHub search results.",
+            "expected_output": "Real read-only GitHub Public API search results.",
             "completion_criteria": "The adapter returns evidence without any write operation.",
+            "risk_level": "medium",
+            "requires_confirmation": False,
+        },
+        "tavily_search": {
+            "goal": "Search current external web sources through the read-only Tavily API.",
+            "arguments": {
+                "query": task,
+                "max_results": settings.tavily_default_max_results,
+                "search_depth": "advanced",
+                "include_answer": True,
+                "include_raw_content": False,
+            },
+            "expected_output": "Current web results returned by the real Tavily Search API.",
+            "completion_criteria": "Tavily returns external evidence or a structured API error.",
             "risk_level": "medium",
             "requires_confirmation": False,
         },
@@ -170,7 +208,7 @@ def _append_step(
 def plan_task(
     task: str,
     allowed_tools: list[str] | None = None,
-    source_mode: str = "mock",
+    source_mode: str = "real",
     planner_mode: str | None = None,
 ) -> dict[str, Any]:
     """Create a plan using deterministic rules or optional LLM planning."""
@@ -201,6 +239,7 @@ def plan_task(
                     source_mode=source_mode,
                 )
                 if valid and normalized is not None:
+                    _enforce_external_tool_modes(normalized, task, source_mode)
                     _apply_human_confirmation_policy(normalized, task)
                     _synchronize_confirmation_notes(normalized)
                     normalized["planner_source"] = "llm"
@@ -232,7 +271,7 @@ def plan_task(
 def deterministic_plan_task(
     task: str,
     allowed_tools: list[str] | None = None,
-    source_mode: str = "mock",
+    source_mode: str = "real",
 ) -> dict[str, Any]:
     """Create a stable deterministic plan from task keywords.
 
@@ -251,6 +290,8 @@ def deterministic_plan_task(
         _append_step(steps, notes, "file_reader", task_text, allowed_set)
     if _matches(task_lower, SQL_KEYWORDS):
         _append_step(steps, notes, "sql_query", task_text, allowed_set)
+    if _matches(task_lower, WEB_SEARCH_KEYWORDS):
+        _append_step(steps, notes, "tavily_search", task_text, allowed_set)
     if _matches(task_lower, RAG_KEYWORDS):
         _append_step(steps, notes, "rag_search", task_text, allowed_set)
     if _matches(task_lower, GITHUB_KEYWORDS):
@@ -282,7 +323,7 @@ def deterministic_plan_task(
     for index, step in enumerate(steps, start=1):
         step["step_no"] = index
 
-    return {
+    plan = {
         "version": "deterministic-v1",
         "task": task_text,
         "source_mode": source_mode,
@@ -291,6 +332,38 @@ def deterministic_plan_task(
         "notes": notes,
         "confirmation": None,
     }
+    _enforce_external_tool_modes(plan, task_text, source_mode)
+    return plan
+
+
+def _enforce_external_tool_modes(
+    plan: dict[str, Any], task: str, source_mode: str
+) -> None:
+    """Keep external tool plans consistent with explicit real/offline mode."""
+
+    normalized_source = str(source_mode or "real").strip().lower()
+    use_mock = normalized_source in {"mock", "offline"} or settings.offline_mode
+    repository_ranking = _matches(task.lower(), GITHUB_REPOSITORY_RANKING_KEYWORDS)
+    for step in plan.get("steps") or []:
+        tool_name = step.get("tool_name")
+        arguments = step.setdefault("arguments", {})
+        if not isinstance(arguments, dict):
+            arguments = {}
+            step["arguments"] = arguments
+        if tool_name == "mcp_github_search":
+            arguments["mode"] = "mock" if use_mock else "public_api"
+            if repository_ranking:
+                arguments.update(
+                    {
+                        "repo": None,
+                        "search_type": "repositories",
+                        "sort": "stars",
+                        "order": "desc",
+                    }
+                )
+        elif tool_name == "tavily_search":
+            arguments.setdefault("max_results", settings.tavily_default_max_results)
+            arguments.setdefault("search_depth", "advanced")
 
 
 def _safe_fallback_reason(reason: str) -> str:

@@ -17,7 +17,7 @@ class HealthResponse(BaseModel):
 class TaskCreateRequest(BaseModel):
     task: str = Field(..., min_length=1)
     report_type: str = "summary"
-    source_mode: str = "mock"
+    source_mode: str = "real"
     allowed_tools: list[str] | None = None
 
 

@@ -6,6 +6,7 @@ from app.tools.mcp_github import github_search_handler
 from app.tools.rag_search import search_rag
 from app.tools.registry import register_tool
 from app.tools.sql_query import run_query
+from app.tools.tavily_search import tavily_search_handler
 
 
 def register_default_tools() -> None:
@@ -51,14 +52,17 @@ def register_default_tools() -> None:
         ToolSpec(
             name="mcp_github_search",
             description=(
-                "Search GitHub repository information through a read-only "
-                "MCP/GitHub-style adapter. Defaults to offline mock mode."
+                "Search real GitHub repositories or issues through a read-only "
+                "Public API adapter. Mock mode is explicit/offline only."
             ),
             input_schema={
                 "query": "string",
                 "repo": "string|null",
                 "limit": "integer",
                 "mode": "mock|public_api",
+                "search_type": "issues|repositories",
+                "sort": "stars|updated|best_match",
+                "order": "asc|desc",
             },
             output_schema={"query": "string", "repo": "string|null", "mode": "string", "results": "array"},
             risk_level=RiskLevel.MEDIUM,
@@ -67,6 +71,25 @@ def register_default_tools() -> None:
             tags=["github", "mcp", "read-only"],
         ),
         handler=github_search_handler,
+    )
+    register_tool(
+        ToolSpec(
+            name="tavily_search",
+            description="Search current external web sources through the real read-only Tavily API.",
+            input_schema={
+                "query": "string",
+                "max_results": "integer",
+                "search_depth": "basic|advanced",
+                "include_answer": "boolean",
+                "include_raw_content": "boolean",
+            },
+            output_schema={"query": "string", "answer": "string|null", "results": "array"},
+            risk_level=RiskLevel.MEDIUM,
+            requires_confirmation=False,
+            enabled=True,
+            tags=["tavily", "web", "search", "read-only"],
+        ),
+        handler=tavily_search_handler,
     )
     register_tool(
         ToolSpec(

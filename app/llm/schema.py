@@ -12,6 +12,7 @@ KNOWN_TOOLS = {
     "sql_query",
     "rag_search",
     "mcp_github_search",
+    "tavily_search",
     "report_writer",
 }
 VALID_RISK_LEVELS = {"low", "medium", "high"}
