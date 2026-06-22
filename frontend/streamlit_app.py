@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +117,10 @@ class ApiError(Exception):
     pass
 
 
+class ApiTimeoutError(ApiError):
+    pass
+
+
 def init_state() -> None:
     defaults = {
         "api_base_url": os.environ.get("STREAMLIT_API_BASE_URL", DEFAULT_API_BASE_URL),
@@ -123,7 +128,7 @@ def init_state() -> None:
         "api_key":      os.environ.get("DEMO_API_KEY", ""),
         "tenant_id":    os.environ.get("DEFAULT_TENANT_ID", "demo"),
         "user_id":      os.environ.get("DEFAULT_USER_ID", "local-user"),
-        "use_async_run": False,
+        "use_async_run": True,
         # EXECUTION_MODE 由后端 .env 控制，这里只做显示用
         "execution_mode_display": os.environ.get("EXECUTION_MODE", "planned"),
         "run_id": "",
@@ -133,6 +138,7 @@ def init_state() -> None:
         "last_plan": None,
         "last_trace": [],
         "last_report": None,
+        "run_notice": None,
         "selected_template": list(DEMO_TEMPLATES.keys())[0],
         "task_text": list(DEMO_TEMPLATES.values())[0]["task"],
         "allowed_tools": list(DEMO_TEMPLATES.values())[0]["allowed_tools"],
@@ -164,7 +170,9 @@ def api_request(method: str, path: str, payload: dict | None = None) -> Any:
     except requests.ConnectionError:
         raise ApiError("⚠️ 后端未启动，请先运行 FastAPI：python -m uvicorn app.main:app --port 8000")
     except requests.Timeout:
-        raise ApiError("⚠️ 请求超时，请检查后端是否正常响应")
+        raise ApiTimeoutError(
+            "前端等待超时，但后端可能仍在执行。请点击“刷新全部”查看最新状态。"
+        )
     except requests.RequestException as e:
         raise ApiError(f"⚠️ 请求失败：{e}")
     try:
@@ -198,6 +206,26 @@ def refresh_all(show_errors: bool = True) -> None:
         st.session_state.last_report = api_get(f"/api/reports/{run_id}")
     except ApiError as exc:
         if show_errors: st.error(str(exc))
+
+
+def _current_run_status() -> str:
+    status_obj = st.session_state.get("last_status")
+    if isinstance(status_obj, dict):
+        return str(status_obj.get("status") or "unknown")
+    return "unknown"
+
+
+def _poll_running_task(max_attempts: int = 3, interval_seconds: float = 1.0) -> str:
+    """Briefly poll an async run without turning Streamlit into a long-running waiter."""
+
+    status = _current_run_status()
+    for _ in range(max_attempts):
+        if status not in {"pending", "running", "unknown"}:
+            break
+        time.sleep(interval_seconds)
+        refresh_all(show_errors=False)
+        status = _current_run_status()
+    return status
 
 
 def apply_template(name: str) -> None:
@@ -373,7 +401,7 @@ def render_sidebar() -> None:
             st.text_input("API Key", key="api_key", type="password")
             st.text_input("Tenant ID", key="tenant_id")
             st.text_input("User ID",   key="user_id")
-            st.checkbox("异步执行", key="use_async_run")
+            st.checkbox("异步执行（推荐；关闭后使用同步执行）", key="use_async_run")
 
         st.divider()
         if st.session_state.get("run_id"):
@@ -392,6 +420,19 @@ def render_sidebar() -> None:
 def tab_task() -> None:
     st.markdown("#### 📝 调研任务描述")
     st.markdown('<p class="section-tip">系统会将自然语言任务转化为结构化执行计划，每一步工具调用都有明确的目标和风险等级。</p>', unsafe_allow_html=True)
+
+    notice = st.session_state.pop("run_notice", None)
+    if isinstance(notice, dict):
+        level = notice.get("level", "info")
+        message = str(notice.get("message") or "")
+        if level == "success":
+            st.success(message)
+        elif level == "warning":
+            st.warning(message)
+        elif level == "error":
+            st.error(message)
+        else:
+            st.info(message)
 
     st.text_area(
         "任务内容",
@@ -422,18 +463,58 @@ def tab_task() -> None:
     with col2:
         run_id = st.session_state.get("run_id", "")
         if run_id and st.button("② 执行任务 ▶", type="primary", use_container_width=True):
-            run_path = (
-                f"/api/tasks/{run_id}/run_async"
-                if st.session_state.use_async_run
-                else f"/api/tasks/{run_id}/run"
-            )
-            try:
-                resp = api_post(run_path, {})
-                st.session_state.last_run_response = resp
-                refresh_all(show_errors=False)
-                st.rerun()
-            except ApiError as exc:
-                st.error(str(exc))
+            refresh_all(show_errors=False)
+            current_status = _current_run_status()
+            if current_status == "completed":
+                st.info("任务已完成，请查看研究报告。")
+            elif current_status == "running":
+                st.info("任务正在执行中，请刷新状态。")
+            elif current_status == "waiting_human":
+                st.warning("任务等待人工确认。")
+            else:
+                run_path = (
+                    f"/api/tasks/{run_id}/run_async"
+                    if st.session_state.use_async_run
+                    else f"/api/tasks/{run_id}/run"
+                )
+                try:
+                    resp = api_post(run_path, {})
+                    st.session_state.last_run_response = resp
+                    refresh_all(show_errors=False)
+                    final_status = (
+                        _poll_running_task(max_attempts=3, interval_seconds=1.0)
+                        if st.session_state.use_async_run
+                        else _current_run_status()
+                    )
+                    if final_status == "completed":
+                        notice = {"level": "success", "message": "任务已完成，请查看研究报告。"}
+                    elif final_status == "waiting_human":
+                        notice = {"level": "warning", "message": "任务等待人工确认。"}
+                    elif final_status == "failed":
+                        notice = {"level": "error", "message": "任务执行失败，请查看 Trace 中的错误详情。"}
+                    else:
+                        notice = {
+                            "level": "success",
+                            "message": "任务已开始执行，正在刷新状态。若仍在运行，请点击“刷新全部”。",
+                        }
+                    st.session_state.run_notice = notice
+                    st.rerun()
+                except ApiTimeoutError:
+                    refresh_all(show_errors=False)
+                    if _current_run_status() == "completed":
+                        st.session_state.run_notice = {
+                            "level": "success",
+                            "message": "后端任务已完成，请查看研究报告。",
+                        }
+                    else:
+                        st.session_state.run_notice = {
+                            "level": "warning",
+                            "message": "前端等待超时，但后端可能仍在执行。请点击“刷新全部”查看最新状态。",
+                        }
+                    st.rerun()
+                except ApiError as exc:
+                    st.error(str(exc))
+        st.caption("真实 GitHub/Tavily/LLM 任务可能耗时较久，系统默认异步执行。")
 
     # 当前状态摘要
     status_obj = st.session_state.get("last_status")
