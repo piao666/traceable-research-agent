@@ -4303,3 +4303,46 @@ Not completed in Day36-A:
 Next step:
 
 * Day36-B - Run Real Embedding Experiment And Update RAG Experiment Report.
+
+2026-06-20 - Day36-B Run Real Embedding Experiment And Update RAG Experiment Report
+
+Experiment execution:
+
+* Re-ran the deterministic Dense + BM25 + RRF baseline with 9 documents and 20
+  query/reference cases. Results: 256 => Recall@3/5 1.0/1.0, 4.239 ms, 135
+  chunks; 512 => 1.0/1.0, 3.273 ms, 67 chunks; 1024 => 1.0/1.0, 2.583 ms,
+  34 chunks.
+* Explicitly enabled `RUN_REAL_RAG_CHUNK_EXPERIMENT=true` with the configured
+  local `bge-small-zh-v1.5` model. The payload confirmed
+  `use_real_embedding=true` and `embedding_backend=sentence_transformers`; no
+  deterministic fallback occurred.
+* Real SentenceTransformers results: 256 => Recall@3/5 1.0/1.0, 87.465 ms,
+  135 chunks; 512 => 1.0/1.0, 52.154 ms, 67 chunks; 1024 => 1.0/1.0,
+  35.199 ms, 34 chunks.
+* Both result sets remain recall-saturated. This is reported as a limitation of
+  the current rule-based demo corpus rather than evidence that one size is
+  universally superior.
+* Chunk size 512 remains the recommended default engineering compromise: it
+  reduces chunk count relative to 256 while retaining more focused evidence
+  than 1024. The recommendation is based on latency, index size, and context
+  granularity, not a measured recall advantage.
+
+Documentation and validation:
+
+* Updated `docs/rag_chunk_experiment.md` with corpus/query descriptions, both
+  measured tables, findings, and explicit limitations.
+* Updated only the RAG chunk experiment section of `README.md` with the Day36-B
+  results, reproducible-default behavior, real-run switch, and link to the full
+  report.
+* `compileall`, `smoke_rag_chunk_real_switch.py`, the deterministic experiment,
+  `smoke_hybrid_rag.py`, and application eval all passed.
+* Application eval result: 29/29 passed, failed=0. Default smoke/eval remains
+  independent of the real model and external network.
+* Runtime result JSON remains under ignored `workspace/eval_outputs` and is not
+  tracked. No `.env`, key, model, database, runtime index/cache/chroma/report,
+  or other generated artifact is intended for commit.
+
+Next step:
+
+* Do not add further product features. Continue with resume and interview
+  material refinement, using these results with their documented limitations.

@@ -118,15 +118,24 @@ The complete 18-case experiment is documented in
 * Reciprocal Rank Fusion (RRF).
 * `retrieval_mode=dense|bm25|hybrid`.
 
-| Chunk Size | Recall@3 | Recall@5 | Avg Latency |
-| ---: | ---: | ---: | ---: |
-| 256 | 1.0 | 1.0 | 2.098 ms |
-| 512 | 1.0 | 1.0 | 1.588 ms |
-| 1024 | 1.0 | 1.0 | 1.814 ms |
+Day36 expanded the experiment to 9 documents and 20 query/reference cases.
+The deterministic baseline remains the default reproducible path; set
+`RUN_REAL_RAG_CHUNK_EXPERIMENT=true` with a configured local model to run the
+real SentenceTransformers branch.
 
-Chunk size 512 is the recommended default for the current demo corpus. These
-small-corpus results are engineering regression evidence rather than a public
-large-scale benchmark. See
+| Backend | Chunk Size | Recall@3 | Recall@5 | Avg Latency |
+| --- | ---: | ---: | ---: | ---: |
+| SentenceTransformers | 256 | 1.0 | 1.0 | 87.465 ms |
+| SentenceTransformers | 512 | 1.0 | 1.0 | 52.154 ms |
+| SentenceTransformers | 1024 | 1.0 | 1.0 | 35.199 ms |
+| Deterministic | 256 | 1.0 | 1.0 | 4.239 ms |
+| Deterministic | 512 | 1.0 | 1.0 | 3.273 ms |
+| Deterministic | 1024 | 1.0 | 1.0 | 2.583 ms |
+
+Recall remains saturated on the current demo corpus, so the results do not
+establish a universal winner. Chunk size 512 is the recommended default
+engineering compromise between latency, chunk count, and evidence granularity.
+See
 [RAG Chunk Experiment](docs/rag_chunk_experiment.md).
 
 ## 6. Tool System and Safety Boundaries
