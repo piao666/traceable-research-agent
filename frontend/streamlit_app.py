@@ -1,10 +1,9 @@
-"""Traceable Research Agent — 中文演示界面"""
+"""Traceable Research Agent"""
 
 from __future__ import annotations
 
 import json
 import os
-import time
 from pathlib import Path
 from typing import Any
 
@@ -22,21 +21,13 @@ if _env_path.exists():
 
 # ── 常量 ──────────────────────────────────────────────────────────
 DEFAULT_API_BASE_URL = "http://127.0.0.1:8000"
-ALL_TOOLS = [
-    "file_reader",
-    "sql_query",
-    "rag_search",
-    "mcp_github_search",
-    "tavily_search",
-    "report_writer",
-]
+ALL_TOOLS = ["file_reader", "sql_query", "rag_search", "mcp_github_search", "report_writer"]
 
 TOOL_ICON = {
     "file_reader":      "📄",
     "sql_query":        "🗄️",
     "rag_search":       "🔍",
     "mcp_github_search":"🐙",
-    "tavily_search":   "🌐",
     "report_writer":    "📝",
 }
 TOOL_CN = {
@@ -44,7 +35,6 @@ TOOL_CN = {
     "sql_query":        "数据库查询",
     "rag_search":       "RAG 向量检索",
     "mcp_github_search":"GitHub 只读调研",
-    "tavily_search":   "Tavily 真实网络搜索",
     "report_writer":    "Markdown 报告生成",
 }
 RISK_COLOR = {"low": "#15803D", "medium": "#B45309", "high": "#B91C1C"}
@@ -81,7 +71,6 @@ STATUS_CN = {
 RAG_METADATA_FIELDS = [
     "retrieval_mode", "embedding_backend", "vector_backend",
     "fallback_used", "dense_hit_count", "bm25_hit_count", "rrf_k",
-    "dimension", "collection_name",
 ]
 
 # ── 全局 CSS（极简深色调） ────────────────────────────────────────
@@ -117,10 +106,6 @@ class ApiError(Exception):
     pass
 
 
-class ApiTimeoutError(ApiError):
-    pass
-
-
 def init_state() -> None:
     defaults = {
         "api_base_url": os.environ.get("STREAMLIT_API_BASE_URL", DEFAULT_API_BASE_URL),
@@ -128,7 +113,7 @@ def init_state() -> None:
         "api_key":      os.environ.get("DEMO_API_KEY", ""),
         "tenant_id":    os.environ.get("DEFAULT_TENANT_ID", "demo"),
         "user_id":      os.environ.get("DEFAULT_USER_ID", "local-user"),
-        "use_async_run": True,
+        "use_async_run": False,
         # EXECUTION_MODE 由后端 .env 控制，这里只做显示用
         "execution_mode_display": os.environ.get("EXECUTION_MODE", "planned"),
         "run_id": "",
@@ -138,12 +123,11 @@ def init_state() -> None:
         "last_plan": None,
         "last_trace": [],
         "last_report": None,
-        "run_notice": None,
         "selected_template": list(DEMO_TEMPLATES.keys())[0],
         "task_text": list(DEMO_TEMPLATES.values())[0]["task"],
         "allowed_tools": list(DEMO_TEMPLATES.values())[0]["allowed_tools"],
         "report_type": "summary",
-        "source_mode": "real",
+        "source_mode_ui": "real",       # default: real API
     }
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
@@ -170,9 +154,7 @@ def api_request(method: str, path: str, payload: dict | None = None) -> Any:
     except requests.ConnectionError:
         raise ApiError("⚠️ 后端未启动，请先运行 FastAPI：python -m uvicorn app.main:app --port 8000")
     except requests.Timeout:
-        raise ApiTimeoutError(
-            "前端等待超时，但后端可能仍在执行。请点击“刷新全部”查看最新状态。"
-        )
+        raise ApiError("⚠️ 请求超时，请检查后端是否正常响应")
     except requests.RequestException as e:
         raise ApiError(f"⚠️ 请求失败：{e}")
     try:
@@ -208,31 +190,24 @@ def refresh_all(show_errors: bool = True) -> None:
         if show_errors: st.error(str(exc))
 
 
-def _current_run_status() -> str:
-    status_obj = st.session_state.get("last_status")
-    if isinstance(status_obj, dict):
-        return str(status_obj.get("status") or "unknown")
-    return "unknown"
+def _sync_allowed_tools() -> None:
+    """on_change callback for the template selectbox — syncs allowed_tools only.
+    Called automatically by Streamlit when the selectbox value changes.
+    Must NOT touch st.session_state.selected_template (widget owns it via key=).
+    """
+    name = st.session_state.get("selected_template", list(DEMO_TEMPLATES.keys())[0])
+    t = DEMO_TEMPLATES.get(name) or list(DEMO_TEMPLATES.values())[0]
+    st.session_state.allowed_tools = list(t["allowed_tools"])
 
 
-def _poll_running_task(max_attempts: int = 3, interval_seconds: float = 1.0) -> str:
-    """Briefly poll an async run without turning Streamlit into a long-running waiter."""
-
-    status = _current_run_status()
-    for _ in range(max_attempts):
-        if status not in {"pending", "running", "unknown"}:
-            break
-        time.sleep(interval_seconds)
-        refresh_all(show_errors=False)
-        status = _current_run_status()
-    return status
-
-
-def apply_template(name: str) -> None:
-    t = DEMO_TEMPLATES[name]
-    st.session_state.task_text        = t["task"]
-    st.session_state.allowed_tools    = list(t["allowed_tools"])
-    st.session_state.selected_template = name
+def apply_template(name: str, fill_task: bool = False) -> None:
+    """Apply a template. Only overwrites task_text when fill_task=True (user explicitly clicked).
+    NOTE: Never sets st.session_state.selected_template — Streamlit owns it via key=.
+    """
+    t = DEMO_TEMPLATES.get(name) or list(DEMO_TEMPLATES.values())[0]
+    if fill_task:
+        st.session_state.task_text = t["task"]
+    st.session_state.allowed_tools = list(t["allowed_tools"])
 
 
 # ── UI helpers ────────────────────────────────────────────────────
@@ -325,10 +300,6 @@ def trace_step_card(trace: dict) -> None:
             cols2[0].metric("Embedding", meta.get("embedding_backend", "—"))
             cols2[1].metric("是否 Fallback", "是" if meta.get("fallback_used") else "否")
             cols2[2].metric("RRF-k", meta.get("rrf_k", "—"))
-            cols3 = st.columns(3)
-            cols3[0].metric("向量后端", meta.get("vector_backend", "—"))
-            cols3[1].metric("向量维度", meta.get("dimension", "—"))
-            cols3[2].metric("Collection", meta.get("collection_name", "—"))
 
 
 # ── 侧边栏 ────────────────────────────────────────────────────────
@@ -347,51 +318,45 @@ def render_sidebar() -> None:
 
         st.divider()
         st.markdown("**📋 场景模板**")
-        selected = st.selectbox(
+        st.selectbox(
             "选择演示场景",
             list(DEMO_TEMPLATES.keys()),
-            index=list(DEMO_TEMPLATES.keys()).index(st.session_state.selected_template),
+            key="selected_template",       # Streamlit 独占管理此 key，禁止在回调外赋值
+            on_change=_sync_allowed_tools, # 切换时只同步 allowed_tools，不碰 task_text
             label_visibility="collapsed",
         )
-        if selected != st.session_state.selected_template:
-            apply_template(selected)
+        if st.button("📋 填充示例任务文本", use_container_width=True,
+                     help="将下方任务框替换为当前场景的示例任务（不影响已输入的自定义内容）"):
+            apply_template(st.session_state.selected_template, fill_task=True)
             st.rerun()
 
         st.divider()
         st.markdown("**⚙️ 执行模式**")
-        mode = st.selectbox(
+        st.selectbox(
             "执行模式",
             ["planned", "react"],
-            index=["planned","react"].index(st.session_state.execution_mode_display),
-            format_func=lambda x: "📋 Planned（固定计划）" if x=="planned" else "🤖 ReAct（动态决策）",
+            format_func=lambda x: "📋 Planned（固定计划）" if x == "planned" else "🤖 ReAct（动态决策）",
             key="execution_mode_display",
             label_visibility="collapsed",
         )
-        if mode == "react":
-            st.caption("💡 ReAct 由后端 `.env` 里 `EXECUTION_MODE=react` 控制，此处仅作提示。需配置 `QWEN_API_KEY` 或 `DEEPSEEK_API_KEY`。")
+        if st.session_state.execution_mode_display == "react":
+            st.caption("🤖 创建任务时将以 ReAct 模式运行，每步由 LLM 动态决策。需后端已配置 QWEN_API_KEY 或 DEEPSEEK_API_KEY。")
         else:
-            st.caption("💡 当前模式由后端 `.env` 决定，此处选项不改变实际行为。")
+            st.caption("📋 创建任务时将以 Planned 模式运行，Planner 一次性生成固定执行计划。")
 
         st.divider()
-        st.markdown("**🌐 外部数据源**")
+        st.markdown("**🌐 数据来源**")
         st.selectbox(
-            "外部数据源",
+            "数据来源",
             ["real", "mock"],
-            key="source_mode",
-            format_func=lambda value: (
-                "real（真实 GitHub / Tavily API）"
-                if value == "real"
-                else "mock（离线演示数据）"
-            ),
+            format_func=lambda x: "🌐 real（真实 GitHub / Tavily API）" if x == "real" else "🧪 mock（离线演示数据）",
+            key="source_mode_ui",
             label_visibility="collapsed",
         )
-        if st.session_state.source_mode == "real":
-            st.caption(
-                "real：使用真实 GitHub/Tavily API，可能受网络、GitHub rate limit "
-                "和 Tavily API key 配置限制；未配置 Tavily key 时会返回 missing_api_key。"
-            )
+        if st.session_state.get("source_mode_ui") == "real":
+            st.caption("⚠️ real 模式调用真实 API，受 rate limit 限制，需配置相应 Key。")
         else:
-            st.caption("mock：仅用于离线演示、CI 和 smoke，不代表真实搜索结果或排名。")
+            st.caption("🧪 mock 模式使用本地离线数据，无需 API Key，适合演示。")
 
         st.divider()
         with st.expander("🔧 高级配置（API 连接）"):
@@ -401,14 +366,15 @@ def render_sidebar() -> None:
             st.text_input("API Key", key="api_key", type="password")
             st.text_input("Tenant ID", key="tenant_id")
             st.text_input("User ID",   key="user_id")
-            st.checkbox("异步执行（推荐；关闭后使用同步执行）", key="use_async_run")
+            st.checkbox("异步执行", key="use_async_run")
 
         st.divider()
         if st.session_state.get("run_id"):
             st.code(st.session_state.run_id[:16] + "…", language=None)
             if st.button("🔄 刷新全部", use_container_width=True):
                 refresh_all()
-                st.rerun()
+                # 不显式 st.rerun()：按钮点击本身会触发 Streamlit 的一次 rerun
+                # 避免双重 rerun 导致 selectbox index 重计算、task_text 被覆盖
         if st.button("🗑️ 清空会话", use_container_width=True):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
@@ -420,19 +386,6 @@ def render_sidebar() -> None:
 def tab_task() -> None:
     st.markdown("#### 📝 调研任务描述")
     st.markdown('<p class="section-tip">系统会将自然语言任务转化为结构化执行计划，每一步工具调用都有明确的目标和风险等级。</p>', unsafe_allow_html=True)
-
-    notice = st.session_state.pop("run_notice", None)
-    if isinstance(notice, dict):
-        level = notice.get("level", "info")
-        message = str(notice.get("message") or "")
-        if level == "success":
-            st.success(message)
-        elif level == "warning":
-            st.warning(message)
-        elif level == "error":
-            st.error(message)
-        else:
-            st.info(message)
 
     st.text_area(
         "任务内容",
@@ -449,7 +402,8 @@ def tab_task() -> None:
                 "task": task_text,
                 "allowed_tools": st.session_state.allowed_tools,
                 "report_type": "summary",
-                "source_mode": st.session_state.source_mode,
+                "source_mode": st.session_state.get("source_mode_ui", "real"),
+                "execution_mode_override": st.session_state.execution_mode_display,
             }
             try:
                 resp = api_post("/api/tasks", payload)
@@ -463,58 +417,18 @@ def tab_task() -> None:
     with col2:
         run_id = st.session_state.get("run_id", "")
         if run_id and st.button("② 执行任务 ▶", type="primary", use_container_width=True):
-            refresh_all(show_errors=False)
-            current_status = _current_run_status()
-            if current_status == "completed":
-                st.info("任务已完成，请查看研究报告。")
-            elif current_status == "running":
-                st.info("任务正在执行中，请刷新状态。")
-            elif current_status == "waiting_human":
-                st.warning("任务等待人工确认。")
-            else:
-                run_path = (
-                    f"/api/tasks/{run_id}/run_async"
-                    if st.session_state.use_async_run
-                    else f"/api/tasks/{run_id}/run"
-                )
-                try:
-                    resp = api_post(run_path, {})
-                    st.session_state.last_run_response = resp
-                    refresh_all(show_errors=False)
-                    final_status = (
-                        _poll_running_task(max_attempts=3, interval_seconds=1.0)
-                        if st.session_state.use_async_run
-                        else _current_run_status()
-                    )
-                    if final_status == "completed":
-                        notice = {"level": "success", "message": "任务已完成，请查看研究报告。"}
-                    elif final_status == "waiting_human":
-                        notice = {"level": "warning", "message": "任务等待人工确认。"}
-                    elif final_status == "failed":
-                        notice = {"level": "error", "message": "任务执行失败，请查看 Trace 中的错误详情。"}
-                    else:
-                        notice = {
-                            "level": "success",
-                            "message": "任务已开始执行，正在刷新状态。若仍在运行，请点击“刷新全部”。",
-                        }
-                    st.session_state.run_notice = notice
-                    st.rerun()
-                except ApiTimeoutError:
-                    refresh_all(show_errors=False)
-                    if _current_run_status() == "completed":
-                        st.session_state.run_notice = {
-                            "level": "success",
-                            "message": "后端任务已完成，请查看研究报告。",
-                        }
-                    else:
-                        st.session_state.run_notice = {
-                            "level": "warning",
-                            "message": "前端等待超时，但后端可能仍在执行。请点击“刷新全部”查看最新状态。",
-                        }
-                    st.rerun()
-                except ApiError as exc:
-                    st.error(str(exc))
-        st.caption("真实 GitHub/Tavily/LLM 任务可能耗时较久，系统默认异步执行。")
+            run_path = (
+                f"/api/tasks/{run_id}/run_async"
+                if st.session_state.use_async_run
+                else f"/api/tasks/{run_id}/run"
+            )
+            try:
+                resp = api_post(run_path, {})
+                st.session_state.last_run_response = resp
+                refresh_all(show_errors=False)
+                st.rerun()
+            except ApiError as exc:
+                st.error(str(exc))
 
     # 当前状态摘要
     status_obj = st.session_state.get("last_status")
@@ -624,12 +538,22 @@ def tab_report() -> None:
 
     # 报告存在：展示状态摘要
     status_obj = st.session_state.get("last_status") or {}
-    steps_done = status_obj.get("total_tool_calls", len(st.session_state.get("last_trace") or []))
+    # total_tool_calls excludes ReAct "finish" steps; use trace count as fallback
+    steps_done = (status_obj.get("total_tool_calls") or
+                  len(st.session_state.get("last_trace") or []) or
+                  status_obj.get("total_steps", 0))
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("执行步骤数", steps_done)
-    col2.metric("任务状态", status_obj.get("status", "completed"))
-    col3.metric("规划器", status_obj.get("planner_source", "—"))
+    # Show trace count (actual steps recorded) rather than tool_calls (excludes finish steps)
+    trace_count = len(st.session_state.get("last_trace") or [])
+    plan_steps  = len((st.session_state.get("last_plan") or {}).get("steps") or [])
+    display_steps = trace_count or steps_done or plan_steps
+    exec_mode = status_obj.get("execution_mode", status_obj.get("requested_execution_mode", "planned"))
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("计划步骤数", plan_steps)
+    col2.metric("实际执行步骤", display_steps)
+    col3.metric("任务状态", status_obj.get("status", "completed"))
+    col4.metric("执行模式", exec_mode)
 
     st.divider()
     st.markdown(md)

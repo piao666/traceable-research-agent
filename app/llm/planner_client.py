@@ -36,7 +36,9 @@ def build_planner_messages(
         "completion_criteria, risk_level, and requires_confirmation. Known tools: "
         "file_reader reads workspace/docs demo files; sql_query runs read-only SQL; "
         "rag_search performs local RAG retrieval; mcp_github_search performs read-only "
-        "GitHub mock/API search; report_writer creates the final Markdown report."
+        "GitHub mock/API search; report_writer creates the final Markdown report. "
+        "IMPORTANT: Write the 'goal', 'completion_criteria', 'expected_output', and 'notes' "
+        "fields in Simplified Chinese (简体中文). Keep JSON keys and tool names in English."
     )
     user = {
         "task": task,

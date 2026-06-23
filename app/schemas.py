@@ -19,6 +19,7 @@ class TaskCreateRequest(BaseModel):
     report_type: str = "summary"
     source_mode: str = "real"
     allowed_tools: list[str] | None = None
+    execution_mode_override: str | None = None  # "planned" | "react" | None (use server default)
 
 
 class TaskCreateResponse(BaseModel):

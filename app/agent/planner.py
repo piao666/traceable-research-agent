@@ -210,6 +210,7 @@ def plan_task(
     allowed_tools: list[str] | None = None,
     source_mode: str = "real",
     planner_mode: str | None = None,
+    execution_mode_override: str | None = None,
 ) -> dict[str, Any]:
     """Create a plan using deterministic rules or optional LLM planning."""
 

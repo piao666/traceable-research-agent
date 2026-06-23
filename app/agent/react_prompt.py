@@ -35,17 +35,23 @@ def build_react_messages(
 ) -> list[LLMMessage]:
     """Build a JSON-only next-action prompt without requesting hidden reasoning."""
 
+    # Build a strict allowed_tools constraint string for injection
+    tools_str = ", ".join(allowed_tools) if allowed_tools else "none"
     system = (
-        "You are a traceable research agent. Choose one safe next action from the "
-        "allowed tools based on the task and previous observations. The thought field "
-        "must contain only a short decision rationale, not a detailed chain of thought. "
-        "Output one strict JSON object only, with no Markdown. Required schema: "
-        '{"thought":"short rationale","action":"tool name or finish",'
+        "You are a traceable research agent. "
+        f"CRITICAL: You MUST select your action ONLY from this exact list: [{tools_str}]. "
+        "Choosing ANY other tool name (e.g. tavily_search, web_search, browser) is a fatal "
+        "error and will abort the task. If none of the allowed tools can answer the question, "
+        "use action=finish immediately and put your best answer in args.summary. "
+        "For general knowledge questions (e.g. 'what is X'), prefer action=finish with a "
+        "direct answer rather than forcing an inappropriate tool call. "
+        "The thought field must contain only a short decision rationale. "
+        "Output one strict JSON object only, no Markdown. Required schema: "
+        '{"thought":"short rationale","action":"MUST be from allowed list or finish",'
         '"args":{},"finish_reason":null}. '
-        "If complete, use action=finish and put a concise summary in args.summary. "
-        "If a tool failed or returned no evidence, choose another useful allowed tool or "
-        "finish with a limitation. Do not invent tools, write files directly, bypass human "
-        "confirmation, use SQL writes, or request GitHub writes."
+        "If complete, use action=finish and put a concise answer in args.summary. "
+        "Do not invent tools, write files directly, bypass human confirmation, "
+        "use SQL writes, or request GitHub writes."
     )
     payload = {
         "task": task,

@@ -378,7 +378,25 @@ def run_react_task(
                     },
                     error_message=reason,
                 )
-                if settings.react_fallback_to_planned and not state.get("observation_history"):
+                invalid_count = int(state.get("invalid_decisions") or 0)
+                # Give LLM one self-correction chance: append the rejection as an observation
+                # so it can see why its tool choice was rejected and pick a valid one.
+                if invalid_count <= 1:
+                    # Inject rejection feedback into observation history
+                    state.setdefault("observation_history", []).append({
+                        "step_no": step_no,
+                        "action": raw.get("action", "unknown") if raw else "invalid",
+                        "thought": "(rejected)",
+                        "observation_summary": f"Tool rejected: {reason}. Must choose from: {allowed_tools}",
+                        "success": False,
+                        "error_message": reason,
+                        "tool_result_metadata": {"error_type": "disallowed_tool"},
+                    })
+                    plan["react_state"] = state
+                    _persist_plan(db, run_id, plan)
+                    continue  # Let LLM retry with the rejection feedback visible
+                # After 2 invalid decisions, fall back
+                if settings.react_fallback_to_planned and not state.get("observation_history", [{}])[0].get("success"):
                     return _fallback_to_plan(db, run_id, plan, state, step_no, reason)
                 if settings.react_finish_on_invalid_decision:
                     return _complete_report(db, run_id, plan, state, reason, limitation=True)

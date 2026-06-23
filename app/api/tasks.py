@@ -203,6 +203,7 @@ async def create_task(
         task=request.task,
         allowed_tools=request.allowed_tools,
         source_mode=request.source_mode,
+        execution_mode_override=request.execution_mode_override,
     )
     plan["requested_execution_mode"] = settings.execution_mode
     plan["execution_mode"] = settings.execution_mode
