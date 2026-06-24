@@ -24,7 +24,7 @@ def build_planner_messages(
             "query": task,
             "repo": "piao666/traceable-research-agent",
             "limit": 5,
-            "mode": "mock",
+            "mode": "public_api" if source_mode == "real" else "mock",
         },
         "report_writer": {},
     }
@@ -38,8 +38,10 @@ def build_planner_messages(
         "rag_search performs local RAG retrieval; mcp_github_search performs read-only "
         "GitHub mock/API search; report_writer creates the final Markdown report. "
         "IMPORTANT: Write the 'goal', 'completion_criteria', 'expected_output', and 'notes' "
-        "fields in Simplified Chinese (简体中文). Keep JSON keys and tool names in English."
-    )
+        "fields in Simplified Chinese (简体中文). Keep JSON keys and tool names in English. "
+        f"The source_mode is '{source_mode}'. If source_mode is 'real', the notes MUST say "
+        "'工具将通过真实 API 访问外部数据' and NOT mention mock or simulation. "
+        "If source_mode is 'mock', the notes should say '工具使用本地离线数据（mock模式）'."    )
     user = {
         "task": task,
         "source_mode": source_mode,

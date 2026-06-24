@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agent.reporter import generate_markdown_report, save_report
+from app.llm.providers import create_llm_client
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool
 from app.trace import store
@@ -162,7 +163,8 @@ def run_plan(db: Session, run_id: str) -> dict[str, Any]:
         traces = store.list_tool_traces(db, run_id)
         run.status = "completed"
         run.error_message = None
-        markdown = generate_markdown_report(run, plan, observations, traces)
+        _llm = create_llm_client()  # Phase A: LLM synthesis for final answer
+        markdown = generate_markdown_report(run, plan, observations, traces, llm_client=_llm)
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)
         run = store.update_agent_run_status(db, run_id, "completed", None)

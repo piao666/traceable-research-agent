@@ -226,7 +226,8 @@ def _complete_report(
     traces = store.list_tool_traces(db, run_id)
     run.status = "completed"
     run.error_message = None
-    markdown = generate_markdown_report(run, plan, observations, traces)
+    _llm = llm_client or create_llm_client()  # Phase A: LLM synthesis
+    markdown = generate_markdown_report(run, plan, observations, traces, llm_client=_llm)
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
     run = store.update_agent_run_status(db, run_id, "completed", None)

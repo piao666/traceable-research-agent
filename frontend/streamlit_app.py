@@ -113,7 +113,7 @@ def init_state() -> None:
         "api_key":      os.environ.get("DEMO_API_KEY", ""),
         "tenant_id":    os.environ.get("DEFAULT_TENANT_ID", "demo"),
         "user_id":      os.environ.get("DEFAULT_USER_ID", "local-user"),
-        "use_async_run": False,
+        "use_async_run": True,   # async by default to avoid 30s sync timeout
         # EXECUTION_MODE 由后端 .env 控制，这里只做显示用
         "execution_mode_display": os.environ.get("EXECUTION_MODE", "planned"),
         "run_id": "",
@@ -366,7 +366,7 @@ def render_sidebar() -> None:
             st.text_input("API Key", key="api_key", type="password")
             st.text_input("Tenant ID", key="tenant_id")
             st.text_input("User ID",   key="user_id")
-            st.checkbox("异步执行", key="use_async_run")
+            st.checkbox("异步执行（推荐开启，避免超时）", key="use_async_run")
 
         st.divider()
         if st.session_state.get("run_id"):
