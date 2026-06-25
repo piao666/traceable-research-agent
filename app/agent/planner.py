@@ -205,6 +205,17 @@ def _append_step(
     steps.append(step)
 
 
+
+def _apply_execution_mode(plan: dict, override: str | None) -> dict:
+    """Apply execution_mode_override into plan. Called at all plan_task return paths."""
+    effective = (override or settings.execution_mode or "planned").lower()
+    if effective not in ("planned", "react"):
+        effective = settings.execution_mode or "planned"
+    plan["execution_mode"] = effective
+    plan["requested_execution_mode"] = effective
+    return plan
+
+
 def plan_task(
     task: str,
     allowed_tools: list[str] | None = None,
@@ -223,7 +234,7 @@ def plan_task(
         plan["planner_source"] = "deterministic"
         plan["llm_provider"] = None
         plan["llm_model"] = None
-        return plan
+        return _apply_execution_mode(plan, execution_mode_override)
 
     should_try_llm = mode == "llm" or (mode == "auto" and settings.llm_planner_enabled)
     if should_try_llm:
@@ -246,7 +257,13 @@ def plan_task(
                     normalized["planner_source"] = "llm"
                     normalized["llm_provider"] = response.provider
                     normalized["llm_model"] = response.model
-                    return normalized
+                    # Phase B: attach sub-queries for reporter
+                    try:
+                        from app.agent.query_decomposer import decompose_and_annotate_plan
+                        normalized = decompose_and_annotate_plan(task, normalized, client, n=4)
+                    except Exception:
+                        pass
+                    return _apply_execution_mode(normalized, execution_mode_override)
                 fallback_reason = "LLM output failed schema validation; used deterministic fallback."
             else:
                 fallback_reason = "LLM output was not valid JSON; used deterministic fallback."
@@ -259,14 +276,14 @@ def plan_task(
         plan["llm_model"] = client.describe().get("model")
         plan["notes"] = list(plan.get("notes") or []) + [_safe_fallback_reason(fallback_reason)]
         _synchronize_confirmation_notes(plan)
-        return plan
+        return _apply_execution_mode(plan, execution_mode_override)
 
     plan = deterministic_plan_task(task, allowed_tools, source_mode)
     plan["planner_source"] = "deterministic"
     plan["llm_provider"] = None
     plan["llm_model"] = None
     _synchronize_confirmation_notes(plan)
-    return plan
+    return _apply_execution_mode(plan, execution_mode_override)
 
 
 def deterministic_plan_task(

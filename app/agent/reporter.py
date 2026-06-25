@@ -472,7 +472,7 @@ def _llm_synthesize_answer(
                 "",
             ]
         )
-    return answer
+    return answer or ["本次执行未产生可用证据，无法生成结论。", ""]
 
 
 def _runtime_limitations(plan: dict[str, Any]) -> list[str]:
@@ -569,9 +569,28 @@ def generate_markdown_report(
         f"* 请求执行模式 (`requested_execution_mode`): `{plan.get('requested_execution_mode') or plan.get('execution_mode') or 'planned'}`",
         f"* 是否降级 (`fallback_used`): `{bool((plan.get('react_state') or {}).get('fallback_used'))}`",
         "",
+    ]
+
+    # ── Phase A: LLM synthesis OR template fallback ──────────────────────────
+    _llm_answer: str | None = None
+    if llm_client is not None:
+        _llm_answer = _llm_synthesize_answer(run.task, observations, llm_client)
+
+    if _llm_answer:
+        _final_answer_lines: list[str] = [
+            _llm_answer,
+            "",
+            "> **生成方式：** 本回答由 LLM 综合工具证据生成，各来源已标注。",
+            "",
+        ]
+    else:
+        _final_answer_lines = _render_final_answer(run.task, observations, traces) or []
+    # ── End Phase A ──────────────────────────────────────────────────────────
+
+    lines += [
         "## 3. 最终回答",
         "",
-        *_render_final_answer(run.task, observations, traces),
+        *_final_answer_lines,
         "## 4. 执行计划",
         "",
     ]
