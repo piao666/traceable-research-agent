@@ -1,0 +1,15 @@
+services:
+  api:
+    volumes:
+      - ./workspace:/app/workspace
+      - ${RAG_MODEL_HOST_PATH:-E:/Models/bge-small-zh-v1.5}:/models/bge-small-zh-v1.5:ro
+    environment:
+      RAG_REAL_BACKEND_ENABLED: "true"
+      RAG_EMBEDDING_BACKEND: sentence_transformers
+      RAG_VECTOR_BACKEND: chroma
+      RAG_MODEL_PATH: /models/bge-small-zh-v1.5
+      RAG_CHROMA_DIR: /app/workspace/chroma
+      RAG_COLLECTION_NAME: traceable_research_docs
+      RAG_DEVICE: cpu
+      RAG_NORMALIZE_EMBEDDINGS: "true"
+      RAG_RETRIEVAL_MODE: hybrid

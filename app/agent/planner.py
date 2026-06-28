@@ -207,10 +207,10 @@ def _append_step(
 
 
 def _apply_execution_mode(plan: dict, override: str | None) -> dict:
-    """Apply execution_mode_override into plan. Called at all plan_task return paths."""
-    effective = (override or settings.execution_mode or "planned").lower()
+    """Write execution_mode into plan from override or global settings."""
+    effective = (override or settings.execution_mode or "planned").strip().lower()
     if effective not in ("planned", "react"):
-        effective = settings.execution_mode or "planned"
+        effective = "planned"
     plan["execution_mode"] = effective
     plan["requested_execution_mode"] = effective
     return plan
@@ -257,9 +257,9 @@ def plan_task(
                     normalized["planner_source"] = "llm"
                     normalized["llm_provider"] = response.provider
                     normalized["llm_model"] = response.model
-                    # Phase B: attach sub-queries for reporter
                     try:
                         from app.agent.query_decomposer import decompose_and_annotate_plan
+
                         normalized = decompose_and_annotate_plan(task, normalized, client, n=4)
                     except Exception:
                         pass

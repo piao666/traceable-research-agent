@@ -11,4 +11,6 @@ workspace/reports
 workspace/tmp
 workspace/eval_outputs
 .env
+.env.*
+!.env.docker.example
 *.log

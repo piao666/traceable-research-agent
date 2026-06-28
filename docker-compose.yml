@@ -1,9 +1,34 @@
 services:
-  traceable-research-agent:
+  api:
     build: .
     ports:
       - "8000:8000"
     volumes:
       - ./workspace:/app/workspace
+    env_file:
+      - path: .env.docker
+        required: false
     environment:
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      DOCKER_INIT_DEMO_DATA: ${DOCKER_INIT_DEMO_DATA:-true}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  streamlit:
+    build: .
+    command: ["streamlit", "run", "frontend/streamlit_app.py", "--server.port", "8501", "--server.address", "0.0.0.0", "--server.headless", "true"]
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./workspace:/app/workspace
+    env_file:
+      - path: .env.docker
+        required: false
+    environment:
+      STREAMLIT_API_BASE_URL: ${STREAMLIT_API_BASE_URL:-http://api:8000}
+    depends_on:
+      api:
+        condition: service_healthy

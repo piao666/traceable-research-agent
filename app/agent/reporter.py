@@ -15,6 +15,7 @@ except ImportError:
     LLMMessage = None  # type: ignore[assignment,misc]
 
 from app.trace.models import AgentRun, ToolTrace
+from app.agent.context_compressor import compress_evidence, has_useful_evidence
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -339,17 +340,8 @@ def _learning_route_final_answer(records: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def _render_final_answer(
-    task: str, observations: list[dict[str, Any]], traces: list[ToolTrace]
-) -> list[str]:
-    """Build a user-facing answer strictly from successful tool evidence."""
 
-    records = _evidence_records(observations, traces)
-    successful = [record for record in records if record["success"]]
-
-    
-
-# ── Phase A: LLM-Synthesized Answer ───────────────────────────────────────────
+# ── Phase A: LLM-Synthesized Answer ──────────────────────────────────────────
 
 _SYNTHESIS_SYSTEM = """你是专业调研报告撰写人。请基于工具采集的证据，
 为给定的调研任务生成一份结构清晰、有来源标注的中文回答。
@@ -375,19 +367,15 @@ def _llm_synthesize_answer(
     llm_client: "LLMClient",
 ) -> str | None:
     """Call LLM to synthesize tool evidence into a coherent answer.
-
     Returns synthesized text, or None if LLM call fails / no useful evidence.
     """
     if LLMClient is None or not llm_client.is_available():
         return None
-
     if not has_useful_evidence(observations):
         return None
-
     evidence = compress_evidence(observations, max_total_chars=5000)
     if not evidence.strip():
         return None
-
     messages = [
         LLMMessage(role="system", content=_SYNTHESIS_SYSTEM),
         LLMMessage(
@@ -404,9 +392,16 @@ def _llm_synthesize_answer(
         logging.getLogger(__name__).warning("LLM synthesis failed: %s", exc)
     return None
 
-# ── FIX #3: Handle ReAct finish action as first-class answer ──
-    # When ReAct uses action=finish, the LLM answer is in args["summary"].
-    # tool_name is stored as "finish" in the trace. Promote it to final answer.
+
+def _render_final_answer(
+    task: str, observations: list[dict[str, Any]], traces: list[ToolTrace]
+) -> list[str]:
+    """Build a user-facing answer strictly from successful tool evidence."""
+
+    records = _evidence_records(observations, traces)
+    successful = [record for record in records if record["success"]]
+
+    # Handle ReAct finish action as first-class answer
     finish_record = next(
         (r for r in successful if r["tool_name"] == "finish"), None
     )
@@ -424,12 +419,18 @@ def _llm_synthesize_answer(
                 "如需工具验证，请使用包含 rag_search 或 mcp_github_search 的场景模板重新提问。",
                 "",
             ]
-    # ── End FIX #3 ──
 
-    github_record = next((record for record in successful if record["tool_name"] == "mcp_github_search"), None)
-    tavily_record = next((record for record in successful if record["tool_name"] == "tavily_search"), None)
+    github_record = next(
+        (r for r in successful if r["tool_name"] == "mcp_github_search"), None
+    )
+    tavily_record = next(
+        (r for r in successful if r["tool_name"] == "tavily_search"), None
+    )
     task_lower = task.lower()
-    learning_route = any(term in task_lower for term in ("学习路线", "学习路径", "roadmap", "curriculum"))
+    learning_route = any(
+        term in task_lower
+        for term in ("学习路线", "学习路径", "roadmap", "curriculum")
+    )
 
     if github_record:
         answer = _github_final_answer(github_record, task)
@@ -441,38 +442,73 @@ def _llm_synthesize_answer(
         answer = None
 
     if not answer:
-        summaries = [str(record["summary"]).strip() for record in successful if record.get("summary")]
+        summaries = [
+            str(record["summary"]).strip()
+            for record in successful
+            if record.get("summary")
+        ]
         if summaries:
             answer = ["以下是根据本次成功工具结果整理的内容：", ""]
-            answer.extend(f"{index}、{summary}" for index, summary in enumerate(summaries[:8], 1))
+            answer.extend(
+                f"{i}、{s}" for i, s in enumerate(summaries[:8], 1)
+            )
             answer.append("")
         else:
-            answer = ["本次未获得足够证据，无法生成可信的最终答案。", ""]
+            _knowledge_keywords = [
+                "什么", "是什么", "什么是", "怎么", "为什么",
+                "how", "what is", "explain", "define",
+            ]
+            _data_keywords = [
+                "github", "repo", "仓库", "数据库", "文件",
+                "搜索", "查询", "star", "search",
+            ]
+            _task_lower = task.lower()
+            _is_knowledge_q = (
+                any(kw in _task_lower for kw in _knowledge_keywords)
+                and not any(kw in _task_lower for kw in _data_keywords)
+            )
+            if _is_knowledge_q:
+                answer = [
+                    "⚠️ 当前已启用的工具无法回答通识性问题。",
+                    "",
+                    f"「{task}」是一个知识性问题，建议：",
+                    "1. 切换到包含 `rag_search`（本地知识库检索）的场景模板；",
+                    "2. 或者切换到包含 `file_reader` 的场景，直接读取相关文档；",
+                    "3. 或者直接向 LLM 提问，不走 Agent 工具流程。",
+                    "",
+                ]
+            else:
+                answer = ["本次未获得足够证据，无法生成可信的最终答案。", ""]
 
-    failed = [record for record in records if not record["success"]]
+    failed = [r for r in records if not r["success"]]
     if failed:
         details = []
-        for record in failed[:5]:
-            reason = record.get("error_message") or record.get("summary") or "工具未返回成功结果"
-            details.append(f"第 {record.get('step_no')} 步 `{record['tool_name']}`：{reason}")
+        for r in failed[:5]:
+            reason = (
+                r.get("error_message") or r.get("summary") or "工具未返回成功结果"
+            )
+            details.append(f"第 {r.get('step_no')} 步 `{r['tool_name']}`：{reason}")
         answer.extend(
             [
                 "> **完成限制：** 本次任务部分完成，结论仅基于已成功的工具结果。",
-                *[f"> * {detail}" for detail in details],
+                *[f"> * {d}" for d in details],
                 "",
             ]
         )
+
     limit_text = " ".join(
-        str(record.get("error_message") or record.get("summary") or "") for record in records
+        str(r.get("error_message") or r.get("summary") or "") for r in records
     )
     if "same_tool_max_calls" in limit_text:
         answer.extend(
             [
-                "> **安全保护说明：** ReAct 模式连续选择同一工具达到调用上限，系统停止继续调用，这是安全保护，不是程序崩溃。",
+                "> **安全保护说明：** ReAct 模式连续选择同一工具达到调用上限，"
+                "系统停止继续调用，这是安全保护，不是程序崩溃。",
                 "",
             ]
         )
-    return answer or ["本次执行未产生可用证据，无法生成结论。", ""]
+
+    return answer or ["本次执行未产生可用证据，请检查工具配置后重试。", ""]
 
 
 def _runtime_limitations(plan: dict[str, Any]) -> list[str]:
@@ -571,21 +607,17 @@ def generate_markdown_report(
         "",
     ]
 
-    # ── Phase A: LLM synthesis OR template fallback ──────────────────────────
+    # ── Phase A: LLM synthesis if available, else template ──────────────────
     _llm_answer: str | None = None
     if llm_client is not None:
         _llm_answer = _llm_synthesize_answer(run.task, observations, llm_client)
 
-    if _llm_answer:
-        _final_answer_lines: list[str] = [
-            _llm_answer,
-            "",
-            "> **生成方式：** 本回答由 LLM 综合工具证据生成，各来源已标注。",
-            "",
-        ]
-    else:
-        _final_answer_lines = _render_final_answer(run.task, observations, traces) or []
-    # ── End Phase A ──────────────────────────────────────────────────────────
+    _final_answer_lines: list[str] = (
+        [_llm_answer, "",
+         "> **生成方式：** 本回答由 LLM 综合工具证据生成，各来源已标注。", ""]
+        if _llm_answer
+        else (_render_final_answer(run.task, observations, traces) or [])
+    )
 
     lines += [
         "## 3. 最终回答",
