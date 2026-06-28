@@ -620,4 +620,56 @@ Expected output:
 
 ---
 
+## Research Evidence Aggregation
+
+Day41 adds a reusable evidence aggregation layer for multi-source research runs.
+It does not add a database table; evidence is derived from persisted `ToolTrace`
+rows and live executor observations.
+
+Endpoint:
+
+```text
+GET /api/tasks/{run_id}/evidence
+```
+
+The response includes:
+
+- `EvidenceItem`: normalized evidence with `evidence_id`, `run_id`, `trace_id`,
+  `step_no`, `tool_name`, `source_type`, `source_ref`, `title`, `snippet`,
+  `confidence`, `metadata`, `is_mock`, `is_fallback`, and `unsupported_reason`.
+- `EvidenceGroup`: grouped source counts for file, sql, rag, public_api, cache,
+  mock, fallback, tavily_api, mcp_remote, and failure-style evidence.
+- `ClaimEvidenceMap`: lightweight claim-to-evidence links based on planned steps.
+- `warnings`: explicit notes when mock, fallback, unsupported, or remote MCP
+  failure evidence is present.
+
+Reports now include a `Research Evidence Aggregation` section before raw tool
+observations. Mock and fallback evidence is explicitly marked so reports do not
+state offline or degraded data as fresh external facts. Remote MCP failures remain
+auditable failed evidence and still do not become API 500 errors.
+
+Streamlit keeps the existing report rendering and adds a compact evidence summary
+panel in the report tab.
+
+Day41 smoke:
+
+```powershell
+python scripts/smoke_evidence_aggregation.py
+```
+
+Expected output:
+
+```json
+{
+  "evidence_aggregation": "ok",
+  "evidence_api": "ok",
+  "multi_source_groups": "ok",
+  "mock_and_fallback_marked": "ok",
+  "remote_mcp_failure_auditable": "ok",
+  "react_limitation_report": "ok"
+}
+```
+
+---
+
 > 永远不要提交 `.env`、API Key、GitHub Token、本地模型文件、SQLite 数据库、生成的报告、缓存文件、索引文件、Chroma 数据或评测输出到 git。

@@ -140,6 +140,52 @@ class ToolTraceResponse(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+class EvidenceItemResponse(BaseModel):
+    evidence_id: str
+    run_id: str
+    trace_id: str | None = None
+    step_no: int | None = None
+    tool_name: str
+    source_type: str
+    source_ref: str | None = None
+    title: str
+    snippet: str
+    status: str
+    confidence: str
+    metadata: dict[str, Any]
+    is_mock: bool = False
+    is_fallback: bool = False
+    unsupported_reason: str | None = None
+
+
+class EvidenceGroupResponse(BaseModel):
+    source_type: str
+    evidence_ids: list[str]
+    count: int
+    mock_count: int = 0
+    fallback_count: int = 0
+    unsupported_count: int = 0
+
+
+class ClaimEvidenceMapResponse(BaseModel):
+    claim_id: str
+    claim: str
+    evidence_ids: list[str]
+    support_level: str
+    notes: str | None = None
+
+
+class EvidenceBundleResponse(BaseModel):
+    run_id: str
+    task: str
+    total_evidence_items: int
+    source_groups: list[EvidenceGroupResponse]
+    claims: list[ClaimEvidenceMapResponse]
+    evidence_items: list[EvidenceItemResponse]
+    unsupported_claims: list[ClaimEvidenceMapResponse]
+    warnings: list[str]
+
+
 class ToolInfo(BaseModel):
     name: str
     description: str

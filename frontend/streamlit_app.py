@@ -128,6 +128,7 @@ def init_state() -> None:
         "last_status": None,
         "last_plan": None,
         "last_trace": [],
+        "last_evidence": None,
         "last_report": None,
         "selected_template": list(DEMO_TEMPLATES.keys())[0],
         "task_text": list(DEMO_TEMPLATES.values())[0]["task"],
@@ -213,6 +214,7 @@ def refresh_all(show_errors: bool = True) -> None:
         st.session_state.last_status = api_get(f"/api/tasks/{run_id}")
         st.session_state.last_plan   = api_get(f"/api/tasks/{run_id}/plan")
         st.session_state.last_trace  = normalize_trace(api_get(f"/api/tasks/{run_id}/trace"))
+        st.session_state.last_evidence = api_get(f"/api/tasks/{run_id}/evidence")
         st.session_state.last_report = api_get(f"/api/reports/{run_id}")
     except ApiError as exc:
         if show_errors: st.error(str(exc))
@@ -369,6 +371,38 @@ def trace_step_card(trace: dict) -> None:
             cols3 = st.columns(2)
             cols3[0].metric("向量维度", meta.get("dimension", "—"))
             cols3[1].metric("Collection", meta.get("collection_name", "—"))
+
+
+def render_evidence_summary() -> None:
+    evidence = st.session_state.get("last_evidence") or {}
+    if not isinstance(evidence, dict) or not evidence:
+        return
+    groups = evidence.get("source_groups") or []
+    warnings = evidence.get("warnings") or []
+    claims = evidence.get("claims") or []
+    unsupported = evidence.get("unsupported_claims") or []
+    with st.expander("Research Evidence Aggregation", expanded=False):
+        cols = st.columns(4)
+        cols[0].metric("evidence", evidence.get("total_evidence_items", 0))
+        cols[1].metric("source groups", len(groups))
+        cols[2].metric("claims", len(claims))
+        cols[3].metric("unsupported", len(unsupported))
+        if warnings:
+            for warning in warnings:
+                st.warning(warning)
+        if groups:
+            st.dataframe(groups, use_container_width=True, hide_index=True)
+        if claims:
+            preview = [
+                {
+                    "claim_id": item.get("claim_id"),
+                    "support": item.get("support_level"),
+                    "evidence": ", ".join(item.get("evidence_ids") or []),
+                    "claim": item.get("claim"),
+                }
+                for item in claims[:8]
+            ]
+            st.dataframe(preview, use_container_width=True, hide_index=True)
 
 
 # ── 侧边栏 ────────────────────────────────────────────────────────
@@ -652,6 +686,8 @@ def tab_report() -> None:
     col2.metric("实际执行步骤", display_steps)
     col3.metric("任务状态", status_obj.get("status", "completed"))
     col4.metric("执行模式", exec_mode)
+
+    render_evidence_summary()
 
     st.divider()
     st.markdown(md)

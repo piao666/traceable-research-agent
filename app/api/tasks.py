@@ -2,16 +2,19 @@
 
 import json
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.agent.dispatcher import run_task_by_mode
+from app.agent.evidence import build_evidence_bundle
 from app.agent.planner import plan_task
 from app.config import settings
 from app.database import SessionLocal, get_db
 from app.schemas import (
     AsyncRunResponse,
+    EvidenceBundleResponse,
     TaskCreateRequest,
     TaskCreateResponse,
     TaskConfirmRequest,
@@ -187,6 +190,16 @@ def _extract_trace_metadata(output) -> dict | None:
     }
     selected = {key: output[key] for key in keys if key in output}
     return selected or None
+
+
+def _parse_run_plan(run: AgentRun) -> dict[str, Any]:
+    if not run.plan_json:
+        return {}
+    try:
+        parsed = json.loads(run.plan_json)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 @router.post("", response_model=TaskCreateResponse)
@@ -433,3 +446,18 @@ async def get_task_trace(
 
     traces = store.list_tool_traces(db, run_id)
     return [_tool_trace_response(trace) for trace in traces]
+
+
+@router.get("/{run_id}/evidence", response_model=EvidenceBundleResponse)
+async def get_task_evidence(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> EvidenceBundleResponse:
+    """Return grouped research evidence derived from persisted traces."""
+
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    traces = store.list_tool_traces(db, run_id)
+    bundle = build_evidence_bundle(run, _parse_run_plan(run), [], traces)
+    return EvidenceBundleResponse(**bundle.to_dict())

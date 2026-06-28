@@ -16,6 +16,7 @@ except ImportError:
 
 from app.trace.models import AgentRun, ToolTrace
 from app.agent.context_compressor import compress_evidence, has_useful_evidence
+from app.agent.evidence import build_evidence_bundle, render_evidence_markdown
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -707,7 +708,10 @@ def generate_markdown_report(
                 ]
             )
 
-    lines.extend(["## 6. 证据与工具观察结果", ""])
+    evidence_bundle = build_evidence_bundle(run, plan, observations, traces)
+    lines.extend(render_evidence_markdown(evidence_bundle))
+
+    lines.extend(["## 7. 证据与工具观察结果", ""])
     if observations:
         for observation in observations:
             tool_name = str(
@@ -785,7 +789,7 @@ def generate_markdown_report(
     else:
         lines.extend(["未记录可执行工具的观察结果。", ""])
 
-    lines.extend(["## 7. Trace 汇总", ""])
+    lines.extend(["## 8. Trace 汇总", ""])
     if status_counts:
         for status, count in sorted(status_counts.items()):
             lines.append(f"* {status}: {count}")
@@ -809,7 +813,7 @@ def generate_markdown_report(
 
     problem_traces = [trace for trace in traces if trace.status in {"failed", "rejected"}]
     if problem_traces:
-        lines.extend(["", "## 8. 失败与拒绝详情", ""])
+        lines.extend(["", "## 9. 失败与拒绝详情", ""])
         for trace in problem_traces:
             trace_metadata = _trace_metadata(trace)
             lines.extend(
@@ -824,7 +828,7 @@ def generate_markdown_report(
                 ]
             )
 
-    lines.extend(["", "## 9. 运行限制与说明", ""])
+    lines.extend(["", "## 10. 运行限制与说明", ""])
     parallel_problem_traces = [
         trace for trace in problem_traces if _trace_metadata(trace).get("parallel") is True
     ]

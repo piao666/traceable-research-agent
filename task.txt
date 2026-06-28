@@ -1170,6 +1170,147 @@ Passed:
   and hit SQLite `database is locked`; rerunning it by itself passed.
 - Next recommended step: Day41 Research Evidence Aggregation.
 
+## 2026-06-28 - Day41 Research Evidence Aggregation
+
+### Goal
+
+Strengthen the Research Agent side of the project by normalizing multi-source
+tool outputs into auditable evidence, without turning the project into a heavier
+enterprise RAG backend.
+
+### Implemented
+
+Added:
+- `app/agent/evidence.py`
+- `scripts/smoke_evidence_aggregation.py`
+
+Modified:
+- `app/agent/reporter.py`
+- `app/api/tasks.py`
+- `app/schemas.py`
+- `frontend/streamlit_app.py`
+- `README.md`
+- `task.txt`
+
+### Evidence aggregation layer
+
+New internal structures:
+- `EvidenceItem`
+- `EvidenceGroup`
+- `ClaimEvidenceMap`
+- `EvidenceBundle`
+
+Evidence is derived from live executor observations and persisted `ToolTrace`
+rows. No new database table or migration was added.
+
+Each `EvidenceItem` includes:
+- `evidence_id`
+- `run_id`
+- `trace_id`
+- `step_no`
+- `tool_name`
+- `source_type`
+- `source_ref`
+- `title`
+- `snippet`
+- `status`
+- `confidence`
+- `metadata`
+- `is_mock`
+- `is_fallback`
+- `unsupported_reason`
+
+Supported extraction paths:
+- `file_reader` -> file evidence
+- `sql_query` -> read-only SQL evidence
+- `rag_search` -> RAG hit evidence
+- `mcp_github_search` -> GitHub result evidence
+- `tavily_search` -> Tavily result evidence
+- remote MCP registered tools -> `mcp_remote` evidence
+- failed/rejected/empty tools -> unsupported evidence
+- ReAct `finish` -> `llm_finish` evidence when it produces a final limitation summary
+
+### API
+
+New endpoint:
+
+```text
+GET /api/tasks/{run_id}/evidence
+```
+
+The endpoint reuses the existing tasks router auth/request-context dependencies
+and returns an `EvidenceBundleResponse`.
+
+### Reporter
+
+Reports now include a `Research Evidence Aggregation` section before raw tool
+observations. The section displays:
+- source groups
+- source warnings
+- claim-evidence map
+- unsupported or limited claims
+- normalized evidence item previews
+
+Mock and fallback evidence is explicitly marked so offline or degraded evidence
+is not described as fresh external fact. Remote MCP failures remain visible as
+unsupported evidence and do not become API 500 errors.
+
+### Streamlit
+
+The report tab now fetches `/api/tasks/{run_id}/evidence` during refresh and shows
+a compact `Research Evidence Aggregation` expander with counts, warnings, source
+groups, and claim previews. Existing report rendering and manual refresh remain
+unchanged.
+
+### Smoke coverage
+
+New `scripts/smoke_evidence_aggregation.py` covers:
+- evidence API response format
+- file/sql/rag/mock GitHub/mock Tavily multi-source grouping
+- report `Research Evidence Aggregation` and `Claim-Evidence Map` sections
+- fallback trace marked as fallback
+- remote MCP failure visible as unsupported evidence without API-level failure
+- ReAct limitation finish still writes a report and exposes evidence
+
+Expected output:
+
+```json
+{
+  "evidence_aggregation": "ok",
+  "evidence_api": "ok",
+  "multi_source_groups": "ok",
+  "mock_and_fallback_marked": "ok",
+  "remote_mcp_failure_auditable": "ok",
+  "react_limitation_report": "ok"
+}
+```
+
+### Validation
+
+Passed:
+- `python -m compileall app scripts frontend`
+- `python scripts/smoke_evidence_aggregation.py`
+- `python scripts/smoke_realtime_trace.py`
+- `python scripts/smoke_mcp_client.py`
+- `python scripts/smoke_mcp_server.py`
+- `python scripts/smoke_parallel_execution.py`
+- `python scripts/smoke_react_executor.py`
+- `python scripts/smoke_streamlit_frontend.py`
+- `python scripts/smoke_auth_async.py`
+- `python scripts/smoke_alembic_sql_parser.py`
+- `python scripts/smoke_hybrid_rag.py`
+- `python scripts/smoke_github_mcp.py`
+- `python scripts/smoke_tavily_search.py`
+- `python -m app.eval.run_eval` -> 32/32, failed=0
+
+### Notes
+
+- Day37 parallel metadata remains in Trace metadata and is preserved by evidence item metadata.
+- Day38 MCP server behavior is unchanged.
+- Day39 remote `tool_source=mcp_remote` metadata remains visible in evidence items.
+- Day40 SSE remains unchanged; evidence is exposed through a REST endpoint.
+- Next recommended step: Day42 Lightweight Web UI or Evidence Export, depending on demo priorities.
+
 ### 注意事项
 
 - 默认 Docker 目标是本地演示，不是生产云部署。
