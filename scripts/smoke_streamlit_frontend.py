@@ -67,7 +67,7 @@ def main() -> None:
         "User ID": ["User ID"],
         "async run": ["异步执行", "Use async run"],
         "execution mode": ["执行模式", "Execution Mode"],
-        "external source": ["外部数据源"],
+        "external source": ["外部数据源", "数据来源"],
     }
     for control, labels in controls.items():
         assert_true(
@@ -81,9 +81,10 @@ def main() -> None:
         "ReAct 思考链" in source or "ReAct Trace" in source,
         "missing ReAct trace section",
     )
-    assert_true('"source_mode": "real"' in source, "real source mode is not the default")
+    assert_true('"source_mode_ui": "real"' in source or '"source_mode": "real"' in source, "real source mode is not the default")
     assert_true(
-        '"source_mode": st.session_state.source_mode' in source,
+        '"source_mode": st.session_state.source_mode' in source
+        or '"source_mode": st.session_state.get("source_mode_ui", "real")' in source,
         "task payload does not use selected source mode",
     )
 

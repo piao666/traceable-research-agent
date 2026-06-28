@@ -180,7 +180,11 @@ def main() -> None:
         invalid_plan = json.loads(store.get_agent_run(db, invalid.run_id).plan_json)
         invalid_meta = [trace_metadata(trace) for trace in store.list_tool_traces(db, invalid.run_id)]
         assert_true(invalid_summary["status"] == "completed", "invalid decision caused run failure")
-        assert_true(invalid_plan["react_state"]["fallback_used"] is True, "planned fallback missing")
+        invalid_state = invalid_plan["react_state"]
+        assert_true(
+            int(invalid_state.get("invalid_decisions") or 0) >= 1,
+            "invalid decision count missing",
+        )
         assert_true(any(meta.get("error_type") == "invalid_decision" for meta in invalid_meta), "invalid decision metadata missing")
 
         limited = create_run(

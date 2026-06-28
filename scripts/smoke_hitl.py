@@ -56,7 +56,7 @@ def main() -> None:
         final_run = store.get_agent_run(db, run.run_id)
         report_path = ROOT / str(final_run.report_path)
         markdown = report_path.read_text(encoding="utf-8")
-        if "Human Confirmation" not in markdown:
+        if "Human Confirmation" not in markdown and "人工确认" not in markdown:
             raise SystemExit("Report is missing Human Confirmation section.")
 
         print(

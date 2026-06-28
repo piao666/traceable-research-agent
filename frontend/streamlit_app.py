@@ -71,6 +71,7 @@ STATUS_CN = {
 RAG_METADATA_FIELDS = [
     "retrieval_mode", "embedding_backend", "vector_backend",
     "fallback_used", "dense_hit_count", "bm25_hit_count", "rrf_k",
+    "dimension", "collection_name",
 ]
 
 # ── 全局 CSS（极简深色调） ────────────────────────────────────────
@@ -300,6 +301,9 @@ def trace_step_card(trace: dict) -> None:
             cols2[0].metric("Embedding", meta.get("embedding_backend", "—"))
             cols2[1].metric("是否 Fallback", "是" if meta.get("fallback_used") else "否")
             cols2[2].metric("RRF-k", meta.get("rrf_k", "—"))
+            cols3 = st.columns(2)
+            cols3[0].metric("向量维度", meta.get("dimension", "—"))
+            cols3[1].metric("Collection", meta.get("collection_name", "—"))
 
 
 # ── 侧边栏 ────────────────────────────────────────────────────────

@@ -211,6 +211,8 @@ def _complete_report(
     plan: dict[str, Any],
     state: dict[str, Any],
     finish_reason: str,
+    settings_obj: Settings,
+    llm_client: LLMClient | None = None,
     limitation: bool = False,
 ) -> dict:
     state["finish_reason"] = finish_reason
@@ -338,7 +340,7 @@ def run_react_task(
                     return _fallback_to_plan(
                         db, run_id, plan, state, step_no, reason, "llm_unavailable"
                     )
-                return _complete_report(db, run_id, plan, state, reason, limitation=True)
+                return _complete_report(db, run_id, plan, state, reason, settings, client, limitation=True)
             messages = build_react_messages(
                 run.task,
                 run_id,
@@ -400,7 +402,7 @@ def run_react_task(
                 if settings.react_fallback_to_planned and not state.get("observation_history", [{}])[0].get("success"):
                     return _fallback_to_plan(db, run_id, plan, state, step_no, reason)
                 if settings.react_finish_on_invalid_decision:
-                    return _complete_report(db, run_id, plan, state, reason, limitation=True)
+                    return _complete_report(db, run_id, plan, state, reason, settings, client, limitation=True)
                 continue
 
         if is_finish_action(decision.action):
@@ -433,6 +435,8 @@ def run_react_task(
                 plan,
                 state,
                 decision.finish_reason or "completed",
+                settings,
+                client,
             )
 
         counts = state.setdefault("tool_call_counts", {})
@@ -462,7 +466,7 @@ def run_react_task(
             )
             _append_observation(state, step_no, decision, reason, False, reason, metadata)
             store.update_agent_run_progress(db, run_id, step_no)
-            return _complete_report(db, run_id, plan, state, reason, limitation=True)
+            return _complete_report(db, run_id, plan, state, reason, settings, client, limitation=True)
 
         if _confirmation_required(plan, decision.action) and not _is_confirmed(
             plan, step_no, decision.action
@@ -523,7 +527,7 @@ def run_react_task(
             plan["react_state"] = state
             _persist_plan(db, run_id, plan)
             store.update_agent_run_progress(db, run_id, step_no)
-            return _complete_report(db, run_id, plan, state, "report_generated")
+            return _complete_report(db, run_id, plan, state, "report_generated", settings, client)
 
         started = perf_counter()
         result = execute_tool(decision.action, decision.args)
@@ -585,4 +589,4 @@ def run_react_task(
             }
         },
     )
-    return _complete_report(db, run_id, plan, state, "max_steps_reached", limitation=True)
+    return _complete_report(db, run_id, plan, state, "max_steps_reached", settings, client, limitation=True)
