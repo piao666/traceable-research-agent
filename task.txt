@@ -1043,6 +1043,133 @@ Passed:
 - Day37 planned parallel execution and Day38 MCP server behavior are preserved.
 - Next recommended step: Day40 Realtime Trace Streaming.
 
+## 2026-06-28 - Day40 Realtime Trace Streaming
+
+### Goal
+
+Let long-running tasks expose incremental run and trace state through a realtime
+backend endpoint while preserving the existing REST polling and Streamlit manual
+refresh fallback.
+
+### Implemented
+
+Added:
+- `app/trace/events.py`
+- `app/api/events.py`
+- `scripts/smoke_realtime_trace.py`
+
+Modified:
+- `app/main.py`
+- `frontend/streamlit_app.py`
+- `README.md`
+- `task.txt`
+
+### SSE endpoint
+
+New endpoint:
+
+```text
+GET /api/tasks/{run_id}/events
+```
+
+Behavior:
+- Uses `text/event-stream`.
+- Replays existing run status and traces for completed runs.
+- Polls persisted `AgentRun` and `ToolTrace` rows for incremental updates.
+- Sends heartbeat events while a stream remains open.
+- Sends `done` and closes for `completed`, `failed`, and `waiting_human` runs.
+- Keeps `GET /api/tasks/{run_id}`, `GET /api/tasks/{run_id}/trace`, and
+  `GET /api/reports/{run_id}` unchanged.
+
+Event fields include:
+- `run_id`
+- `event_type`
+- `trace_id`
+- `step_no`
+- `tool_name`
+- `status`
+- `output_summary`
+- `error_message`
+- `latency_ms`
+- `metadata`
+- `created_at`
+- `finished_at`
+- `current_step`
+- `total_steps`
+- `report_path`
+
+Event types:
+- `run_status`
+- `trace_created`
+- `trace_finished`
+- `waiting_human`
+- `report_ready`
+- `heartbeat`
+- `done`
+
+### Preservation notes
+
+- Day37 parallel trace metadata remains visible in stream event `metadata`.
+- Day38 MCP server trace behavior is unchanged.
+- Day39 local and remote `tool_source` metadata remains visible in stream events.
+- Remote MCP failure remains a failed `ToolResult` / failed trace and does not
+  become an API 500.
+- ReAct limitation finish still writes a report and completes the run.
+- No database schema change.
+- No WebSocket dependency was added.
+
+### Streamlit
+
+Streamlit keeps the existing refresh-all flow and adds a lightweight realtime panel
+in the Trace tab. The panel displays the backend SSE URL and can auto-refresh via
+the existing REST endpoints when enabled. The SSE endpoint remains the stable
+backend integration point for clients that want true streaming.
+
+### Smoke coverage
+
+New `scripts/smoke_realtime_trace.py` covers:
+- SSE content type and JSON event format.
+- Completed run replay stream.
+- HITL `waiting_human` stream event.
+- Day37 planned parallel metadata visibility.
+- Day39 remote MCP failed trace visibility with `tool_source=mcp_remote`.
+
+Expected output:
+
+```json
+{
+  "realtime_trace": "ok",
+  "sse_format": "ok",
+  "completed_stream": "ok",
+  "hitl_waiting": "ok",
+  "parallel_metadata": "ok",
+  "remote_mcp_failure_visible": "ok"
+}
+```
+
+### Validation
+
+Passed:
+- `python -m compileall app scripts frontend`
+- `python scripts/smoke_realtime_trace.py`
+- `python scripts/smoke_streamlit_frontend.py`
+- `python scripts/smoke_mcp_server.py`
+- `python scripts/smoke_mcp_client.py`
+- `python scripts/smoke_parallel_execution.py`
+- `python scripts/smoke_react_executor.py`
+- `python scripts/smoke_auth_async.py`
+- `python scripts/smoke_alembic_sql_parser.py`
+- `python scripts/smoke_hybrid_rag.py`
+- `python scripts/smoke_github_mcp.py`
+- `python scripts/smoke_tavily_search.py`
+- `python -m app.eval.run_eval` -> 32/32, failed=0
+
+### Notes
+
+- `smoke_auth_async.py` was first run in parallel with other DB-heavy smoke tests
+  and hit SQLite `database is locked`; rerunning it by itself passed.
+- Next recommended step: Day41 Research Evidence Aggregation.
+
 ### 注意事项
 
 - 默认 Docker 目标是本地演示，不是生产云部署。

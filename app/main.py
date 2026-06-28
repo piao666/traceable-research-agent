@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api import reports, tasks, tools
+from app.api import events, reports, tasks, tools
 from app.config import settings
 from app.database import init_db
 from app.mcp import server as mcp_server
@@ -45,6 +45,7 @@ async def health() -> HealthResponse:
 
 
 app.include_router(tasks.router, prefix=settings.api_prefix)
+app.include_router(events.router, prefix=settings.api_prefix)
 app.include_router(tools.router, prefix=settings.api_prefix)
 app.include_router(reports.router, prefix=settings.api_prefix)
 app.include_router(mcp_server.router)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,8 @@ def init_state() -> None:
         "tenant_id":    os.environ.get("DEFAULT_TENANT_ID", "demo"),
         "user_id":      os.environ.get("DEFAULT_USER_ID", "local-user"),
         "use_async_run": True,   # async by default to avoid 30s sync timeout
+        "realtime_auto_refresh": False,
+        "realtime_poll_seconds": 2,
         # EXECUTION_MODE 由后端 .env 控制，这里只做显示用
         "execution_mode_display": os.environ.get("EXECUTION_MODE", "planned"),
         "run_id": "",
@@ -213,6 +216,26 @@ def refresh_all(show_errors: bool = True) -> None:
         st.session_state.last_report = api_get(f"/api/reports/{run_id}")
     except ApiError as exc:
         if show_errors: st.error(str(exc))
+
+
+def realtime_events_url() -> str:
+    run_id = st.session_state.get("run_id", "")
+    return api_url(f"/api/tasks/{run_id}/events") if run_id else ""
+
+
+def maybe_auto_refresh() -> None:
+    if not st.session_state.get("realtime_auto_refresh"):
+        return
+    run_id = st.session_state.get("run_id")
+    if not run_id:
+        return
+    status = (st.session_state.get("last_status") or {}).get("status")
+    if status not in ("pending", "running"):
+        return
+    delay = int(st.session_state.get("realtime_poll_seconds") or 2)
+    time.sleep(max(delay, 1))
+    refresh_all(show_errors=False)
+    st.rerun()
 
 
 def _sync_allowed_tools() -> None:
@@ -414,6 +437,8 @@ def render_sidebar() -> None:
             st.text_input("Tenant ID", key="tenant_id")
             st.text_input("User ID",   key="user_id")
             st.checkbox("异步执行（推荐开启，避免超时）", key="use_async_run")
+            st.checkbox("Realtime auto refresh", key="realtime_auto_refresh")
+            st.slider("Realtime poll seconds", 1, 10, key="realtime_poll_seconds")
 
         st.divider()
         if st.session_state.get("run_id"):
@@ -533,6 +558,31 @@ def tab_trace() -> None:
     traces = st.session_state.get("last_trace") or []
     status_obj = st.session_state.get("last_status") or {}
 
+    with st.expander(
+        "Realtime trace stream",
+        expanded=bool(status_obj.get("status") in ("pending", "running", "waiting_human")),
+    ):
+        st.caption(
+            "Backend SSE endpoint is available for external clients; "
+            "this Streamlit panel uses lightweight auto-refresh."
+        )
+        if st.session_state.get("run_id"):
+            st.code(realtime_events_url(), language=None)
+        cols = st.columns(4)
+        cols[0].metric("status", status_obj.get("status", "-"))
+        cols[1].metric("current step", status_obj.get("current_step", 0))
+        cols[2].metric("trace events", len(traces))
+        cols[3].metric(
+            "auto refresh",
+            "on" if st.session_state.get("realtime_auto_refresh") else "off",
+        )
+        if traces:
+            latest = traces[-1]
+            st.caption(
+                f"latest={latest.get('tool_name')} status={latest.get('status')} "
+                f"finished_at={latest.get('finished_at')}"
+            )
+
     if not traces:
         st.info("暂无 Trace，请先创建并执行任务。")
         return
@@ -635,6 +685,7 @@ def main() -> None:
     with tab1:  tab_task()
     with tab2:  tab_trace()
     with tab3:  tab_report()
+    maybe_auto_refresh()
 
 
 if __name__ == "__main__":

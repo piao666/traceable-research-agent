@@ -564,4 +564,60 @@ Expected output:
 
 ---
 
+## Realtime Trace Streaming
+
+Day40 adds a lightweight Server-Sent Events endpoint for realtime task progress
+without replacing the existing REST status, trace, and report APIs.
+
+Endpoint:
+
+```text
+GET /api/tasks/{run_id}/events
+```
+
+The stream uses `text/event-stream` and replays existing state for completed runs,
+so clients can connect during or after execution. Events include `run_id`,
+`event_type`, `step_no`, `tool_name`, `status`, `output_summary`, `error_message`,
+`latency_ms`, `metadata`, `created_at`, and `finished_at` when available.
+
+Initial event types:
+
+- `run_status`
+- `trace_created`
+- `trace_finished`
+- `waiting_human`
+- `report_ready`
+- `heartbeat`
+- `done`
+
+The first implementation polls persisted `ToolTrace` and `AgentRun` rows, preserving
+Day37 parallel metadata, Day38 MCP server trace behavior, and Day39 remote
+`tool_source=mcp_remote` metadata. Remote MCP failures remain failed tool results in
+Trace and do not turn task APIs into HTTP 500 responses.
+
+Streamlit keeps the manual refresh fallback and adds a lightweight realtime panel
+with optional auto-refresh. The backend SSE endpoint is the stable integration point
+for external clients.
+
+Day40 smoke:
+
+```powershell
+python scripts/smoke_realtime_trace.py
+```
+
+Expected output:
+
+```json
+{
+  "realtime_trace": "ok",
+  "sse_format": "ok",
+  "completed_stream": "ok",
+  "hitl_waiting": "ok",
+  "parallel_metadata": "ok",
+  "remote_mcp_failure_visible": "ok"
+}
+```
+
+---
+
 > 永远不要提交 `.env`、API Key、GitHub Token、本地模型文件、SQLite 数据库、生成的报告、缓存文件、索引文件、Chroma 数据或评测输出到 git。
