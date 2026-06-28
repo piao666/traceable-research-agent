@@ -21,6 +21,8 @@ if _env_path.exists():
 
 # ── 常量 ──────────────────────────────────────────────────────────
 DEFAULT_API_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_API_TIMEOUT_SECONDS = int(os.environ.get("STREAMLIT_API_TIMEOUT_SECONDS", "30"))
+CREATE_TASK_TIMEOUT_SECONDS = int(os.environ.get("STREAMLIT_CREATE_TASK_TIMEOUT_SECONDS", "120"))
 ALL_TOOLS = ["file_reader", "sql_query", "rag_search", "mcp_github_search", "report_writer"]
 
 TOOL_ICON = {
@@ -149,13 +151,31 @@ def request_headers() -> dict[str, str]:
     return h
 
 
-def api_request(method: str, path: str, payload: dict | None = None) -> Any:
+def api_request(
+    method: str,
+    path: str,
+    payload: dict | None = None,
+    timeout: int | float | None = None,
+) -> Any:
+    effective_timeout = timeout or DEFAULT_API_TIMEOUT_SECONDS
     try:
-        r = requests.request(method, api_url(path), json=payload, headers=request_headers(), timeout=30)
+        r = requests.request(
+            method,
+            api_url(path),
+            json=payload,
+            headers=request_headers(),
+            timeout=effective_timeout,
+        )
     except requests.ConnectionError:
         raise ApiError("⚠️ 后端未启动，请先运行 FastAPI：python -m uvicorn app.main:app --port 8000")
     except requests.Timeout:
-        raise ApiError("⚠️ 请求超时，请检查后端是否正常响应")
+        if path == "/api/tasks":
+            raise ApiError(
+                "⚠️ 创建任务超时：后端可能仍在调用 LLM Planner 生成执行计划。"
+                "标准调研模板包含 file/sql/rag/report 多工具规划，耗时会更长；"
+                "请稍后查看后端日志，或重试创建任务。"
+            )
+        raise ApiError("⚠️ 请求超时，但后端可能仍在执行。请点击“刷新全部”查看最新状态。")
     except requests.RequestException as e:
         raise ApiError(f"⚠️ 请求失败：{e}")
     try:
@@ -168,8 +188,12 @@ def api_request(method: str, path: str, payload: dict | None = None) -> Any:
     return data
 
 
-def api_get(path: str) -> Any:  return api_request("GET", path)
-def api_post(path: str, payload: dict | None = None) -> Any:  return api_request("POST", path, payload or {})
+def api_get(path: str, timeout: int | float | None = None) -> Any:
+    return api_request("GET", path, timeout=timeout)
+
+
+def api_post(path: str, payload: dict | None = None, timeout: int | float | None = None) -> Any:
+    return api_request("POST", path, payload or {}, timeout=timeout)
 
 
 def normalize_trace(data: Any) -> list[dict]:
@@ -316,7 +340,8 @@ def render_sidebar() -> None:
             try:
                 h = api_get("/health")
                 st.session_state.health = h
-                st.success(f"✅ 连接正常  ·  模式：{h.get('execution_mode','planned')}")
+                st.success(f"✅ 连接正常  ·  后端默认模式：{h.get('execution_mode','planned')}")
+                st.caption("当前任务实际执行模式以左侧“执行模式”选择为准。")
             except ApiError as e:
                 st.error(str(e))
 
@@ -410,7 +435,8 @@ def tab_task() -> None:
                 "execution_mode_override": st.session_state.execution_mode_display,
             }
             try:
-                resp = api_post("/api/tasks", payload)
+                with st.spinner("正在创建任务并调用 Planner 生成执行计划，标准调研可能需要 30-90 秒..."):
+                    resp = api_post("/api/tasks", payload, timeout=CREATE_TASK_TIMEOUT_SECONDS)
                 st.session_state.last_task_response = resp
                 st.session_state.run_id = resp.get("run_id", "")
                 refresh_all(show_errors=False)

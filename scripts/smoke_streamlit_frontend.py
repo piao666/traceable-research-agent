@@ -87,6 +87,11 @@ def main() -> None:
         or '"source_mode": st.session_state.get("source_mode_ui", "real")' in source,
         "task payload does not use selected source mode",
     )
+    assert_true("CREATE_TASK_TIMEOUT_SECONDS" in source, "create-task timeout constant missing")
+    assert_true(
+        'api_post("/api/tasks", payload, timeout=CREATE_TASK_TIMEOUT_SECONDS)' in source,
+        "create-task request does not use the longer planner timeout",
+    )
 
     forbidden_patterns = [
         r"QWEN_API_KEY\s*=",

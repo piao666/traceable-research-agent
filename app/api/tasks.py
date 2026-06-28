@@ -50,6 +50,7 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
         created_at=run.created_at,
         updated_at=run.updated_at,
         execution_mode=plan_meta["execution_mode"],
+        requested_execution_mode=plan_meta.get("requested_execution_mode"),
         planner_source=plan_meta.get("planner_source"),
         llm_provider=plan_meta.get("llm_provider"),
         llm_model=plan_meta.get("llm_model"),
@@ -117,6 +118,9 @@ def _plan_metadata(run: AgentRun) -> dict:
         react_state = {}
     return {
         "execution_mode": plan.get("execution_mode") or "planned",
+        "requested_execution_mode": plan.get("requested_execution_mode")
+        or plan.get("execution_mode")
+        or "planned",
         "planner_source": plan.get("planner_source"),
         "llm_provider": react_state.get("llm_provider") or plan.get("llm_provider"),
         "llm_model": react_state.get("llm_model") or plan.get("llm_model"),
@@ -205,8 +209,8 @@ async def create_task(
         source_mode=request.source_mode,
         execution_mode_override=request.execution_mode_override,
     )
-    plan["requested_execution_mode"] = settings.execution_mode
-    plan["execution_mode"] = settings.execution_mode
+    plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
+    plan.setdefault("execution_mode", settings.execution_mode)
     run = store.update_agent_run_plan(db, run.run_id, plan)
     return TaskCreateResponse(
         run_id=run.run_id,

@@ -84,6 +84,49 @@ def main() -> None:
 
     init_demo_db()
     build_local_index()
+    api_override_ok = False
+    try:
+        from fastapi.testclient import TestClient
+        from app.main import app
+        import app.api.tasks as tasks_api
+        import app.agent.planner as planner_module
+
+        original_api_llm = tasks_api.settings.llm_planner_enabled
+        original_planner_llm = planner_module.settings.llm_planner_enabled
+        tasks_api.settings.llm_planner_enabled = False
+        planner_module.settings.llm_planner_enabled = False
+        try:
+            client = TestClient(app)
+            response = client.post(
+                "/api/tasks",
+                json={
+                    "task": "Read local docs and generate a traceable report.",
+                    "report_type": "summary",
+                    "source_mode": "mock",
+                    "allowed_tools": ["file_reader", "report_writer"],
+                    "execution_mode_override": "react",
+                },
+            )
+            assert_true(response.status_code == 200, "API task create failed")
+            run_id = response.json()["run_id"]
+            plan_payload = client.get(f"/api/tasks/{run_id}/plan").json()
+            status_payload = client.get(f"/api/tasks/{run_id}").json()
+            assert_true(plan_payload.get("execution_mode") == "react", "API plan did not preserve react override")
+            assert_true(
+                plan_payload.get("requested_execution_mode") == "react",
+                "API plan requested_execution_mode did not preserve react override",
+            )
+            assert_true(status_payload.get("execution_mode") == "react", "API status did not expose react mode")
+            assert_true(
+                status_payload.get("requested_execution_mode") == "react",
+                "API status did not expose requested react mode",
+            )
+            api_override_ok = True
+        finally:
+            tasks_api.settings.llm_planner_enabled = original_api_llm
+            planner_module.settings.llm_planner_enabled = original_planner_llm
+    except Exception as exc:
+        raise AssertionError(f"api execution_mode_override check failed: {exc}") from exc
 
     react_settings = Settings(
         execution_mode="react",
@@ -239,6 +282,7 @@ def main() -> None:
         json.dumps(
             {
                 "react_executor": "ok",
+                "api_execution_mode_override": "ok" if api_override_ok else "failed",
                 "planned_default": "ok",
                 "react_basic": "ok",
                 "failure_recovery": "ok",

@@ -48,6 +48,7 @@ class TaskStatusResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     execution_mode: str = "planned"
+    requested_execution_mode: str | None = None
     planner_source: str | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
