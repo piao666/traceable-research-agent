@@ -934,6 +934,115 @@ Passed:
 - `python scripts/smoke_hybrid_rag.py`
 - `python -m app.eval.run_eval` -> 32/32, failed=0
 
+## 2026-06-28 - Day39 MCP Client And Remote Tool Registry
+
+### Goal
+
+Let the Agent discover and call remote MCP tools in addition to local tools, while
+presenting both through one unified Tool Registry to Planner, Planned executor, and
+ReAct. Preserve ReAct `allowed_tools` validation, remote failure visibility, and
+traceability.
+
+### Implemented
+
+Added:
+- `app/mcp/client.py`
+- `scripts/smoke_mcp_client.py`
+
+Modified:
+- `app/config.py`
+- `app/main.py`
+- `app/tools/registry.py`
+- `app/agent/executor.py`
+- `app/agent/parallel_executor.py`
+- `app/agent/planner.py`
+- `app/agent/react_executor.py`
+- `app/llm/schema.py`
+- `app/llm/planner_client.py`
+- `README.md`
+- `task.txt`
+
+### Remote MCP registry behavior
+
+- Remote MCP discovery is opt-in and disabled by default.
+- Enable with:
+
+```ini
+MCP_REMOTE_REGISTRY_ENABLED=true
+MCP_REMOTE_SERVERS=[{"name":"demo","base_url":"http://127.0.0.1:8001/mcp","timeout_seconds":5}]
+```
+
+- Remote tools are registered as `<server>.<tool>`, for example `fake.echo`.
+- Only remote tools with `read_only=true`, `side_effect_free=true`, and
+  `requires_confirmation=false` are registered.
+- Write-capable or confirmation-required remote tools are ignored.
+- Registered remote tools receive the `mcp_remote` tag and are visible through
+  `list_tools()`, Planner prompts, ReAct available tool specs, and `/api/tools`.
+
+### Execution behavior
+
+- Local tools now include `tool_source=local` in result metadata.
+- Remote MCP tools include `tool_source=mcp_remote`, `remote_server`,
+  `remote_tool_name`, `remote_base_url`, and `latency_ms`.
+- Planned executor now accepts any enabled registered tool, so remote tools can run
+  through the same `execute_tool()` path.
+- Parallel executor remains conservative: Day37 parallel-safe local tools are still
+  the only automatic parallel group candidates; remote tools execute as normal
+  registered tools outside the Day37 parallel whitelist.
+- ReAct still validates every non-finish action against `allowed_tools` and enabled
+  registered tools before execution.
+- Remote timeout / call failure / remote `isError` becomes a failed `ToolResult`,
+  is written into Trace and ReAct observation history, and does not cause API 500.
+- ReAct can finish with `completed_with_limitation`; that flag is now reflected in
+  persisted `react_state`.
+
+### Smoke coverage
+
+New `scripts/smoke_mcp_client.py` starts a fake remote MCP JSON-RPC server and checks:
+- fake remote MCP server discovery
+- remote read-only tool registration
+- write-capable remote tool hidden
+- direct remote tool execution through the unified registry
+- planned Agent remote tool execution
+- remote tool failure visible as failed trace while run completes
+- ReAct remote failure followed by limitation finish
+
+Expected output:
+
+```json
+{
+  "mcp_client": "ok",
+  "fake_remote_discovery": "ok",
+  "remote_tool_call": "ok",
+  "remote_tool_failure_visible": "ok",
+  "react_remote_failure_limitation": "ok",
+  "write_remote_hidden": "ok"
+}
+```
+
+### Validation
+
+Passed:
+- `python -m compileall app scripts`
+- `python scripts/smoke_mcp_client.py`
+- `python scripts/smoke_mcp_server.py`
+- `python scripts/smoke_parallel_execution.py`
+- `python scripts/smoke_github_mcp.py`
+- `python scripts/smoke_tavily_search.py`
+- `python scripts/smoke_auth_async.py`
+- `python scripts/smoke_react_executor.py`
+- `python scripts/smoke_alembic_sql_parser.py`
+- `python scripts/smoke_hybrid_rag.py`
+- `python -m app.eval.run_eval` -> 32/32, failed=0
+
+### Notes
+
+- No database schema change.
+- No new dependency; the project already had `requests`.
+- Remote MCP registry remains opt-in to keep default smoke/eval offline-friendly.
+- Day37 planned parallel execution and Day38 MCP server behavior are preserved.
+- Next recommended step: Day40 Realtime Trace Streaming.
+
 ### 注意事项
 
 - 默认 Docker 目标是本地演示，不是生产云部署。

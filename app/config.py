@@ -47,6 +47,8 @@ class Settings(BaseModel):
     mcp_readonly_mode: bool = True
     mcp_adapter_mode: str = "github_tavily_readonly"
     mcp_allow_write_tools: bool = False
+    mcp_remote_registry_enabled: bool = False
+    mcp_remote_servers: str = ""
     parallel_execution_enabled: bool = False
     parallel_max_workers: int = 3
     parallel_group_strategy: str = "independent_tools"
@@ -228,6 +230,10 @@ class Settings(BaseModel):
             ).strip()
             or "github_tavily_readonly",
             mcp_allow_write_tools=_env_bool("MCP_ALLOW_WRITE_TOOLS", False),
+            mcp_remote_registry_enabled=_env_bool(
+                "MCP_REMOTE_REGISTRY_ENABLED", False
+            ),
+            mcp_remote_servers=os.getenv("MCP_REMOTE_SERVERS", "").strip(),
             parallel_execution_enabled=_env_bool(
                 "PARALLEL_EXECUTION_ENABLED", False
             ),
@@ -424,6 +430,8 @@ class Settings(BaseModel):
             "mcp_readonly_mode": self.mcp_readonly_mode,
             "mcp_adapter_mode": self.mcp_adapter_mode,
             "mcp_allow_write_tools": self.mcp_allow_write_tools,
+            "mcp_remote_registry_enabled": self.mcp_remote_registry_enabled,
+            "mcp_remote_servers_configured": bool(self.mcp_remote_servers),
             "parallel_execution_enabled": self.parallel_execution_enabled,
             "parallel_max_workers": self.parallel_max_workers,
             "parallel_group_strategy": self.parallel_group_strategy,

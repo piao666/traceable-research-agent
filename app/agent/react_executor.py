@@ -429,6 +429,7 @@ def run_react_task(
                 output={"summary": summary},
             )
             store.update_agent_run_progress(db, run_id, step_no)
+            limitation = "limitation" in str(decision.finish_reason or "").lower()
             return _complete_report(
                 db,
                 run_id,
@@ -437,6 +438,7 @@ def run_react_task(
                 decision.finish_reason or "completed",
                 settings,
                 client,
+                limitation=limitation,
             )
 
         counts = state.setdefault("tool_call_counts", {})

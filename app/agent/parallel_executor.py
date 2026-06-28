@@ -16,6 +16,7 @@ from app.agent.executor import (
     EXECUTABLE_TOOLS,
     _failed_observation,
     _is_step_confirmed,
+    is_executable_tool,
     _message_summary,
     _parse_plan,
     _summary,
@@ -314,7 +315,7 @@ def run_plan_parallel(
                     run = store.update_agent_run_progress(db, run_id, step_no)
                     continue
 
-                if tool_name not in EXECUTABLE_TOOLS:
+                if not is_executable_tool(tool_name):
                     result = ToolResult(
                         success=False,
                         error_message=f"Executor does not support tool '{tool_name}'.",

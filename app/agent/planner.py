@@ -9,6 +9,7 @@ from app.config import settings
 from app.llm.planner_client import call_llm_for_plan
 from app.llm.providers import create_llm_client
 from app.llm.schema import extract_json_object, validate_and_normalize_plan
+from app.tools.registry import get_tool, list_tools
 
 
 DEFAULT_TOOL_ORDER = [
@@ -78,6 +79,14 @@ WEB_SEARCH_KEYWORDS = {
     "外部资料",
     "互联网搜索",
     "联网搜索",
+}
+REMOTE_MCP_KEYWORDS = {
+    "remote",
+    "mcp remote",
+    "remote mcp",
+    "remote tool",
+    "远端",
+    "远程",
 }
 GITHUB_REPOSITORY_RANKING_KEYWORDS = {
     "stars",
@@ -176,7 +185,24 @@ def _step_template(
             "requires_confirmation": False,
         },
     }
-    step = templates[tool_name].copy()
+    if tool_name in templates:
+        step = templates[tool_name].copy()
+    else:
+        spec = get_tool(tool_name)
+        input_schema = spec.input_schema if spec else {}
+        arguments: dict[str, Any] = {}
+        if "query" in input_schema:
+            arguments["query"] = task
+        elif "text" in input_schema:
+            arguments["text"] = task
+        step = {
+            "goal": f"Call remote MCP tool {tool_name} through the unified Tool Registry.",
+            "arguments": arguments,
+            "expected_output": "Remote MCP tool output or a structured remote failure.",
+            "completion_criteria": "The remote tool returns an observation without crashing the Agent API.",
+            "risk_level": (spec.risk_level.value if spec else "low"),
+            "requires_confirmation": False,
+        }
     if tool_name == "report_writer" and requires_human_confirmation:
         step["risk_level"] = "high"
         step["requires_confirmation"] = True
@@ -310,6 +336,16 @@ def deterministic_plan_task(
         _append_step(steps, notes, "sql_query", task_text, allowed_set)
     if _matches(task_lower, WEB_SEARCH_KEYWORDS):
         _append_step(steps, notes, "tavily_search", task_text, allowed_set)
+    if _matches(task_lower, REMOTE_MCP_KEYWORDS):
+        remote_tools = [
+            spec.name
+            for spec in list_tools()
+            if spec.enabled and "mcp_remote" in spec.tags and spec.name != "report_writer"
+        ]
+        for remote_tool_name in remote_tools:
+            if allowed_set is None or remote_tool_name in allowed_set:
+                _append_step(steps, notes, remote_tool_name, task_text, allowed_set)
+                break
     if _matches(task_lower, RAG_KEYWORDS):
         _append_step(steps, notes, "rag_search", task_text, allowed_set)
     if _matches(task_lower, GITHUB_KEYWORDS):
@@ -341,11 +377,16 @@ def deterministic_plan_task(
     for index, step in enumerate(steps, start=1):
         step["step_no"] = index
 
+    default_allowed = DEFAULT_TOOL_ORDER.copy()
+    for spec in list_tools():
+        if spec.enabled and "mcp_remote" in spec.tags and spec.name not in default_allowed:
+            default_allowed.append(spec.name)
+
     plan = {
         "version": "deterministic-v1",
         "task": task_text,
         "source_mode": source_mode,
-        "allowed_tools": allowed_tools if allowed_tools is not None else DEFAULT_TOOL_ORDER.copy(),
+        "allowed_tools": allowed_tools if allowed_tools is not None else default_allowed,
         "steps": steps,
         "notes": notes,
         "confirmation": None,

@@ -18,6 +18,18 @@ KNOWN_TOOLS = {
 VALID_RISK_LEVELS = {"low", "medium", "high"}
 
 
+def known_tool_names() -> set[str]:
+    """Return local constants plus any dynamically registered remote tools."""
+
+    try:
+        from app.tools.registry import list_tools
+
+        registered = {spec.name for spec in list_tools()}
+    except Exception:
+        registered = set()
+    return set(KNOWN_TOOLS) | registered
+
+
 def extract_json_object(text: str) -> dict | None:
     """Extract a JSON object from raw LLM text."""
 
@@ -54,6 +66,7 @@ def validate_and_normalize_plan(
     if not isinstance(raw_plan, dict):
         return False, None, ["LLM plan is not a JSON object."]
 
+    known_tools = known_tool_names()
     allowed_set = set(allowed_tools) if allowed_tools is not None else None
     raw_steps = raw_plan.get("steps", [])
     if not isinstance(raw_steps, list):
@@ -65,7 +78,7 @@ def validate_and_normalize_plan(
             notes.append("Skipped non-object step from LLM plan.")
             continue
         tool_name = str(raw_step.get("tool_name") or "").strip()
-        if tool_name not in KNOWN_TOOLS:
+        if tool_name not in known_tools:
             notes.append(f"Skipped unknown tool from LLM plan: {tool_name or '<missing>'}.")
             continue
         if allowed_set is not None and tool_name not in allowed_set:
@@ -108,7 +121,7 @@ def validate_and_normalize_plan(
         "version": str(raw_plan.get("version") or "llm-v1"),
         "task": task.strip(),
         "source_mode": source_mode,
-        "allowed_tools": allowed_tools if allowed_tools is not None else sorted(KNOWN_TOOLS),
+        "allowed_tools": allowed_tools if allowed_tools is not None else sorted(known_tools),
         "steps": normalized_steps,
         "notes": notes,
         "confirmation": raw_plan.get("confirmation") if isinstance(raw_plan.get("confirmation"), dict) else None,

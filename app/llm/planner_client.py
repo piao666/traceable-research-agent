@@ -5,7 +5,15 @@ from __future__ import annotations
 import json
 
 from app.llm.base import LLMClient, LLMMessage, LLMResponse
-from app.llm.schema import KNOWN_TOOLS
+from app.llm.schema import known_tool_names
+from app.tools.registry import get_tool
+
+
+def _tool_description(name: str) -> str:
+    spec = get_tool(name)
+    if spec is None:
+        return name
+    return f"{name}: {spec.description}"
 
 
 def build_planner_messages(
@@ -15,7 +23,7 @@ def build_planner_messages(
 ) -> list[LLMMessage]:
     """Build strict JSON-only planner messages."""
 
-    allowed = allowed_tools if allowed_tools is not None else sorted(KNOWN_TOOLS)
+    allowed = allowed_tools if allowed_tools is not None else sorted(known_tool_names())
     tool_defaults = {
         "file_reader": {"path": "demo_research_note.md", "max_chars": 4000},
         "sql_query": {"query": "SELECT id, title, category FROM documents", "limit": 5},
@@ -28,15 +36,16 @@ def build_planner_messages(
         },
         "report_writer": {},
     }
+    for tool_name in allowed:
+        tool_defaults.setdefault(tool_name, {})
+    known_tool_text = "; ".join(_tool_description(name) for name in allowed)
     system = (
         "You are the Planner for Traceable Research Agent. Output only one JSON object. "
         "Do not output markdown. Do not explain. Do not execute tools. Do not invent tools. "
         "Use only allowed_tools. The plan must be executable by the later Executor. "
         "Each step must include step_no, goal, tool_name, arguments, expected_output, "
-        "completion_criteria, risk_level, and requires_confirmation. Known tools: "
-        "file_reader reads workspace/docs demo files; sql_query runs read-only SQL; "
-        "rag_search performs local RAG retrieval; mcp_github_search performs read-only "
-        "GitHub mock/API search; report_writer creates the final Markdown report. "
+        "completion_criteria, risk_level, and requires_confirmation. Available known tools: "
+        f"{known_tool_text}. "
         "IMPORTANT: Write the 'goal', 'completion_criteria', 'expected_output', and 'notes' "
         "fields in Simplified Chinese (简体中文). Keep JSON keys and tool names in English. "
         f"The source_mode is '{source_mode}'. If source_mode is 'real', the notes MUST say "

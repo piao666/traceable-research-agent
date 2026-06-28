@@ -199,6 +199,49 @@ REACT_LLM_MODEL=qwen-plus
 RUN_REAL_RAG_CHUNK_EXPERIMENT=false   # true 时运行真实 embedding 实验
 ```
 
+## MCP Client And Remote Tool Registry
+
+Day39 adds opt-in remote MCP client support and merges safe remote MCP tools into
+the same Tool Registry used by Planner, Planned executor, ReAct, and `/api/tools`.
+
+Key behavior:
+
+- Local tools keep `tool_source=local` trace metadata.
+- Remote MCP tools are registered as `<server>.<tool>` and use
+  `tool_source=mcp_remote` trace metadata.
+- Remote discovery is disabled by default. Enable with:
+
+```ini
+MCP_REMOTE_REGISTRY_ENABLED=true
+MCP_REMOTE_SERVERS=[{"name":"demo","base_url":"http://127.0.0.1:8001/mcp","timeout_seconds":5}]
+```
+
+- Only remote tools marked `read_only=true`, `side_effect_free=true`, and
+  `requires_confirmation=false` are registered.
+- ReAct still validates every action against `allowed_tools` and enabled registered
+  tools before execution.
+- Remote timeout or failure is converted to a failed `ToolResult`, written as a
+  ReAct observation / trace row, and does not turn the API request into a 500.
+
+Day39 smoke:
+
+```powershell
+python scripts/smoke_mcp_client.py
+```
+
+Expected output:
+
+```json
+{
+  "mcp_client": "ok",
+  "fake_remote_discovery": "ok",
+  "remote_tool_call": "ok",
+  "remote_tool_failure_visible": "ok",
+  "react_remote_failure_limitation": "ok",
+  "write_remote_hidden": "ok"
+}
+```
+
 ---
 
 ## 十、Streamlit 中文演示界面

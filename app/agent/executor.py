@@ -12,7 +12,7 @@ from app.agent.reporter import generate_markdown_report, save_report
 from app.llm.providers import create_llm_client
 from app.config import settings as _exec_settings
 from app.tools.base import ToolResult
-from app.tools.registry import execute_tool
+from app.tools.registry import execute_tool, get_tool
 from app.trace import store
 from app.trace.logger import record_tool_result
 from app.trace.models import AgentRun
@@ -25,6 +25,15 @@ EXECUTABLE_TOOLS = {
     "mcp_github_search",
     "tavily_search",
 }
+
+
+def is_executable_tool(tool_name: str) -> bool:
+    """Return whether a tool can be executed by the structured executor."""
+
+    if tool_name == "report_writer":
+        return False
+    spec = get_tool(tool_name)
+    return bool(spec and spec.enabled)
 
 
 def _parse_plan(run: AgentRun) -> dict[str, Any]:
@@ -133,7 +142,7 @@ def run_plan(db: Session, run_id: str) -> dict[str, Any]:
                 run = store.update_agent_run_progress(db, run_id, step_no)
                 continue
 
-            if tool_name not in EXECUTABLE_TOOLS:
+            if not is_executable_tool(tool_name):
                 result = ToolResult(
                     success=False,
                     error_message=f"Executor does not support tool '{tool_name}'.",

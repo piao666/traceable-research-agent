@@ -30,6 +30,29 @@ def list_tools() -> list[ToolSpec]:
     return [_tool_specs[name] for name in sorted(_tool_specs)]
 
 
+def _tool_source(spec: ToolSpec | None) -> str:
+    if spec and "mcp_remote" in spec.tags:
+        return "mcp_remote"
+    return "local"
+
+
+def _with_registry_metadata(
+    name: str,
+    spec: ToolSpec | None,
+    result: ToolResult,
+) -> ToolResult:
+    metadata = dict(result.metadata or {})
+    metadata.setdefault("tool_name", name)
+    metadata.setdefault("tool_source", _tool_source(spec))
+    return ToolResult(
+        success=result.success,
+        output=result.output,
+        output_summary=result.output_summary,
+        error_message=result.error_message,
+        metadata=metadata,
+    )
+
+
 def execute_tool(
     name: str,
     arguments: dict[str, Any] | None = None,
@@ -45,14 +68,14 @@ def execute_tool(
         return ToolResult(
             success=False,
             error_message=f"Tool '{name}' is not registered.",
-            metadata={"tool_name": name, "error_type": "not_found"},
+            metadata={"tool_name": name, "tool_source": "unknown", "error_type": "not_found"},
         )
 
     if not spec.enabled:
         return ToolResult(
             success=False,
             error_message=f"Tool '{name}' is disabled.",
-            metadata={"tool_name": name, "error_type": "disabled"},
+            metadata={"tool_name": name, "tool_source": _tool_source(spec), "error_type": "disabled"},
         )
 
     handler = _tool_handlers.get(name)
@@ -62,16 +85,17 @@ def execute_tool(
             error_message="Tool handler is not implemented yet.",
             metadata={
                 "tool_name": name,
+                "tool_source": _tool_source(spec),
                 "arguments": arguments or {},
                 "error_type": "not_implemented",
             },
         )
 
     try:
-        return handler(arguments or {})
+        return _with_registry_metadata(name, spec, handler(arguments or {}))
     except Exception as exc:  # pragma: no cover - handler path is future work
         return ToolResult(
             success=False,
             error_message=str(exc),
-            metadata={"tool_name": name, "error_type": "handler_error"},
+            metadata={"tool_name": name, "tool_source": _tool_source(spec), "error_type": "handler_error"},
         )

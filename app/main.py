@@ -8,6 +8,7 @@ from app.api import reports, tasks, tools
 from app.config import settings
 from app.database import init_db
 from app.mcp import server as mcp_server
+from app.mcp.client import register_remote_mcp_tools_from_settings
 from app.schemas import HealthResponse
 from app.tools.defaults import register_default_tools
 
@@ -18,6 +19,7 @@ async def lifespan(app: FastAPI):
 
     init_db()
     register_default_tools()
+    register_remote_mcp_tools_from_settings(settings)
     yield
 
 
