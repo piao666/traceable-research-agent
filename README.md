@@ -302,6 +302,60 @@ python scripts/smoke_final_project.py
 python -m app.eval.run_eval
 ```
 
+## Parallel Multi-tool Execution
+
+Day37 新增 planned 模式下的可选多工具并行执行。默认仍保持稳定串行路径：
+
+```ini
+PARALLEL_EXECUTION_ENABLED=false
+PARALLEL_MAX_WORKERS=3
+PARALLEL_GROUP_STRATEGY=independent_tools
+PARALLEL_TIMEOUT_SECONDS=60
+```
+
+本地开启方式：
+
+```ini
+PARALLEL_EXECUTION_ENABLED=true
+PARALLEL_MAX_WORKERS=3
+```
+
+当前只并行安全、互不依赖的只读工具：`file_reader`、`rag_search`、
+`mcp_github_search`、`tavily_search` 和只读 `sql_query`。`report_writer`
+始终作为 evidence 收集后的 barrier 执行；`requires_confirmation=true` 的 HITL
+步骤不会并行，也不会被绕过。
+
+每个并行工具调用继续使用现有 `ToolResult` 结构，并在 Trace output metadata
+中记录：`parallel`、`parallel_group_id`、`parallel_worker_id`、
+`parallel_group_size`、`execution_mode=planned_parallel`、`started_at`、
+`finished_at`、`latency_ms`。Reporter 和 Streamlit Trace Viewer 会展示这些
+并行组、worker 和耗时信息。单个工具失败会写入 failed trace 并进入报告，不会把
+整个 API 调用变成 500。
+
+ReAct 在 Day37 仍保持动态串行 loop；后续可探索 ReAct 内部候选工具并行，但本轮只
+增强 planned executor。
+
+Day37 验证命令：
+
+```powershell
+python scripts/smoke_parallel_execution.py
+```
+
+预期输出：
+
+```json
+{
+  "parallel_execution": "ok",
+  "default_serial_guard": "ok",
+  "parallel_group": "ok",
+  "trace_metadata": "ok",
+  "report_writer_guard": "ok",
+  "failure_visible": "ok",
+  "hitl_guard": "ok",
+  "async_dispatch": "ok"
+}
+```
+
 ---
 
 ## 十三、优化路线图（Phase A-E）

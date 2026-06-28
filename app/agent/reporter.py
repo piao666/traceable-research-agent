@@ -156,6 +156,29 @@ def _trace_output(trace: ToolTrace) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _trace_metadata(trace: ToolTrace) -> dict[str, Any]:
+    output = _trace_output(trace)
+    metadata = output.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _parallel_metadata_lines(metadata: dict[str, Any]) -> list[str]:
+    if metadata.get("parallel") is not True:
+        return []
+    return [
+        "Parallel execution metadata:",
+        "",
+        f"* parallel_group_id: `{metadata.get('parallel_group_id')}`",
+        f"* parallel_worker_id: `{metadata.get('parallel_worker_id')}`",
+        f"* parallel_group_size: `{metadata.get('parallel_group_size')}`",
+        f"* execution_mode: `{metadata.get('execution_mode')}`",
+        f"* started_at: `{metadata.get('started_at')}`",
+        f"* finished_at: `{metadata.get('finished_at')}`",
+        f"* latency_ms: `{metadata.get('latency_ms')}`",
+        "",
+    ]
+
+
 def _evidence_records(
     observations: list[dict[str, Any]], traces: list[ToolTrace]
 ) -> list[dict[str, Any]]:
@@ -746,6 +769,9 @@ def generate_markdown_report(
                         ]
                     )
             if metadata:
+                parallel_lines = _parallel_metadata_lines(metadata)
+                if parallel_lines:
+                    lines.extend(parallel_lines)
                 lines.extend(
                     [
                         "原始 Metadata（JSON key 保持不变）：",
@@ -768,24 +794,24 @@ def generate_markdown_report(
         lines.extend(["未记录 Trace 数据。", ""])
 
     for trace in traces:
+        metadata = _trace_metadata(trace)
+        parallel_suffix = ""
+        if metadata.get("parallel") is True:
+            parallel_suffix = (
+                f" parallel=true group={metadata.get('parallel_group_id')}"
+                f" worker={metadata.get('parallel_worker_id')}"
+                f" latency_ms={metadata.get('latency_ms')}"
+            )
         lines.append(
             f"* `{trace.trace_id}` step={trace.step_no} tool={trace.tool_name} "
-            f"status={trace.status}"
+            f"status={trace.status}{parallel_suffix}"
         )
 
     problem_traces = [trace for trace in traces if trace.status in {"failed", "rejected"}]
     if problem_traces:
         lines.extend(["", "## 8. 失败与拒绝详情", ""])
         for trace in problem_traces:
-            trace_metadata: dict[str, Any] = {}
-            try:
-                parsed_output = json.loads(trace.output_json or "{}")
-                if isinstance(parsed_output, dict):
-                    nested = parsed_output.get("metadata")
-                    if isinstance(nested, dict):
-                        trace_metadata = nested
-            except (TypeError, json.JSONDecodeError):
-                pass
+            trace_metadata = _trace_metadata(trace)
             lines.extend(
                 [
                     f"### 步骤 {trace.step_no}: {trace.tool_name}",
@@ -799,6 +825,14 @@ def generate_markdown_report(
             )
 
     lines.extend(["", "## 9. 运行限制与说明", ""])
+    parallel_problem_traces = [
+        trace for trace in problem_traces if _trace_metadata(trace).get("parallel") is True
+    ]
+    if parallel_problem_traces:
+        lines.extend(["", "### Parallel failure metadata", ""])
+        for trace in parallel_problem_traces:
+            lines.extend(_parallel_metadata_lines(_trace_metadata(trace)))
+
     lines.extend([f"* {limitation}" for limitation in _runtime_limitations(plan)])
     lines.append("")
     return "\n".join(lines)

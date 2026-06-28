@@ -27,3 +27,6 @@
 {"case_id":"react_vs_planned_eval_smoke_001","mode":"react_vs_planned_eval_smoke","should_succeed":true,"category":"quantitative_eval"}
 {"case_id":"rag_chunk_real_switch_smoke_001","mode":"rag_chunk_real_switch","should_succeed":true,"category":"rag_chunk_correction"}
 {"case_id":"rag_chunk_corpus_expansion_001","mode":"rag_chunk_corpus","should_succeed":true,"category":"rag_chunk_correction"}
+{"case_id":"planned_parallel_basic_001","mode":"planned_parallel","parallel_scenario":"basic","task":"Read local docs, query database metrics, retrieve trace evidence, and generate a markdown report","should_succeed":true,"category":"planned_parallel"}
+{"case_id":"planned_parallel_failure_visible_001","mode":"planned_parallel","parallel_scenario":"failure_visible","task":"Run a planned parallel task with one missing local evidence file and still generate a report","should_succeed":true,"category":"planned_parallel"}
+{"case_id":"planned_parallel_hitl_guard_001","mode":"planned_parallel","parallel_scenario":"hitl_guard","task":"Read local docs, retrieve trace evidence, and wait for human approval before the report","should_succeed":true,"category":"planned_parallel"}

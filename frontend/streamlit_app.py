@@ -295,6 +295,24 @@ def trace_step_card(trace: dict) -> None:
     )
 
     # ReAct 思考链
+    trace_meta = trace.get("metadata") or {}
+    if isinstance(trace_meta, str):
+        try:
+            trace_meta = json.loads(trace_meta)
+        except Exception:
+            trace_meta = {}
+    if isinstance(trace_meta, dict) and trace_meta.get("parallel") is True:
+        with st.expander(f"Parallel group {trace_meta.get('parallel_group_id')}", expanded=False):
+            cols = st.columns(4)
+            cols[0].metric("parallel", str(trace_meta.get("parallel")))
+            cols[1].metric("worker", trace_meta.get("parallel_worker_id", "-"))
+            cols[2].metric("group size", trace_meta.get("parallel_group_size", "-"))
+            cols[3].metric("latency", f"{trace_meta.get('latency_ms', '-')} ms")
+            st.caption(
+                f"started_at={trace_meta.get('started_at')} | "
+                f"finished_at={trace_meta.get('finished_at')}"
+            )
+
     out = trace.get("output") or {}
     if isinstance(out, dict):
         thought = out.get("thought") or (out.get("metadata") or {}).get("thought")

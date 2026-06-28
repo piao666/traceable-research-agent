@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.executor import run_plan
+from app.agent.dispatcher import run_task_by_mode
 from app.agent.planner import plan_task
 from app.agent.react_executor import run_react_task
 from app.database import SessionLocal, init_db
@@ -498,6 +499,135 @@ def _run_react_case(db, case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _parallel_eval_plan(case: dict[str, Any]) -> dict[str, Any]:
+    bad_file = case.get("parallel_scenario") == "failure_visible"
+    hitl = case.get("parallel_scenario") == "hitl_guard"
+    task = case.get("task") or "Evaluate planned parallel execution."
+    return {
+        "version": "day37-eval",
+        "task": task,
+        "source_mode": "mock",
+        "allowed_tools": ["file_reader", "sql_query", "rag_search", "report_writer"],
+        "planner_source": "eval",
+        "execution_mode": "planned",
+        "steps": [
+            {
+                "step_no": 1,
+                "goal": "Read local evidence.",
+                "tool_name": "file_reader",
+                "arguments": {
+                    "path": "missing_parallel_eval.md" if bad_file else "demo_research_note.md",
+                    "max_chars": 1000,
+                },
+                "expected_output": "Local evidence.",
+                "completion_criteria": "File read succeeds or records a visible failure.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 2,
+                "goal": "Query local demo database.",
+                "tool_name": "sql_query",
+                "arguments": {"query": "SELECT title FROM documents", "limit": 3},
+                "expected_output": "Read-only rows.",
+                "completion_criteria": "SQL returns rows.",
+                "risk_level": "medium",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 3,
+                "goal": "Retrieve local RAG evidence.",
+                "tool_name": "rag_search",
+                "arguments": {"query": "trace persistence tool registry", "top_k": 2},
+                "expected_output": "RAG hits.",
+                "completion_criteria": "RAG returns evidence.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 4,
+                "goal": "Generate final report.",
+                "tool_name": "report_writer",
+                "arguments": {},
+                "expected_output": "Markdown report.",
+                "completion_criteria": "Report is saved.",
+                "risk_level": "high" if hitl else "low",
+                "requires_confirmation": hitl,
+            },
+        ],
+        "notes": ["Day37 parallel eval plan."],
+    }
+
+
+def _trace_metadata(trace) -> dict[str, Any]:
+    try:
+        payload = json.loads(trace.output_json or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _run_planned_parallel_case(db, case: dict[str, Any]) -> dict[str, Any]:
+    original = {
+        "parallel_execution_enabled": settings.parallel_execution_enabled,
+        "parallel_max_workers": settings.parallel_max_workers,
+        "parallel_timeout_seconds": settings.parallel_timeout_seconds,
+    }
+    try:
+        settings.parallel_execution_enabled = True
+        settings.parallel_max_workers = 3
+        settings.parallel_timeout_seconds = 60
+        plan = _parallel_eval_plan(case)
+        run = store.create_agent_run(
+            db,
+            task=plan["task"],
+            report_type="summary",
+            source_mode="mock",
+            allowed_tools=plan["allowed_tools"],
+        )
+        store.update_agent_run_plan(db, run.run_id, plan)
+        summary = run_task_by_mode(db, run.run_id, settings)
+        final_run = store.get_agent_run(db, run.run_id)
+        traces = store.list_tool_traces(db, run.run_id)
+        parallel_traces = [trace for trace in traces if _trace_metadata(trace).get("parallel") is True]
+        group_ids = Counter(_trace_metadata(trace).get("parallel_group_id") for trace in parallel_traces)
+        report_exists = bool(final_run.report_path and (ROOT / final_run.report_path).exists())
+        scenario = case.get("parallel_scenario")
+        failed_file_visible = any(
+            trace.tool_name == "file_reader" and trace.status == "failed"
+            for trace in traces
+        )
+        hitl_waited = summary["status"] == "waiting_human"
+        passed = (
+            len(parallel_traces) >= 2
+            and any(count >= 2 for count in group_ids.values())
+            and all(_trace_metadata(trace).get("execution_mode") == "planned_parallel" for trace in parallel_traces)
+        )
+        if scenario == "failure_visible":
+            passed = passed and summary["status"] == "completed" and failed_file_visible and report_exists
+        elif scenario == "hitl_guard":
+            passed = passed and hitl_waited and not report_exists
+        else:
+            passed = passed and summary["status"] == "completed" and report_exists
+        return {
+            "case_id": case["case_id"],
+            "passed": passed,
+            "run_id": run.run_id,
+            "status": summary["status"],
+            "planned_tools": [step.get("tool_name") for step in plan.get("steps") or []],
+            "trace_count": len(traces),
+            "trace_statuses": Counter(trace.status for trace in traces),
+            "trace_complete": len(parallel_traces) >= 2,
+            "report_exists": report_exists,
+            "failure_reason": None if passed else "Planned parallel eval checks did not match expectations",
+        }
+    finally:
+        settings.parallel_execution_enabled = original["parallel_execution_enabled"]
+        settings.parallel_max_workers = original["parallel_max_workers"]
+        settings.parallel_timeout_seconds = original["parallel_timeout_seconds"]
+
+
 def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
     try:
         mode = case.get("mode", "task_run")
@@ -525,6 +655,8 @@ def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
             return _run_react_vs_planned_smoke_case(case)
         if mode == "react_scripted":
             return _run_react_case(db, case)
+        if mode == "planned_parallel":
+            return _run_planned_parallel_case(db, case)
         return _run_task_case(db, case)
     except Exception as exc:
         return {

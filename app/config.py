@@ -47,6 +47,10 @@ class Settings(BaseModel):
     mcp_readonly_mode: bool = True
     mcp_adapter_mode: str = "github_tavily_readonly"
     mcp_allow_write_tools: bool = False
+    parallel_execution_enabled: bool = False
+    parallel_max_workers: int = 3
+    parallel_group_strategy: str = "independent_tools"
+    parallel_timeout_seconds: int = 60
     execution_mode: str = "planned"
     react_enabled: bool = True
     react_max_steps: int = 8
@@ -116,6 +120,22 @@ class Settings(BaseModel):
     def validate_execution_mode(cls, value: object) -> str:
         normalized = str(value or "planned").strip().lower()
         return normalized if normalized in {"planned", "react"} else "planned"
+
+    @field_validator("parallel_max_workers", mode="before")
+    @classmethod
+    def validate_parallel_max_workers(cls, value: object) -> int:
+        return _bounded_value(value, 3, 1, 8)
+
+    @field_validator("parallel_timeout_seconds", mode="before")
+    @classmethod
+    def validate_parallel_timeout_seconds(cls, value: object) -> int:
+        return _bounded_value(value, 60, 5, 300)
+
+    @field_validator("parallel_group_strategy", mode="before")
+    @classmethod
+    def validate_parallel_group_strategy(cls, value: object) -> str:
+        normalized = str(value or "independent_tools").strip().lower()
+        return normalized if normalized in {"independent_tools"} else "independent_tools"
 
     @field_validator("react_max_steps", mode="before")
     @classmethod
@@ -208,6 +228,18 @@ class Settings(BaseModel):
             ).strip()
             or "github_tavily_readonly",
             mcp_allow_write_tools=_env_bool("MCP_ALLOW_WRITE_TOOLS", False),
+            parallel_execution_enabled=_env_bool(
+                "PARALLEL_EXECUTION_ENABLED", False
+            ),
+            parallel_max_workers=_env_bounded_int("PARALLEL_MAX_WORKERS", 3, 1, 8),
+            parallel_group_strategy=_env_choice(
+                "PARALLEL_GROUP_STRATEGY",
+                "independent_tools",
+                {"independent_tools"},
+            ),
+            parallel_timeout_seconds=_env_bounded_int(
+                "PARALLEL_TIMEOUT_SECONDS", 60, 5, 300
+            ),
             execution_mode=_env_choice(
                 "EXECUTION_MODE", "planned", {"planned", "react"}
             ),
@@ -392,6 +424,10 @@ class Settings(BaseModel):
             "mcp_readonly_mode": self.mcp_readonly_mode,
             "mcp_adapter_mode": self.mcp_adapter_mode,
             "mcp_allow_write_tools": self.mcp_allow_write_tools,
+            "parallel_execution_enabled": self.parallel_execution_enabled,
+            "parallel_max_workers": self.parallel_max_workers,
+            "parallel_group_strategy": self.parallel_group_strategy,
+            "parallel_timeout_seconds": self.parallel_timeout_seconds,
         }
 
     def get_safe_rag_config_summary(self) -> dict:

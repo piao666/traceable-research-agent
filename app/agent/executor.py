@@ -18,7 +18,13 @@ from app.trace.logger import record_tool_result
 from app.trace.models import AgentRun
 
 
-EXECUTABLE_TOOLS = {"file_reader", "sql_query", "rag_search", "mcp_github_search"}
+EXECUTABLE_TOOLS = {
+    "file_reader",
+    "sql_query",
+    "rag_search",
+    "mcp_github_search",
+    "tavily_search",
+}
 
 
 def _parse_plan(run: AgentRun) -> dict[str, Any]:

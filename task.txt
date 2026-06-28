@@ -761,6 +761,103 @@ Invoke-WebRequest http://127.0.0.1:8501 -UseBasicParsing
 docker compose down
 ```
 
+---
+
+## 2026-06-28 - Day37 Parallel Multi-tool Execution
+
+### Why parallel execution was added
+
+Traceable Research Agent is moving toward a traceable, multi-tool Research Agent runtime.
+Independent evidence tools such as GitHub search, Tavily search, RAG retrieval, file reads,
+and read-only SQL should not always pay serial latency. Day37 adds an optional planned
+parallel executor while preserving Trace, HITL, read-only safety, and report generation.
+
+### Default serial, optional parallel
+
+- Default remains `PARALLEL_EXECUTION_ENABLED=false`; the existing serial planned executor
+  is still the stable path.
+- When `PARALLEL_EXECUTION_ENABLED=true` and the plan uses `execution_mode=planned`,
+  dispatcher calls `run_plan_parallel`.
+- ReAct remains a dynamic serial loop in Day37.
+
+### Parallel tool scope
+
+Eligible independent read-only tools:
+- `file_reader`
+- `rag_search`
+- `mcp_github_search`
+- `tavily_search`
+- read-only `sql_query`
+
+Never parallelized:
+- `report_writer`, which remains a final barrier after evidence collection.
+- `requires_confirmation=true` HITL steps, which must stop at `waiting_human`.
+- Steps with explicit dependency keys such as `depends_on` or `after_step`.
+
+### Trace metadata
+
+Parallel execution metadata is stored in existing trace output metadata without changing
+the database schema:
+- `parallel=true`
+- `parallel_group_id`
+- `parallel_worker_id`
+- `parallel_group_size`
+- `execution_mode=planned_parallel`
+- `started_at`
+- `finished_at`
+- `latency_ms`
+
+Reporter and Streamlit display the parallel group, worker, and latency information.
+Failed tools remain visible as failed traces and in the report; they do not turn the
+whole API request into a 500.
+
+### smoke_parallel_execution.py result
+
+`scripts/smoke_parallel_execution.py` covers:
+- default serial guard
+- parallel group creation
+- trace metadata
+- report_writer barrier
+- failed tool visibility
+- HITL guard
+- `/run_async` parallel dispatch
+
+Expected output:
+
+```json
+{
+  "parallel_execution": "ok",
+  "default_serial_guard": "ok",
+  "parallel_group": "ok",
+  "trace_metadata": "ok",
+  "report_writer_guard": "ok",
+  "failure_visible": "ok",
+  "hitl_guard": "ok",
+  "async_dispatch": "ok"
+}
+```
+
+### Eval updates
+
+Added:
+- `planned_parallel_basic_001`
+- `planned_parallel_failure_visible_001`
+- `planned_parallel_hitl_guard_001`
+
+Default eval remains offline-friendly and does not require real external network,
+real LLM keys, or local embedding models.
+
+### Current limits
+
+- No distributed queue.
+- No ReAct internal parallelism.
+- No complex DAG scheduler.
+- No database schema change; reuse trace JSON metadata.
+
+### Next
+
+Day38 Full MCP Server Foundation.
+
 ### 注意事项
 
 - 默认 Docker 目标是本地演示，不是生产云部署。

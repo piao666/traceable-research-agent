@@ -36,4 +36,7 @@ def run_task_by_mode(
     if effective_mode == "react" and settings_obj.react_enabled:
         from app.agent.react_executor import run_react_task
         return run_react_task(db, run_id, settings_obj, llm_client=llm_client)
+    if effective_mode == "planned" and settings_obj.parallel_execution_enabled:
+        from app.agent.parallel_executor import run_plan_parallel
+        return run_plan_parallel(db, run_id, settings_obj)
     return run_plan(db, run_id)
