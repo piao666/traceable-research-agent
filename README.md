@@ -460,4 +460,65 @@ traceable-research-agent/
 
 ---
 
+## Full MCP Server Foundation
+
+Day38 adds a lightweight, read-only MCP-compatible server foundation.
+
+Endpoints:
+
+```text
+GET  /mcp/health
+GET  /mcp/tools
+POST /mcp/tools/call
+POST /mcp
+```
+
+`POST /mcp` supports a small JSON-RPC subset:
+
+- `initialize`
+- `tools/list`
+- `tools/call`
+
+Initial exposed MCP tools:
+
+- `file_reader`
+- `rag_search`
+- `sql_query_readonly`
+- `github_search`
+- `tavily_search`
+- `trace_reader`
+- `report_reader`
+
+MCP metadata includes `read_only`, `side_effect_free`, `requires_confirmation`,
+`risk_level`, `input_schema`, and `output_schema`. Write-capable tools and barrier
+tools such as `report_writer` are not exposed by default.
+
+Read-only policy notes:
+
+- GitHub remains GET-only through the existing public API adapter.
+- Tavily search is allowed as semantic read-only search even though its HTTP API uses POST.
+- SQL remains protected by the existing SQLGlot read-only validation.
+- MCP calls can optionally write trace rows when a `run_id` is supplied in trace options.
+
+Day38 smoke:
+
+```powershell
+python scripts/smoke_mcp_server.py
+```
+
+Expected output:
+
+```json
+{
+  "mcp_server": "ok",
+  "tool_discovery": "ok",
+  "json_rpc": "ok",
+  "tool_call_trace": "ok",
+  "readers": "ok",
+  "write_tools_hidden": "ok"
+}
+```
+
+---
+
 > 永远不要提交 `.env`、API Key、GitHub Token、本地模型文件、SQLite 数据库、生成的报告、缓存文件、索引文件、Chroma 数据或评测输出到 git。

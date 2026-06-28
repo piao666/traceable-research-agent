@@ -858,6 +858,82 @@ real LLM keys, or local embedding models.
 
 Day38 Full MCP Server Foundation.
 
+## 2026-06-28 - Day38 Full MCP Server Foundation
+
+### Goal
+
+Upgrade the previous MCP-style read-only adapters into a lightweight MCP-compatible
+server foundation that external clients can discover and call, while preserving
+Day37 parallel execution, ReAct serial execution, Auth/Async, SQLGlot read-only
+checks, RAG, GitHub GET-only policy, and Tavily semantic read-only search.
+
+### Implemented
+
+Added:
+- `app/mcp/policy.py`
+- `app/mcp/schemas.py`
+- `app/mcp/server.py`
+- `scripts/smoke_mcp_server.py`
+
+Modified:
+- `app/main.py`
+- `app/mcp/__init__.py`
+- `app/mcp/readonly.py`
+- `README.md`
+- `task.txt`
+
+### MCP endpoints
+
+- `GET /mcp/health`
+- `GET /mcp/tools`
+- `POST /mcp/tools/call`
+- `POST /mcp`
+
+`POST /mcp` supports:
+- `initialize`
+- `tools/list`
+- `tools/call`
+
+### Exposed tools
+
+- `file_reader`
+- `rag_search`
+- `sql_query_readonly`
+- `github_search`
+- `tavily_search`
+- `trace_reader`
+- `report_reader`
+
+Not exposed by default:
+- `report_writer`
+- write-capable GitHub/database/file tools
+- confirmation-required tools
+
+### Policy
+
+- MCP metadata includes name, description, input_schema, output_schema, read_only,
+  side_effect_free, requires_confirmation, and risk_level.
+- GitHub remains GET-only.
+- Tavily remains allowed because search is semantic read-only even though Tavily's
+  HTTP API uses POST.
+- SQL execution continues to use the existing SQLGlot read-only validator.
+- MCP tool calls can write trace rows when `_trace.run_id` is supplied through
+  JSON-RPC or `trace.run_id` is supplied through `/mcp/tools/call`.
+
+### Validation
+
+Passed:
+- `python -m compileall app scripts`
+- `python scripts/smoke_mcp_server.py`
+- `python scripts/smoke_parallel_execution.py`
+- `python scripts/smoke_github_mcp.py`
+- `python scripts/smoke_tavily_search.py`
+- `python scripts/smoke_auth_async.py`
+- `python scripts/smoke_react_executor.py`
+- `python scripts/smoke_alembic_sql_parser.py`
+- `python scripts/smoke_hybrid_rag.py`
+- `python -m app.eval.run_eval` -> 32/32, failed=0
+
 ### 注意事项
 
 - 默认 Docker 目标是本地演示，不是生产云部署。

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app.api import reports, tasks, tools
 from app.config import settings
 from app.database import init_db
+from app.mcp import server as mcp_server
 from app.schemas import HealthResponse
 from app.tools.defaults import register_default_tools
 
@@ -44,3 +45,4 @@ async def health() -> HealthResponse:
 app.include_router(tasks.router, prefix=settings.api_prefix)
 app.include_router(tools.router, prefix=settings.api_prefix)
 app.include_router(reports.router, prefix=settings.api_prefix)
+app.include_router(mcp_server.router)
