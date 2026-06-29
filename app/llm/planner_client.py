@@ -43,6 +43,16 @@ def build_planner_messages(
         "You are the Planner for Traceable Research Agent. Output only one JSON object. "
         "Do not output markdown. Do not explain. Do not execute tools. Do not invent tools. "
         "Use only allowed_tools. The plan must be executable by the later Executor. "
+        "Use the exact default_arguments unless the user gives a more specific valid value. "
+        "For file_reader, path must be a relative filename under workspace/docs; do not prefix "
+        "workspace/docs and do not invent filenames. Valid examples include "
+        "demo_research_note.md, streamlit_demo_notes.md, sql_safety_notes.md, "
+        "github_mcp_readonly_notes.md, rag_retrieval_notes.md, react_execution_notes.md, "
+        "traceable_agent_architecture.md, and evaluation_notes.md. "
+        "For sql_query, the demo SQLite schema is documents(id,title,source,category,created_at) "
+        "and metrics(id,name,value,unit); generate only one SELECT or WITH statement over those "
+        "columns. For GitHub search, keep query short plain text, repo must be owner/name or null, "
+        "search_type must be issues or repositories, and the tool is read-only. "
         "Each step must include step_no, goal, tool_name, arguments, expected_output, "
         "completion_criteria, risk_level, and requires_confirmation. Available known tools: "
         f"{known_tool_text}. "
@@ -65,6 +75,25 @@ def build_planner_messages(
             "confirmation",
         ],
         "default_arguments": tool_defaults,
+        "tool_boundaries": {
+            "file_reader": {
+                "root": "workspace/docs",
+                "path_rule": "relative existing file path only; no workspace/docs prefix",
+            },
+            "sql_query": {
+                "schema": {
+                    "documents": ["id", "title", "source", "category", "created_at"],
+                    "metrics": ["id", "name", "value", "unit"],
+                },
+                "rule": "single read-only SELECT or WITH statement",
+            },
+            "mcp_github_search": {
+                "query_rule": "short plain text query",
+                "repo_rule": "owner/name or null",
+                "search_type": ["issues", "repositories"],
+                "mode": "public_api when source_mode=real, mock when source_mode=mock",
+            },
+        },
     }
     return [
         LLMMessage(role="system", content=system),

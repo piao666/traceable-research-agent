@@ -18,6 +18,7 @@ CHECKS = [
     ("smoke_hitl", [sys.executable, "scripts/smoke_hitl.py"]),
     ("smoke_llm_config", [sys.executable, "scripts/smoke_llm_config.py"]),
     ("smoke_llm_planner", [sys.executable, "scripts/smoke_llm_planner.py"]),
+    ("smoke_planner_guardrails", [sys.executable, "scripts/smoke_planner_guardrails.py"]),
     ("smoke_rag_query", [sys.executable, "scripts/smoke_rag_query.py"]),
     ("smoke_rag_backends", [sys.executable, "scripts/smoke_rag_backends.py"]),
     ("smoke_streamlit_frontend", [sys.executable, "scripts/smoke_streamlit_frontend.py"]),

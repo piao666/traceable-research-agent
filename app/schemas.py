@@ -186,6 +186,24 @@ class EvidenceBundleResponse(BaseModel):
     warnings: list[str]
 
 
+class EvidenceExportResponse(BaseModel):
+    run_id: str
+    format: str
+    export_path: str
+    item_count: int
+    created_at: str
+
+
+class EvidenceExportContentResponse(BaseModel):
+    run_id: str
+    format: str
+    export_path: str
+    content: str
+    content_type: str
+    item_count: int
+    created_at: str
+
+
 class ToolInfo(BaseModel):
     name: str
     description: str

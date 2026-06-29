@@ -23,6 +23,7 @@ env/
 
 # Local app data
 workspace/cache/
+workspace/exports/
 workspace/reports/
 workspace/*.sqlite
 workspace/*.sqlite-journal

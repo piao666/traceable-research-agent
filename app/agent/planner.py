@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from app.config import settings
+from app.agent.plan_guardrails import normalize_plan_arguments
 from app.llm.planner_client import call_llm_for_plan
 from app.llm.providers import create_llm_client
 from app.llm.schema import extract_json_object, validate_and_normalize_plan
@@ -279,6 +280,7 @@ def plan_task(
                 if valid and normalized is not None:
                     _enforce_external_tool_modes(normalized, task, source_mode)
                     _apply_human_confirmation_policy(normalized, task)
+                    normalize_plan_arguments(normalized, task, source_mode)
                     _synchronize_confirmation_notes(normalized)
                     normalized["planner_source"] = "llm"
                     normalized["llm_provider"] = response.provider
@@ -289,6 +291,7 @@ def plan_task(
                         normalized = decompose_and_annotate_plan(task, normalized, client, n=4)
                     except Exception:
                         pass
+                    normalize_plan_arguments(normalized, task, source_mode)
                     return _apply_execution_mode(normalized, execution_mode_override)
                 fallback_reason = "LLM output failed schema validation; used deterministic fallback."
             else:
@@ -392,6 +395,7 @@ def deterministic_plan_task(
         "confirmation": None,
     }
     _enforce_external_tool_modes(plan, task_text, source_mode)
+    normalize_plan_arguments(plan, task_text, source_mode)
     return plan
 
 

@@ -1,1318 +1,187 @@
-# Traceable Research Agent — 任务追踪文档
+# Traceable Research Agent - Task Plan
 
-## 项目基本信息
-- 仓库：https://github.com/piao666/traceable-research-agent
-- 当前最新提交：3409727a516093fb8b9b9158bc22995c809c40ac（2026-06-24）
-- 技术栈：Python / FastAPI / SQLAlchemy / SQLite / Alembic / SentenceTransformers / ChromaDB / Streamlit
-- 参考项目：GPT Researcher（assafelovic/gpt-researcher）
+更新时间：2026-06-29
 
----
+## 项目定位
 
-## 完成阶段历史
+Traceable Research Agent 的核心目标是构建一个可追踪、可审计、可复盘的多工具调研 Agent。当前主线不是扩展第二套前端，也不是转向企业知识库 RAG 平台，而是继续强化：
 
-### Day1-5：FastAPI 骨架搭建
-- POST /api/tasks 任务创建接口
-- 状态机设计：pending → running → waiting_human → completed/failed
-- Tool Registry 统一注册机制
-- SQLite 持久化（AgentRun + ToolTrace 两张表）
+- 任务规划与工具调用的稳定性
+- Trace / Evidence / Report 的闭环
+- MCP 只读工具协议互操作
+- 真实演示问题下的端到端可靠性
 
-### Day6-12：工具层实现
-- file_reader：路径白名单 + max_chars 截断
-- sql_query：SQLGlot AST 只读校验（拒绝 INSERT/UPDATE/DELETE/DROP）
-- rag_search：占位符实现，为后续 RAG 接入预留接口
-- mcp_github_search：offline mock 模式，后续接入 GitHub Public API
-- report_writer：基于 Trace 记录生成 Markdown 报告
+Streamlit 继续作为主 demo UI；FastAPI 是稳定后端；MCP 端点用于外部客户端发现和只读调用。
 
-### Day13-18：Planner 与 Executor
-- 确定性关键词 Planner（deterministic）
-- LLM Planner（qwen-plus / deepseek-chat，OpenAI-compatible API）
-- LLM_PLANNER_ENABLED + LLM_PLANNER_MODE=auto 配置
-- Planned Executor：按计划步骤顺序执行，失败时记录但继续
+## 当前已具备的闭环
 
-### Day19-24：ReAct Executor
-- Thought / Action / Observation 循环
-- max_steps 和 same_tool_max_calls 安全限制
-- LLM JSON 输出校验 + fallback 逻辑
-- ReAct vs Planned 18-case 量化评测
-  - Planned：完成率 100%，恢复 1/7，平均延迟 826ms
-  - ReAct：完成率 100%，恢复 6/7，平均延迟 1299ms
+- FastAPI 任务生命周期：create / plan / run / run_async / confirm / status
+- Planned 与 ReAct 两种执行模式
+- Tool Registry 统一注册本地工具和可选远端 MCP 工具
+- file_reader / sql_query / rag_search / mcp_github_search / tavily_search / report_writer
+- SQLGlot 只读校验、文件路径白名单、GitHub GET-only、HITL、ReAct 循环上限
+- SQLite AgentRun / ToolTrace 持久化
+- SSE 实时 Trace 事件流
+- Streamlit 任务创建、计划查看、执行追踪、报告渲染
+- EvidenceBundle 聚合、多来源证据分组、mock/fallback/failure 标记
+- Evidence Export：JSON / JSONL / Markdown metadata、content preview、download
+- MCP Server：只读工具发现、工具调用、trace_reader、report_reader
+- MCP Client / Remote Tool Registry：可选发现安全远端只读工具
 
-### Day25-30：真实 RAG
-- SentenceTransformers（bge-small-zh-v1.5）真实语义向量
-- ChromaDB 持久化向量库
-- BM25 稀疏检索（rank-bm25）
-- RRF（Reciprocal Rank Fusion）混合检索
-- retrieval_mode=dense|bm25|hybrid 配置
+## 当前未提交改动状态
 
-### Day31-35：安全与工程化
-- HITL（Human-in-the-Loop）确认流程
-- API Key 鉴权（X-API-Key header）
-- Tenant/User 上下文（X-Tenant-ID / X-User-ID）
-- BackgroundTasks 异步执行（/run_async 接口）
-- Alembic 数据库迁移基线
-- Docker Compose 轻量构建验证
-- 18 个 smoke 测试脚本 / 27 个 eval case
+Day42 Evidence Export、Day43 Evidence Export Download Polish 和 Day43.5 Stabilization 处于未提交状态。不要自动执行 git pull、commit 或 push。
 
-### Day36-A/B：RAG 实验升级
-- run_rag_chunk_experiment.py 接入真实 embedding 开关
-  （RUN_REAL_RAG_CHUNK_EXPERIMENT=true）
-- workspace/docs 语料从 1 篇扩充到 9 篇
-- 测试 case 从 8 条扩充到 20 条
-- 验证 chunk_size=256/512/1024 的 Recall@3/5
-  （当前 demo 语料召回饱和，三组均为 1.0；
-   512 作为工程折中推荐值：延迟 52ms，chunk 数量适中）
-- Streamlit 界面从英文模板升级为中文三 Tab 界面
+当前预期涉及文件：
 
----
-
-## 最近修复轮次（2026-06-22 至 2026-06-25）
-
-### Streamlit 中文界面重构（claude fix 提交）
-
-改动文件：frontend/streamlit_app.py
-
-变更内容：
-1. 三 Tab 布局：⚡ 任务与规划 / 🔍 执行追踪 / 📝 研究报告
-2. 侧边栏从"配置面板"重构为"演示控制台"：
-   - 演示场景模板一键切换
-   - 执行模式下拉框（Planned / ReAct）
-   - 数据来源切换（real / mock）
-   - 高级配置折叠（API Key / Tenant / User）
-3. 计划步骤由 dataframe 改为卡片（工具图标 + 中文名 + 风险色块）
-4. Trace 由原始 dataframe 改为时间线卡片（含延迟 / 状态）
-5. RAG 元数据由 JSON 改为三列 st.metric 指标卡
-6. 异步执行默认开启，轮询上限从 20s 延长到 90s
-
-关键 Bug（Streamlit 层面）：
-- BUG-S1：st.text_area(value=..., key="task_text") 引发
-  StreamlitAPIException（value= 和 key= 双重赋值冲突）
-  → 修复：去掉 value= 参数，用 key= 自动绑定 session state
-- BUG-S2：selectbox index=list(...).index(selected_template)
-  在 apply_template 回调中写 st.session_state.selected_template
-  引发"cannot be modified after widget is instantiated"
-  → 修复：改用 key= 直接绑定，on_change 回调只更新 allowed_tools
-- BUG-S3：刷新全部调用 st.rerun() 导致 selectbox 重新计算 index，
-  任务上下文被清空
-  → 修复：按钮点击本身触发 rerun，移除显式 st.rerun()
-
----
-
-### 核心代码 Bug 修复（均已通过实际运行验证）
-
-#### BUG-1：create_llm_client() 缺少必填参数 settings
-影响范围：所有任务执行后报告生成阶段
-根因：executor.py 第 166 行调用 create_llm_client()，
-      react_executor.py 第 229 行同样问题。
-      create_llm_client(settings) 的 settings 是必填参数，
-      缺少时抛 TypeError，被外层 except Exception 捕获，
-      任务状态直接变为 failed，报告永远不生成。
-验证：python3 -c "create_llm_client()" 实际运行确认报错。
-修复：executor.py 改为 create_llm_client(_exec_settings)
-      react_executor.py 改为 create_llm_client(settings_obj)
-影响后果：修复前所有任务必然失败，这是 executor.py 上线后的致命 Bug。
-
-#### BUG-2：execution_mode_override 参数接收但未写入 plan
-影响范围：Streamlit 执行模式切换完全无效
-根因：planner.py 的 plan_task() 接收 execution_mode_override 参数，
-      但 4 条 return 路径均直接 return plan，
-      从未将 override 写入 plan["execution_mode"]。
-验证：plan_task(..., execution_mode_override='react') 后
-      读 plan["execution_mode"] 得到 None，实际运行确认。
-修复：添加 _apply_execution_mode(plan, override) helper，
-      在 4 个 return 路径前调用：
-      - 确定性早返回
-      - LLM 成功返回
-      - LLM fallback 返回
-      - 末端确定性返回
-
-#### BUG-3：_render_final_answer 函数体被截断，隐式返回 None
-影响范围：所有报告生成崩溃
-根因：某次 Phase A 补丁将 _SYNTHESIS_SYSTEM 常量和
-      _llm_synthesize_answer 函数插入到 _render_final_answer
-      函数体内部，导致函数在第 3 行后"自然结束"，
-      剩余 finish_record / github_record 等处理逻辑
-      变成孤立的模块级代码（语法合法但不属于任何函数）。
-      函数隐式返回 None，list literal 中的 *None 崩溃。
-验证：inspect.getsource(_render_final_answer) 只返回 3 行。
-      _render_final_answer('test', [], []) 实际返回 None。
-修复：重建整个 reporter.py 结构：
-      Phase A 代码（_SYNTHESIS_SYSTEM、_llm_synthesize_answer）
-      放在模块级正确位置；
-      _render_final_answer 完整恢复所有业务逻辑；
-      *_render_final_answer(...) 从 list literal 提取为变量，
-      加 or [] 防 None。
-
-#### BUG-4：Phase A LLM 合成未真正集成进 generate_markdown_report
-影响范围：LLM 合成报告功能未生效
-根因：Phase A 补丁针对 final_answer_lines = ... 赋值模式注入，
-      但实际代码使用的是 *_render_final_answer(...) 内联模式，
-      模式不匹配导致注入静默失败。
-修复：重写 generate_markdown_report 末尾逻辑：
-      先尝试 _llm_synthesize_answer，结果赋给 _llm_answer，
-      再决定 _final_answer_lines 的内容，
-      最后展开到 lines 列表。
-
-#### BUG-5：reporter.py 缺少 context_compressor import
-影响范围：_llm_synthesize_answer 调用时 NameError
-根因：compress_evidence / has_useful_evidence 被调用，
-      但 from app.agent.context_compressor import ... 行缺失。
-验证：run_plan 运行后 error_message = "name 'has_useful_evidence' is not defined"
-修复：在 reporter.py 第 18 行后添加正确 import。
-
-#### BUG-6：dispatcher.py 读 settings 不读 plan 执行模式
-影响范围：UI 模式切换无效（与 BUG-2 协同）
-根因：dispatcher.py 第 18 行只读 settings_obj.execution_mode（来自 .env），
-      即使 plan["execution_mode"] 已经写入，也被完全忽略。
-修复：dispatcher 优先读 plan["execution_mode"]，
-      有值时用 plan 的模式，否则才 fallback 到 settings。
-
-#### BUG-7：planner_client.py mcp_github_search mode 硬编码为 mock
-影响范围：即使 source_mode=real 也走 mock，GitHub 搜索无实际 API 调用
-根因：tool_defaults["mcp_github_search"]["mode"] = "mock" 写死。
-修复：改为动态：
-      "mode": "public_api" if source_mode == "real" else "mock"
-
----
-
-### Phase A 实现（LLM 合成报告 + 上下文压缩）
-
-新增文件：
-- app/agent/context_compressor.py
-  功能：按工具类型提取最有信息量的文本，比例截断至 max_total_chars，
-        has_useful_evidence() 判断是否有可用证据。
-
-修改文件：
-- app/agent/reporter.py
-  新增：_SYNTHESIS_SYSTEM（中文系统提示词）
-        _SYNTHESIS_USER_TMPL（任务+证据模板）
-        _llm_synthesize_answer(task, observations, llm_client) → str|None
-  修改：generate_markdown_report 新增 llm_client 参数，
-        有 LLM 时合成最终回答，无 LLM 时 fallback 到模板。
-- app/agent/executor.py
-  修改：生成报告前调用 create_llm_client(_exec_settings)，
-        传给 generate_markdown_report。
-- app/agent/react_executor.py
-  修改：同上，使用 settings_obj。
-
-状态：已实现，已通过 8 项集成测试验证。
-
----
-
-### Phase B 实现（Sub-query 任务分解）
-
-新增文件：
-- app/agent/query_decomposer.py
-  功能：decompose_task(task, llm_client, n=4) 将宽泛任务分解为
-        N 个独立子问题；_is_broad_task() 启发式判断是否需要分解；
-        decompose_and_annotate_plan(task, plan, llm_client) 将
-        sub_queries 附加到 plan 字典供 reporter 使用。
-
-修改文件：
-- app/agent/planner.py
-  修改：LLM 成功路径的 return 前调用 decompose_and_annotate_plan，
-        plan["sub_queries"] 存储分解结果。
-
-状态：已实现，LLM 可用时生效，不可用时静默跳过（try/except）。
-
----
-
-## 当前已验证状态（截止 2026-06-25）
-
-通过 8 项集成测试验证（实际代码执行，非静态分析）：
-
-TEST 1  _render_final_answer 永不返回 None         PASS
-TEST 2  execution_mode_override 正确写入 plan      PASS
-TEST 3  generate_markdown_report 无 LLM 不崩溃    PASS
-TEST 4  run_plan 端到端 completed（不再 failed）   PASS
-TEST 5  executor.py 使用 create_llm_client(settings) PASS
-TEST 6  react_executor.py 无裸 create_llm_client()   PASS
-TEST 7  compress_evidence 正常压缩证据              PASS
-TEST 8  dispatcher 正确路由 planned/react 模式      PASS
-
-已修复文件清单：
-- app/agent/executor.py       （BUG-1）
-- app/agent/react_executor.py （BUG-1）
-- app/agent/planner.py        （BUG-2 + Phase B）
-- app/agent/reporter.py       （BUG-3/4/5 + Phase A）
-- app/agent/dispatcher.py     （BUG-6）
-- app/llm/planner_client.py   （BUG-7）
-- app/agent/context_compressor.py（新增，Phase A）
-- app/agent/query_decomposer.py  （新增，Phase B）
-- frontend/streamlit_app.py   （Streamlit 重构 + BUG-S1/S2/S3）
-
----
-
-## 下一步规划（Phase C-E）
-
-### Phase C：并行工具执行（预计 2-3 天）
-
-目标：把串行 for 循环改为 asyncio.gather 并发执行，
-      速度提升 3-5x（对有网络延迟的工具效果最显著）。
-
-实现方案：
-新增文件：app/agent/parallel_executor.py
-
-```python
-async def run_steps_parallel(steps, db, run_id, max_concurrent=3):
-    semaphore = asyncio.Semaphore(max_concurrent)
-    async def _run_one(step):
-        async with semaphore:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, execute_tool, step["tool_name"], step["arguments"]
-            )
-            record_trace_event(db, run_id, step["step_no"], ...)
-            return {"step": step, "result": result}
-    return await asyncio.gather(*[_run_one(s) for s in steps])
-```
-
-并行策略：
-- rag_search + tavily_search + mcp_github_search 并行
-- sql_query 串行（同一 SQLite 连接）
-- report_writer 必须等其他工具完成后执行
-
----
-
-### Phase D：WebSocket 实时进度推送（预计 2 天）
-
-目标：替换 REST 轮询（每 3s 一次），改为 WebSocket 实时推送每步进度，
-      面试演示时可以实时看 Agent 思考过程。
-
-实现方案：
-新增文件：app/api/ws.py
-
-```python
-@router.websocket("/ws/{run_id}")
-async def task_websocket(websocket: WebSocket, run_id: str):
-    await websocket.accept()
-    active_connections[run_id] = websocket
-    while True:
-        await asyncio.sleep(0.5)
-        traces = get_latest_traces(run_id)
-        status = get_run_status(run_id)
-        await websocket.send_json({
-            "type": "trace_update",
-            "traces": traces,
-            "status": status,
-        })
-        if status in ("completed", "failed"):
-            break
-```
-
-Streamlit 侧：每 500ms 通过 websocket 接收事件，实时渲染卡片。
-
----
-
-### Phase E：三层 LLM 策略（预计 1 天）
-
-目标：不同场景用不同模型，降低成本同时提升质量。
-
-配置新增（.env）：
-```ini
-FAST_LLM_MODEL=qwen-turbo       # 工具摘要、简单分类（便宜快）
-SMART_LLM_MODEL=qwen-plus       # 规划、推理（当前主力）
-STRATEGIC_LLM_MODEL=deepseek-chat  # 最终报告撰写（质量优先）
-```
-
-应用：
-- Planner → smart_llm_model
-- ReAct 每步 → fast_llm_model
-- Reporter 合成 → strategic_llm_model
-
----
-
-## 待确认问题
-
-1. Streamlit UI 替换后，请用"标准调研（文件+SQL+RAG+报告）"场景验证：
-   - status = completed（不再 failed）
-   - 研究报告 Tab 显示完整 Markdown（非"Report has not been generated yet"）
-   - 执行追踪 Tab 显示 3-4 步全绿
-
-2. 切换 Planned → ReAct：
-   - 侧边栏选择 ReAct → 创建任务 → 执行
-   - 执行追踪显示"ReAct 思考链"expander（确认 dispatcher 读了 plan 的模式）
-
-3. 数据来源 real 模式下 GitHub 搜索：
-   - 确认 metadata 里 mode=public_api（不再是 mock）
-
----
-
-## 注意事项（永久有效）
-
-- .env 永不提交到 git
-- EXECUTION_MODE 默认值为 planned（.env 中设置）
-- LLM_MODEL 使用 qwen-plus（非 qwen3.7-plus，后者为无效模型名）
-- LLM_TIMEOUT_SECONDS 建议 ≥ 60（真实 API 响应可能 30-60s）
-- Docker image 使用 requirements-docker-light.txt，不含本地 embedding 模型
-- RAG 实验结果（召回饱和）诚实标注，不夸大实验结论
-
----
-
-## 文件变更记录
-
-```
-app/
-├── agent/
-│   ├── context_compressor.py   [新增] Phase A 上下文压缩
-│   ├── query_decomposer.py     [新增] Phase B 任务分解
-│   ├── dispatcher.py           [修改] BUG-6 读 plan 执行模式
-│   ├── executor.py             [修改] BUG-1 + Phase A
-│   ├── planner.py              [修改] BUG-2 + Phase B
-│   ├── react_executor.py       [修改] BUG-1 + Phase A
-│   └── reporter.py             [修改] BUG-3/4/5 + Phase A 重建
-├── llm/
-│   └── planner_client.py       [修改] BUG-7 动态 source_mode
-frontend/
-└── streamlit_app.py            [修改] 中文 UI 重构 + BUG-S1/2/3
-```
-
----
-
-## 2026-06-27 - Differentiation Roadmap: Parallel Tools And Full MCP Service
-
-### 背景与定位调整
-
-参考另一个项目 `agent-service-toolkit/feature/enterprise-rag-backend` 后，当前项目需要避免继续和企业知识库 RAG 后端高度重叠。
-
-`agent-service-toolkit` 更适合承担：
-- 企业知识库 RAG 后端
-- 文档解析、结构化检索、metadata / symbol retrieval
-- 多轮记忆、custom graph、evidence verifier
-- 大规模企业知识库 eval 和 bad-case 诊断
-- 面向企业 KB 问答的稳定服务接口
-
-`Traceable Research Agent` 后续应强化差异化方向：
-- 多工具并行 Research Agent
-- Planned / ReAct 双执行模式
-- 完整 Trace、HITL、安全边界和可审计报告
-- MCP-first 工具协议化
-- 完整 MCP Server / MCP Client / remote tool registry
-- GitHub / Tavily / RAG / SQL / file 等多源工具并发编排
-- 实时执行进度展示
-- Streamlit 继续作为主展示前端，轻量 Web UI 仅作为后期扩展
-
-核心定位调整为：
-
-> 一个可追踪、多工具并行、MCP-first 的 Research Agent 执行系统，而不是另一个企业知识库 RAG QA 后端。
-
----
-
-### Phase C：Parallel Multi-tool Execution
-
-目标：
-- 将串行工具执行升级为可控并行执行。
-- 优先提升 GitHub / Tavily / RAG 等网络或检索工具的整体耗时。
-- 保持 planned executor 的稳定性和 Trace 完整性。
-
-建议新增：
-- `app/agent/parallel_executor.py`
-
-配置建议：
-```ini
-PARALLEL_EXECUTION_ENABLED=false
-PARALLEL_MAX_CONCURRENT=3
-PARALLEL_TOOL_TIMEOUT_SECONDS=60
-```
-
-并行策略：
-- 可并行：
-  - `rag_search`
-  - `tavily_search`
-  - `mcp_github_search`
-  - `file_reader`
-- 保持串行或 barrier：
-  - `sql_query`：SQLite / SQL 安全边界下保持串行更稳。
-  - `report_writer`：必须等待所有 evidence tools 完成。
-  - HITL confirmation：不得绕过人工确认。
-
-Trace 要求：
-- 记录 parallel_batch_id。
-- 记录 tool start/end time。
-- 记录 latency、status、metadata。
-- 记录 dependency / barrier 信息。
-
-验收标准：
-- 一个任务中 GitHub + Tavily + RAG 可以并行执行。
-- 并行执行耗时低于串行基线。
-- Trace 不丢失、不乱写。
-- report_writer 等待全部证据完成后再生成报告。
-- `/run` 和 `/run_async` 接口保持兼容。
-
----
-
-### Phase D：Full MCP Server Foundation
-
-目标：
-- 从当前 MCP-style read-only adapter 升级为完整 MCP Server。
-- 将项目内工具协议化暴露给外部 MCP client。
-- 默认 read-only，但 read-only 不等于只能 GET；核心含义是“不产生外部状态变更”。
-
-建议新增：
-- `app/mcp/server.py`
-- `app/mcp/policy.py`
-- `app/mcp/schemas.py`
-
-MCP tools 初始暴露：
-- `file_reader`
-- `rag_search`
-- `sql_query_readonly`
-- `github_search`
-- `tavily_search`
-- `trace_reader`
-- `report_reader`
-
-MCP tool metadata 必须包含：
-- name
-- description
-- input_schema
-- output_schema
-- read_only
-- side_effect_free
-- requires_confirmation
-- risk_level
-
-Read-only policy 说明：
-- GitHub 搜索可以继续使用 GET-only。
-- Tavily Search 语义上是只读搜索，即使 HTTP method 是 POST，也应允许。
-- 禁止所有会改变外部状态的操作：
-  - GitHub issue create
-  - PR comment
-  - repository mutation
-  - push
-  - DB write
-  - 文件写入非允许路径
-
-验收标准：
-- 外部 MCP client 可以发现 tools。
-- 可以通过 MCP 调用只读工具。
-- MCP 调用结果写入 Trace。
-- 没有任何 write-capable tool 被默认暴露。
-- Tavily 搜索不因 read-only policy 被误杀。
-
----
-
-### Phase E：MCP Client And Remote Tool Registry
-
-目标：
-- 当前 Agent 不只执行本地工具，也能调用远端 MCP tools。
-- 本地工具和远端 MCP 工具在 Planner / ReAct 看来是统一 Tool Registry。
-
-建议新增：
-- local tool registry
-- mcp remote registry
-- merged tool registry
-
-行为要求：
-- Planner 能看到 local + remote MCP tools 的统一描述。
-- ReAct action 仍必须通过 allowed_tools 校验。
-- 远端 MCP tool timeout / failure 作为 Observation 写入 ReAct history。
-- Trace 中区分：
-  - `tool_source=local`
-  - `tool_source=mcp_remote`
-
-验收标准：
-- fake remote MCP server 可被发现。
-- remote tool 可被 Agent 调用。
-- remote tool failure 不导致 API 500。
-- ReAct 可根据 remote failure 选择换工具或 limitation finish。
-
----
-
-### Phase F：Realtime Trace Streaming
-
-目标：
-- 强化演示体验，让并行工具和 ReAct 思考过程实时可见。
-- 保留 Streamlit 作为主展示前端。
-- 轻量 Web UI 放到后期扩展，不作为当前主线。
-
-推荐实现：
-- 优先 SSE，后续需要双向交互时再 WebSocket。
-- 事件接口可选：
-  - `/api/tasks/{run_id}/events`
-  - 或 `/ws/{run_id}`
-
-事件类型：
-- `run_started`
-- `tool_started`
-- `tool_finished`
-- `tool_failed`
-- `waiting_human`
-- `report_ready`
-
-Streamlit 行为：
-- 实时展示工具卡片 running / success / failed。
-- 并行工具可同时显示 running。
-- 保留“刷新全部”作为兜底。
-
-验收标准：
-- 长任务执行时无需反复点击刷新。
-- Trace 卡片逐步出现。
-- completed 后报告自动可见或提示可刷新查看。
-
----
-
-### Phase G：Research Evidence Aggregation
-
-目标：
-- 不重复企业 RAG 能力，而是强化 Research Agent 的多源证据组织。
-- 将 GitHub / Tavily / RAG / SQL / file 的结果统一成可审计 evidence。
-
-建议新增内部结构：
-- EvidenceItem
-- EvidenceGroup
-- ClaimEvidenceMap
-
-报告增强：
-- 每个核心结论关联 evidence source。
-- 标注来源类型：
-  - public_api
-  - tavily_api
-  - rag
-  - sql
-  - file
-  - cache
-  - mock
-  - fallback
-- mock / fallback 不得被描述成真实外部事实。
-- unsupported claims 标记“证据不足”。
-
-验收标准：
-- GitHub + Tavily + RAG 混合任务能输出来源分组报告。
-- 最终回答不要求用户阅读 JSON。
-- 关键结论能追溯到 Trace / evidence item。
-
----
-
-### 后期扩展：Lightweight Web UI
-
-当前策略：
-- Streamlit 继续作为主 demo UI。
-- 不立即重写生产级前端。
-- 等并行执行、MCP Server、MCP Client、实时 Trace 稳定后，再考虑轻量 Web UI。
-
-候选方向：
-- 简单 React / Next.js 前端
-- 展示 task / plan / trace / report / events
-- 不在当前阶段引入复杂权限、团队空间、云部署
-
----
-
-### 明确不做
-
-为保持和 `agent-service-toolkit` 区分度，当前项目暂不继续加强以下方向：
-- 企业知识库 RAG 后端
-- 大规模文档解析 pipeline
-- metadata / symbol retrieval
-- 企业多轮 memory
-- custom graph enterprise KB workflow
-- 企业级大规模 KB benchmark
-- 生产级 Web App
-- GitHub write tools
-- 默认开放 MCP write tools
-
----
-
-### 推荐执行顺序
-
-1. Day37：Parallel Multi-tool Execution
-2. Day38：Full MCP Server Foundation
-3. Day39：MCP Client And Remote Tool Registry
-4. Day40：Realtime Trace Streaming
-5. Day41：Research Evidence Aggregation
-6. Post-Day41：Lightweight Web UI
-
-优先级原则：
-- 先做多工具并行，提高 Research Agent 执行能力。
-- 再做完整 MCP Server，让工具边界协议化。
-- 再做 MCP Client，把外部工具纳入统一 Agent 编排。
-- 再做实时 Trace，提升演示体验。
-- 最后做 evidence aggregation 和轻量 Web UI 包装。
-
----
-
-### 测试与验收总原则
-
-默认 smoke / eval 仍必须：
-- 不依赖真实外网。
-- 不依赖真实 LLM key。
-- 不依赖本地 embedding 模型。
-- 不提交 `.env`、key、模型、DB、cache、index、reports、eval outputs。
-
-新增测试建议：
-- `scripts/smoke_parallel_executor.py`
-- `scripts/smoke_mcp_server.py`
-- `scripts/smoke_mcp_client.py`
-- `scripts/smoke_realtime_trace.py`
-- `scripts/smoke_evidence_aggregation.py`
-
-核心回归仍保留：
-- `python scripts/smoke_planner.py`
-- `python scripts/smoke_llm_planner.py`
-- `python scripts/smoke_react_executor.py`
-- `python scripts/smoke_hybrid_rag.py`
-- `python scripts/smoke_auth_async.py`
-- `python -m app.eval.run_eval`
-
----
-
-## 2026-06-28 - Docker One-command Deployment Plan And Implementation
-
-### 目标
-
-将 Docker 从单 FastAPI 后端服务升级为一键演示部署：
-- 默认轻量部署：FastAPI API + Streamlit 中文演示界面。
-- 可选增强部署：挂载本地 SentenceTransformers 模型并启用真实 RAG / Chroma。
-- 默认路径保持低依赖、无 key 可启动、适合面试演示。
-
-### 已实现内容
-
-新增/修改文件：
-- 修改 `Dockerfile`
-- 修改 `docker-compose.yml`
-- 新增 `docker-compose.real-rag.yml`
-- 新增 `.env.docker.example`
-- 新增 `scripts/docker_entrypoint.py`
-- 新增 `scripts/smoke_docker_config.py`
-- 修改 `.gitignore`
-- 修改 `.dockerignore`
-- 更新 `README.md`
-- 更新 `task.txt`
-
-默认部署结构：
-- `api` 服务：FastAPI 后端，暴露 `8000`。
-- `streamlit` 服务：中文演示前端，暴露 `8501`。
-- Streamlit 通过 `STREAMLIT_API_BASE_URL=http://api:8000` 访问后端。
-- 两个服务共享 `./workspace:/app/workspace` volume。
-- `streamlit` 依赖 `api` 的 healthcheck。
-
-API 容器启动流程：
-1. `python scripts/init_demo_db.py`
-2. `python scripts/build_rag_index.py`
-3. `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000`
-
-默认启动命令：
-
-```powershell
-docker compose up --build
-```
-
-访问地址：
-- FastAPI: `http://127.0.0.1:8000/health`
-- Streamlit: `http://127.0.0.1:8501`
-
-### 环境变量与密钥管理
-
-新增 `.env.docker.example`，只包含占位配置：
-- `AUTH_ENABLED=false`
-- `EXECUTION_MODE=planned`
-- `LLM_PLANNER_ENABLED=false`
-- `GITHUB_TOKEN=`
-- `TAVILY_API_KEY=`
-- `QWEN_API_KEY=`
-- `DEEPSEEK_API_KEY=`
-- `RAG_REAL_BACKEND_ENABLED=false`
-- `RAG_EMBEDDING_BACKEND=deterministic`
-- `RAG_VECTOR_BACKEND=json`
-
-`.env.docker` 用于本地真实 key，已被 `.gitignore` 和 `.dockerignore` 忽略。
-`.env.docker.example` 作为模板保留在 Git 中。
-
-### 可选真实 RAG 部署
-
-新增 `docker-compose.real-rag.yml`，用于本地模型挂载：
-
-```powershell
-$env:RAG_MODEL_HOST_PATH="E:/Models/bge-small-zh-v1.5"
-docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up --build
-```
-
-该路径启用：
-- `RAG_REAL_BACKEND_ENABLED=true`
-- `RAG_EMBEDDING_BACKEND=sentence_transformers`
-- `RAG_VECTOR_BACKEND=chroma`
-- `RAG_MODEL_PATH=/models/bge-small-zh-v1.5`
-- `RAG_CHROMA_DIR=/app/workspace/chroma`
-
-真实模型路径不存在时，不作为默认部署阻塞条件，应回退使用轻量部署。
-
-### 验证
-
-新增静态 smoke：
-
-```powershell
-python scripts/smoke_docker_config.py
-```
-
-检查内容：
-- Dockerfile 使用 light requirements 和 docker entrypoint。
-- compose 包含 `api` 与 `streamlit` 双服务。
-- 端口 `8000` / `8501` 正确暴露。
-- Streamlit 指向 `http://api:8000`。
-- API healthcheck 存在。
-- `.env.docker.example` 存在且不包含真实 key。
-- real-rag override 配置完整。
-
-后续手动验收：
-
-```powershell
-docker compose up --build -d
-Invoke-RestMethod http://127.0.0.1:8000/health
-Invoke-WebRequest http://127.0.0.1:8501 -UseBasicParsing
-docker compose down
-```
-
----
-
-## 2026-06-28 - Day37 Parallel Multi-tool Execution
-
-### Why parallel execution was added
-
-Traceable Research Agent is moving toward a traceable, multi-tool Research Agent runtime.
-Independent evidence tools such as GitHub search, Tavily search, RAG retrieval, file reads,
-and read-only SQL should not always pay serial latency. Day37 adds an optional planned
-parallel executor while preserving Trace, HITL, read-only safety, and report generation.
-
-### Default serial, optional parallel
-
-- Default remains `PARALLEL_EXECUTION_ENABLED=false`; the existing serial planned executor
-  is still the stable path.
-- When `PARALLEL_EXECUTION_ENABLED=true` and the plan uses `execution_mode=planned`,
-  dispatcher calls `run_plan_parallel`.
-- ReAct remains a dynamic serial loop in Day37.
-
-### Parallel tool scope
-
-Eligible independent read-only tools:
-- `file_reader`
-- `rag_search`
-- `mcp_github_search`
-- `tavily_search`
-- read-only `sql_query`
-
-Never parallelized:
-- `report_writer`, which remains a final barrier after evidence collection.
-- `requires_confirmation=true` HITL steps, which must stop at `waiting_human`.
-- Steps with explicit dependency keys such as `depends_on` or `after_step`.
-
-### Trace metadata
-
-Parallel execution metadata is stored in existing trace output metadata without changing
-the database schema:
-- `parallel=true`
-- `parallel_group_id`
-- `parallel_worker_id`
-- `parallel_group_size`
-- `execution_mode=planned_parallel`
-- `started_at`
-- `finished_at`
-- `latency_ms`
-
-Reporter and Streamlit display the parallel group, worker, and latency information.
-Failed tools remain visible as failed traces and in the report; they do not turn the
-whole API request into a 500.
-
-### smoke_parallel_execution.py result
-
-`scripts/smoke_parallel_execution.py` covers:
-- default serial guard
-- parallel group creation
-- trace metadata
-- report_writer barrier
-- failed tool visibility
-- HITL guard
-- `/run_async` parallel dispatch
-
-Expected output:
-
-```json
-{
-  "parallel_execution": "ok",
-  "default_serial_guard": "ok",
-  "parallel_group": "ok",
-  "trace_metadata": "ok",
-  "report_writer_guard": "ok",
-  "failure_visible": "ok",
-  "hitl_guard": "ok",
-  "async_dispatch": "ok"
-}
-```
-
-### Eval updates
-
-Added:
-- `planned_parallel_basic_001`
-- `planned_parallel_failure_visible_001`
-- `planned_parallel_hitl_guard_001`
-
-Default eval remains offline-friendly and does not require real external network,
-real LLM keys, or local embedding models.
-
-### Current limits
-
-- No distributed queue.
-- No ReAct internal parallelism.
-- No complex DAG scheduler.
-- No database schema change; reuse trace JSON metadata.
-
-### Next
-
-Day38 Full MCP Server Foundation.
-
-## 2026-06-28 - Day38 Full MCP Server Foundation
-
-### Goal
-
-Upgrade the previous MCP-style read-only adapters into a lightweight MCP-compatible
-server foundation that external clients can discover and call, while preserving
-Day37 parallel execution, ReAct serial execution, Auth/Async, SQLGlot read-only
-checks, RAG, GitHub GET-only policy, and Tavily semantic read-only search.
-
-### Implemented
-
-Added:
-- `app/mcp/policy.py`
-- `app/mcp/schemas.py`
-- `app/mcp/server.py`
-- `scripts/smoke_mcp_server.py`
-
-Modified:
-- `app/main.py`
-- `app/mcp/__init__.py`
-- `app/mcp/readonly.py`
+- `.gitignore`
 - `README.md`
 - `task.txt`
-
-### MCP endpoints
-
-- `GET /mcp/health`
-- `GET /mcp/tools`
-- `POST /mcp/tools/call`
-- `POST /mcp`
-
-`POST /mcp` supports:
-- `initialize`
-- `tools/list`
-- `tools/call`
-
-### Exposed tools
-
-- `file_reader`
-- `rag_search`
-- `sql_query_readonly`
-- `github_search`
-- `tavily_search`
-- `trace_reader`
-- `report_reader`
-
-Not exposed by default:
-- `report_writer`
-- write-capable GitHub/database/file tools
-- confirmation-required tools
-
-### Policy
-
-- MCP metadata includes name, description, input_schema, output_schema, read_only,
-  side_effect_free, requires_confirmation, and risk_level.
-- GitHub remains GET-only.
-- Tavily remains allowed because search is semantic read-only even though Tavily's
-  HTTP API uses POST.
-- SQL execution continues to use the existing SQLGlot read-only validator.
-- MCP tool calls can write trace rows when `_trace.run_id` is supplied through
-  JSON-RPC or `trace.run_id` is supplied through `/mcp/tools/call`.
-
-### Validation
-
-Passed:
-- `python -m compileall app scripts`
-- `python scripts/smoke_mcp_server.py`
-- `python scripts/smoke_parallel_execution.py`
-- `python scripts/smoke_github_mcp.py`
-- `python scripts/smoke_tavily_search.py`
-- `python scripts/smoke_auth_async.py`
-- `python scripts/smoke_react_executor.py`
-- `python scripts/smoke_alembic_sql_parser.py`
-- `python scripts/smoke_hybrid_rag.py`
-- `python -m app.eval.run_eval` -> 32/32, failed=0
-
-## 2026-06-28 - Day39 MCP Client And Remote Tool Registry
-
-### Goal
-
-Let the Agent discover and call remote MCP tools in addition to local tools, while
-presenting both through one unified Tool Registry to Planner, Planned executor, and
-ReAct. Preserve ReAct `allowed_tools` validation, remote failure visibility, and
-traceability.
-
-### Implemented
-
-Added:
-- `app/mcp/client.py`
-- `scripts/smoke_mcp_client.py`
-
-Modified:
-- `app/config.py`
-- `app/main.py`
-- `app/tools/registry.py`
-- `app/agent/executor.py`
-- `app/agent/parallel_executor.py`
-- `app/agent/planner.py`
-- `app/agent/react_executor.py`
-- `app/llm/schema.py`
-- `app/llm/planner_client.py`
-- `README.md`
-- `task.txt`
-
-### Remote MCP registry behavior
-
-- Remote MCP discovery is opt-in and disabled by default.
-- Enable with:
-
-```ini
-MCP_REMOTE_REGISTRY_ENABLED=true
-MCP_REMOTE_SERVERS=[{"name":"demo","base_url":"http://127.0.0.1:8001/mcp","timeout_seconds":5}]
-```
-
-- Remote tools are registered as `<server>.<tool>`, for example `fake.echo`.
-- Only remote tools with `read_only=true`, `side_effect_free=true`, and
-  `requires_confirmation=false` are registered.
-- Write-capable or confirmation-required remote tools are ignored.
-- Registered remote tools receive the `mcp_remote` tag and are visible through
-  `list_tools()`, Planner prompts, ReAct available tool specs, and `/api/tools`.
-
-### Execution behavior
-
-- Local tools now include `tool_source=local` in result metadata.
-- Remote MCP tools include `tool_source=mcp_remote`, `remote_server`,
-  `remote_tool_name`, `remote_base_url`, and `latency_ms`.
-- Planned executor now accepts any enabled registered tool, so remote tools can run
-  through the same `execute_tool()` path.
-- Parallel executor remains conservative: Day37 parallel-safe local tools are still
-  the only automatic parallel group candidates; remote tools execute as normal
-  registered tools outside the Day37 parallel whitelist.
-- ReAct still validates every non-finish action against `allowed_tools` and enabled
-  registered tools before execution.
-- Remote timeout / call failure / remote `isError` becomes a failed `ToolResult`,
-  is written into Trace and ReAct observation history, and does not cause API 500.
-- ReAct can finish with `completed_with_limitation`; that flag is now reflected in
-  persisted `react_state`.
-
-### Smoke coverage
-
-New `scripts/smoke_mcp_client.py` starts a fake remote MCP JSON-RPC server and checks:
-- fake remote MCP server discovery
-- remote read-only tool registration
-- write-capable remote tool hidden
-- direct remote tool execution through the unified registry
-- planned Agent remote tool execution
-- remote tool failure visible as failed trace while run completes
-- ReAct remote failure followed by limitation finish
-
-Expected output:
-
-```json
-{
-  "mcp_client": "ok",
-  "fake_remote_discovery": "ok",
-  "remote_tool_call": "ok",
-  "remote_tool_failure_visible": "ok",
-  "react_remote_failure_limitation": "ok",
-  "write_remote_hidden": "ok"
-}
-```
-
-### Validation
-
-Passed:
-- `python -m compileall app scripts`
-- `python scripts/smoke_mcp_client.py`
-- `python scripts/smoke_mcp_server.py`
-- `python scripts/smoke_parallel_execution.py`
-- `python scripts/smoke_github_mcp.py`
-- `python scripts/smoke_tavily_search.py`
-- `python scripts/smoke_auth_async.py`
-- `python scripts/smoke_react_executor.py`
-- `python scripts/smoke_alembic_sql_parser.py`
-- `python scripts/smoke_hybrid_rag.py`
-- `python -m app.eval.run_eval` -> 32/32, failed=0
-
-### Notes
-
-- No database schema change.
-- No new dependency; the project already had `requests`.
-- Remote MCP registry remains opt-in to keep default smoke/eval offline-friendly.
-- Day37 planned parallel execution and Day38 MCP server behavior are preserved.
-- Next recommended step: Day40 Realtime Trace Streaming.
-
-## 2026-06-28 - Day40 Realtime Trace Streaming
-
-### Goal
-
-Let long-running tasks expose incremental run and trace state through a realtime
-backend endpoint while preserving the existing REST polling and Streamlit manual
-refresh fallback.
-
-### Implemented
-
-Added:
-- `app/trace/events.py`
-- `app/api/events.py`
-- `scripts/smoke_realtime_trace.py`
-
-Modified:
-- `app/main.py`
-- `frontend/streamlit_app.py`
-- `README.md`
-- `task.txt`
-
-### SSE endpoint
-
-New endpoint:
-
-```text
-GET /api/tasks/{run_id}/events
-```
-
-Behavior:
-- Uses `text/event-stream`.
-- Replays existing run status and traces for completed runs.
-- Polls persisted `AgentRun` and `ToolTrace` rows for incremental updates.
-- Sends heartbeat events while a stream remains open.
-- Sends `done` and closes for `completed`, `failed`, and `waiting_human` runs.
-- Keeps `GET /api/tasks/{run_id}`, `GET /api/tasks/{run_id}/trace`, and
-  `GET /api/reports/{run_id}` unchanged.
-
-Event fields include:
-- `run_id`
-- `event_type`
-- `trace_id`
-- `step_no`
-- `tool_name`
-- `status`
-- `output_summary`
-- `error_message`
-- `latency_ms`
-- `metadata`
-- `created_at`
-- `finished_at`
-- `current_step`
-- `total_steps`
-- `report_path`
-
-Event types:
-- `run_status`
-- `trace_created`
-- `trace_finished`
-- `waiting_human`
-- `report_ready`
-- `heartbeat`
-- `done`
-
-### Preservation notes
-
-- Day37 parallel trace metadata remains visible in stream event `metadata`.
-- Day38 MCP server trace behavior is unchanged.
-- Day39 local and remote `tool_source` metadata remains visible in stream events.
-- Remote MCP failure remains a failed `ToolResult` / failed trace and does not
-  become an API 500.
-- ReAct limitation finish still writes a report and completes the run.
-- No database schema change.
-- No WebSocket dependency was added.
-
-### Streamlit
-
-Streamlit keeps the existing refresh-all flow and adds a lightweight realtime panel
-in the Trace tab. The panel displays the backend SSE URL and can auto-refresh via
-the existing REST endpoints when enabled. The SSE endpoint remains the stable
-backend integration point for clients that want true streaming.
-
-### Smoke coverage
-
-New `scripts/smoke_realtime_trace.py` covers:
-- SSE content type and JSON event format.
-- Completed run replay stream.
-- HITL `waiting_human` stream event.
-- Day37 planned parallel metadata visibility.
-- Day39 remote MCP failed trace visibility with `tool_source=mcp_remote`.
-
-Expected output:
-
-```json
-{
-  "realtime_trace": "ok",
-  "sse_format": "ok",
-  "completed_stream": "ok",
-  "hitl_waiting": "ok",
-  "parallel_metadata": "ok",
-  "remote_mcp_failure_visible": "ok"
-}
-```
-
-### Validation
-
-Passed:
-- `python -m compileall app scripts frontend`
-- `python scripts/smoke_realtime_trace.py`
-- `python scripts/smoke_streamlit_frontend.py`
-- `python scripts/smoke_mcp_server.py`
-- `python scripts/smoke_mcp_client.py`
-- `python scripts/smoke_parallel_execution.py`
-- `python scripts/smoke_react_executor.py`
-- `python scripts/smoke_auth_async.py`
-- `python scripts/smoke_alembic_sql_parser.py`
-- `python scripts/smoke_hybrid_rag.py`
-- `python scripts/smoke_github_mcp.py`
-- `python scripts/smoke_tavily_search.py`
-- `python -m app.eval.run_eval` -> 32/32, failed=0
-
-### Notes
-
-- `smoke_auth_async.py` was first run in parallel with other DB-heavy smoke tests
-  and hit SQLite `database is locked`; rerunning it by itself passed.
-- Next recommended step: Day41 Research Evidence Aggregation.
-
-## 2026-06-28 - Day41 Research Evidence Aggregation
-
-### Goal
-
-Strengthen the Research Agent side of the project by normalizing multi-source
-tool outputs into auditable evidence, without turning the project into a heavier
-enterprise RAG backend.
-
-### Implemented
-
-Added:
-- `app/agent/evidence.py`
-- `scripts/smoke_evidence_aggregation.py`
-
-Modified:
-- `app/agent/reporter.py`
 - `app/api/tasks.py`
 - `app/schemas.py`
+- `app/config.py`
+- `app/agent/evidence_exporter.py`
+- `app/agent/plan_guardrails.py`
+- `app/agent/planner.py`
+- `app/llm/planner_client.py`
 - `frontend/streamlit_app.py`
-- `README.md`
-- `task.txt`
+- `scripts/smoke_evidence_export.py`
+- `scripts/smoke_planner_guardrails.py`
+- `scripts/smoke_final_project.py`
 
-### Evidence aggregation layer
+## 2026-06-29 - Day43 Evidence Export Download Polish
 
-New internal structures:
-- `EvidenceItem`
-- `EvidenceGroup`
-- `ClaimEvidenceMap`
-- `EvidenceBundle`
+目标：补齐 Day42 evidence export 的预览和下载体验，同时保留原 metadata endpoint。
 
-Evidence is derived from live executor observations and persisted `ToolTrace`
-rows. No new database table or migration was added.
+已实现：
 
-Each `EvidenceItem` includes:
-- `evidence_id`
-- `run_id`
-- `trace_id`
-- `step_no`
-- `tool_name`
-- `source_type`
-- `source_ref`
-- `title`
-- `snippet`
-- `status`
-- `confidence`
-- `metadata`
-- `is_mock`
-- `is_fallback`
-- `unsupported_reason`
+- 保留 `GET /api/tasks/{run_id}/evidence/export?format=json|jsonl|markdown`
+- 新增 `GET /api/tasks/{run_id}/evidence/export/content?format=json|jsonl|markdown`
+- 新增 `GET /api/tasks/{run_id}/evidence/export/download?format=json|jsonl|markdown`
+- content/download 复用任务路由 auth 和 request context
+- run 不存在返回 404
+- 无 trace run 导出空 EvidenceBundle，不返回 500
+- 只读取 exporter 在 `workspace/exports/` 下生成的 artifact
+- Streamlit Report tab 支持导出后预览 Markdown/JSON/JSONL，并提供 download button
+- `scripts/smoke_evidence_export.py` 覆盖 metadata/content/download、empty trace、fallback/mock、remote MCP failure、exports path guard、secret filter、missing run 404
 
-Supported extraction paths:
-- `file_reader` -> file evidence
-- `sql_query` -> read-only SQL evidence
-- `rag_search` -> RAG hit evidence
-- `mcp_github_search` -> GitHub result evidence
-- `tavily_search` -> Tavily result evidence
-- remote MCP registered tools -> `mcp_remote` evidence
-- failed/rejected/empty tools -> unsupported evidence
-- ReAct `finish` -> `llm_finish` evidence when it produces a final limitation summary
+## 2026-06-29 - Day43.5 Stabilization
 
-### API
+背景：深度排查 Day40-Day43 后发现核心 API、Streamlit、SSE、MCP、Evidence Export 都能闭环运行，但真实 LLM Planner 在自由问题下可能生成不匹配本地工具边界的参数，例如：
 
-New endpoint:
+- `file_reader.path` 带 `workspace/docs/` 前缀或引用不存在文件
+- `sql_query.query` 查询 demo schema 中不存在的列或表
+- `mcp_github_search.query` 过长、包含混乱换行或无效参数，可能触发 GitHub Search HTTP 422
 
-```text
-GET /api/tasks/{run_id}/evidence
+修复目标：
+
+- 在计划落库前对工具参数做语义归一化
+- 保持工具自身安全边界不放松
+- 不新增重型依赖
+- 不破坏 Planned、parallel、ReAct、Trace、SSE、MCP、Evidence Export
+
+实现内容：
+
+- 新增 `app/agent/plan_guardrails.py`
+  - `normalize_plan_arguments(plan, task, source_mode)`
+  - 文件路径归一化到 `workspace/docs` 下已存在相对路径
+  - 文件缺失时按任务关键词选择已有 demo 文档，默认回退 `demo_research_note.md`
+  - SQL 只读校验后用 SQLite `EXPLAIN QUERY PLAN` 预检 schema
+  - SQL 无效时按任务语义回退到 demo schema 下的安全 SELECT
+  - GitHub query 压缩为短 plain text
+  - GitHub repo/search_type/sort/order/limit/mode 归一化
+  - RAG/Tavily 缺省 query、top_k/max_results、mode 参数归一化
+  - report_writer 参数清空
+  - 归一化原因写入 `plan["notes"]`
+- 修改 `app/agent/planner.py`
+  - deterministic plan 和 LLM plan 返回前统一调用 guardrail
+  - LLM 子问题分解后再次归一化，防止后处理引入参数偏移
+- 修改 `app/llm/planner_client.py`
+  - Planner prompt 明确列出 workspace/docs 文件边界
+  - 明确 demo SQLite schema
+  - 明确 GitHub query/repo/search_type/read-only 边界
+- 新增 `scripts/smoke_planner_guardrails.py`
+  - 模拟坏 LLM plan
+  - 覆盖文件前缀修正、SQL schema 修正、GitHub 参数修正、RAG 参数修正、report_writer 参数清理
+  - 真实调用 file_reader、sql_query、GitHub mock 工具确认修正后可执行
+- 修改 `scripts/smoke_final_project.py`
+  - 聚合验证加入 `smoke_planner_guardrails.py`
+- 修改 `README.md`
+  - 重写为正常项目 README
+  - 删除阶段流水账、过时限制和旧 MCP 定位表述
+- 修改 `task.txt`
+  - 删除早期历史规划和旧前端扩展路线
+  - 更新当前任务状态和下一步路线
+
+## 验证计划
+
+本轮需要至少运行：
+
+```powershell
+python -m compileall app scripts frontend
+python scripts/smoke_planner_guardrails.py
+python scripts/smoke_llm_planner.py
+python scripts/smoke_evidence_export.py
+python scripts/smoke_evidence_aggregation.py
+python scripts/smoke_realtime_trace.py
+python scripts/smoke_mcp_server.py
+python scripts/smoke_mcp_client.py
+python scripts/smoke_parallel_execution.py
+python scripts/smoke_react_executor.py
+python scripts/smoke_streamlit_frontend.py
+python scripts/smoke_auth_async.py
+python -m app.eval.run_eval
 ```
 
-The endpoint reuses the existing tasks router auth/request-context dependencies
-and returns an `EvidenceBundleResponse`.
+如时间允许，补充：
 
-### Reporter
-
-Reports now include a `Research Evidence Aggregation` section before raw tool
-observations. The section displays:
-- source groups
-- source warnings
-- claim-evidence map
-- unsupported or limited claims
-- normalized evidence item previews
-
-Mock and fallback evidence is explicitly marked so offline or degraded evidence
-is not described as fresh external fact. Remote MCP failures remain visible as
-unsupported evidence and do not become API 500 errors.
-
-### Streamlit
-
-The report tab now fetches `/api/tasks/{run_id}/evidence` during refresh and shows
-a compact `Research Evidence Aggregation` expander with counts, warnings, source
-groups, and claim previews. Existing report rendering and manual refresh remain
-unchanged.
-
-### Smoke coverage
-
-New `scripts/smoke_evidence_aggregation.py` covers:
-- evidence API response format
-- file/sql/rag/mock GitHub/mock Tavily multi-source grouping
-- report `Research Evidence Aggregation` and `Claim-Evidence Map` sections
-- fallback trace marked as fallback
-- remote MCP failure visible as unsupported evidence without API-level failure
-- ReAct limitation finish still writes a report and exposes evidence
-
-Expected output:
-
-```json
-{
-  "evidence_aggregation": "ok",
-  "evidence_api": "ok",
-  "multi_source_groups": "ok",
-  "mock_and_fallback_marked": "ok",
-  "remote_mcp_failure_auditable": "ok",
-  "react_limitation_report": "ok"
-}
+```powershell
+python scripts/smoke_final_project.py
 ```
 
-### Validation
+## 下一步任务
 
-Passed:
-- `python -m compileall app scripts frontend`
-- `python scripts/smoke_evidence_aggregation.py`
-- `python scripts/smoke_realtime_trace.py`
-- `python scripts/smoke_mcp_client.py`
-- `python scripts/smoke_mcp_server.py`
-- `python scripts/smoke_parallel_execution.py`
-- `python scripts/smoke_react_executor.py`
-- `python scripts/smoke_streamlit_frontend.py`
-- `python scripts/smoke_auth_async.py`
-- `python scripts/smoke_alembic_sql_parser.py`
-- `python scripts/smoke_hybrid_rag.py`
-- `python scripts/smoke_github_mcp.py`
-- `python scripts/smoke_tavily_search.py`
-- `python -m app.eval.run_eval` -> 32/32, failed=0
+### Next: Day46 - MCP External Client Demo
 
-### Notes
+目标：暂不进入 Day44/Day45，优先做一个清晰的外部 MCP client demo，验证本项目作为只读 MCP 工具服务对外可发现、可调用、可审计。
 
-- Day37 parallel metadata remains in Trace metadata and is preserved by evidence item metadata.
-- Day38 MCP server behavior is unchanged.
-- Day39 remote `tool_source=mcp_remote` metadata remains visible in evidence items.
-- Day40 SSE remains unchanged; evidence is exposed through a REST endpoint.
-- Next recommended step: Day42 Lightweight Web UI or Evidence Export, depending on demo priorities.
+建议范围：
 
-### 注意事项
+- 新增一个轻量脚本，例如 `scripts/demo_mcp_external_client.py`
+- 启动或连接本地 FastAPI MCP endpoint
+- 调用 JSON-RPC `initialize`
+- 调用 `tools/list` 并展示只读工具列表
+- 调用 `tools/call`
+  - `trace_reader`
+  - `report_reader`
+  - 一个只读业务工具，例如 `file_reader` 或 `sql_query_readonly`
+- 验证 `report_writer` 不暴露
+- 验证写工具或不安全工具不会出现在 MCP tool list
+- 验证 MCP 调用可选择写入 trace
+- README 增加 MCP external client 使用说明
+- smoke 覆盖外部 client demo 的成功路径和只读边界
 
-- 默认 Docker 目标是本地演示，不是生产云部署。
-- 默认镜像不打包本地 embedding 模型。
-- 不提交 `.env.docker`、API key、模型、SQLite DB、workspace/cache、workspace/index、workspace/chroma、workspace/reports、eval outputs。
+验收标准：
+
+- 默认离线可跑
+- 不要求真实 GitHub/Tavily/LLM key
+- 不新增重型依赖
+- 不改变本地工具安全边界
+- 不破坏已有 MCP server/client、Trace、Evidence、Export、Streamlit
+
+## 后续扩展方向（暂缓）
+
+### Day44 - Evidence Quality / Verifier
+
+暂缓。后续可在 EvidenceBundle 上增加轻量质量判断，例如来源质量、freshness、mock/fallback/failure 降级提示、claim support strength。优先确定性规则，必要时再考虑 LLM verifier。
+
+### Day45 - Trace Replay / Run Replay
+
+暂缓。后续可将 persisted trace 组织成可回放 timeline，用于审计、debug 和面试演示。不应在 Day46 前打断 MCP interoperability 主线。
+
+## 当前注意事项
+
+- 不提交 `.env`、token、key、本地模型、SQLite DB、RAG index、Chroma 数据、cache、reports、exports、eval outputs。
+- Day43.5 的 guardrail 只修正计划参数，不放宽工具自身安全校验。
+- 如果真实外部 API 失败，应转化为 traceable failed/fallback evidence，不应导致任务 API 500。
+- Streamlit 继续作为主 demo UI，不新增第二套前端。

@@ -129,6 +129,8 @@ def init_state() -> None:
         "last_plan": None,
         "last_trace": [],
         "last_evidence": None,
+        "last_evidence_export": None,
+        "last_evidence_export_content": None,
         "last_report": None,
         "selected_template": list(DEMO_TEMPLATES.keys())[0],
         "task_text": list(DEMO_TEMPLATES.values())[0]["task"],
@@ -403,6 +405,66 @@ def render_evidence_summary() -> None:
                 for item in claims[:8]
             ]
             st.dataframe(preview, use_container_width=True, hide_index=True)
+        _render_evidence_export_controls()
+
+
+def _render_evidence_export_controls() -> None:
+    run_id = st.session_state.get("run_id")
+    if not run_id:
+        return
+    st.markdown("**Evidence Export**")
+    cols = st.columns([2, 1])
+    with cols[0]:
+        export_format = st.selectbox(
+            "Evidence export format",
+            ["json", "jsonl", "markdown"],
+            key="evidence_export_format",
+            label_visibility="collapsed",
+        )
+    with cols[1]:
+        if st.button("Export", use_container_width=True):
+            try:
+                result = api_get(f"/api/tasks/{run_id}/evidence/export?format={export_format}")
+                content = api_get(f"/api/tasks/{run_id}/evidence/export/content?format={export_format}")
+                st.session_state.last_evidence_export = result
+                st.session_state.last_evidence_export_content = content
+                st.success(f"export_path={result.get('export_path')}")
+            except ApiError as exc:
+                st.error(str(exc))
+    last_export = st.session_state.get("last_evidence_export")
+    content_payload = st.session_state.get("last_evidence_export_content")
+    if isinstance(last_export, dict) and last_export.get("run_id") == run_id:
+        st.caption(
+            f"{last_export.get('format')} | {last_export.get('item_count')} items | "
+            f"{last_export.get('export_path')}"
+        )
+    if (
+        isinstance(content_payload, dict)
+        and content_payload.get("run_id") == run_id
+        and content_payload.get("format") == (last_export or {}).get("format")
+    ):
+        content = str(content_payload.get("content") or "")
+        fmt = str(content_payload.get("format") or "json")
+        preview = content[:8000]
+        if fmt == "markdown":
+            with st.expander("Markdown preview", expanded=True):
+                st.markdown(preview or "_No evidence content._")
+        else:
+            with st.expander(f"{fmt.upper()} preview", expanded=True):
+                st.code(preview or "", language="json" if fmt == "json" else None)
+        st.download_button(
+            "Download evidence export",
+            data=content,
+            file_name=_evidence_export_filename(run_id, fmt),
+            mime=content_payload.get("content_type") or "text/plain",
+            use_container_width=True,
+        )
+
+
+def _evidence_export_filename(run_id: str, export_format: str) -> str:
+    extension = {"json": "json", "jsonl": "jsonl", "markdown": "md"}.get(export_format, "txt")
+    safe_run_id = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in run_id)[:96] or "unknown"
+    return f"evidence_{safe_run_id}.{extension}"
 
 
 # ── 侧边栏 ────────────────────────────────────────────────────────

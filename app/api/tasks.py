@@ -4,17 +4,27 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.agent.dispatcher import run_task_by_mode
 from app.agent.evidence import build_evidence_bundle
+from app.agent.evidence_exporter import (
+    export_evidence_bundle,
+    export_filename,
+    export_media_type,
+    read_export_text,
+    resolve_export_path,
+)
 from app.agent.planner import plan_task
 from app.config import settings
 from app.database import SessionLocal, get_db
 from app.schemas import (
     AsyncRunResponse,
     EvidenceBundleResponse,
+    EvidenceExportContentResponse,
+    EvidenceExportResponse,
     TaskCreateRequest,
     TaskCreateResponse,
     TaskConfirmRequest,
@@ -200,6 +210,19 @@ def _parse_run_plan(run: AgentRun) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _export_run_evidence(
+    db: Session,
+    run_id: str,
+    export_format: str,
+):
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    traces = store.list_tool_traces(db, run_id)
+    bundle = build_evidence_bundle(run, _parse_run_plan(run), [], traces)
+    return export_evidence_bundle(bundle, export_format)
 
 
 @router.post("", response_model=TaskCreateResponse)
@@ -461,3 +484,49 @@ async def get_task_evidence(
     traces = store.list_tool_traces(db, run_id)
     bundle = build_evidence_bundle(run, _parse_run_plan(run), [], traces)
     return EvidenceBundleResponse(**bundle.to_dict())
+
+
+@router.get("/{run_id}/evidence/export", response_model=EvidenceExportResponse)
+async def export_task_evidence(
+    run_id: str,
+    format: str = Query(default="json", pattern="^(json|jsonl|markdown|md)$"),
+    db: Session = Depends(get_db),
+) -> EvidenceExportResponse:
+    """Export grouped evidence to a local artifact under workspace/exports."""
+
+    result = _export_run_evidence(db, run_id, format)
+    return EvidenceExportResponse(**result.to_dict())
+
+
+@router.get("/{run_id}/evidence/export/content", response_model=EvidenceExportContentResponse)
+async def export_task_evidence_content(
+    run_id: str,
+    format: str = Query(default="json", pattern="^(json|jsonl|markdown|md)$"),
+    db: Session = Depends(get_db),
+) -> EvidenceExportContentResponse:
+    """Export evidence and return a safe preview/download payload."""
+
+    result = _export_run_evidence(db, run_id, format)
+    content = read_export_text(result.export_path)
+    return EvidenceExportContentResponse(
+        **result.to_dict(),
+        content=content,
+        content_type=export_media_type(result.format),
+    )
+
+
+@router.get("/{run_id}/evidence/export/download")
+async def download_task_evidence_export(
+    run_id: str,
+    format: str = Query(default="json", pattern="^(json|jsonl|markdown|md)$"),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Export evidence and return the artifact as a file download."""
+
+    result = _export_run_evidence(db, run_id, format)
+    export_path = resolve_export_path(result.export_path)
+    return FileResponse(
+        path=export_path,
+        media_type=export_media_type(result.format),
+        filename=export_filename(run_id, result.format),
+    )

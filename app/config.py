@@ -14,7 +14,7 @@ class Settings(BaseModel):
     """Small settings object; expanded later for model providers."""
 
     service_name: str = "traceable-research-agent"
-    phase: str = "day33-hybrid-rag"
+    phase: str = "traceable-research-agent"
     api_prefix: str = "/api"
     auth_enabled: bool = False
     demo_api_key: str | None = None
@@ -163,7 +163,7 @@ class Settings(BaseModel):
 
         return cls(
             service_name=os.getenv("SERVICE_NAME", "traceable-research-agent"),
-            phase=os.getenv("APP_PHASE", "day33-hybrid-rag"),
+            phase=os.getenv("APP_PHASE", "traceable-research-agent"),
             api_prefix=os.getenv("API_PREFIX", "/api"),
             auth_enabled=_env_bool("AUTH_ENABLED", False),
             demo_api_key=_env_optional("DEMO_API_KEY"),
