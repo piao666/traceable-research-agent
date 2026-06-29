@@ -227,6 +227,32 @@ MCP_REMOTE_SERVERS=[{"name":"demo","base_url":"http://127.0.0.1:8001/mcp","timeo
 
 远端工具会注册为 `<server>.<tool>`，并在 trace metadata 中标记 `tool_source=mcp_remote`。远端失败会变成 failed `ToolResult`，不会把任务 API 变成 500。
 
+### MCP External Client Demo
+
+Day46 提供一个默认离线可跑的外部 MCP client demo：
+
+```powershell
+python scripts/demo_mcp_external_client.py
+```
+
+该脚本使用 FastAPI `TestClient` 直接调用本项目 `/mcp`，不需要先启动 uvicorn。它会先创建并执行一个最小 demo run，然后以外部 Agent 的视角完成：
+
+- JSON-RPC `initialize`
+- JSON-RPC `tools/list`
+- JSON-RPC `tools/call`
+- 携带 `_trace.run_id` 的 MCP 调用 trace 写入
+- `trace_reader` / `report_reader` 读回 trace 和 Markdown report
+
+脚本输出结构化 JSON summary，包括 `run_id`、`discovered_tools`、`boundary_checks`、`trace_count`、`mcp_trace_written`、`report_exists` 和 `overall_status`。MCP external client demo 只验证只读审计边界：`report_writer` 和写类/高风险工具不会暴露给外部 MCP client。
+
+如需验证真实进程外 HTTP client，可运行：
+
+```powershell
+python scripts/smoke_mcp_external_http_client.py
+```
+
+该 smoke 会启动一个临时 uvicorn 子进程，并用 `requests` 通过 localhost TCP 调用 `/mcp`，用于确认外部 Agent 按 HTTP JSON-RPC 接入时也能完成工具发现、只读调用、trace 写入和 report readback。
+
 ## Docker
 
 轻量 Docker 默认使用 deterministic/json RAG，不打包本地 embedding 模型：
@@ -265,6 +291,8 @@ python scripts/smoke_evidence_aggregation.py
 python scripts/smoke_realtime_trace.py
 python scripts/smoke_mcp_server.py
 python scripts/smoke_mcp_client.py
+python scripts/demo_mcp_external_client.py
+python scripts/smoke_mcp_external_http_client.py
 python scripts/smoke_parallel_execution.py
 python scripts/smoke_react_executor.py
 python scripts/smoke_auth_async.py

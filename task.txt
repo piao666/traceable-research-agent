@@ -126,6 +126,8 @@ python scripts/smoke_evidence_aggregation.py
 python scripts/smoke_realtime_trace.py
 python scripts/smoke_mcp_server.py
 python scripts/smoke_mcp_client.py
+python scripts/demo_mcp_external_client.py
+python scripts/smoke_mcp_external_http_client.py
 python scripts/smoke_parallel_execution.py
 python scripts/smoke_react_executor.py
 python scripts/smoke_streamlit_frontend.py
@@ -139,27 +141,46 @@ python -m app.eval.run_eval
 python scripts/smoke_final_project.py
 ```
 
-## 下一步任务
-
-### Next: Day46 - MCP External Client Demo
+## 2026-06-29 - Day46 MCP External Client Demo
 
 目标：暂不进入 Day44/Day45，优先做一个清晰的外部 MCP client demo，验证本项目作为只读 MCP 工具服务对外可发现、可调用、可审计。
 
-建议范围：
+实现内容：
 
-- 新增一个轻量脚本，例如 `scripts/demo_mcp_external_client.py`
-- 启动或连接本地 FastAPI MCP endpoint
-- 调用 JSON-RPC `initialize`
-- 调用 `tools/list` 并展示只读工具列表
-- 调用 `tools/call`
-  - `trace_reader`
-  - `report_reader`
-  - 一个只读业务工具，例如 `file_reader` 或 `sql_query_readonly`
-- 验证 `report_writer` 不暴露
-- 验证写工具或不安全工具不会出现在 MCP tool list
-- 验证 MCP 调用可选择写入 trace
-- README 增加 MCP external client 使用说明
-- smoke 覆盖外部 client demo 的成功路径和只读边界
+- 新增 `scripts/demo_mcp_external_client.py`
+  - 使用 FastAPI `TestClient` 直接调用 `/mcp`，默认不需要启动 uvicorn
+  - 初始化 demo DB 和默认工具注册
+  - 通过任务 API 创建并执行一个最小 demo run，让 trace_reader/report_reader 有真实内容可读
+  - 调用 JSON-RPC `initialize`
+  - 调用 JSON-RPC `tools/list`，验证只读工具可见：
+    - `file_reader`
+    - `rag_search`
+    - `sql_query_readonly`
+    - `github_search`
+    - `tavily_search`
+    - `trace_reader`
+    - `report_reader`
+  - 验证 `report_writer` 和写类/高风险工具不暴露
+  - 调用 JSON-RPC `tools/call` 执行 `file_reader`
+  - 调用 `trace_reader` 读取 persisted ToolTrace
+  - 调用 `report_reader` 读取生成的 Markdown report
+  - 通过 `_trace: {run_id, step_no}` 验证 MCP 调用可写入 trace row
+  - 输出结构化 JSON summary，便于 smoke 检查和演示
+- 更新 `README.md`
+  - 增加 MCP External Client Demo 使用说明
+  - 说明默认离线可跑、输出字段含义和只读审计边界
+  - 将 `python scripts/demo_mcp_external_client.py` 加入验证命令
+- 更新 `scripts/smoke_final_project.py`
+  - 将 Day46 demo 加入最终聚合验证
+- 新增 `scripts/smoke_mcp_external_http_client.py`
+  - 启动临时 uvicorn 子进程
+  - 使用 `requests` 通过 localhost TCP 调用 `/mcp`
+  - 验证真实 HTTP client 也能完成 initialize、tools/list、tools/call、trace 写入和 report readback
+- 修改 `app/database.py`
+  - SQLite 连接增加 `timeout=30`
+  - 连接时设置 `PRAGMA busy_timeout=30000`
+  - 连接时设置 `PRAGMA journal_mode=WAL` 和 `PRAGMA synchronous=NORMAL`
+  - 降低多个 smoke/API 进程并发写同一 SQLite 数据库时的 `database is locked` 概率
 
 验收标准：
 
@@ -167,7 +188,21 @@ python scripts/smoke_final_project.py
 - 不要求真实 GitHub/Tavily/LLM key
 - 不新增重型依赖
 - 不改变本地工具安全边界
+- 不暴露 `report_writer`
 - 不破坏已有 MCP server/client、Trace、Evidence、Export、Streamlit
+
+验证结果：
+
+- `python -m compileall app scripts frontend` 通过
+- `python scripts/smoke_mcp_server.py` 通过
+- `python scripts/smoke_mcp_client.py` 通过
+- `python scripts/demo_mcp_external_client.py` 通过
+- `python scripts/smoke_mcp_external_http_client.py` 通过
+- `python scripts/smoke_planner_guardrails.py` 通过
+- `python scripts/smoke_evidence_export.py` 通过
+- `python scripts/smoke_realtime_trace.py` 通过
+- `python scripts/smoke_auth_async.py` 通过
+- 并行压力复测：同时运行 `smoke_evidence_export.py`、`smoke_realtime_trace.py`、`smoke_auth_async.py` 通过，未再出现 `database is locked`。
 
 ## 后续扩展方向（暂缓）
 

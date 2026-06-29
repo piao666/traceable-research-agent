@@ -25,6 +25,8 @@ CHECKS = [
     ("smoke_auth_async", [sys.executable, "scripts/smoke_auth_async.py"]),
     ("smoke_alembic_sql_parser", [sys.executable, "scripts/smoke_alembic_sql_parser.py"]),
     ("smoke_github_mcp", [sys.executable, "scripts/smoke_github_mcp.py"]),
+    ("demo_mcp_external_client", [sys.executable, "scripts/demo_mcp_external_client.py"]),
+    ("smoke_mcp_external_http_client", [sys.executable, "scripts/smoke_mcp_external_http_client.py"]),
     ("smoke_react_executor", [sys.executable, "scripts/smoke_react_executor.py"]),
     ("smoke_hybrid_rag", [sys.executable, "scripts/smoke_hybrid_rag.py"]),
     ("smoke_react_vs_planned_eval", [sys.executable, "scripts/smoke_react_vs_planned_eval.py"]),

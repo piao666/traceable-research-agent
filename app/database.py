@@ -3,7 +3,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 WORKSPACE_DIR = Path("workspace")
@@ -14,9 +14,22 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 30},
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+@event.listens_for(engine, "connect")
+def _configure_sqlite_connection(dbapi_connection, connection_record) -> None:
+    """Make local SQLite more tolerant of concurrent smoke/API writers."""
+
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+    finally:
+        cursor.close()
 
 
 class Base(DeclarativeBase):
