@@ -76,6 +76,42 @@ def main() -> None:
     file_result = read_file(file_args)
     _assert(file_result.success, file_result.error_message or "file_reader failed")
 
+    outside_path = ROOT / "workspace" / "tmp" / "guardrail_outside_allowed_root.md"
+    outside_plan = {
+        "version": "llm-v1",
+        "task": "Read an explicit outside file",
+        "source_mode": "mock",
+        "allowed_tools": ["file_reader"],
+        "steps": [
+            {
+                "step_no": 1,
+                "tool_name": "file_reader",
+                "arguments": {"path": str(outside_path), "max_chars": 100},
+                "goal": "Read outside file.",
+                "expected_output": "Content.",
+                "completion_criteria": "Requires approval.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            }
+        ],
+        "notes": [],
+        "confirmation": None,
+    }
+    normalized_outside = normalize_plan_arguments(outside_plan, outside_plan["task"], "mock")
+    outside_step = normalized_outside["steps"][0]
+    _assert(
+        outside_step["arguments"]["path"] == str(outside_path),
+        f"outside path should be preserved for HITL, got {outside_step}",
+    )
+    _assert(
+        outside_step["requires_confirmation"] is True,
+        f"outside path did not require confirmation: {outside_step}",
+    )
+    _assert(
+        outside_step.get("confirmation_details", {}).get("confirmation_scope") == "single_file_path",
+        f"outside path confirmation scope missing: {outside_step}",
+    )
+
     sql_args = steps["sql_query"]["arguments"]
     _assert(sql_args["query"] == "SELECT id, name, value, unit FROM metrics", f"bad sql query: {sql_args}")
     _assert(sql_args["limit"] == 100, f"bad sql limit: {sql_args}")
@@ -106,6 +142,7 @@ def main() -> None:
             {
                 "planner_guardrails": "ok",
                 "file_path": file_args["path"],
+                "outside_hitl_path": outside_step["arguments"]["path"],
                 "sql_query": sql_args["query"],
                 "github_query_length": len(github_args["query"]),
                 "notes": normalized.get("notes"),

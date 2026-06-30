@@ -39,6 +39,7 @@ def main() -> None:
         "/run_async",
         "/trace",
         "/api/reports",
+        "/download?format=",
         "/confirm",
     ]
     missing_paths = [path for path in required_paths if path not in source]
@@ -91,6 +92,16 @@ def main() -> None:
     assert_true(
         'api_post("/api/tasks", payload, timeout=CREATE_TASK_TIMEOUT_SECONDS)' in source,
         "create-task request does not use the longer planner timeout",
+    )
+    assert_true('"tavily_search"' in source, "tavily_search missing from frontend tool list")
+    assert_true('"docx"' in source and '"pdf"' in source, "report docx/pdf download formats missing")
+    assert_true("本地读取（文件 + RAG + SQL）" in source, "local reading template missing")
+    assert_true("外部调研（GitHub + Tavily）" in source, "external research template missing")
+    assert_true("全规划器（本地读取 + 外部调研）" in source, "full planner template missing")
+    assert_true("HITL 人工确认流程" not in source, "standalone HITL template should be removed")
+    assert_true(
+        source.count('"allowed_tools":') >= 3,
+        "expected at least three scenario template allowed_tools entries",
     )
 
     forbidden_patterns = [

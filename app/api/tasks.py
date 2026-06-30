@@ -17,6 +17,10 @@ from app.agent.evidence_exporter import (
     read_export_text,
     resolve_export_path,
 )
+from app.agent.file_access_policy import (
+    CONFIRMATION_REASON_OUTSIDE_ALLOWED_ROOTS,
+    confirmation_details_for_path,
+)
 from app.agent.planner import plan_task
 from app.config import settings
 from app.database import SessionLocal, get_db
@@ -390,27 +394,54 @@ async def confirm_task(
 
     required_step_no = None
     required_tool_name = None
+    required_confirmation_details = None
     react_state = plan.get("react_state")
     pending = react_state.get("pending_confirmation") if isinstance(react_state, dict) else None
     if isinstance(pending, dict):
         decision = pending.get("decision") or {}
         required_step_no = int(pending.get("step_no") or run.current_step + 1)
         required_tool_name = decision.get("action")
+        if required_tool_name == "file_reader":
+            args = decision.get("args") if isinstance(decision.get("args"), dict) else {}
+            path = str(args.get("path") or "").strip()
+            if path:
+                required_confirmation_details = confirmation_details_for_path(path)
     else:
         for step in plan.get("steps") or []:
             step_no = int(step.get("step_no") or 0)
             if step_no > run.current_step and step.get("requires_confirmation"):
                 required_step_no = step_no
                 required_tool_name = step.get("tool_name")
+                details = step.get("confirmation_details")
+                if isinstance(details, dict):
+                    required_confirmation_details = details
                 break
 
     plan["confirmation"] = {
         "required_step_no": required_step_no,
         "required_tool_name": required_tool_name,
+        "confirmation_reason": (
+            required_confirmation_details.get("reason")
+            if isinstance(required_confirmation_details, dict)
+            else None
+        ),
+        "confirmation_details": required_confirmation_details,
         "approved": request.approved,
         "comment": request.comment,
         "approved_at": datetime.now(timezone.utc).isoformat(),
     }
+    if (
+        request.approved
+        and required_tool_name == "file_reader"
+        and isinstance(required_confirmation_details, dict)
+        and required_confirmation_details.get("reason")
+        == CONFIRMATION_REASON_OUTSIDE_ALLOWED_ROOTS
+        and required_confirmation_details.get("resolved_path")
+    ):
+        plan["confirmation"]["approved_file_reader_paths"] = [
+            required_confirmation_details["resolved_path"]
+        ]
+        plan["confirmation"]["confirmation_scope"] = "single_file_path"
     store.replace_agent_run_plan(db, run_id, plan)
 
     if not request.approved:

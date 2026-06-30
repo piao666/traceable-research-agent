@@ -7,8 +7,15 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from app.agent.file_access_policy import (
+    CONFIRMATION_REASON_OUTSIDE_ALLOWED_ROOTS,
+    DOCS_ROOT,
+    confirmation_details_for_path,
+    find_allowed_root,
+    resolve_file_reader_path,
+)
 from app.config import settings
-from app.tools.file_reader import DEFAULT_MAX_CHARS, DOCS_ROOT, MAX_CHARS_LIMIT
+from app.tools.file_reader import DEFAULT_MAX_CHARS, MAX_CHARS_LIMIT
 from app.tools.mcp_github import MAX_LIMIT as GITHUB_MAX_LIMIT
 from app.tools.mcp_github import REPO_PATTERN
 from app.tools.sql_query import DEFAULT_DB_PATH
@@ -40,7 +47,7 @@ def normalize_plan_arguments(
             step["arguments"] = arguments
 
         if tool_name == "file_reader":
-            _normalize_file_reader(arguments, task, notes)
+            _normalize_file_reader(step, arguments, task, notes)
         elif tool_name == "sql_query":
             _normalize_sql_query(arguments, task, notes)
         elif tool_name == "mcp_github_search":
@@ -115,20 +122,65 @@ def _best_local_doc(task: str) -> Path:
     return preferred if preferred.exists() else sorted(files, key=lambda path: path.name)[0]
 
 
-def _normalize_file_reader(arguments: dict[str, Any], task: str, notes: list[str]) -> None:
+def _docs_relative_path(path: Path) -> str:
+    return path.relative_to(DOCS_ROOT).as_posix()
+
+
+def _allowed_path_argument(path: Path) -> str:
+    allowed_root = find_allowed_root(path)
+    if allowed_root == DOCS_ROOT:
+        return _docs_relative_path(path)
+    return str(path)
+
+
+def _normalize_file_reader(
+    step: dict[str, Any],
+    arguments: dict[str, Any],
+    task: str,
+    notes: list[str],
+) -> None:
     original = str(arguments.get("path") or "").strip()
-    resolved = _resolve_docs_relative(original)
-    if resolved is None:
+    if not original:
         fallback = _best_local_doc(task)
-        arguments["path"] = fallback.relative_to(DOCS_ROOT).as_posix()
+        arguments["path"] = _docs_relative_path(fallback)
         notes.append(
             "Planner guardrail normalized file_reader.path to an existing file under workspace/docs."
         )
     else:
-        relative = resolved.relative_to(DOCS_ROOT).as_posix()
-        if relative != original:
-            notes.append("Planner guardrail removed workspace/docs prefix from file_reader.path.")
-        arguments["path"] = relative
+        resolved = resolve_file_reader_path(original)
+        allowed_root = find_allowed_root(resolved)
+        if allowed_root is None:
+            details = confirmation_details_for_path(original)
+            arguments["path"] = original
+            step["risk_level"] = "high"
+            step["requires_confirmation"] = bool(details["requires_confirmation"])
+            step["confirmation_reason"] = CONFIRMATION_REASON_OUTSIDE_ALLOWED_ROOTS
+            step["confirmation_details"] = details
+            step["completion_criteria"] = (
+                "Human confirmation must approve this exact file path before file_reader reads it."
+            )
+            notes.append(
+                "Planner guardrail marked file_reader.path for HITL because it is outside configured allowed roots."
+            )
+        elif resolved.exists() and resolved.is_file():
+            normalized = _allowed_path_argument(resolved)
+            if normalized != original:
+                notes.append("Planner guardrail normalized file_reader.path inside configured allowed roots.")
+            arguments["path"] = normalized
+            step.pop("confirmation_reason", None)
+            step.pop("confirmation_details", None)
+            if step.get("requires_confirmation") and step.get("tool_name") == "file_reader":
+                step["requires_confirmation"] = False
+        else:
+            fallback = _best_local_doc(task)
+            arguments["path"] = _docs_relative_path(fallback)
+            step.pop("confirmation_reason", None)
+            step.pop("confirmation_details", None)
+            if step.get("requires_confirmation") and step.get("tool_name") == "file_reader":
+                step["requires_confirmation"] = False
+            notes.append(
+                "Planner guardrail normalized missing file_reader.path to an existing file under workspace/docs."
+            )
     arguments["max_chars"] = _bounded_int(
         arguments.get("max_chars"),
         DEFAULT_MAX_CHARS,

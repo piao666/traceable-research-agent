@@ -44,6 +44,8 @@ class Settings(BaseModel):
     tavily_timeout_seconds: int = 15
     tavily_max_retries: int = 2
     tavily_fallback_to_mock: bool = False
+    file_reader_allowed_roots: str = "workspace/docs"
+    file_reader_hitl_outside_allowed_roots: bool = True
     mcp_readonly_mode: bool = True
     mcp_adapter_mode: str = "github_tavily_readonly"
     mcp_allow_write_tools: bool = False
@@ -224,6 +226,13 @@ class Settings(BaseModel):
             ),
             tavily_max_retries=_env_bounded_int("TAVILY_MAX_RETRIES", 2, 0, 5),
             tavily_fallback_to_mock=_env_bool("TAVILY_FALLBACK_TO_MOCK", False),
+            file_reader_allowed_roots=os.getenv(
+                "FILE_READER_ALLOWED_ROOTS", "workspace/docs"
+            ).strip()
+            or "workspace/docs",
+            file_reader_hitl_outside_allowed_roots=_env_bool(
+                "FILE_READER_HITL_OUTSIDE_ALLOWED_ROOTS", True
+            ),
             mcp_readonly_mode=_env_bool("MCP_READONLY_MODE", True),
             mcp_adapter_mode=os.getenv(
                 "MCP_ADAPTER_MODE", "github_tavily_readonly"
@@ -427,6 +436,8 @@ class Settings(BaseModel):
             "tavily_timeout_seconds": self.tavily_timeout_seconds,
             "tavily_max_retries": self.tavily_max_retries,
             "tavily_fallback_to_mock": self.tavily_fallback_to_mock,
+            "file_reader_allowed_roots": self.file_reader_allowed_roots,
+            "file_reader_hitl_outside_allowed_roots": self.file_reader_hitl_outside_allowed_roots,
             "mcp_readonly_mode": self.mcp_readonly_mode,
             "mcp_adapter_mode": self.mcp_adapter_mode,
             "mcp_allow_write_tools": self.mcp_allow_write_tools,

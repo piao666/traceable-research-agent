@@ -63,6 +63,8 @@ class PlanStepResponse(BaseModel):
     completion_criteria: str
     risk_level: str
     requires_confirmation: bool
+    confirmation_reason: str | None = None
+    confirmation_details: dict[str, Any] | None = None
 
 
 class TaskPlanResponse(BaseModel):

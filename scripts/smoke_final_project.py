@@ -22,6 +22,7 @@ CHECKS = [
     ("smoke_rag_query", [sys.executable, "scripts/smoke_rag_query.py"]),
     ("smoke_rag_backends", [sys.executable, "scripts/smoke_rag_backends.py"]),
     ("smoke_streamlit_frontend", [sys.executable, "scripts/smoke_streamlit_frontend.py"]),
+    ("smoke_report_download", [sys.executable, "scripts/smoke_report_download.py"]),
     ("smoke_auth_async", [sys.executable, "scripts/smoke_auth_async.py"]),
     ("smoke_alembic_sql_parser", [sys.executable, "scripts/smoke_alembic_sql_parser.py"]),
     ("smoke_github_mcp", [sys.executable, "scripts/smoke_github_mcp.py"]),

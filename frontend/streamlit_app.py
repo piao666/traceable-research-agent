@@ -24,13 +24,14 @@ if _env_path.exists():
 DEFAULT_API_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_API_TIMEOUT_SECONDS = int(os.environ.get("STREAMLIT_API_TIMEOUT_SECONDS", "30"))
 CREATE_TASK_TIMEOUT_SECONDS = int(os.environ.get("STREAMLIT_CREATE_TASK_TIMEOUT_SECONDS", "120"))
-ALL_TOOLS = ["file_reader", "sql_query", "rag_search", "mcp_github_search", "report_writer"]
+ALL_TOOLS = ["file_reader", "sql_query", "rag_search", "mcp_github_search", "tavily_search", "report_writer"]
 
 TOOL_ICON = {
     "file_reader":      "📄",
     "sql_query":        "🗄️",
     "rag_search":       "🔍",
     "mcp_github_search":"🐙",
+    "tavily_search":    "🌐",
     "report_writer":    "📝",
 }
 TOOL_CN = {
@@ -38,25 +39,22 @@ TOOL_CN = {
     "sql_query":        "数据库查询",
     "rag_search":       "RAG 向量检索",
     "mcp_github_search":"GitHub 只读调研",
+    "tavily_search":    "Tavily 外部搜索",
     "report_writer":    "Markdown 报告生成",
 }
 RISK_COLOR = {"low": "#15803D", "medium": "#B45309", "high": "#B91C1C"}
 
 DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
-    "📄 标准调研（文件+SQL+RAG+报告）": {
+    "本地读取（文件 + RAG + SQL）": {
         "task": "Read local docs, query database metrics, retrieve trace evidence, and generate a markdown report",
         "allowed_tools": ["file_reader", "sql_query", "rag_search", "report_writer"],
     },
-    "🐙 GitHub 只读调研报告": {
-        "task": "Search GitHub repository issues about traceable research agent and generate a markdown report",
-        "allowed_tools": ["mcp_github_search", "report_writer"],
+    "外部调研（GitHub + Tavily）": {
+        "task": "Search GitHub repository issues and current web sources about traceable research agent, then generate a markdown report",
+        "allowed_tools": ["mcp_github_search", "tavily_search", "report_writer"],
     },
-    "✋ HITL 人工确认流程": {
-        "task": "Read local docs, retrieve trace evidence, and generate a markdown report with human approval",
-        "allowed_tools": ["file_reader", "rag_search", "report_writer"],
-    },
-    "⚡ LLM 规划器（全工具）": {
-        "task": "Read local docs, query database metrics, retrieve trace evidence, search GitHub repository issues, and generate a markdown report",
+    "全规划器（本地读取 + 外部调研）": {
+        "task": "Read local docs, query database metrics, retrieve trace evidence, search GitHub repository issues and current web sources, then generate a markdown report",
         "allowed_tools": ALL_TOOLS,
     },
 }
@@ -200,6 +198,25 @@ def api_get(path: str, timeout: int | float | None = None) -> Any:
 
 def api_post(path: str, payload: dict | None = None, timeout: int | float | None = None) -> Any:
     return api_request("POST", path, payload or {}, timeout=timeout)
+
+
+def api_download(path: str, timeout: int | float | None = None) -> tuple[bytes, str]:
+    effective_timeout = timeout or DEFAULT_API_TIMEOUT_SECONDS
+    try:
+        r = requests.get(api_url(path), headers=request_headers(), timeout=effective_timeout)
+    except requests.ConnectionError:
+        raise ApiError("⚠️ 后端未启动，请先运行 FastAPI：python -m uvicorn app.main:app --port 8000")
+    except requests.Timeout:
+        raise ApiError("⚠️ 下载请求超时，请稍后重试。")
+    except requests.RequestException as e:
+        raise ApiError(f"⚠️ 下载请求失败：{e}")
+    if r.status_code >= 400:
+        try:
+            detail = r.json().get("detail")
+        except ValueError:
+            detail = r.text
+        raise ApiError(f"HTTP {r.status_code}：{detail}")
+    return r.content, r.headers.get("content-type", "application/octet-stream")
 
 
 def normalize_trace(data: Any) -> list[dict]:
@@ -629,8 +646,35 @@ def tab_task() -> None:
         st.info("计划加载中…点击侧边栏「刷新全部」获取最新状态。")
 
 
+def _pending_confirmation_details() -> dict[str, Any] | None:
+    plan = st.session_state.get("last_plan") or {}
+    react_state = plan.get("react_state") if isinstance(plan, dict) else None
+    pending = react_state.get("pending_confirmation") if isinstance(react_state, dict) else None
+    if isinstance(pending, dict) and isinstance(pending.get("confirmation_details"), dict):
+        return pending["confirmation_details"]
+    current_step = int((st.session_state.get("last_status") or {}).get("current_step") or 0)
+    for step in plan.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        if int(step.get("step_no") or 0) > current_step and step.get("requires_confirmation"):
+            details = step.get("confirmation_details")
+            return details if isinstance(details, dict) else None
+    return None
+
+
 def _render_hitl() -> None:
     st.warning("✋ 任务正在等待人工确认，请确认后继续执行。")
+    details = _pending_confirmation_details()
+    if details:
+        st.error("检测到 file_reader 请求读取非白名单路径。批准后仅允许读取本次展示的具体文件路径，不会放开目录或磁盘。")
+        st.json(
+            {
+                "requested_path": details.get("requested_path"),
+                "resolved_path": details.get("resolved_path"),
+                "allowed_roots": details.get("allowed_roots"),
+                "confirmation_scope": details.get("confirmation_scope"),
+            }
+        )
     approved = st.checkbox("批准执行", value=True)
     comment  = st.text_input("备注", value="Streamlit 界面已确认")
     if st.button("提交确认"):
@@ -753,12 +797,37 @@ def tab_report() -> None:
 
     st.divider()
     st.markdown(md)
-    st.download_button(
-        "⬇️ 下载 Markdown 报告",
+    run_id = st.session_state.get("run_id", "")
+    dl1, dl2, dl3 = st.columns(3)
+    dl1.download_button(
+        "⬇️ Markdown",
         data=md,
-        file_name=f"research_report_{st.session_state.get('run_id','')[:8]}.md",
+        file_name=f"research_report_{run_id[:8]}.md",
         mime="text/markdown",
     )
+    for column, fmt, label, filename, fallback_mime in [
+        (
+            dl2,
+            "docx",
+            "⬇️ Word",
+            f"research_report_{run_id[:8]}.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (dl3, "pdf", "⬇️ PDF", f"research_report_{run_id[:8]}.pdf", "application/pdf"),
+    ]:
+        try:
+            content, content_type = api_download(
+                f"/api/reports/{run_id}/download?format={fmt}",
+                timeout=DEFAULT_API_TIMEOUT_SECONDS,
+            )
+            column.download_button(
+                label,
+                data=content,
+                file_name=filename,
+                mime=content_type or fallback_mime,
+            )
+        except ApiError as exc:
+            column.caption(str(exc))
 
 
 # ── 主入口 ────────────────────────────────────────────────────────

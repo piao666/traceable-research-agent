@@ -15,7 +15,10 @@ def register_default_tools() -> None:
     register_tool(
         ToolSpec(
             name="file_reader",
-            description="Read allowed local files under workspace/docs.",
+            description=(
+                "Read allowed local files under configured FILE_READER_ALLOWED_ROOTS. "
+                "Paths outside allowed roots require per-file HITL approval during agent runs."
+            ),
             input_schema={"path": "string", "max_chars": "integer"},
             output_schema={"content": "string", "source_path": "string"},
             risk_level=RiskLevel.LOW,

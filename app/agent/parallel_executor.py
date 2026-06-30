@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.agent.file_access_policy import file_reader_execution_arguments
 from app.agent.executor import (
     EXECUTABLE_TOOLS,
     _failed_observation,
@@ -147,12 +148,21 @@ def _timeout_result(message: str) -> ToolResult:
     )
 
 
-def _execute_step(step: dict[str, Any], worker_id: int) -> _StepResult:
+def _execute_step(
+    step: dict[str, Any],
+    worker_id: int,
+    plan: dict[str, Any] | None = None,
+) -> _StepResult:
     tool_name = str(step.get("tool_name") or "")
     arguments = step.get("arguments") or {}
+    execution_arguments = (
+        file_reader_execution_arguments(arguments, plan)
+        if tool_name == "file_reader"
+        else arguments
+    )
     started_at = _utc_iso()
     started = perf_counter()
-    result = execute_tool(tool_name, arguments)
+    result = execute_tool(tool_name, execution_arguments)
     latency_ms = int((perf_counter() - started) * 1000)
     finished_at = _utc_iso()
     return _StepResult(step, result, latency_ms, started_at, finished_at, worker_id)
@@ -161,6 +171,7 @@ def _execute_step(step: dict[str, Any], worker_id: int) -> _StepResult:
 def _run_parallel_group(
     group: list[dict[str, Any]],
     settings_obj: Settings,
+    plan: dict[str, Any] | None = None,
 ) -> list[_StepResult]:
     group_id = f"pg-{uuid4().hex[:12]}"
     group_size = len(group)
@@ -170,7 +181,7 @@ def _run_parallel_group(
     group_started_at = _utc_iso()
     try:
         for index, step in enumerate(group, 1):
-            futures[executor.submit(_execute_step, step, index)] = (step, index, group_started_at)
+            futures[executor.submit(_execute_step, step, index, plan)] = (step, index, group_started_at)
 
         done, pending = wait(set(futures), timeout=settings_obj.parallel_timeout_seconds)
         results: list[_StepResult] = []
@@ -241,8 +252,11 @@ def _run_parallel_group(
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-def _run_single_tool_step(step: dict[str, Any]) -> _StepResult:
-    return _execute_step(step, 1)
+def _run_single_tool_step(
+    step: dict[str, Any],
+    plan: dict[str, Any] | None = None,
+) -> _StepResult:
+    return _execute_step(step, 1, plan)
 
 
 def _observation(step: dict[str, Any], result: ToolResult) -> dict[str, Any]:
@@ -326,7 +340,7 @@ def run_plan_parallel(
                     run = store.update_agent_run_progress(db, run_id, step_no, total_tool_calls_delta=1)
                     continue
 
-                step_result = _run_single_tool_step(step)
+                step_result = _run_single_tool_step(step, plan)
                 record_tool_result(
                     db,
                     run_id,
@@ -346,7 +360,7 @@ def run_plan_parallel(
                 )
                 continue
 
-            parallel_results = _run_parallel_group(executable_group, settings_obj)
+            parallel_results = _run_parallel_group(executable_group, settings_obj, plan)
             for step_result in parallel_results:
                 step = step_result.step
                 step_no = int(step.get("step_no") or 0)

@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.agent.planner import plan_task
+from app.agent.plan_guardrails import normalize_plan_arguments
 
 
 def _tools(plan: dict) -> list[str]:
@@ -84,6 +85,31 @@ def main() -> None:
         "mock",
         planner_mode="auto",
     )
+    outside_path = ROOT / "workspace" / "tmp" / "llm_planner_outside_allowed_root.md"
+    path_hitl = normalize_plan_arguments(
+        {
+            "version": "llm-smoke",
+            "task": "Read explicit outside file",
+            "source_mode": "mock",
+            "allowed_tools": ["file_reader"],
+            "steps": [
+                {
+                    "step_no": 1,
+                    "tool_name": "file_reader",
+                    "arguments": {"path": str(outside_path), "max_chars": 100},
+                    "goal": "Read outside file.",
+                    "expected_output": "Content.",
+                    "completion_criteria": "Requires approval.",
+                    "risk_level": "low",
+                    "requires_confirmation": False,
+                }
+            ],
+            "notes": [],
+            "confirmation": None,
+        },
+        "Read explicit outside file",
+        "mock",
+    )
 
     if deterministic.get("planner_source") != "deterministic":
         raise SystemExit("deterministic planner_source mismatch")
@@ -92,8 +118,11 @@ def main() -> None:
     if _tools(limited) != ["file_reader"]:
         raise SystemExit(f"allowed_tools failed: {_tools(limited)}")
     report_steps = [step for step in hitl["steps"] if step["tool_name"] == "report_writer"]
-    if not report_steps or not report_steps[0]["requires_confirmation"]:
-        raise SystemExit("HITL rule failed")
+    if report_steps and report_steps[0]["requires_confirmation"]:
+        raise SystemExit("report_writer should not be a standalone HITL scene")
+    file_step = path_hitl["steps"][0]
+    if file_step.get("confirmation_reason") != "file_reader_path_outside_allowed_roots":
+        raise SystemExit(f"file path HITL rule failed: {path_hitl}")
     if _tools(github) != ["mcp_github_search", "report_writer"]:
         raise SystemExit(f"GitHub planning failed: {_tools(github)}")
     _assert_confirmation_notes_match_steps(auto)
@@ -101,8 +130,8 @@ def main() -> None:
     auto_hitl_report_steps = [
         step for step in auto_hitl["steps"] if step["tool_name"] == "report_writer"
     ]
-    if not auto_hitl_report_steps or not auto_hitl_report_steps[0]["requires_confirmation"]:
-        raise SystemExit("LLM HITL confirmation rule failed")
+    if auto_hitl_report_steps and auto_hitl_report_steps[0]["requires_confirmation"]:
+        raise SystemExit("auto planner report_writer should not require standalone HITL")
 
     payload = {
         "deterministic": {
@@ -117,10 +146,10 @@ def main() -> None:
             "notes_tail": list(auto.get("notes") or [])[-2:],
         },
         "allowed_tools": _tools(limited),
-        "hitl_report_requires_confirmation": report_steps[0]["requires_confirmation"],
+        "hitl_file_requires_confirmation": file_step["requires_confirmation"],
         "github_tools": _tools(github),
         "confirmation_notes_consistent": True,
-        "auto_hitl_report_requires_confirmation": True,
+        "auto_hitl_report_requires_confirmation": False,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
 

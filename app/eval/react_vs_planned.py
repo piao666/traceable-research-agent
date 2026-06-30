@@ -14,6 +14,7 @@ from urllib.error import URLError
 from sqlalchemy.orm import Session
 
 from app.agent.executor import run_plan
+from app.agent.file_access_policy import confirmation_details_for_path
 from app.agent.react_executor import run_react_task
 from app.config import Settings
 from app.eval.fake_react_llm import FakeReActLLMClient
@@ -196,19 +197,29 @@ def _confirm_waiting_run(db: Session, run_id: str, mode: str) -> dict[str, Any]:
         decision = pending.get("decision") or {}
         step_no = int(pending.get("step_no") or run.current_step + 1)
         tool_name = decision.get("action") or "report_writer"
+        args = decision.get("args") if isinstance(decision.get("args"), dict) else {}
     else:
         step = next(
             item for item in plan.get("steps") or [] if item.get("requires_confirmation")
         )
         step_no = int(step["step_no"])
         tool_name = str(step["tool_name"])
+        args = step.get("arguments") if isinstance(step.get("arguments"), dict) else {}
+    details = None
+    if tool_name == "file_reader" and str(args.get("path") or "").strip():
+        details = confirmation_details_for_path(str(args.get("path")))
     plan["confirmation"] = {
         "required_step_no": step_no,
         "required_tool_name": tool_name,
+        "confirmation_reason": details.get("reason") if isinstance(details, dict) else None,
+        "confirmation_details": details,
         "approved": True,
         "comment": "Approved by Day34 deterministic evaluation.",
         "approved_at": datetime.now(timezone.utc).isoformat(),
     }
+    if isinstance(details, dict) and details.get("resolved_path"):
+        plan["confirmation"]["approved_file_reader_paths"] = [details["resolved_path"]]
+        plan["confirmation"]["confirmation_scope"] = "single_file_path"
     store.replace_agent_run_plan(db, run_id, plan)
     store.update_agent_run_status(db, run_id, "pending", None)
     return plan

@@ -329,7 +329,7 @@ def deterministic_plan_task(
     task_text = task.strip()
     task_lower = task_text.lower()
     allowed_set = set(allowed_tools) if allowed_tools is not None else None
-    requires_human_confirmation = _matches(task_lower, HUMAN_CONFIRM_KEYWORDS)
+    requires_human_confirmation = False
     notes: list[str] = []
     steps: list[dict[str, Any]] = []
 
@@ -440,30 +440,10 @@ def _safe_fallback_reason(reason: str) -> str:
 
 
 def _apply_human_confirmation_policy(plan: dict[str, Any], task: str) -> None:
-    """Keep HITL behavior deterministic even when an LLM proposes the plan."""
+    """Keep legacy HITL prompts from making report_writer a separate approval scene."""
 
-    requires_human_confirmation = _matches(task.lower(), HUMAN_CONFIRM_KEYWORDS)
-    steps = plan.setdefault("steps", [])
-    allowed_tools = set(plan.get("allowed_tools") or DEFAULT_TOOL_ORDER)
-    has_report_step = any(step.get("tool_name") == "report_writer" for step in steps)
-    if requires_human_confirmation and "report_writer" in allowed_tools and not has_report_step:
-        report_step = _step_template(
-            "report_writer",
-            task,
-            requires_human_confirmation=True,
-        )
-        report_step["step_no"] = len(steps) + 1
-        report_step["tool_name"] = "report_writer"
-        steps.append(report_step)
-
-    for step in steps:
-        if step.get("tool_name") == "report_writer" and requires_human_confirmation:
-            step["risk_level"] = "high"
-            step["requires_confirmation"] = True
-            step["completion_criteria"] = (
-                "Human confirmation is recorded before the final Markdown report is generated."
-            )
-        else:
+    for step in plan.setdefault("steps", []):
+        if step.get("tool_name") != "file_reader":
             step["requires_confirmation"] = False
 
 

@@ -248,14 +248,17 @@ def main() -> None:
         assert_true(limited_plan["react_state"]["completed_with_limitation"] is True, "limit was not recorded")
         assert_true(any(meta.get("error_type") == "tool_call_limit" for meta in limited_meta), "tool call limit trace missing")
 
+        outside_hitl_path = ROOT / "workspace" / "tmp" / "react_outside_allowed_root.md"
+        outside_hitl_path.parent.mkdir(parents=True, exist_ok=True)
+        outside_hitl_path.write_text("react outside allowed roots\n", encoding="utf-8")
         hitl = create_run(
             db,
-            "Read local docs, retrieve trace evidence, and generate a markdown report with human approval",
+            "Read an explicit local file outside allowed roots, retrieve trace evidence, and generate a markdown report",
             ["file_reader", "rag_search", "report_writer"],
         )
         hitl_client = ScriptedLLMClient(
             [
-                {"thought": "Read local evidence.", "action": "file_reader", "args": {"path": "demo_research_note.md"}, "finish_reason": None},
+                {"thought": "Read explicit local evidence.", "action": "file_reader", "args": {"path": str(outside_hitl_path)}, "finish_reason": None},
                 {"thought": "Retrieve supporting evidence.", "action": "rag_search", "args": {"query": "trace evidence", "top_k": 2}, "finish_reason": None},
                 {"thought": "Request the approved report action.", "action": "report_writer", "args": {}, "finish_reason": "completed"},
             ]
@@ -266,9 +269,14 @@ def main() -> None:
         assert_true(not report_exists(waiting_run), "report existed before confirmation")
         hitl_plan = json.loads(waiting_run.plan_json)
         pending = hitl_plan["react_state"]["pending_confirmation"]
+        details = pending["confirmation_details"]
         hitl_plan["confirmation"] = {
             "required_step_no": pending["step_no"],
             "required_tool_name": pending["decision"]["action"],
+            "confirmation_reason": details.get("reason"),
+            "confirmation_details": details,
+            "approved_file_reader_paths": [details["resolved_path"]],
+            "confirmation_scope": "single_file_path",
             "approved": True,
             "comment": "Approved by ReAct smoke.",
         }

@@ -120,6 +120,9 @@ GITHUB_PUBLIC_API_FALLBACK_TO_MOCK=false
 TAVILY_API_KEY=
 TAVILY_FALLBACK_TO_MOCK=false
 
+FILE_READER_ALLOWED_ROOTS=workspace/docs
+FILE_READER_HITL_OUTSIDE_ALLOWED_ROOTS=true
+
 RAG_EMBEDDING_BACKEND=deterministic
 RAG_VECTOR_BACKEND=json
 RAG_REAL_BACKEND_ENABLED=false
@@ -177,6 +180,7 @@ Invoke-RestMethod -Method Post "http://127.0.0.1:8000/api/tasks/$($created.run_i
 | `GET` | `/api/tasks/{run_id}/trace` | 查看 ToolTrace |
 | `GET` | `/api/tasks/{run_id}/events` | SSE 实时事件流 |
 | `GET` | `/api/reports/{run_id}` | 读取 Markdown 报告 |
+| `GET` | `/api/reports/{run_id}/download` | 下载 Markdown/Word/PDF 报告 |
 | `GET` | `/api/tasks/{run_id}/evidence` | 读取 EvidenceBundle |
 | `GET` | `/api/tasks/{run_id}/evidence/export` | 生成导出 artifact 并返回 metadata |
 | `GET` | `/api/tasks/{run_id}/evidence/export/content` | 生成并返回可预览内容 |
@@ -190,11 +194,11 @@ Streamlit 页面提供三类主流程：
 
 - 任务与规划：输入任务、选择模板、选择 Planned/ReAct、切换 real/mock、创建任务、查看计划、执行任务、处理 HITL。
 - 执行追踪：查看状态指标、工具时间线、错误、延迟、RAG/GitHub/MCP 元数据和 ReAct observation。
-- 研究报告：渲染 Markdown 报告，查看 EvidenceBundle 摘要，导出并预览 JSON/JSONL/Markdown evidence packet，直接下载导出内容。
+- 研究报告：渲染 Markdown 报告，下载 Markdown/Word/PDF 报告，查看 EvidenceBundle 摘要，导出并预览 JSON/JSONL/Markdown evidence packet，直接下载导出内容。
 
 ## 工具边界
 
-- `file_reader`：只能读取 `workspace/docs` 下支持的文本文件；Planner 会自动去掉 `workspace/docs/` 前缀并回退到存在的 demo 文档。
+- `file_reader`：默认允许读取 `workspace/docs` 下支持的文本文件；可通过 `FILE_READER_ALLOWED_ROOTS` 配置更多白名单根目录。Planner 遇到白名单外路径时不会静默回退到 demo 文档，而是将对应 step 标记为 HITL，批准后也只允许读取该次确认的具体文件路径。
 - `sql_query`：只允许单条 `SELECT` 或 `WITH`；Planner 会把未知列/表修正为 demo schema 下的安全查询。
 - `rag_search`：支持 `dense`、`bm25`、`hybrid`；默认离线 JSON index，可切换真实向量后端。
 - `mcp_github_search`：只读 GitHub 搜索；`repo` 必须是 `owner/name` 或 `null`；Planner 会压缩过长 query 并对齐 real/mock 模式。
@@ -285,8 +289,10 @@ docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up --build
 
 ```powershell
 python -m compileall app scripts frontend
+python scripts/smoke_hitl.py
 python scripts/smoke_planner_guardrails.py
 python scripts/smoke_evidence_export.py
+python scripts/smoke_report_download.py
 python scripts/smoke_evidence_aggregation.py
 python scripts/smoke_realtime_trace.py
 python scripts/smoke_mcp_server.py

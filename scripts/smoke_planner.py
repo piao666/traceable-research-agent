@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.agent.planner import plan_task
+from app.agent.plan_guardrails import normalize_plan_arguments
 
 
 def main() -> None:
@@ -47,15 +48,35 @@ def main() -> None:
     if empty["steps"] or "No executable planning step" not in " ".join(empty["notes"]):
         raise SystemExit(f"Expected empty plan for allowed_tools=[], got {empty}")
 
-    hitl = plan_task(
-        task="Read local docs and generate a markdown report with human approval",
-        allowed_tools=["file_reader", "report_writer"],
-        source_mode="mock",
-        planner_mode="deterministic",
-    )
-    report_steps = [step for step in hitl["steps"] if step["tool_name"] == "report_writer"]
-    if not report_steps or not report_steps[0]["requires_confirmation"]:
-        raise SystemExit(f"Expected report_writer HITL confirmation, got {hitl}")
+    outside_path = ROOT / "workspace" / "tmp" / "planner_outside_allowed_root.md"
+    hitl = {
+        "version": "planner-smoke",
+        "task": "Read an explicit outside file",
+        "source_mode": "mock",
+        "allowed_tools": ["file_reader"],
+        "steps": [
+            {
+                "step_no": 1,
+                "tool_name": "file_reader",
+                "arguments": {"path": str(outside_path), "max_chars": 100},
+                "goal": "Read outside file.",
+                "expected_output": "Content.",
+                "completion_criteria": "Requires approval.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            }
+        ],
+        "notes": [],
+        "confirmation": None,
+    }
+    hitl = normalize_plan_arguments(hitl, hitl["task"], "mock")
+    file_step = hitl["steps"][0]
+    if (
+        file_step["tool_name"] != "file_reader"
+        or file_step["requires_confirmation"] is not True
+        or file_step.get("confirmation_reason") != "file_reader_path_outside_allowed_roots"
+    ):
+        raise SystemExit(f"Expected file_reader path HITL confirmation, got {hitl}")
 
     github = plan_task(
         task="Search GitHub repository issues about traceable research agent and generate a markdown report",
@@ -74,7 +95,7 @@ def main() -> None:
             "limited_tools": limited_tools,
             "limited_notes": limited["notes"],
             "empty_steps": len(empty["steps"]),
-            "hitl_report_requires_confirmation": report_steps[0]["requires_confirmation"],
+            "hitl_file_requires_confirmation": file_step["requires_confirmation"],
             "github_tools": github_tools,
         }
     )

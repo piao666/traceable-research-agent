@@ -34,6 +34,13 @@ def build_planner_messages(
             "limit": 5,
             "mode": "public_api" if source_mode == "real" else "mock",
         },
+        "tavily_search": {
+            "query": task,
+            "max_results": 5,
+            "search_depth": "advanced",
+            "include_answer": True,
+            "include_raw_content": False,
+        },
         "report_writer": {},
     }
     for tool_name in allowed:
@@ -44,8 +51,10 @@ def build_planner_messages(
         "Do not output markdown. Do not explain. Do not execute tools. Do not invent tools. "
         "Use only allowed_tools. The plan must be executable by the later Executor. "
         "Use the exact default_arguments unless the user gives a more specific valid value. "
-        "For file_reader, path must be a relative filename under workspace/docs; do not prefix "
-        "workspace/docs and do not invent filenames. Valid examples include "
+        "For file_reader, prefer a relative filename under workspace/docs; do not prefix "
+        "workspace/docs and do not invent filenames unless the user explicitly provides a path. "
+        "A path outside configured FILE_READER_ALLOWED_ROOTS will require per-file human "
+        "confirmation before execution. Valid workspace/docs examples include "
         "demo_research_note.md, streamlit_demo_notes.md, sql_safety_notes.md, "
         "github_mcp_readonly_notes.md, rag_retrieval_notes.md, react_execution_notes.md, "
         "traceable_agent_architecture.md, and evaluation_notes.md. "
@@ -77,8 +86,10 @@ def build_planner_messages(
         "default_arguments": tool_defaults,
         "tool_boundaries": {
             "file_reader": {
-                "root": "workspace/docs",
-                "path_rule": "relative existing file path only; no workspace/docs prefix",
+                "default_root": "workspace/docs",
+                "allowed_roots_env": "FILE_READER_ALLOWED_ROOTS",
+                "outside_allowed_roots_rule": "requires per-file HITL approval",
+                "path_rule": "prefer relative existing file path under workspace/docs; preserve explicit user paths for HITL",
             },
             "sql_query": {
                 "schema": {
@@ -92,6 +103,11 @@ def build_planner_messages(
                 "repo_rule": "owner/name or null",
                 "search_type": ["issues", "repositories"],
                 "mode": "public_api when source_mode=real, mock when source_mode=mock",
+            },
+            "tavily_search": {
+                "query_rule": "plain text web search query",
+                "max_results": "1 to 20",
+                "search_depth": ["basic", "advanced"],
             },
         },
     }

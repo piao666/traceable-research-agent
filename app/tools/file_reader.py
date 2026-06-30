@@ -5,11 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from app.agent.file_access_policy import (
+    DOCS_ROOT,
+    allowed_roots,
+    display_path,
+    find_allowed_root,
+    resolve_file_reader_path,
+)
 from app.tools.base import ToolResult
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DOCS_ROOT = (ROOT / "workspace" / "docs").resolve()
 DEFAULT_MAX_CHARS = 8000
 MAX_CHARS_LIMIT = 20000
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".py", ".log"}
@@ -32,6 +38,7 @@ def _failure(
             "path": path,
             "extension": extension,
             "docs_root": str(DOCS_ROOT),
+            "allowed_roots": [str(root) for root in allowed_roots()],
             "resolved_path_summary": str(resolved_path) if resolved_path else None,
         },
     )
@@ -45,24 +52,52 @@ def _coerce_max_chars(value: Any) -> int:
     return max(1, min(max_chars, MAX_CHARS_LIMIT))
 
 
-def _resolve_allowed_path(raw_path: str) -> tuple[Path | None, ToolResult | None]:
-    candidate = Path(raw_path)
-    if candidate.is_absolute():
-        resolved = candidate.resolve()
-    else:
-        resolved = (DOCS_ROOT / candidate).resolve()
-
+def _output_path(resolved_path: Path, allowed_root: Path | None) -> str:
+    if allowed_root is not None:
+        try:
+            return resolved_path.relative_to(allowed_root).as_posix()
+        except ValueError:
+            pass
     try:
-        resolved.relative_to(DOCS_ROOT)
+        return resolved_path.relative_to(DOCS_ROOT).as_posix()
     except ValueError:
-        return None, _failure(
-            "Path is outside workspace/docs.",
-            error_type="safety_rejected",
-            path=raw_path,
-            extension=resolved.suffix.lower(),
-            resolved_path=resolved,
-        )
-    return resolved, None
+        return display_path(resolved_path)
+
+
+def _approved_path_value(arguments: dict[str, Any]) -> str | None:
+    value = arguments.get("_approved_file_reader_path")
+    return str(value).strip() if value else None
+
+
+def _resolve_allowed_path_for_read(
+    raw_path: str,
+    arguments: dict[str, Any],
+) -> tuple[Path | None, Path | None, bool, ToolResult | None]:
+    approved_path = _approved_path_value(arguments)
+    resolved = resolve_file_reader_path(raw_path)
+    allowed_root = find_allowed_root(resolved)
+    if allowed_root is not None:
+        return resolved, allowed_root, False, None
+    approved = False
+    try:
+        approved = bool(approved_path) and Path(approved_path).resolve() == resolved
+    except OSError:
+        approved = False
+    if approved:
+        return resolved, None, True, None
+    error_type = "approval_mismatch" if approved_path else "safety_rejected"
+    message = (
+        "Approved file path did not match the requested file_reader path."
+        if approved_path
+        else "Path is outside configured file_reader allowed roots and has not been approved for this run."
+    )
+    return None, None, False, _failure(
+        message,
+        error_type=error_type,
+        path=raw_path,
+        extension=resolved.suffix.lower(),
+        resolved_path=resolved,
+    )
 
 
 def read_file(arguments: dict[str, Any]) -> ToolResult:
@@ -74,7 +109,9 @@ def read_file(arguments: dict[str, Any]) -> ToolResult:
     if not raw_path:
         return _failure("Missing required argument: path.", error_type="invalid_args")
 
-    resolved_path, failure = _resolve_allowed_path(raw_path)
+    resolved_path, allowed_root, approved, failure = _resolve_allowed_path_for_read(
+        raw_path, arguments
+    )
     if failure is not None:
         return failure
     assert resolved_path is not None
@@ -129,7 +166,7 @@ def read_file(arguments: dict[str, Any]) -> ToolResult:
 
     truncated = len(text) > max_chars
     content = text[:max_chars]
-    relative_path = resolved_path.relative_to(DOCS_ROOT).as_posix()
+    relative_path = _output_path(resolved_path, allowed_root)
     chars_read = len(content)
     return ToolResult(
         success=True,
@@ -146,8 +183,11 @@ def read_file(arguments: dict[str, Any]) -> ToolResult:
         metadata={
             "error_type": None,
             "safe_path": True,
+            "approved_outside_allowed_roots": approved,
             "extension": extension,
             "docs_root": str(DOCS_ROOT),
+            "allowed_root": str(allowed_root) if allowed_root else None,
+            "allowed_roots": [str(root) for root in allowed_roots()],
             "resolved_path_summary": str(resolved_path),
             "max_chars": max_chars,
         },

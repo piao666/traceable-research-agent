@@ -8,6 +8,13 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.agent.file_access_policy import (
+    CONFIRMATION_REASON_OUTSIDE_ALLOWED_ROOTS,
+    confirmation_details_for_path,
+    file_reader_execution_arguments,
+    is_path_approved,
+    resolve_file_reader_path,
+)
 from app.agent.executor import run_plan
 from app.agent.react_prompt import build_react_messages
 from app.agent.react_schema import (
@@ -100,6 +107,21 @@ def _confirmation_required(plan: dict[str, Any], action: str) -> bool:
         step.get("tool_name") == action and bool(step.get("requires_confirmation"))
         for step in plan.get("steps") or []
     )
+
+
+def _file_reader_confirmation_details(plan: dict[str, Any], decision: ReActDecision) -> dict[str, Any] | None:
+    if decision.action != "file_reader":
+        return None
+    path = str(decision.args.get("path") or "").strip()
+    if not path:
+        return None
+    details = confirmation_details_for_path(path)
+    if details.get("allowed") or not details.get("requires_confirmation"):
+        return None
+    resolved_path = resolve_file_reader_path(path)
+    if is_path_approved(plan, resolved_path):
+        return None
+    return details
 
 
 def _is_confirmed(plan: dict[str, Any], step_no: int, action: str) -> bool:
@@ -470,6 +492,42 @@ def run_react_task(
             store.update_agent_run_progress(db, run_id, step_no)
             return _complete_report(db, run_id, plan, state, reason, settings, client, limitation=True)
 
+        file_confirmation_details = _file_reader_confirmation_details(plan, decision)
+        if file_confirmation_details is not None:
+            reason = (
+                f"Waiting for human confirmation before ReAct step {step_no}: "
+                f"file_reader path {file_confirmation_details.get('display_path')}"
+            )
+            metadata = _react_metadata(
+                decision,
+                reason,
+                count,
+                state,
+                requires_confirmation=True,
+                confirmation_reason=CONFIRMATION_REASON_OUTSIDE_ALLOWED_ROOTS,
+                confirmation_details=file_confirmation_details,
+            )
+            state["pending_confirmation"] = {
+                "step_no": step_no,
+                "decision": decision.model_dump(),
+                "confirmation_details": file_confirmation_details,
+            }
+            plan["react_state"] = state
+            _persist_plan(db, run_id, plan)
+            record_trace_event(
+                db,
+                run_id,
+                step_no,
+                decision.action,
+                "waiting_human",
+                {"action": decision.action, "args": decision.args},
+                reason,
+                {"metadata": metadata},
+            )
+            store.update_agent_run_progress(db, run_id, max(step_no - 1, 0))
+            run = store.update_agent_run_status(db, run_id, "waiting_human", reason)
+            return _summary(run, plan, reason)
+
         if _confirmation_required(plan, decision.action) and not _is_confirmed(
             plan, step_no, decision.action
         ):
@@ -531,8 +589,13 @@ def run_react_task(
             store.update_agent_run_progress(db, run_id, step_no)
             return _complete_report(db, run_id, plan, state, "report_generated", settings, client)
 
+        execution_args = (
+            file_reader_execution_arguments(decision.args, plan)
+            if decision.action == "file_reader"
+            else decision.args
+        )
         started = perf_counter()
-        result = execute_tool(decision.action, decision.args)
+        result = execute_tool(decision.action, execution_args)
         latency_ms = int((perf_counter() - started) * 1000)
         observation_summary = _observation_summary(decision.action, result)
         metadata = _react_metadata(decision, observation_summary, count, state)

@@ -12,6 +12,7 @@ from typing import Any
 
 from app.agent.executor import run_plan
 from app.agent.dispatcher import run_task_by_mode
+from app.agent.plan_guardrails import normalize_plan_arguments
 from app.agent.planner import plan_task
 from app.agent.react_executor import run_react_task
 from app.database import SessionLocal, init_db
@@ -165,6 +166,9 @@ def _run_direct_tool_case(db, case: dict[str, Any]) -> dict[str, Any]:
 
 
 def _run_hitl_case(db, case: dict[str, Any]) -> dict[str, Any]:
+    outside_path = ROOT / "workspace" / "tmp" / "eval_hitl_outside_allowed_root.md"
+    outside_path.parent.mkdir(parents=True, exist_ok=True)
+    outside_path.write_text("eval outside allowed roots\n", encoding="utf-8")
     run = store.create_agent_run(
         db=db,
         task=case["task"],
@@ -172,13 +176,48 @@ def _run_hitl_case(db, case: dict[str, Any]) -> dict[str, Any]:
         source_mode="mock",
         allowed_tools=case.get("allowed_tools"),
     )
-    plan = plan_task(case["task"], case.get("allowed_tools"), "mock", planner_mode="deterministic")
+    plan = {
+        "version": "eval-hitl-path",
+        "task": case["task"],
+        "source_mode": "mock",
+        "allowed_tools": ["file_reader", "report_writer"],
+        "steps": [
+            {
+                "step_no": 1,
+                "tool_name": "file_reader",
+                "arguments": {"path": str(outside_path), "max_chars": 1000},
+                "goal": "Read explicit outside file.",
+                "expected_output": "File content.",
+                "completion_criteria": "Requires per-file approval.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 2,
+                "tool_name": "report_writer",
+                "arguments": {},
+                "goal": "Generate report.",
+                "expected_output": "Markdown report.",
+                "completion_criteria": "Report saved.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+        ],
+        "notes": [],
+        "confirmation": None,
+    }
+    plan = normalize_plan_arguments(plan, case["task"], "mock")
     store.update_agent_run_plan(db, run.run_id, plan)
     waiting = run_plan(db, run.run_id)
-    report_step = next(step for step in plan["steps"] if step["tool_name"] == "report_writer")
+    file_step = next(step for step in plan["steps"] if step["tool_name"] == "file_reader")
+    details = file_step.get("confirmation_details") or {}
     plan["confirmation"] = {
-        "required_step_no": report_step["step_no"],
-        "required_tool_name": "report_writer",
+        "required_step_no": file_step["step_no"],
+        "required_tool_name": "file_reader",
+        "confirmation_reason": details.get("reason"),
+        "confirmation_details": details,
+        "approved_file_reader_paths": [details.get("resolved_path")],
+        "confirmation_scope": "single_file_path",
         "approved": True,
         "comment": "Approved by eval runner.",
         "approved_at": datetime.now(timezone.utc).isoformat(),

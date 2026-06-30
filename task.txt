@@ -204,6 +204,30 @@ python scripts/smoke_final_project.py
 - `python scripts/smoke_auth_async.py` 通过
 - 并行压力复测：同时运行 `smoke_evidence_export.py`、`smoke_realtime_trace.py`、`smoke_auth_async.py` 通过，未再出现 `database is locked`。
 
+## 2026-06-30 - 板块一：场景模板、路径白名单 HITL、报告下载
+
+目标：不进入 Day44/Day45，优先完成 demo 场景收敛、file_reader 白名单路径权限，以及研究报告 Markdown/Word/PDF 下载。
+
+实现内容：
+
+- Streamlit 场景模板收敛为三种：
+  - 本地读取（文件 + RAG + SQL）
+  - 外部调研（GitHub + Tavily）
+  - 全规划器（本地读取 + 外部调研）
+- `file_reader` 支持 `FILE_READER_ALLOWED_ROOTS`，默认仍为 `workspace/docs`。
+- `FILE_READER_HITL_OUTSIDE_ALLOWED_ROOTS=true` 时，白名单外路径不再静默 fallback 到 demo 文档，而是进入 per-file HITL。
+- HITL 批准只写入 `approved_file_reader_paths` 中的具体 resolved path，不放开目录或磁盘。
+- Planned、Parallel、ReAct 三条执行路径均复用同一套 file access policy。
+- `GET /api/reports/{run_id}/download?format=markdown|docx|pdf` 支持报告下载。
+- 新增 `app/agent/report_exporter.py`，以 Markdown 为源生成 DOCX/PDF 派生文件。
+- Streamlit 研究报告页增加 Markdown/Word/PDF 下载按钮。
+- 新增或更新 smoke：
+  - `scripts/smoke_hitl.py`
+  - `scripts/smoke_report_download.py`
+  - `scripts/smoke_streamlit_frontend.py`
+  - `scripts/smoke_planner.py`
+  - `scripts/smoke_planner_guardrails.py`
+
 ## 后续扩展方向（暂缓）
 
 ### Day44 - Evidence Quality / Verifier

@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.agent.file_access_policy import file_reader_execution_arguments
 from app.agent.reporter import generate_markdown_report, save_report
 from app.llm.providers import create_llm_client
 from app.config import settings as _exec_settings
@@ -153,8 +154,13 @@ def run_plan(db: Session, run_id: str) -> dict[str, Any]:
                 run = store.update_agent_run_progress(db, run_id, step_no, total_tool_calls_delta=1)
                 continue
 
+            execution_arguments = (
+                file_reader_execution_arguments(arguments, plan)
+                if tool_name == "file_reader"
+                else arguments
+            )
             started = perf_counter()
-            result = execute_tool(tool_name, arguments)
+            result = execute_tool(tool_name, execution_arguments)
             latency_ms = int((perf_counter() - started) * 1000)
             record_tool_result(db, run_id, step_no, tool_name, arguments, result, latency_ms)
             observations.append(

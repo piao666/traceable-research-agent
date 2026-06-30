@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 from fastapi import Request
 from fastapi.testclient import TestClient
 
+from app.agent.plan_guardrails import normalize_plan_arguments
 from app.config import settings
 from app.database import SessionLocal
 from app.main import app
@@ -27,7 +28,7 @@ REGULAR_TASK = {
     "allowed_tools": ["file_reader", "report_writer"],
 }
 HITL_TASK = {
-    "task": "Read local docs and generate a markdown report with human approval",
+    "task": "Read an explicit local file outside allowed roots and generate a markdown report",
     "report_type": "summary",
     "source_mode": "mock",
     "allowed_tools": ["file_reader", "report_writer"],
@@ -61,6 +62,45 @@ def create_task(client: TestClient, headers: dict[str, str] | None = None, *, hi
     )
     assert_true(response.status_code == 200, "task creation failed")
     return response.json()["run_id"]
+
+
+def install_path_hitl_plan(run_id: str) -> None:
+    outside = ROOT / "workspace" / "tmp" / "auth_async_outside_allowed_root.md"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_text("auth async outside allowed roots\n", encoding="utf-8")
+    plan = {
+        "version": "auth-async-hitl",
+        "task": HITL_TASK["task"],
+        "source_mode": "mock",
+        "allowed_tools": ["file_reader", "report_writer"],
+        "steps": [
+            {
+                "step_no": 1,
+                "tool_name": "file_reader",
+                "arguments": {"path": str(outside), "max_chars": 1000},
+                "goal": "Read explicit outside file.",
+                "expected_output": "File content.",
+                "completion_criteria": "Requires per-file approval.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 2,
+                "tool_name": "report_writer",
+                "arguments": {},
+                "goal": "Generate report.",
+                "expected_output": "Markdown report.",
+                "completion_criteria": "Report saved.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+        ],
+        "notes": [],
+        "confirmation": None,
+    }
+    plan = normalize_plan_arguments(plan, HITL_TASK["task"], "mock")
+    with SessionLocal() as db:
+        store.replace_agent_run_plan(db, run_id, plan)
 
 
 def trace_count(client: TestClient, run_id: str, headers: dict[str, str] | None = None) -> int:
@@ -127,6 +167,7 @@ def main() -> None:
             )
 
             disabled_hitl_id = create_task(client, hitl=True)
+            install_path_hitl_plan(disabled_hitl_id)
             waiting = client.post(f"/api/tasks/{disabled_hitl_id}/run", json={})
             assert_true(waiting.json()["status"] == "waiting_human", "auth-disabled HITL did not wait")
             assert_true(
@@ -256,6 +297,7 @@ def main() -> None:
             )
 
             hitl_id = create_task(client, hitl=True)
+            install_path_hitl_plan(hitl_id)
             hitl_start = client.post(f"/api/tasks/{hitl_id}/run_async", json={})
             assert_true(hitl_start.json()["status"] == "running", "HITL async did not start")
             hitl_status = client.get(f"/api/tasks/{hitl_id}").json()["status"]
