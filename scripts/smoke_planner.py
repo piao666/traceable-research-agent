@@ -78,15 +78,25 @@ def main() -> None:
     ):
         raise SystemExit(f"Expected file_reader path HITL confirmation, got {hitl}")
 
-    github = plan_task(
-        task="Search GitHub repository issues about traceable research agent and generate a markdown report",
-        allowed_tools=["mcp_github_search", "report_writer"],
+    external = plan_task(
+        task="Search GitHub repository issues and current web sources about traceable research agent and generate a markdown report",
+        allowed_tools=["mcp_github_search", "tavily_search", "report_writer"],
         source_mode="mock",
         planner_mode="deterministic",
     )
-    github_tools = [step["tool_name"] for step in github["steps"]]
-    if github_tools != ["mcp_github_search", "report_writer"]:
-        raise SystemExit(f"Expected GitHub mock planning path, got {github_tools}")
+    external_tools = [step["tool_name"] for step in external["steps"]]
+    if external_tools != ["tavily_search", "mcp_github_search", "report_writer"]:
+        raise SystemExit(f"Expected external research planning path, got {external_tools}")
+
+    chinese_web = plan_task(
+        task="帮我全网搜集关于 LLM 的学习资料、课程和教程，并生成报告",
+        allowed_tools=["tavily_search", "report_writer"],
+        source_mode="mock",
+        planner_mode="deterministic",
+    )
+    chinese_web_tools = [step["tool_name"] for step in chinese_web["steps"]]
+    if chinese_web_tools != ["tavily_search", "report_writer"]:
+        raise SystemExit(f"Expected Chinese web keywords to trigger Tavily, got {chinese_web_tools}")
 
     print(
         {
@@ -96,7 +106,8 @@ def main() -> None:
             "limited_notes": limited["notes"],
             "empty_steps": len(empty["steps"]),
             "hitl_file_requires_confirmation": file_step["requires_confirmation"],
-            "github_tools": github_tools,
+            "external_tools": external_tools,
+            "chinese_web_tools": chinese_web_tools,
         }
     )
 

@@ -68,7 +68,7 @@ def search_rag(arguments: dict[str, Any]) -> ToolResult:
     except (TypeError, ValueError):
         top_k = 3
     requested = str(arguments.get("retrieval_mode") or settings.rag_retrieval_mode).strip().lower()
-    requested = requested if requested in {"dense", "bm25", "hybrid"} else "dense"
+    requested = requested if requested in {"dense", "bm25", "hybrid"} else settings.rag_retrieval_mode
     metadata: dict[str, Any] = {
         "retrieval_mode": requested,
         "requested_retrieval_mode": requested,

@@ -62,20 +62,19 @@ def main() -> None:
         "执行元信息" in source or "Trace details:" in source,
         "trace details display missing",
     )
-    controls = {
-        "API Key": ["API Key"],
-        "Tenant ID": ["Tenant ID"],
-        "User ID": ["User ID"],
-        "async run": ["异步执行", "Use async run"],
-        "execution mode": ["执行模式", "Execution Mode"],
-        "external source": ["外部数据源", "数据来源"],
-    }
-    for control, labels in controls.items():
-        assert_true(
-            any(label in source for label in labels),
-            f"missing Streamlit control: {control}",
-        )
-    assert_true('type="password"' in source, "API key input is not password protected")
+    assert_true("执行模式" in source or "Execution Mode" in source, "execution mode control missing")
+    removed_sidebar_text = [
+        "填充示例任务文本",
+        "**🌐 数据来源**",
+        "数据来源\"",
+        "🔧 高级配置（API 连接）",
+        "异步执行（推荐开启，避免超时）",
+        "Realtime auto refresh",
+        "可追踪调研智能体后端",
+    ]
+    leaked_sidebar_text = [text for text in removed_sidebar_text if text in source]
+    assert_true(not leaked_sidebar_text, f"removed sidebar/title text still present: {leaked_sidebar_text}")
+    assert_true("api_base_url" in source and "tenant_id" in source and "user_id" in source, "default API context state missing")
     for react_field in ["Thought", "Action", "Observation"]:
         assert_true(react_field in source, f"missing ReAct trace display: {react_field}")
     assert_true(
@@ -99,6 +98,13 @@ def main() -> None:
     assert_true("外部调研（GitHub + Tavily）" in source, "external research template missing")
     assert_true("全规划器（本地读取 + 外部调研）" in source, "full planner template missing")
     assert_true("HITL 人工确认流程" not in source, "standalone HITL template should be removed")
+    assert_true('"mcp_github_search", "tavily_search", "report_writer"' in source, "external template must include GitHub and Tavily")
+    assert_true("证据聚合" in source, "evidence aggregation title should be localized")
+    assert_true("证据导出" in source, "evidence export title should be localized")
+    assert_true("FOLDED_REPORT_SECTION_PREFIXES" in source, "report folded section helper missing")
+    assert_true("render_report_markdown(md)" in source, "report markdown should use folded renderer")
+    assert_true("<details><summary>关键证据片段</summary>" in source, "key evidence fragment folding missing")
+    assert_true("计划步骤数" not in source and "实际执行步骤" not in source, "report summary still shows removed metrics")
     assert_true(
         source.count('"allowed_tools":') >= 3,
         "expected at least three scenario template allowed_tools entries",

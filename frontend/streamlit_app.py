@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import html
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -400,27 +402,30 @@ def render_evidence_summary() -> None:
     warnings = evidence.get("warnings") or []
     claims = evidence.get("claims") or []
     unsupported = evidence.get("unsupported_claims") or []
-    with st.expander("Research Evidence Aggregation", expanded=False):
+    with st.expander("证据聚合", expanded=False):
         cols = st.columns(4)
-        cols[0].metric("evidence", evidence.get("total_evidence_items", 0))
-        cols[1].metric("source groups", len(groups))
-        cols[2].metric("claims", len(claims))
-        cols[3].metric("unsupported", len(unsupported))
+        cols[0].metric("证据条目", evidence.get("total_evidence_items", 0))
+        cols[1].metric("来源分组", len(groups))
+        cols[2].metric("支持结论", len(claims))
+        cols[3].metric("受限结论", len(unsupported))
         if warnings:
+            st.markdown("**来源警告**")
             for warning in warnings:
                 st.warning(warning)
         if groups:
+            st.markdown("**来源分组**")
             st.dataframe(groups, use_container_width=True, hide_index=True)
         if claims:
             preview = [
                 {
-                    "claim_id": item.get("claim_id"),
-                    "support": item.get("support_level"),
-                    "evidence": ", ".join(item.get("evidence_ids") or []),
-                    "claim": item.get("claim"),
+                    "结论 ID": item.get("claim_id"),
+                    "支持程度": item.get("support_level"),
+                    "证据": ", ".join(item.get("evidence_ids") or []),
+                    "结论": item.get("claim"),
                 }
                 for item in claims[:8]
             ]
+            st.markdown("**结论-证据映射**")
             st.dataframe(preview, use_container_width=True, hide_index=True)
         _render_evidence_export_controls()
 
@@ -429,17 +434,17 @@ def _render_evidence_export_controls() -> None:
     run_id = st.session_state.get("run_id")
     if not run_id:
         return
-    st.markdown("**Evidence Export**")
+    st.markdown("**证据导出**")
     cols = st.columns([2, 1])
     with cols[0]:
         export_format = st.selectbox(
-            "Evidence export format",
+            "证据导出格式",
             ["json", "jsonl", "markdown"],
             key="evidence_export_format",
             label_visibility="collapsed",
         )
     with cols[1]:
-        if st.button("Export", use_container_width=True):
+        if st.button("导出", use_container_width=True):
             try:
                 result = api_get(f"/api/tasks/{run_id}/evidence/export?format={export_format}")
                 content = api_get(f"/api/tasks/{run_id}/evidence/export/content?format={export_format}")
@@ -464,13 +469,13 @@ def _render_evidence_export_controls() -> None:
         fmt = str(content_payload.get("format") or "json")
         preview = content[:8000]
         if fmt == "markdown":
-            with st.expander("Markdown preview", expanded=True):
-                st.markdown(preview or "_No evidence content._")
+            with st.expander("Markdown 预览", expanded=True):
+                st.markdown(preview or "_暂无证据内容。_")
         else:
-            with st.expander(f"{fmt.upper()} preview", expanded=True):
+            with st.expander(f"{fmt.upper()} 预览", expanded=True):
                 st.code(preview or "", language="json" if fmt == "json" else None)
         st.download_button(
-            "Download evidence export",
+            "下载证据导出",
             data=content,
             file_name=_evidence_export_filename(run_id, fmt),
             mime=content_payload.get("content_type") or "text/plain",
@@ -495,7 +500,6 @@ def render_sidebar() -> None:
                 h = api_get("/health")
                 st.session_state.health = h
                 st.success(f"✅ 连接正常  ·  后端默认模式：{h.get('execution_mode','planned')}")
-                st.caption("当前任务实际执行模式以左侧“执行模式”选择为准。")
             except ApiError as e:
                 st.error(str(e))
 
@@ -508,10 +512,6 @@ def render_sidebar() -> None:
             on_change=_sync_allowed_tools, # 切换时只同步 allowed_tools，不碰 task_text
             label_visibility="collapsed",
         )
-        if st.button("📋 填充示例任务文本", use_container_width=True,
-                     help="将下方任务框替换为当前场景的示例任务（不影响已输入的自定义内容）"):
-            apply_template(st.session_state.selected_template, fill_task=True)
-            st.rerun()
 
         st.divider()
         st.markdown("**⚙️ 执行模式**")
@@ -522,36 +522,6 @@ def render_sidebar() -> None:
             key="execution_mode_display",
             label_visibility="collapsed",
         )
-        if st.session_state.execution_mode_display == "react":
-            st.caption("🤖 创建任务时将以 ReAct 模式运行，每步由 LLM 动态决策。需后端已配置 QWEN_API_KEY 或 DEEPSEEK_API_KEY。")
-        else:
-            st.caption("📋 创建任务时将以 Planned 模式运行，Planner 一次性生成固定执行计划。")
-
-        st.divider()
-        st.markdown("**🌐 数据来源**")
-        st.selectbox(
-            "数据来源",
-            ["real", "mock"],
-            format_func=lambda x: "🌐 real（真实 GitHub / Tavily API）" if x == "real" else "🧪 mock（离线演示数据）",
-            key="source_mode_ui",
-            label_visibility="collapsed",
-        )
-        if st.session_state.get("source_mode_ui") == "real":
-            st.caption("⚠️ real 模式调用真实 API，受 rate limit 限制，需配置相应 Key。")
-        else:
-            st.caption("🧪 mock 模式使用本地离线数据，无需 API Key，适合演示。")
-
-        st.divider()
-        with st.expander("🔧 高级配置（API 连接）"):
-            st.session_state.api_base_url = st.text_input(
-                "API Base URL", value=st.session_state.api_base_url
-            )
-            st.text_input("API Key", key="api_key", type="password")
-            st.text_input("Tenant ID", key="tenant_id")
-            st.text_input("User ID",   key="user_id")
-            st.checkbox("异步执行（推荐开启，避免超时）", key="use_async_run")
-            st.checkbox("Realtime auto refresh", key="realtime_auto_refresh")
-            st.slider("Realtime poll seconds", 1, 10, key="realtime_poll_seconds")
 
         st.divider()
         if st.session_state.get("run_id"):
@@ -758,10 +728,59 @@ def tab_trace() -> None:
             mc2.metric("LLM 模型",   status_obj.get("llm_model", "—"))
 
 
+FOLDED_REPORT_SECTION_PREFIXES = ("## 4.", "## 5.", "## 6.", "## 7.")
+
+
+def _split_report_markdown(markdown: str) -> list[tuple[str, str]]:
+    sections: list[tuple[str, str]] = []
+    current_heading = ""
+    current_lines: list[str] = []
+
+    for line in markdown.splitlines():
+        if line.startswith("## "):
+            if current_lines:
+                sections.append((current_heading, "\n".join(current_lines).strip()))
+            current_heading = line.strip()
+            current_lines = [line]
+        else:
+            current_lines.append(line)
+    if current_lines:
+        sections.append((current_heading, "\n".join(current_lines).strip()))
+    return sections
+
+
+def _report_section_label(heading: str, body: str) -> str:
+    source = heading or next((line for line in body.splitlines() if line.strip()), "报告正文")
+    return re.sub(r"^#+\s*", "", source).strip() or "报告正文"
+
+
+def _collapse_key_evidence_blocks(markdown: str) -> str:
+    pattern = re.compile(r"关键证据片段：\s*\n\s*```(?:text)?\n(.*?)\n```", re.DOTALL)
+
+    def replace(match: re.Match[str]) -> str:
+        escaped = html.escape(match.group(1).strip())
+        return (
+            "<details><summary>关键证据片段</summary>"
+            f"<pre><code>{escaped}</code></pre></details>"
+        )
+
+    return pattern.sub(replace, markdown)
+
+
+def render_report_markdown(markdown: str) -> None:
+    for heading, body in _split_report_markdown(markdown):
+        should_fold = heading.startswith(FOLDED_REPORT_SECTION_PREFIXES)
+        rendered = _collapse_key_evidence_blocks(body)
+        if should_fold:
+            with st.expander(_report_section_label(heading, body), expanded=False):
+                st.markdown(rendered, unsafe_allow_html=True)
+        else:
+            st.markdown(rendered, unsafe_allow_html=True)
+
+
 # ── Tab 3：研究报告 ───────────────────────────────────────────────
 def tab_report() -> None:
     st.markdown("#### 📝 Markdown 研究报告")
-    st.markdown('<p class="section-tip">Reporter 根据 Trace 记录和工具返回结果组织报告，包含任务、执行计划、证据来源、Trace 汇总和运行时限制说明。</p>', unsafe_allow_html=True)
 
     report = st.session_state.get("last_report")
     if not report:
@@ -776,27 +795,24 @@ def tab_report() -> None:
 
     # 报告存在：展示状态摘要
     status_obj = st.session_state.get("last_status") or {}
-    # total_tool_calls excludes ReAct "finish" steps; use trace count as fallback
-    steps_done = (status_obj.get("total_tool_calls") or
-                  len(st.session_state.get("last_trace") or []) or
-                  status_obj.get("total_steps", 0))
+    plan = st.session_state.get("last_plan") or {}
+    react_state = plan.get("react_state") if isinstance(plan.get("react_state"), dict) else {}
+    exec_mode = status_obj.get("execution_mode", plan.get("execution_mode", "planned"))
+    requested_mode = status_obj.get(
+        "requested_execution_mode",
+        plan.get("requested_execution_mode", exec_mode),
+    )
+    fallback_used = bool(react_state.get("fallback_used"))
 
-    # Show trace count (actual steps recorded) rather than tool_calls (excludes finish steps)
-    trace_count = len(st.session_state.get("last_trace") or [])
-    plan_steps  = len((st.session_state.get("last_plan") or {}).get("steps") or [])
-    display_steps = trace_count or steps_done or plan_steps
-    exec_mode = status_obj.get("execution_mode", status_obj.get("requested_execution_mode", "planned"))
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("计划步骤数", plan_steps)
-    col2.metric("实际执行步骤", display_steps)
-    col3.metric("任务状态", status_obj.get("status", "completed"))
-    col4.metric("执行模式", exec_mode)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("执行模式", exec_mode)
+    col2.metric("请求执行模式", requested_mode)
+    col3.metric("是否降级", "是" if fallback_used else "否")
 
     render_evidence_summary()
 
     st.divider()
-    st.markdown(md)
+    render_report_markdown(md)
     run_id = st.session_state.get("run_id", "")
     dl1, dl2, dl3 = st.columns(3)
     dl1.download_button(
@@ -842,10 +858,6 @@ def main() -> None:
     render_sidebar()
 
     st.markdown("# 🔬 Traceable Research Agent")
-    st.markdown(
-        "可追踪调研智能体后端 &nbsp;·&nbsp; "
-        "任务创建 → 规划 → 工具执行 → Trace 记录 → 研究报告"
-    )
     st.divider()
 
     tab1, tab2, tab3 = st.tabs(["⚡ 任务与规划", "🔍 执行追踪", "📝 研究报告"])

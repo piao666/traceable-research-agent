@@ -172,13 +172,13 @@ def _export_path(export_root: Path, run_id: str, export_format: str) -> Path:
 
 def _render_markdown(bundle: dict[str, Any], created_at: str) -> str:
     lines: list[str] = [
-        "# Evidence Packet",
+        "# 证据包",
         "",
         f"* Run ID: `{bundle.get('run_id')}`",
-        f"* Created at: `{created_at}`",
-        f"* Evidence items: `{bundle.get('total_evidence_items', 0)}`",
+        f"* 创建时间 (`created_at`): `{created_at}`",
+        f"* 证据条目数 (`total_evidence_items`): `{bundle.get('total_evidence_items', 0)}`",
         "",
-        "## Task",
+        "## 任务",
         "",
         str(bundle.get("task") or ""),
         "",
@@ -186,29 +186,29 @@ def _render_markdown(bundle: dict[str, Any], created_at: str) -> str:
 
     warnings = [str(item) for item in bundle.get("warnings") or []]
     if warnings:
-        lines.extend(["## Warnings", ""])
+        lines.extend(["## 警告", ""])
         lines.extend(f"* {warning}" for warning in warnings)
         lines.append("")
 
     groups = [item for item in bundle.get("source_groups") or [] if isinstance(item, dict)]
     if groups:
-        lines.extend(["## Source Groups", ""])
+        lines.extend(["## 来源分组", ""])
         for group in groups:
             lines.append(
-                f"* `{group.get('source_type')}`: {group.get('count', 0)} items "
+                f"* `{group.get('source_type')}`: {group.get('count', 0)} 条 "
                 f"(mock={group.get('mock_count', 0)}, "
                 f"fallback={group.get('fallback_count', 0)}, "
                 f"unsupported={group.get('unsupported_count', 0)})"
             )
         lines.append("")
 
-    _append_claims(lines, "Claim-Evidence Map", bundle.get("claims") or [])
-    _append_claims(lines, "Unsupported Or Limited Claims", bundle.get("unsupported_claims") or [])
+    _append_claims(lines, "结论-证据映射", bundle.get("claims") or [])
+    _append_claims(lines, "未支持或受限结论", bundle.get("unsupported_claims") or [])
 
     items = [item for item in bundle.get("evidence_items") or [] if isinstance(item, dict)]
-    lines.extend(["## Evidence Items", ""])
+    lines.extend(["## 证据条目", ""])
     if not items:
-        lines.extend(["No structured evidence items were extracted.", ""])
+        lines.extend(["未抽取到结构化证据条目。", ""])
     for item in items:
         flags = []
         if item.get("is_mock"):
@@ -222,12 +222,12 @@ def _render_markdown(bundle: dict[str, Any], created_at: str) -> str:
             [
                 f"### {item.get('evidence_id')} {item.get('title')}{suffix}",
                 "",
-                f"* Tool: `{item.get('tool_name')}`",
-                f"* Step: `{item.get('step_no')}`",
-                f"* Source type: `{item.get('source_type')}`",
-                f"* Source ref: `{item.get('source_ref') or ''}`",
-                f"* Status: `{item.get('status')}`",
-                f"* Confidence: `{item.get('confidence')}`",
+                f"* 工具 (`tool_name`): `{item.get('tool_name')}`",
+                f"* 步骤 (`step_no`): `{item.get('step_no')}`",
+                f"* 来源类型 (`source_type`): `{item.get('source_type')}`",
+                f"* 来源引用 (`source_ref`): `{item.get('source_ref') or ''}`",
+                f"* 状态 (`status`): `{item.get('status')}`",
+                f"* 置信度 (`confidence`): `{item.get('confidence')}`",
                 "",
                 str(item.get("snippet") or ""),
                 "",
@@ -245,8 +245,8 @@ def _append_claims(lines: list[str], title: str, claims: list[Any]) -> None:
         evidence = ", ".join(f"`{item}`" for item in claim.get("evidence_ids") or []) or "`<none>`"
         lines.append(
             f"* `{claim.get('claim_id')}` {claim.get('claim')} "
-            f"- support=`{claim.get('support_level')}`, evidence={evidence}"
+            f"- 支持程度=`{claim.get('support_level')}`, 证据={evidence}"
         )
         if claim.get("notes"):
-            lines.append(f"  Notes: {claim.get('notes')}")
+            lines.append(f"  说明: {claim.get('notes')}")
     lines.append("")

@@ -148,59 +148,59 @@ def render_evidence_markdown(bundle: EvidenceBundle) -> list[str]:
     """Render a concise Markdown section for aggregated evidence."""
 
     lines: list[str] = [
-        "## 6. Research Evidence Aggregation",
+        "## 6. 证据聚合",
         "",
-        f"* Evidence items: `{bundle.total_evidence_items}`",
-        f"* Source groups: `{len(bundle.source_groups)}`",
-        f"* Supported claims: `{len(bundle.claims)}`",
-        f"* Unsupported claims: `{len(bundle.unsupported_claims)}`",
+        f"* 证据条目数 (`total_evidence_items`): `{bundle.total_evidence_items}`",
+        f"* 来源分组数 (`source_groups`): `{len(bundle.source_groups)}`",
+        f"* 已支持结论 (`supported_claims`): `{len(bundle.claims)}`",
+        f"* 未支持或受限结论 (`unsupported_claims`): `{len(bundle.unsupported_claims)}`",
         "",
     ]
     if bundle.warnings:
-        lines.extend(["### Source Warnings", ""])
+        lines.extend(["### 来源警告", ""])
         lines.extend(f"* {warning}" for warning in bundle.warnings)
         lines.append("")
 
     if bundle.source_groups:
-        lines.extend(["### Source Groups", ""])
+        lines.extend(["### 来源分组", ""])
         for group in bundle.source_groups:
             lines.append(
-                f"* `{group.source_type}`: {group.count} items "
+                f"* `{group.source_type}`: {group.count} 条 "
                 f"(mock={group.mock_count}, fallback={group.fallback_count}, "
                 f"unsupported={group.unsupported_count})"
             )
         lines.append("")
 
     if bundle.claims:
-        lines.extend(["### Claim-Evidence Map", ""])
+        lines.extend(["### 结论-证据映射", ""])
         for claim in bundle.claims:
             evidence_refs = ", ".join(f"`{eid}`" for eid in claim.evidence_ids) or "<none>"
             lines.extend(
                 [
                     f"* `{claim.claim_id}` {claim.claim}",
-                    f"  Evidence: {evidence_refs}; support=`{claim.support_level}`",
+                    f"  证据: {evidence_refs}; 支持程度=`{claim.support_level}`",
                 ]
             )
             if claim.notes:
-                lines.append(f"  Notes: {claim.notes}")
+                lines.append(f"  说明: {claim.notes}")
         lines.append("")
 
     if bundle.unsupported_claims:
-        lines.extend(["### Unsupported Or Limited Claims", ""])
+        lines.extend(["### 未支持或受限结论", ""])
         for claim in bundle.unsupported_claims:
             evidence_refs = ", ".join(f"`{eid}`" for eid in claim.evidence_ids) or "<none>"
             lines.extend(
                 [
                     f"* `{claim.claim_id}` {claim.claim}",
-                    f"  Evidence: {evidence_refs}; support=`{claim.support_level}`",
+                    f"  证据: {evidence_refs}; 支持程度=`{claim.support_level}`",
                 ]
             )
             if claim.notes:
-                lines.append(f"  Notes: {claim.notes}")
+                lines.append(f"  说明: {claim.notes}")
         lines.append("")
 
     if bundle.evidence_items:
-        lines.extend(["### Evidence Items", ""])
+        lines.extend(["### 证据条目", ""])
         for item in bundle.evidence_items[:20]:
             flags = []
             if item.is_mock:
@@ -219,10 +219,10 @@ def render_evidence_markdown(bundle: EvidenceBundle) -> list[str]:
                 ]
             )
         if len(bundle.evidence_items) > 20:
-            lines.append(f"* ... {len(bundle.evidence_items) - 20} more evidence items omitted.")
+            lines.append(f"* ... 还有 {len(bundle.evidence_items) - 20} 条证据未展示。")
         lines.append("")
     else:
-        lines.extend(["No structured evidence items were extracted.", ""])
+        lines.extend(["未抽取到结构化证据条目。", ""])
     return lines
 
 
@@ -647,7 +647,7 @@ def _claim_maps(
                     claim=f"{goal} ({tool_name})",
                     evidence_ids=unsupported_ids,
                     support_level="unsupported",
-                    notes="Tool returned a failure, rejection, or empty result.",
+                    notes="工具失败、被拒绝或返回空结果。",
                 )
             )
 
@@ -675,7 +675,7 @@ def _claim_maps(
         unsupported.append(
             ClaimEvidenceMap(
                 claim_id=f"U{len(unsupported) + 1:03d}",
-                claim=f"{record.get('tool_name')} did not support a conclusion.",
+                claim=f"{record.get('tool_name')} 未能支撑结论。",
                 evidence_ids=[],
                 support_level="unsupported",
                 notes=str(record.get("error_message") or record.get("summary") or "tool_failed"),
@@ -686,22 +686,22 @@ def _claim_maps(
 
 def _claim_notes(items: list[EvidenceItem]) -> str | None:
     if any(item.is_fallback for item in items):
-        return "At least one supporting item is fallback data and should not be stated as fresh external fact."
+        return "至少一条支持证据来自 fallback 数据，不应表述为最新外部事实。"
     if any(item.is_mock for item in items):
-        return "At least one supporting item is mock data for offline demonstration."
+        return "至少一条支持证据来自 mock 数据，仅用于离线演示。"
     return None
 
 
 def _warnings(items: list[EvidenceItem]) -> list[str]:
     warnings: list[str] = []
     if any(item.is_mock for item in items):
-        warnings.append("Mock evidence is present; do not describe it as real external facts.")
+        warnings.append("存在 mock 证据，不应描述为真实外部事实。")
     if any(item.is_fallback for item in items):
-        warnings.append("Fallback evidence is present; conclusions relying on it are limited.")
+        warnings.append("存在 fallback 证据，依赖这些证据的结论需要保留限制。")
     if any(item.unsupported_reason for item in items):
-        warnings.append("Some planned claims are unsupported because tools failed or returned empty results.")
+        warnings.append("部分计划结论未被支持，因为工具失败或返回空结果。")
     if any(item.source_type == "mcp_remote" and item.status == "failed" for item in items):
-        warnings.append("Remote MCP failures are visible as failed evidence and did not become API 500 errors.")
+        warnings.append("远端 MCP 失败已记录为失败证据，没有升级为 API 500。")
     return warnings
 
 

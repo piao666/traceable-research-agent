@@ -130,8 +130,24 @@ def main() -> None:
     rag_args = steps["rag_search"]["arguments"]
     _assert(rag_args["query"] == task, f"bad rag query: {rag_args}")
     _assert(rag_args["top_k"] == 10, f"bad rag top_k: {rag_args}")
-    _assert(rag_args["retrieval_mode"] in {"dense", "bm25", "hybrid"}, f"bad rag mode: {rag_args}")
+    _assert(rag_args["retrieval_mode"] == "hybrid", f"bad rag default mode: {rag_args}")
     _assert(steps["report_writer"]["arguments"] == {}, "report_writer arguments were not cleared")
+
+    explicit_modes_plan = {
+        "version": "guardrail-rag-modes",
+        "task": "Check explicit RAG modes",
+        "source_mode": "mock",
+        "allowed_tools": ["rag_search"],
+        "steps": [
+            {"step_no": 1, "tool_name": "rag_search", "arguments": {"query": "trace", "retrieval_mode": "dense"}},
+            {"step_no": 2, "tool_name": "rag_search", "arguments": {"query": "trace", "retrieval_mode": "bm25"}},
+        ],
+        "notes": [],
+        "confirmation": None,
+    }
+    explicit_modes = normalize_plan_arguments(explicit_modes_plan, "Check explicit RAG modes", "mock")
+    explicit_values = [step["arguments"]["retrieval_mode"] for step in explicit_modes["steps"]]
+    _assert(explicit_values == ["dense", "bm25"], f"explicit rag modes were not preserved: {explicit_values}")
 
     notes = "\n".join(normalized.get("notes") or [])
     _assert("Planner guardrail" in notes, "guardrail notes missing")
@@ -145,6 +161,8 @@ def main() -> None:
                 "outside_hitl_path": outside_step["arguments"]["path"],
                 "sql_query": sql_args["query"],
                 "github_query_length": len(github_args["query"]),
+                "rag_default_mode": rag_args["retrieval_mode"],
+                "explicit_rag_modes": explicit_values,
                 "notes": normalized.get("notes"),
             },
             ensure_ascii=False,

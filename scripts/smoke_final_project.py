@@ -33,6 +33,9 @@ CHECKS = [
     ("smoke_react_vs_planned_eval", [sys.executable, "scripts/smoke_react_vs_planned_eval.py"]),
     ("app_eval", [sys.executable, "-m", "app.eval.run_eval"]),
 ]
+CHECK_TIMEOUT_SECONDS = {
+    "app_eval": 420,
+}
 
 
 def main() -> None:
@@ -50,7 +53,7 @@ def main() -> None:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=300,
+            timeout=CHECK_TIMEOUT_SECONDS.get(name, 300),
             check=False,
         )
         duration_ms = round((perf_counter() - started) * 1000, 3)

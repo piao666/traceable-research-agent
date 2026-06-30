@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -608,7 +607,6 @@ def generate_markdown_report(
     Falls back to template automatically if LLM is unavailable or call fails.
     """
 
-    status_counts = Counter(trace.status for trace in traces)
     lines: list[str] = [
         "# Traceable Research Agent 调研报告",
         "",
@@ -618,13 +616,6 @@ def generate_markdown_report(
         "",
         "## 2. 运行摘要",
         "",
-        f"* run_id: `{run.run_id}`",
-        f"* 状态 (`status`): `{run.status}`",
-        f"* 总步骤数 (`total_steps`): {run.total_steps}",
-        f"* 实际工具调用数 (`executed_tool_calls`): {run.total_tool_calls}",
-        f"* Planner 来源 (`planner_source`): `{plan.get('planner_source') or 'unknown'}`",
-        f"* LLM Provider (`llm_provider`): `{plan.get('llm_provider') or '<none>'}`",
-        f"* LLM Model (`llm_model`): `{plan.get('llm_model') or '<none>'}`",
         f"* 执行模式 (`execution_mode`): `{plan.get('execution_mode') or 'planned'}`",
         f"* 请求执行模式 (`requested_execution_mode`): `{plan.get('requested_execution_mode') or plan.get('execution_mode') or 'planned'}`",
         f"* 是否降级 (`fallback_used`): `{bool((plan.get('react_state') or {}).get('fallback_used'))}`",
@@ -789,31 +780,9 @@ def generate_markdown_report(
     else:
         lines.extend(["未记录可执行工具的观察结果。", ""])
 
-    lines.extend(["## 8. Trace 汇总", ""])
-    if status_counts:
-        for status, count in sorted(status_counts.items()):
-            lines.append(f"* {status}: {count}")
-        lines.append("")
-    else:
-        lines.extend(["未记录 Trace 数据。", ""])
-
-    for trace in traces:
-        metadata = _trace_metadata(trace)
-        parallel_suffix = ""
-        if metadata.get("parallel") is True:
-            parallel_suffix = (
-                f" parallel=true group={metadata.get('parallel_group_id')}"
-                f" worker={metadata.get('parallel_worker_id')}"
-                f" latency_ms={metadata.get('latency_ms')}"
-            )
-        lines.append(
-            f"* `{trace.trace_id}` step={trace.step_no} tool={trace.tool_name} "
-            f"status={trace.status}{parallel_suffix}"
-        )
-
     problem_traces = [trace for trace in traces if trace.status in {"failed", "rejected"}]
     if problem_traces:
-        lines.extend(["", "## 9. 失败与拒绝详情", ""])
+        lines.extend(["", "## 8. 失败与拒绝详情", ""])
         for trace in problem_traces:
             trace_metadata = _trace_metadata(trace)
             lines.extend(
@@ -828,17 +797,6 @@ def generate_markdown_report(
                 ]
             )
 
-    lines.extend(["", "## 10. 运行限制与说明", ""])
-    parallel_problem_traces = [
-        trace for trace in problem_traces if _trace_metadata(trace).get("parallel") is True
-    ]
-    if parallel_problem_traces:
-        lines.extend(["", "### Parallel failure metadata", ""])
-        for trace in parallel_problem_traces:
-            lines.extend(_parallel_metadata_lines(_trace_metadata(trace)))
-
-    lines.extend([f"* {limitation}" for limitation in _runtime_limitations(plan)])
-    lines.append("")
     return "\n".join(lines)
 
 

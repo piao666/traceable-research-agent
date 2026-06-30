@@ -58,10 +58,16 @@ def main() -> None:
         DEFAULT_INDEX_PATH.rename(backup)
         try:
             _expect(
-                search_rag({"query": "trace registry", "top_k": 3}),
+                search_rag({"query": "trace registry", "top_k": 3, "retrieval_mode": "dense"}),
                 success=False,
                 error_type="index_missing",
             )
+            hybrid_fallback = search_rag({"query": "trace registry", "top_k": 3})
+            _expect(hybrid_fallback, success=True)
+            if hybrid_fallback.metadata.get("requested_retrieval_mode") != "hybrid":
+                raise SystemExit(f"Default RAG mode should be hybrid: {hybrid_fallback}")
+            if not hybrid_fallback.metadata.get("fallback_used"):
+                raise SystemExit(f"Hybrid missing dense index should fallback: {hybrid_fallback}")
         finally:
             backup.rename(DEFAULT_INDEX_PATH)
             restored = True

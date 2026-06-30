@@ -82,7 +82,7 @@ class Settings(BaseModel):
     rag_device: str = "cpu"
     rag_normalize_embeddings: bool = True
     rag_real_backend_enabled: bool = False
-    rag_retrieval_mode: str = "dense"
+    rag_retrieval_mode: str = "hybrid"
     rag_bm25_enabled: bool = True
     rag_hybrid_enabled: bool = True
     rag_rrf_k: int = 60
@@ -106,8 +106,8 @@ class Settings(BaseModel):
     @field_validator("rag_retrieval_mode", mode="before")
     @classmethod
     def validate_rag_retrieval_mode(cls, value: object) -> str:
-        normalized = str(value or "dense").strip().lower()
-        return normalized if normalized in {"dense", "bm25", "hybrid"} else "dense"
+        normalized = str(value or "hybrid").strip().lower()
+        return normalized if normalized in {"dense", "bm25", "hybrid"} else "hybrid"
 
     @field_validator("rag_rrf_k", mode="before")
     @classmethod
@@ -304,7 +304,7 @@ class Settings(BaseModel):
             rag_normalize_embeddings=_env_bool("RAG_NORMALIZE_EMBEDDINGS", True),
             rag_real_backend_enabled=_env_bool("RAG_REAL_BACKEND_ENABLED", False),
             rag_retrieval_mode=_env_choice(
-                "RAG_RETRIEVAL_MODE", "dense", {"dense", "bm25", "hybrid"}
+                "RAG_RETRIEVAL_MODE", "hybrid", {"dense", "bm25", "hybrid"}
             ),
             rag_bm25_enabled=_env_bool("RAG_BM25_ENABLED", True),
             rag_hybrid_enabled=_env_bool("RAG_HYBRID_ENABLED", True),

@@ -184,13 +184,15 @@ def test_multi_source_bundle(client: TestClient, db) -> str:
     assert_true(evidence["total_evidence_items"] >= 5, "not enough evidence items extracted")
     assert_true(evidence["claims"], "claim-evidence map missing")
     assert_true(any(item["is_mock"] for item in evidence["evidence_items"]), "mock evidence was not marked")
-    assert_true(any("Mock evidence" in warning for warning in evidence["warnings"]), "mock warning missing")
+    assert_true(any("mock 证据" in warning for warning in evidence["warnings"]), "mock warning missing")
 
     report = client.get(f"/api/reports/{run.run_id}")
     assert_true(report.status_code == 200, "report endpoint failed")
     markdown = report.json()["markdown"]
-    assert_true("Research Evidence Aggregation" in markdown, "report missing evidence aggregation section")
-    assert_true("Claim-Evidence Map" in markdown, "report missing claim map")
+    assert_true("## 6. 证据聚合" in markdown, "report missing evidence aggregation section")
+    assert_true("结论-证据映射" in markdown, "report missing claim map")
+    assert_true("Trace 汇总" not in markdown, "report should not include Trace summary section")
+    assert_true("运行限制与说明" not in markdown, "report should not include runtime limitations section")
     return run.run_id
 
 
@@ -248,7 +250,7 @@ def test_fallback_trace_bundle(client: TestClient, db) -> str:
     )
     evidence = get_evidence(client, run.run_id)
     assert_true(any(item["is_fallback"] for item in evidence["evidence_items"]), "fallback evidence not marked")
-    assert_true(any("Fallback evidence" in warning for warning in evidence["warnings"]), "fallback warning missing")
+    assert_true(any("fallback 证据" in warning for warning in evidence["warnings"]), "fallback warning missing")
     return run.run_id
 
 
@@ -332,7 +334,7 @@ def test_react_limitation_bundle(client: TestClient, db) -> str:
         assert_true(evidence["unsupported_claims"], "ReAct unsupported claims missing")
         report = client.get(f"/api/reports/{run.run_id}")
         assert_true(report.status_code == 200 and report.json()["exists"], "ReAct limitation report missing")
-        assert_true("Research Evidence Aggregation" in report.json()["markdown"], "ReAct report missing aggregation")
+        assert_true("## 6. 证据聚合" in report.json()["markdown"], "ReAct report missing aggregation")
         return run.run_id
     finally:
         server.shutdown()

@@ -27,7 +27,7 @@ def build_planner_messages(
     tool_defaults = {
         "file_reader": {"path": "demo_research_note.md", "max_chars": 4000},
         "sql_query": {"query": "SELECT id, title, category FROM documents", "limit": 5},
-        "rag_search": {"query": task, "top_k": 3},
+        "rag_search": {"query": task, "top_k": 3, "retrieval_mode": "hybrid"},
         "mcp_github_search": {
             "query": task,
             "repo": "piao666/traceable-research-agent",

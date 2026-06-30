@@ -112,16 +112,16 @@ def test_completed_run_exports(client: TestClient, db) -> str:
 
     markdown_export = _export(client, run.run_id, "markdown")
     markdown = _read_export(markdown_export)
-    assert_true("# Evidence Packet" in markdown, "Markdown export missing title")
-    assert_true("Claim-Evidence Map" in markdown, "Markdown export missing claim map")
+    assert_true("# 证据包" in markdown, "Markdown export missing title")
+    assert_true("结论-证据映射" in markdown, "Markdown export missing claim map")
     markdown_content = _content(client, run.run_id, "markdown")
-    assert_true("# Evidence Packet" in markdown_content["content"], "Markdown content missing title")
+    assert_true("# 证据包" in markdown_content["content"], "Markdown content missing title")
     assert_true(markdown_content["content_type"] == "text/markdown", "Markdown content type mismatch")
 
     assert_true(json.loads(_download(client, run.run_id, "json")), "JSON download invalid")
     assert_true(_download(client, run.run_id, "jsonl").decode("utf-8").strip(), "JSONL download empty")
     assert_true(
-        "# Evidence Packet" in _download(client, run.run_id, "markdown").decode("utf-8"),
+        "# 证据包" in _download(client, run.run_id, "markdown").decode("utf-8"),
         "Markdown download invalid",
     )
     return run.run_id
@@ -139,7 +139,7 @@ def test_empty_trace_export(client: TestClient, db) -> str:
     exported = json.loads(_read_export(payload))
     assert_true(exported["total_evidence_items"] == 0, "empty trace export should have zero items")
     content = _content(client, run.run_id, "markdown")
-    assert_true("No structured evidence items" in content["content"], "empty trace content missing")
+    assert_true("未抽取到结构化证据条目" in content["content"], "empty trace content missing")
     return run.run_id
 
 

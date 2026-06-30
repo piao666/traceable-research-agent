@@ -47,17 +47,17 @@ def _assert_confirmation_notes_match_steps(plan: dict) -> None:
 def main() -> None:
     task = (
         "Read local docs, query database metrics, retrieve trace evidence, "
-        "search GitHub repository issues, and generate a markdown report"
+        "search GitHub repository issues and current web sources, and generate a markdown report"
     )
     deterministic = plan_task(
         task,
-        ["file_reader", "sql_query", "rag_search", "mcp_github_search", "report_writer"],
+        ["file_reader", "sql_query", "rag_search", "mcp_github_search", "tavily_search", "report_writer"],
         "mock",
         planner_mode="deterministic",
     )
     auto = plan_task(
         task,
-        ["file_reader", "sql_query", "rag_search", "mcp_github_search", "report_writer"],
+        ["file_reader", "sql_query", "rag_search", "mcp_github_search", "tavily_search", "report_writer"],
         "mock",
         planner_mode="auto",
     )
@@ -73,9 +73,9 @@ def main() -> None:
         "mock",
         planner_mode="deterministic",
     )
-    github = plan_task(
-        "Search GitHub repository issues about traceable research agent and generate a markdown report",
-        ["mcp_github_search", "report_writer"],
+    external = plan_task(
+        "Search GitHub repository issues and current web sources about traceable research agent and generate a markdown report",
+        ["mcp_github_search", "tavily_search", "report_writer"],
         "mock",
         planner_mode="deterministic",
     )
@@ -123,8 +123,8 @@ def main() -> None:
     file_step = path_hitl["steps"][0]
     if file_step.get("confirmation_reason") != "file_reader_path_outside_allowed_roots":
         raise SystemExit(f"file path HITL rule failed: {path_hitl}")
-    if _tools(github) != ["mcp_github_search", "report_writer"]:
-        raise SystemExit(f"GitHub planning failed: {_tools(github)}")
+    if _tools(external) != ["tavily_search", "mcp_github_search", "report_writer"]:
+        raise SystemExit(f"external planning failed: {_tools(external)}")
     _assert_confirmation_notes_match_steps(auto)
     _assert_confirmation_notes_match_steps(auto_hitl)
     auto_hitl_report_steps = [
@@ -147,7 +147,7 @@ def main() -> None:
         },
         "allowed_tools": _tools(limited),
         "hitl_file_requires_confirmation": file_step["requires_confirmation"],
-        "github_tools": _tools(github),
+        "external_tools": _tools(external),
         "confirmation_notes_consistent": True,
         "auto_hitl_report_requires_confirmation": False,
     }
