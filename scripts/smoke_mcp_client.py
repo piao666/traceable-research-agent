@@ -211,6 +211,7 @@ def main() -> None:
         direct = execute_tool("fake.echo", {"text": "hello remote"})
         assert_true(direct.success, "direct remote tool call failed")
         assert_true(direct.metadata.get("tool_source") == "mcp_remote", "direct remote source missing")
+        assert_true(direct.metadata.get("remote_channel") == "readonly", "direct remote channel missing")
 
         with SessionLocal() as db:
             planned = store.create_agent_run(
@@ -234,6 +235,10 @@ def main() -> None:
             assert_true(
                 any(trace_metadata(trace).get("tool_source") == "mcp_remote" for trace in planned_traces),
                 "planned remote trace source missing",
+            )
+            assert_true(
+                any(trace_metadata(trace).get("remote_channel") == "readonly" for trace in planned_traces),
+                "planned remote trace channel missing",
             )
 
             failure = store.create_agent_run(
@@ -318,6 +323,7 @@ def main() -> None:
                 "remote_tool_failure_visible": "ok",
                 "react_remote_failure_limitation": "ok",
                 "write_remote_hidden": "ok",
+                "remote_channel_metadata": "ok",
             },
             indent=2,
         )

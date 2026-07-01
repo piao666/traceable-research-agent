@@ -19,6 +19,13 @@ class MCPToolMetadata(BaseModel):
     enabled: bool = True
     tags: list[str] = Field(default_factory=list)
     local_tool_name: str | None = None
+    channel: str = "readonly"
+    policy: dict[str, Any] = Field(default_factory=dict)
+    tool_source: str = "local"
+    remote_server: str | None = None
+    remote_tool_name: str | None = None
+    remote_registry_name: str | None = None
+    mcp_transport: str | None = None
 
 
 class MCPToolListResponse(BaseModel):

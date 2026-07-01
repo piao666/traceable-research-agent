@@ -51,6 +51,9 @@ class Settings(BaseModel):
     mcp_allow_write_tools: bool = False
     mcp_remote_registry_enabled: bool = False
     mcp_remote_servers: str = ""
+    mcp_channel_readonly_servers: str = ""
+    mcp_channel_interactive_servers: str = ""
+    mcp_channel_write_servers: str = ""
     parallel_execution_enabled: bool = False
     parallel_max_workers: int = 3
     parallel_group_strategy: str = "independent_tools"
@@ -243,6 +246,15 @@ class Settings(BaseModel):
                 "MCP_REMOTE_REGISTRY_ENABLED", False
             ),
             mcp_remote_servers=os.getenv("MCP_REMOTE_SERVERS", "").strip(),
+            mcp_channel_readonly_servers=os.getenv(
+                "MCP_CHANNEL_READONLY_SERVERS", ""
+            ).strip(),
+            mcp_channel_interactive_servers=os.getenv(
+                "MCP_CHANNEL_INTERACTIVE_SERVERS", ""
+            ).strip(),
+            mcp_channel_write_servers=os.getenv(
+                "MCP_CHANNEL_WRITE_SERVERS", ""
+            ).strip(),
             parallel_execution_enabled=_env_bool(
                 "PARALLEL_EXECUTION_ENABLED", False
             ),
@@ -443,6 +455,9 @@ class Settings(BaseModel):
             "mcp_allow_write_tools": self.mcp_allow_write_tools,
             "mcp_remote_registry_enabled": self.mcp_remote_registry_enabled,
             "mcp_remote_servers_configured": bool(self.mcp_remote_servers),
+            "mcp_channel_readonly_servers_configured": bool(self.mcp_channel_readonly_servers),
+            "mcp_channel_interactive_servers_configured": bool(self.mcp_channel_interactive_servers),
+            "mcp_channel_write_servers_configured": bool(self.mcp_channel_write_servers),
             "parallel_execution_enabled": self.parallel_execution_enabled,
             "parallel_max_workers": self.parallel_max_workers,
             "parallel_group_strategy": self.parallel_group_strategy,

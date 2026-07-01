@@ -56,6 +56,7 @@ def main() -> None:
     health = client.get("/mcp/health")
     assert_true(health.status_code == 200, "MCP health failed")
     assert_true(health.json()["read_only"] is True, "MCP health is not read-only")
+    assert_true("channel_summary" in health.json(), "MCP health missing channel summary")
 
     tools_response = client.get("/mcp/tools")
     assert_true(tools_response.status_code == 200, "MCP tools/list failed")
@@ -76,6 +77,8 @@ def main() -> None:
         assert_true(tool["read_only"] is True, f"{tool['name']} is not read-only")
         assert_true(tool["side_effect_free"] is True, f"{tool['name']} is not side-effect-free")
         assert_true("risk_level" in tool, f"{tool['name']} missing risk metadata")
+        assert_true(tool.get("channel") == "readonly", f"{tool['name']} missing readonly channel")
+        assert_true(isinstance(tool.get("policy"), dict), f"{tool['name']} missing policy metadata")
 
     initialize = client.post(
         "/mcp",
@@ -142,6 +145,7 @@ def main() -> None:
                 "tool_call_trace": "ok",
                 "readers": "ok",
                 "write_tools_hidden": "ok",
+                "channel_policy_metadata": "ok",
             },
             indent=2,
         )

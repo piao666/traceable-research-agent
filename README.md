@@ -229,7 +229,23 @@ MCP_REMOTE_REGISTRY_ENABLED=true
 MCP_REMOTE_SERVERS=[{"name":"demo","base_url":"http://127.0.0.1:8001/mcp","timeout_seconds":5}]
 ```
 
-远端工具会注册为 `<server>.<tool>`，并在 trace metadata 中标记 `tool_source=mcp_remote`。远端失败会变成 failed `ToolResult`，不会把任务 API 变成 500。
+新版远端 MCP 推荐使用通道配置：
+
+```ini
+MCP_CHANNEL_READONLY_SERVERS=[{"name":"firecrawl","base_url":"http://127.0.0.1:9001/mcp","transport":"http_json_rpc","timeout_seconds":10,"allowed_tools":["scrape","search"],"blocked_tools":[],"headers_env":{"Authorization":"FIRECRAWL_MCP_AUTH_HEADER"},"channel":"readonly"}]
+MCP_CHANNEL_INTERACTIVE_SERVERS=[{"name":"browser","base_url":"http://127.0.0.1:9002/mcp","transport":"http_json_rpc","allowed_tools":["navigate","screenshot"],"channel":"interactive"}]
+MCP_CHANNEL_WRITE_SERVERS=[]
+```
+
+通道策略：
+
+- `readonly`：只有 `tools/list` 声明 `read_only=true`、`side_effect_free=true`、`requires_confirmation=false` 的工具会自动注册和自动执行。
+- `interactive`：用于 browser/playwright 等导航、点击、截图类工具；工具会注册为需要 HITL，不进入默认只读 MCP 暴露和并行自动执行。
+- `write`：默认禁用，即使配置也不会自动注册为可执行工具。
+
+每个 server 支持 `name`、`base_url`、`transport`、`timeout_seconds`、`allowed_tools`、`blocked_tools`、`headers_env` 和 `channel`。`headers_env` 只记录环境变量名，不会把 header 值写入 health、trace、report 或 evidence export。远端工具会注册为 `<server>.<tool>`，并在 trace metadata 中标记 `tool_source=mcp_remote`、`remote_server`、`remote_channel` 和 `remote_tool_name`。远端失败会变成 failed `ToolResult`，不会把任务 API 变成 500。
+
+Firecrawl 如果以 HTTP JSON-RPC MCP 形态提供只读网页抓取/搜索工具，可以放入 `readonly` 通道。browser/filesystem/database MCP 应只接入经过 allowlist 限定的只读子集；browser/playwright 类交互工具应放入 `interactive` 通道。当前实现不是无限制 MCP hub，而是可配置、可审计、默认安全的可信子集。
 
 ### MCP External Client Demo
 
@@ -297,6 +313,7 @@ python scripts/smoke_evidence_aggregation.py
 python scripts/smoke_realtime_trace.py
 python scripts/smoke_mcp_server.py
 python scripts/smoke_mcp_client.py
+python scripts/smoke_mcp_channels.py
 python scripts/demo_mcp_external_client.py
 python scripts/smoke_mcp_external_http_client.py
 python scripts/smoke_parallel_execution.py

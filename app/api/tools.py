@@ -13,6 +13,7 @@ from app.schemas import (
     ToolListResponse,
 )
 from app.security import require_api_key, require_request_context
+from app.mcp.policy import MCPChannel, requires_interactive_confirmation, tool_channel
 from app.tools import registry
 from app.tools.base import ToolResult, ToolSpec
 from app.trace import store
@@ -36,6 +37,7 @@ def _tool_info(spec: ToolSpec) -> ToolInfo:
         input_schema=spec.input_schema,
         output_schema=spec.output_schema,
         tags=spec.tags,
+        metadata=spec.metadata,
     )
 
 
@@ -82,6 +84,15 @@ async def execute_tool(
         run = store.get_agent_run(db, request.run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Task run not found")
+
+    spec = registry.get_tool(tool_name)
+    if spec is not None and tool_channel(spec) == MCPChannel.WRITE.value:
+        raise HTTPException(status_code=403, detail="Write-channel MCP tools are disabled.")
+    if spec is not None and requires_interactive_confirmation(spec):
+        raise HTTPException(
+            status_code=403,
+            detail="Tool requires human confirmation and cannot be executed directly.",
+        )
 
     started = perf_counter()
     result = registry.execute_tool(tool_name, request.arguments)

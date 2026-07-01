@@ -10,6 +10,7 @@ from app.agent.plan_guardrails import normalize_plan_arguments
 from app.llm.planner_client import call_llm_for_plan
 from app.llm.providers import create_llm_client
 from app.llm.schema import extract_json_object, validate_and_normalize_plan
+from app.mcp.policy import requires_interactive_confirmation, tool_channel
 from app.tools.registry import get_tool, list_tools
 
 
@@ -221,8 +222,19 @@ def _step_template(
             "expected_output": "Remote MCP tool output or a structured remote failure.",
             "completion_criteria": "The remote tool returns an observation without crashing the Agent API.",
             "risk_level": (spec.risk_level.value if spec else "low"),
-            "requires_confirmation": False,
+            "requires_confirmation": requires_interactive_confirmation(spec),
         }
+        if spec and requires_interactive_confirmation(spec):
+            step["completion_criteria"] = (
+                "Human confirmation is recorded before this interactive remote MCP tool runs."
+            )
+            step["confirmation_reason"] = "mcp_interactive_channel"
+            step["confirmation_details"] = {
+                "tool_name": tool_name,
+                "channel": tool_channel(spec),
+                "remote_server": (spec.metadata or {}).get("remote_server"),
+                "remote_tool_name": (spec.metadata or {}).get("remote_tool_name"),
+            }
     if tool_name == "report_writer" and requires_human_confirmation:
         step["risk_level"] = "high"
         step["requires_confirmation"] = True
@@ -545,7 +557,21 @@ def _apply_human_confirmation_policy(plan: dict[str, Any], task: str) -> None:
     """Keep legacy HITL prompts from making report_writer a separate approval scene."""
 
     for step in plan.setdefault("steps", []):
-        if step.get("tool_name") != "file_reader":
+        tool_name = str(step.get("tool_name") or "")
+        spec = get_tool(tool_name)
+        if requires_interactive_confirmation(spec):
+            step["requires_confirmation"] = True
+            step.setdefault("confirmation_reason", "mcp_interactive_channel")
+            step.setdefault(
+                "confirmation_details",
+                {
+                    "tool_name": tool_name,
+                    "channel": tool_channel(spec),
+                    "remote_server": (spec.metadata or {}).get("remote_server") if spec else None,
+                    "remote_tool_name": (spec.metadata or {}).get("remote_tool_name") if spec else None,
+                },
+            )
+        elif tool_name != "file_reader":
             step["requires_confirmation"] = False
 
 

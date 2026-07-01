@@ -18,6 +18,7 @@ from app.agent.executor import (
     _failed_observation,
     _is_step_confirmed,
     is_executable_tool,
+    _step_requires_confirmation,
     _message_summary,
     _parse_plan,
     _summary,
@@ -25,8 +26,9 @@ from app.agent.executor import (
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings
 from app.llm.providers import create_llm_client
+from app.mcp.policy import is_parallel_safe_tool
 from app.tools.base import ToolResult
-from app.tools.registry import execute_tool
+from app.tools.registry import execute_tool, get_tool
 from app.trace import store
 from app.trace.logger import record_tool_result
 
@@ -73,10 +75,11 @@ def _has_explicit_dependency(step: dict[str, Any]) -> bool:
 
 def _is_parallel_candidate(step: dict[str, Any]) -> bool:
     tool_name = str(step.get("tool_name") or "")
+    spec = get_tool(tool_name)
     return (
-        tool_name in PARALLEL_SAFE_TOOLS
-        and tool_name in EXECUTABLE_TOOLS
-        and not step.get("requires_confirmation")
+        (tool_name in PARALLEL_SAFE_TOOLS or (spec is not None and "mcp_remote" in spec.tags))
+        and is_parallel_safe_tool(spec)
+        and not _step_requires_confirmation(step, tool_name)
         and not _has_explicit_dependency(step)
     )
 
@@ -308,7 +311,7 @@ def run_plan_parallel(
                 tool_name = str(step.get("tool_name") or "")
                 arguments = step.get("arguments") or {}
 
-                if step.get("requires_confirmation") and not _is_step_confirmed(plan, step_no):
+                if _step_requires_confirmation(step, tool_name) and not _is_step_confirmed(plan, step_no):
                     message = f"Waiting for human confirmation before step {step_no}: {tool_name}"
                     run = store.update_agent_run_progress(db, run_id, max(step_no - 1, 0))
                     run = store.update_agent_run_status(db, run_id, "waiting_human", message)

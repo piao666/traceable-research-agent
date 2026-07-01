@@ -29,8 +29,9 @@ from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings
 from app.llm.base import LLMClient
 from app.llm.providers import create_llm_client
+from app.mcp.policy import requires_interactive_confirmation
 from app.tools.base import ToolResult
-from app.tools.registry import execute_tool, list_tools
+from app.tools.registry import execute_tool, get_tool, list_tools
 from app.trace import store
 from app.trace.logger import record_tool_result, record_trace_event
 from app.trace.models import AgentRun
@@ -103,6 +104,9 @@ def _persist_plan(db: Session, run_id: str, plan: dict[str, Any]) -> None:
 
 
 def _confirmation_required(plan: dict[str, Any], action: str) -> bool:
+    spec = get_tool(action)
+    if requires_interactive_confirmation(spec):
+        return True
     return any(
         step.get("tool_name") == action and bool(step.get("requires_confirmation"))
         for step in plan.get("steps") or []

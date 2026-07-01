@@ -31,6 +31,8 @@ def list_tools() -> list[ToolSpec]:
 
 
 def _tool_source(spec: ToolSpec | None) -> str:
+    if spec and (spec.metadata or {}).get("tool_source"):
+        return str((spec.metadata or {}).get("tool_source"))
     if spec and "mcp_remote" in spec.tags:
         return "mcp_remote"
     return "local"
@@ -41,7 +43,8 @@ def _with_registry_metadata(
     spec: ToolSpec | None,
     result: ToolResult,
 ) -> ToolResult:
-    metadata = dict(result.metadata or {})
+    metadata = dict((spec.metadata or {}) if spec else {})
+    metadata.update(result.metadata or {})
     metadata.setdefault("tool_name", name)
     metadata.setdefault("tool_source", _tool_source(spec))
     return ToolResult(

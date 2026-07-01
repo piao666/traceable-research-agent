@@ -230,6 +230,32 @@ python scripts/smoke_final_project.py
 
 ## 后续扩展方向（暂缓）
 
+## 2026-07-01 - 板块三：MCP 通道升级
+
+目标：把远端 MCP 从单一只读配置升级为通道化策略，保持默认安全、可审计、可接真实 HTTP JSON-RPC MCP 的工程子集，不做无限制 MCP hub。
+
+规划实现：
+
+- 新增远端 MCP 通道配置：
+  - `MCP_CHANNEL_READONLY_SERVERS`
+  - `MCP_CHANNEL_INTERACTIVE_SERVERS`
+  - `MCP_CHANNEL_WRITE_SERVERS`
+- 每个 server 支持 `name`、`base_url`、`transport`、`timeout_seconds`、`allowed_tools`、`blocked_tools`、`headers_env`、`channel`。
+- 保留旧 `MCP_REMOTE_REGISTRY_ENABLED` / `MCP_REMOTE_SERVERS` 兼容入口，按 readonly channel 处理。
+- `readonly` 通道只自动注册 `read_only=true`、`side_effect_free=true`、`requires_confirmation=false` 的远端工具。
+- `interactive` 通道注册为需要 HITL，不进入默认只读 MCP 暴露，不进入 parallel 自动执行。
+- `write` 通道默认禁用，即使配置也不自动注册可执行工具。
+- 远端工具 trace metadata 写入 `tool_source=mcp_remote`、`remote_server`、`remote_channel`、`remote_tool_name`、`mcp_transport` 等字段。
+- `/mcp/health` 返回 channel summary；`/mcp/tools` 显示 channel / policy / remote metadata。
+- 新增 `scripts/smoke_mcp_channels.py` 覆盖 Firecrawl/browser/database/write fake server、allowlist/blocklist、headers_env 脱敏、HITL 和远端失败 trace。
+
+安全边界：
+
+- 不放松本地 `file_reader` path guard 和 SQL read-only guard。
+- browser/playwright 类工具默认属于 interactive；write channel 默认不执行。
+- `headers_env` 只读取环境变量值用于出站请求，不写入 trace/report/evidence。
+- Streamlit 继续作为主 demo UI，不新增第二套前端。
+
 ### Day44 - Evidence Quality / Verifier
 
 暂缓。后续可在 EvidenceBundle 上增加轻量质量判断，例如来源质量、freshness、mock/fallback/failure 降级提示、claim support strength。优先确定性规则，必要时再考虑 LLM verifier。

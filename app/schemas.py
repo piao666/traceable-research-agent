@@ -218,6 +218,7 @@ class ToolInfo(BaseModel):
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     tags: list[str]
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolListResponse(BaseModel):

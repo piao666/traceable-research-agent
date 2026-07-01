@@ -12,6 +12,7 @@ from app.agent.file_access_policy import file_reader_execution_arguments
 from app.agent.reporter import generate_markdown_report, save_report
 from app.llm.providers import create_llm_client
 from app.config import settings as _exec_settings
+from app.mcp.policy import MCPChannel, requires_interactive_confirmation, tool_channel
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool, get_tool
 from app.trace import store
@@ -34,7 +35,12 @@ def is_executable_tool(tool_name: str) -> bool:
     if tool_name == "report_writer":
         return False
     spec = get_tool(tool_name)
-    return bool(spec and spec.enabled)
+    return bool(spec and spec.enabled and tool_channel(spec) != MCPChannel.WRITE.value)
+
+
+def _step_requires_confirmation(step: dict[str, Any], tool_name: str) -> bool:
+    spec = get_tool(tool_name)
+    return bool(step.get("requires_confirmation")) or requires_interactive_confirmation(spec)
 
 
 def _parse_plan(run: AgentRun) -> dict[str, Any]:
@@ -122,7 +128,7 @@ def run_plan(db: Session, run_id: str) -> dict[str, Any]:
             if step_no <= resume_after_step:
                 continue
 
-            if step.get("requires_confirmation") and not _is_step_confirmed(plan, step_no):
+            if _step_requires_confirmation(step, tool_name) and not _is_step_confirmed(plan, step_no):
                 message = f"Waiting for human confirmation before step {step_no}: {tool_name}"
                 run = store.update_agent_run_progress(db, run_id, max(step_no - 1, 0))
                 run = store.update_agent_run_status(db, run_id, "waiting_human", message)

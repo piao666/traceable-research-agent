@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.mcp.client import get_remote_mcp_channel_summary
 from app.database import get_db
 from app.mcp.policy import is_tool_exposable, mcp_policy_metadata
 from app.mcp.schemas import (
@@ -74,6 +75,7 @@ def _resolve_local_tool_name(name: str) -> str:
 
 def _metadata_from_spec(spec: ToolSpec, *, alias: str | None = None) -> MCPToolMetadata:
     policy = mcp_policy_metadata(spec, alias=alias)
+    spec_metadata = spec.metadata or {}
     return MCPToolMetadata(
         name=policy["name"],
         description=spec.description,
@@ -86,6 +88,13 @@ def _metadata_from_spec(spec: ToolSpec, *, alias: str | None = None) -> MCPToolM
         enabled=spec.enabled,
         tags=spec.tags,
         local_tool_name=policy["local_tool_name"],
+        channel=policy["channel"],
+        policy=policy["policy"],
+        tool_source=str(spec_metadata.get("tool_source") or "local"),
+        remote_server=spec_metadata.get("remote_server"),
+        remote_tool_name=spec_metadata.get("remote_tool_name"),
+        remote_registry_name=spec_metadata.get("remote_registry_name"),
+        mcp_transport=spec_metadata.get("mcp_transport"),
     )
 
 
@@ -256,6 +265,8 @@ def _execute_mcp_tool(db: Session, request: MCPToolCallRequest) -> MCPToolCallRe
             "side_effect_free": True,
             "requires_confirmation": False,
             "risk_level": (spec.risk_level.value if spec else "low"),
+            "mcp_channel": ((spec.metadata or {}).get("mcp_channel") if spec else "readonly") or "readonly",
+            "policy": mcp_policy_metadata(spec, alias=request.name)["policy"] if spec else {"channel": "readonly"},
             "latency_ms": latency_ms,
         }
     )
@@ -297,6 +308,11 @@ async def mcp_health() -> dict[str, Any]:
         "protocol_version": PROTOCOL_VERSION,
         "read_only": True,
         "write_operations_allowed": False,
+        "remote_registry_enabled": settings.mcp_remote_registry_enabled
+        or bool(settings.mcp_channel_readonly_servers)
+        or bool(settings.mcp_channel_interactive_servers)
+        or bool(settings.mcp_channel_write_servers),
+        "channel_summary": get_remote_mcp_channel_summary(),
         "tool_count": len(_exposed_tool_specs()),
     }
 

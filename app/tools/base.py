@@ -26,6 +26,7 @@ class ToolSpec(BaseModel):
     enabled: bool = True
     timeout_seconds: int = 30
     tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolResult(BaseModel):

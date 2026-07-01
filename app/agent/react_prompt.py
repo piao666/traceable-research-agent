@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from app.llm.base import LLMMessage
+from app.mcp.policy import tool_channel
 from app.tools.base import ToolSpec
 
 
@@ -23,6 +24,9 @@ def _tool_description(spec: ToolSpec) -> dict[str, Any]:
         "input_schema": spec.input_schema,
         "risk_level": spec.risk_level.value,
         "requires_confirmation": spec.requires_confirmation,
+        "channel": tool_channel(spec),
+        "tool_source": (spec.metadata or {}).get("tool_source", "local"),
+        "remote_server": (spec.metadata or {}).get("remote_server"),
     }
 
 
