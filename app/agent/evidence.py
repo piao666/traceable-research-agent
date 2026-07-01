@@ -473,7 +473,12 @@ def _tavily_items(run_id: str, record: dict[str, Any], existing_count: int) -> l
     for result in results[:8]:
         title = str(result.get("title") or "Tavily result")
         url = str(result.get("url") or "")
-        content = str(result.get("content") or result.get("raw_content") or "").strip()
+        content = str(
+            result.get("clean_content")
+            or result.get("content")
+            or result.get("raw_content")
+            or ""
+        ).strip()
         if not content:
             continue
         item = _make_item(

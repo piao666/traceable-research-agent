@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -96,7 +97,8 @@ def _selected_evidence(tool_name: str, output: Any) -> str:
                     {
                         "title": result.get("title"),
                         "url": result.get("url"),
-                        "content": str(result.get("content") or "")[:300],
+                        "content": str(result.get("clean_content") or result.get("content") or "")[:300],
+                        "content_quality": result.get("content_quality"),
                         "score": result.get("score"),
                     }
                     for result in results[:5]
@@ -288,8 +290,9 @@ def _tavily_final_answer(record: dict[str, Any]) -> list[str] | None:
         lines.extend([f"{index}、**{title}**", ""])
         if item.get("url"):
             lines.append(f"* 链接：{item['url']}")
-        if item.get("content"):
-            lines.append(f"* 摘要：{str(item['content'])[:500]}")
+        content = item.get("clean_content") or item.get("content")
+        if content:
+            lines.append(f"* 摘要：{str(content)[:500]}")
         if item.get("score") is not None:
             lines.append(f"* 相关性分数：{item['score']}")
         lines.append("")
@@ -315,7 +318,7 @@ def _learning_route_final_answer(records: list[dict[str, Any]]) -> list[str]:
         else:
             if output.get("answer"):
                 snippets.append(str(output["answer"]).strip())
-            snippets.extend(str(item.get("content") or "").strip() for item in output.get("results") or [] if isinstance(item, dict))
+            snippets.extend(str(item.get("clean_content") or item.get("content") or "").strip() for item in output.get("results") or [] if isinstance(item, dict))
     snippets = [snippet.replace("\n", " ")[:500] for snippet in snippets if snippet]
     learning_terms = (
         "python", "pytorch", "machine learning", "deep learning", "transformer",
@@ -371,9 +374,11 @@ _SYNTHESIS_SYSTEM = """你是专业调研报告撰写人。请基于工具采集
 
 要求：
 - 不少于 300 字，条理清晰
-- 每个关键结论后用「来源：[工具名]」标注
+- 每个关键结论后必须标注真实来源标题和 URL，格式为：来源：标题（URL）
+- 不要只写来源：[工具名]，工具名不能替代真实 URL
 - 如果某个工具返回空结果，明确说明"未找到相关证据"，不要编造
 - 不要重复输出证据原文，用自己的语言综合表达
+- 忽略网页导航、登录、分享、联系我们、重复菜单等页面壳文本
 - 语气专业，适合调研报告"""
 
 _SYNTHESIS_USER_TMPL = """调研任务：{task}
@@ -414,6 +419,58 @@ def _llm_synthesize_answer(
         import logging
         logging.getLogger(__name__).warning("LLM synthesis failed: %s", exc)
     return None
+
+
+def _source_references(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    references: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(title: Any, url: Any) -> None:
+        link = str(url or "").strip()
+        if not link or not link.startswith(("http://", "https://")) or link in seen:
+            return
+        seen.add(link)
+        label = str(title or link).strip()[:120]
+        references.append((label, link))
+
+    for record in records:
+        if not record.get("success"):
+            continue
+        output = record.get("output") if isinstance(record.get("output"), dict) else {}
+        tool_name = str(record.get("tool_name") or "")
+        if tool_name in {"tavily_search", "mcp_github_search"}:
+            for item in output.get("results") or []:
+                if not isinstance(item, dict):
+                    continue
+                title = (
+                    item.get("title")
+                    or item.get("full_name")
+                    or item.get("name")
+                    or item.get("url")
+                )
+                add(title, item.get("url") or item.get("html_url"))
+    return references
+
+
+def _source_reference_lines(records: list[dict[str, Any]]) -> list[str]:
+    references = _source_references(records)
+    if not references:
+        return []
+    lines = ["### 主要来源", ""]
+    lines.extend(f"* [{title}]({url})" for title, url in references[:10])
+    lines.append("")
+    return lines
+
+
+def _repair_tool_only_sources(answer: str, records: list[dict[str, Any]]) -> str:
+    references = _source_references(records)
+    if not references:
+        return answer
+    title, url = references[0]
+    replacement = f"来源：{title}（{url}）"
+    repaired = re.sub(r"来源[:：]\s*\[`?(?:tavily_search|mcp_github_search)`?\]", replacement, answer)
+    repaired = re.sub(r"来源[:：]\s*(?:tavily_search|mcp_github_search)\b", replacement, repaired)
+    return repaired
 
 
 def _render_final_answer(
@@ -626,9 +683,15 @@ def generate_markdown_report(
     _llm_answer: str | None = None
     if llm_client is not None:
         _llm_answer = _llm_synthesize_answer(run.task, observations, llm_client)
+        if _llm_answer:
+            _llm_answer = _repair_tool_only_sources(
+                _llm_answer,
+                _evidence_records(observations, traces),
+            )
 
     _final_answer_lines: list[str] = (
         [_llm_answer, "",
+         *_source_reference_lines(_evidence_records(observations, traces)),
          "> **生成方式：** 本回答由 LLM 综合工具证据生成，各来源已标注。", ""]
         if _llm_answer
         else (_render_final_answer(run.task, observations, traces) or [])
@@ -699,10 +762,7 @@ def generate_markdown_report(
                 ]
             )
 
-    evidence_bundle = build_evidence_bundle(run, plan, observations, traces)
-    lines.extend(render_evidence_markdown(evidence_bundle))
-
-    lines.extend(["## 7. 证据与工具观察结果", ""])
+    lines.extend(["## 6. 证据与工具观察结果", ""])
     if observations:
         for observation in observations:
             tool_name = str(

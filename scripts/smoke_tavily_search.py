@@ -13,6 +13,7 @@ from app.config import Settings
 from app.tools.defaults import register_default_tools
 from app.tools.registry import get_tool
 from app.tools.tavily_search import tavily_search
+from app.tools.web_content_cleaner import clean_web_snippet
 
 
 class FakeResponse:
@@ -30,7 +31,7 @@ class FakeResponse:
                     {
                         "title": "Tavily result",
                         "url": "https://example.com/result",
-                        "content": "Current external evidence.",
+                        "content": "Overview\nContact us\nCurrent external evidence for LLM courses and learning roadmaps.",
                         "score": 0.91,
                         "raw_content": "Raw external evidence.",
                     }
@@ -80,7 +81,18 @@ def main() -> None:
     assert result.metadata["tavily_configured"] is True
     assert result.metadata["read_only"] is True
     assert result.output["results"][0]["title"] == "Tavily result"
+    assert "clean_content" in result.output["results"][0]
+    assert "Contact us" not in result.output["results"][0]["clean_content"]
+    assert "Current external evidence" in result.output["results"][0]["clean_content"]
     assert "smoke-secret" not in json.dumps(result.model_dump())
+
+    cleaned = clean_web_snippet(
+        "概览\n按技术方向选课\n联系我们\n"
+        "为您提供定制化学习路径，提升生成式 AI 和大语言模型方面的开发技能。"
+    )
+    assert "概览" not in cleaned
+    assert "联系我们" not in cleaned
+    assert "定制化学习路径" in cleaned
 
     offline = tavily_search(
         {"query": "offline demo"},
@@ -98,6 +110,7 @@ def main() -> None:
                 "tavily_search": "ok",
                 "missing_api_key": "ok",
                 "fake_api": "ok",
+                "clean_content": "ok",
                 "offline_mock": "ok",
                 "registered": "ok",
             },

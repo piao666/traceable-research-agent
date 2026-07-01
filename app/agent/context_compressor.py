@@ -50,7 +50,7 @@ def _extract_text_from_output(tool_name: str, output: Any) -> str:
         for r in results[:4]:
             title   = r.get("title", "")
             url     = r.get("url", "")
-            content = r.get("content", "")[:300]
+            content = (r.get("clean_content") or r.get("content") or "")[:300]
             parts.append(f"[{title}]({url})\n{content}")
         return "\n".join(parts)
 

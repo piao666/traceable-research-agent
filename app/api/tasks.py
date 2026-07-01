@@ -247,6 +247,7 @@ async def create_task(
         task=request.task,
         allowed_tools=request.allowed_tools,
         source_mode=request.source_mode,
+        scenario_template=request.scenario_template_key or request.scenario_template,
         execution_mode_override=request.execution_mode_override,
     )
     plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)

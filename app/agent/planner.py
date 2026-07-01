@@ -22,6 +22,15 @@ DEFAULT_TOOL_ORDER = [
     "report_writer",
 ]
 
+FULL_PLANNER_REQUIRED_TOOLS = [
+    "file_reader",
+    "sql_query",
+    "rag_search",
+    "mcp_github_search",
+    "tavily_search",
+    "report_writer",
+]
+
 FILE_KEYWORDS = {
     "file",
     "document",
@@ -258,6 +267,7 @@ def plan_task(
     allowed_tools: list[str] | None = None,
     source_mode: str = "real",
     planner_mode: str | None = None,
+    scenario_template: str | None = None,
     execution_mode_override: str | None = None,
 ) -> dict[str, Any]:
     """Create a plan using deterministic rules or optional LLM planning."""
@@ -267,7 +277,7 @@ def plan_task(
         mode = "deterministic"
 
     if mode == "deterministic":
-        plan = deterministic_plan_task(task, allowed_tools, source_mode)
+        plan = deterministic_plan_task(task, allowed_tools, source_mode, scenario_template)
         plan["planner_source"] = "deterministic"
         plan["llm_provider"] = None
         plan["llm_model"] = None
@@ -301,6 +311,12 @@ def plan_task(
                         normalized = decompose_and_annotate_plan(task, normalized, client, n=4)
                     except Exception:
                         pass
+                    _ensure_full_planner_steps(
+                        normalized,
+                        task,
+                        allowed_tools,
+                        scenario_template,
+                    )
                     normalize_plan_arguments(normalized, task, source_mode)
                     return _apply_execution_mode(normalized, execution_mode_override)
                 fallback_reason = "LLM output failed schema validation; used deterministic fallback."
@@ -309,7 +325,7 @@ def plan_task(
         elif response.error_message:
             fallback_reason = f"{response.error_message}; used deterministic fallback."
 
-        plan = deterministic_plan_task(task, allowed_tools, source_mode)
+        plan = deterministic_plan_task(task, allowed_tools, source_mode, scenario_template)
         plan["planner_source"] = "deterministic_fallback"
         plan["llm_provider"] = client.describe().get("provider")
         plan["llm_model"] = client.describe().get("model")
@@ -317,7 +333,7 @@ def plan_task(
         _synchronize_confirmation_notes(plan)
         return _apply_execution_mode(plan, execution_mode_override)
 
-    plan = deterministic_plan_task(task, allowed_tools, source_mode)
+    plan = deterministic_plan_task(task, allowed_tools, source_mode, scenario_template)
     plan["planner_source"] = "deterministic"
     plan["llm_provider"] = None
     plan["llm_model"] = None
@@ -329,6 +345,7 @@ def deterministic_plan_task(
     task: str,
     allowed_tools: list[str] | None = None,
     source_mode: str = "real",
+    scenario_template: str | None = None,
 ) -> dict[str, Any]:
     """Create a stable deterministic plan from task keywords.
 
@@ -404,6 +421,9 @@ def deterministic_plan_task(
         "notes": notes,
         "confirmation": None,
     }
+    if scenario_template:
+        plan["scenario_template"] = scenario_template
+    _ensure_full_planner_steps(plan, task_text, allowed_tools, scenario_template)
     _enforce_external_tool_modes(plan, task_text, source_mode)
     normalize_plan_arguments(plan, task_text, source_mode)
     return plan
@@ -447,6 +467,78 @@ def _safe_fallback_reason(reason: str) -> str:
     if any(token in lowered for token in blocked_tokens):
         return "LLM planner failed with a redacted provider error; used deterministic fallback."
     return reason[:300]
+
+
+def _is_full_planner_scenario(
+    allowed_tools: list[str] | None,
+    scenario_template: str | None,
+) -> bool:
+    marker = str(scenario_template or "").strip().lower()
+    if marker and ("full" in marker or "\u5168\u89c4\u5212\u5668" in marker):
+        return True
+    return False
+
+
+def _ensure_full_planner_steps(
+    plan: dict[str, Any],
+    task: str,
+    allowed_tools: list[str] | None,
+    scenario_template: str | None,
+) -> None:
+    """Make the Streamlit full-planner template honor its all-tools promise."""
+
+    if not _is_full_planner_scenario(allowed_tools, scenario_template):
+        return
+
+    allowed_set = set(allowed_tools) if allowed_tools is not None else None
+    steps = [step for step in plan.get("steps") or [] if isinstance(step, dict)]
+    report_steps = [step for step in steps if step.get("tool_name") == "report_writer"]
+    non_report_steps = [step for step in steps if step.get("tool_name") != "report_writer"]
+    steps_by_tool: dict[str, dict[str, Any]] = {}
+    extra_steps: list[dict[str, Any]] = []
+    for step in non_report_steps:
+        tool_name = str(step.get("tool_name") or "")
+        if tool_name in FULL_PLANNER_REQUIRED_TOOLS:
+            steps_by_tool.setdefault(tool_name, step)
+        else:
+            extra_steps.append(step)
+    inserted: list[str] = []
+
+    ordered_steps: list[dict[str, Any]] = []
+    for tool_name in FULL_PLANNER_REQUIRED_TOOLS:
+        if tool_name == "report_writer":
+            continue
+        if allowed_set is not None and tool_name not in allowed_set:
+            continue
+        if tool_name in steps_by_tool:
+            ordered_steps.append(steps_by_tool[tool_name])
+        else:
+            step = _step_template(tool_name, task)
+            step["tool_name"] = tool_name
+            ordered_steps.append(step)
+            inserted.append(tool_name)
+
+    steps = ordered_steps + extra_steps
+
+    if allowed_set is None or "report_writer" in allowed_set:
+        report_step = report_steps[0] if report_steps else _step_template("report_writer", task)
+        report_step["tool_name"] = "report_writer"
+        steps.append(report_step)
+
+    for index, step in enumerate(steps, start=1):
+        step["step_no"] = index
+
+    plan["steps"] = steps
+    if scenario_template:
+        plan["scenario_template"] = scenario_template
+    if inserted:
+        notes = [str(note) for note in plan.get("notes") or []]
+        notes.append(
+            "Full planner template backfilled missing required tools: "
+            + ", ".join(inserted)
+            + "."
+        )
+        plan["notes"] = notes
 
 
 def _apply_human_confirmation_policy(plan: dict[str, Any], task: str) -> None:

@@ -132,6 +132,7 @@ def init_state() -> None:
         "last_evidence_export": None,
         "last_evidence_export_content": None,
         "last_report": None,
+        "event_log": [],
         "selected_template": list(DEMO_TEMPLATES.keys())[0],
         "task_text": list(DEMO_TEMPLATES.values())[0]["task"],
         "allowed_tools": list(DEMO_TEMPLATES.values())[0]["allowed_tools"],
@@ -259,6 +260,86 @@ def maybe_auto_refresh() -> None:
     time.sleep(max(delay, 1))
     refresh_all(show_errors=False)
     st.rerun()
+
+
+def _format_stream_event(event: dict[str, Any]) -> str:
+    event_type = str(event.get("event_type") or "message")
+    status = str(event.get("status") or "")
+    step_no = event.get("step_no")
+    tool_name = event.get("tool_name")
+    summary = event.get("output_summary") or event.get("error_message") or ""
+    parts = [event_type]
+    if status:
+        parts.append(f"status={status}")
+    if step_no:
+        parts.append(f"step={step_no}")
+    if tool_name:
+        parts.append(f"tool={tool_name}")
+    if summary:
+        parts.append(str(summary)[:180])
+    return " | ".join(parts)
+
+
+def _append_event_log(event: dict[str, Any]) -> None:
+    logs = list(st.session_state.get("event_log") or [])
+    logs.append(_format_stream_event(event))
+    st.session_state.event_log = logs[-200:]
+
+
+def render_event_console(target: Any | None = None) -> None:
+    lines = st.session_state.get("event_log") or []
+    text = "\n".join(lines[-80:]) if lines else "暂无实时事件。"
+    writer = target if target is not None else st
+    writer.code(text, language="text")
+
+
+def stream_task_events(run_id: str, target: Any | None = None) -> None:
+    if not run_id:
+        return
+    url = api_url(
+        f"/api/tasks/{run_id}/events"
+        "?poll_interval_seconds=0.5&heartbeat_seconds=5&max_duration_seconds=600"
+    )
+    data_lines: list[str] = []
+    try:
+        with requests.get(
+            url,
+            headers=request_headers(),
+            stream=True,
+            timeout=(5, 660),
+        ) as response:
+            response.raise_for_status()
+            for raw_line in response.iter_lines(decode_unicode=True):
+                line = raw_line or ""
+                if line.startswith("data:"):
+                    data_lines.append(line[5:].strip())
+                    continue
+                if line:
+                    continue
+                if not data_lines:
+                    continue
+                try:
+                    event = json.loads("\n".join(data_lines))
+                except json.JSONDecodeError:
+                    data_lines = []
+                    continue
+                data_lines = []
+                _append_event_log(event)
+                if target is not None:
+                    render_event_console(target)
+                if event.get("event_type") == "done":
+                    break
+    except requests.RequestException as exc:
+        _append_event_log(
+            {
+                "event_type": "stream_error",
+                "status": "fallback_polling",
+                "error_message": f"SSE stream failed: {type(exc).__name__}",
+            }
+        )
+        if target is not None:
+            render_event_console(target)
+        st.session_state.realtime_auto_refresh = True
 
 
 def _sync_allowed_tools() -> None:
@@ -559,12 +640,31 @@ def tab_task() -> None:
                 "report_type": "summary",
                 "source_mode": st.session_state.get("source_mode_ui", "real"),
                 "execution_mode_override": st.session_state.execution_mode_display,
+                "scenario_template": st.session_state.get("selected_template", ""),
+                "scenario_template_key": (
+                    "full_planner"
+                    if st.session_state.get("allowed_tools") == ALL_TOOLS
+                    else "standard"
+                ),
             }
             try:
+                st.session_state.event_log = [
+                    "create_task_started | planner=requested | status=pending"
+                ]
+                terminal = st.empty()
+                render_event_console(terminal)
                 with st.spinner("正在创建任务并调用 Planner 生成执行计划，标准调研可能需要 30-90 秒..."):
                     resp = api_post("/api/tasks", payload, timeout=CREATE_TASK_TIMEOUT_SECONDS)
                 st.session_state.last_task_response = resp
                 st.session_state.run_id = resp.get("run_id", "")
+                _append_event_log(
+                    {
+                        "event_type": "plan_ready",
+                        "status": resp.get("status"),
+                        "output_summary": f"run_id={st.session_state.run_id}",
+                    }
+                )
+                render_event_console(terminal)
                 refresh_all(show_errors=False)
                 st.rerun()
             except ApiError as exc:
@@ -581,6 +681,14 @@ def tab_task() -> None:
             try:
                 resp = api_post(run_path, {})
                 st.session_state.last_run_response = resp
+                st.session_state.realtime_auto_refresh = True
+                st.session_state.event_log = [
+                    f"run_requested | status={resp.get('status')} | run_id={run_id}"
+                ]
+                terminal = st.empty()
+                render_event_console(terminal)
+                if run_path.endswith("/run_async"):
+                    stream_task_events(run_id, terminal)
                 refresh_all(show_errors=False)
                 st.rerun()
             except ApiError as exc:
@@ -669,21 +777,18 @@ def tab_trace() -> None:
     status_obj = st.session_state.get("last_status") or {}
 
     with st.expander(
-        "Realtime trace stream",
+        "实时执行事件流",
         expanded=bool(status_obj.get("status") in ("pending", "running", "waiting_human")),
     ):
-        st.caption(
-            "Backend SSE endpoint is available for external clients; "
-            "this Streamlit panel uses lightweight auto-refresh."
-        )
         if st.session_state.get("run_id"):
             st.code(realtime_events_url(), language=None)
+        render_event_console()
         cols = st.columns(4)
         cols[0].metric("status", status_obj.get("status", "-"))
         cols[1].metric("current step", status_obj.get("current_step", 0))
         cols[2].metric("trace events", len(traces))
         cols[3].metric(
-            "auto refresh",
+            "auto polling",
             "on" if st.session_state.get("realtime_auto_refresh") else "off",
         )
         if traces:

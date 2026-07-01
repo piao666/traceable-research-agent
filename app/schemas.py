@@ -20,6 +20,8 @@ class TaskCreateRequest(BaseModel):
     source_mode: str = "real"
     allowed_tools: list[str] | None = None
     execution_mode_override: str | None = None  # "planned" | "react" | None (use server default)
+    scenario_template: str | None = None
+    scenario_template_key: str | None = None
 
 
 class TaskCreateResponse(BaseModel):

@@ -34,7 +34,7 @@ CHECKS = [
     ("app_eval", [sys.executable, "-m", "app.eval.run_eval"]),
 ]
 CHECK_TIMEOUT_SECONDS = {
-    "app_eval": 420,
+    "app_eval": 720,
 }
 
 

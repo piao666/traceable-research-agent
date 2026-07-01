@@ -87,6 +87,10 @@ def main() -> None:
         or '"source_mode": st.session_state.get("source_mode_ui", "real")' in source,
         "task payload does not use selected source mode",
     )
+    assert_true('"scenario_template_key"' in source, "task payload does not include scenario template key")
+    assert_true("full_planner" in source, "full planner scenario key missing")
+    assert_true("stream_task_events" in source, "Streamlit does not consume SSE task events")
+    assert_true("render_event_console" in source, "Streamlit realtime event console missing")
     assert_true("CREATE_TASK_TIMEOUT_SECONDS" in source, "create-task timeout constant missing")
     assert_true(
         'api_post("/api/tasks", payload, timeout=CREATE_TASK_TIMEOUT_SECONDS)' in source,

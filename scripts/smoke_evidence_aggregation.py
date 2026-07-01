@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from app.agent.executor import run_plan
 from app.agent.planner import plan_task
 from app.agent.react_executor import run_react_task
+from app.agent.reporter import _repair_tool_only_sources
 from app.config import Settings, settings
 from app.database import SessionLocal, init_db
 from app.llm.base import LLMClient, LLMMessage, LLMResponse
@@ -189,11 +190,32 @@ def test_multi_source_bundle(client: TestClient, db) -> str:
     report = client.get(f"/api/reports/{run.run_id}")
     assert_true(report.status_code == 200, "report endpoint failed")
     markdown = report.json()["markdown"]
-    assert_true("## 6. 证据聚合" in markdown, "report missing evidence aggregation section")
-    assert_true("结论-证据映射" in markdown, "report missing claim map")
+    assert_true("## 6. 证据聚合" not in markdown, "main report should hide evidence aggregation section")
+    assert_true("## 6. 证据与工具观察结果" in markdown, "report missing tool observation section")
     assert_true("Trace 汇总" not in markdown, "report should not include Trace summary section")
     assert_true("运行限制与说明" not in markdown, "report should not include runtime limitations section")
     return run.run_id
+
+
+def test_tool_source_repair() -> None:
+    records = [
+        {
+            "success": True,
+            "tool_name": "tavily_search",
+            "output": {
+                "results": [
+                    {
+                        "title": "LLM course",
+                        "url": "https://example.com/llm-course",
+                        "clean_content": "Structured course evidence.",
+                    }
+                ]
+            },
+        }
+    ]
+    repaired = _repair_tool_only_sources("结论。来源：[tavily_search]", records)
+    assert_true("[tavily_search]" not in repaired, "tool-only source marker was not repaired")
+    assert_true("https://example.com/llm-course" in repaired, "repaired source missing URL")
 
 
 def test_fallback_trace_bundle(client: TestClient, db) -> str:
@@ -334,7 +356,9 @@ def test_react_limitation_bundle(client: TestClient, db) -> str:
         assert_true(evidence["unsupported_claims"], "ReAct unsupported claims missing")
         report = client.get(f"/api/reports/{run.run_id}")
         assert_true(report.status_code == 200 and report.json()["exists"], "ReAct limitation report missing")
-        assert_true("## 6. 证据聚合" in report.json()["markdown"], "ReAct report missing aggregation")
+        markdown = report.json()["markdown"]
+        assert_true("## 6. 证据聚合" not in markdown, "ReAct report should hide aggregation")
+        assert_true("## 6. 证据与工具观察结果" in markdown, "ReAct report missing observations")
         return run.run_id
     finally:
         server.shutdown()
@@ -352,6 +376,7 @@ def main() -> None:
         settings.parallel_execution_enabled = False
         settings.llm_planner_enabled = False
         settings.llm_planner_mode = "deterministic"
+        test_tool_source_repair()
         with TestClient(app) as client:
             with SessionLocal() as db:
                 test_multi_source_bundle(client, db)
@@ -365,6 +390,7 @@ def main() -> None:
                     "evidence_api": "ok",
                     "multi_source_groups": "ok",
                     "mock_and_fallback_marked": "ok",
+                    "tool_source_repair": "ok",
                     "remote_mcp_failure_auditable": "ok",
                     "react_limitation_report": "ok",
                 },

@@ -98,6 +98,32 @@ def main() -> None:
     if chinese_web_tools != ["tavily_search", "report_writer"]:
         raise SystemExit(f"Expected Chinese web keywords to trigger Tavily, got {chinese_web_tools}")
 
+    full_planner = plan_task(
+        task="Create an LLM learning roadmap with online course links.",
+        allowed_tools=[
+            "file_reader",
+            "sql_query",
+            "rag_search",
+            "mcp_github_search",
+            "tavily_search",
+            "report_writer",
+        ],
+        source_mode="mock",
+        planner_mode="deterministic",
+        scenario_template="full_planner",
+    )
+    full_planner_tools = [step["tool_name"] for step in full_planner["steps"]]
+    expected_full = [
+        "file_reader",
+        "sql_query",
+        "rag_search",
+        "mcp_github_search",
+        "tavily_search",
+        "report_writer",
+    ]
+    if full_planner_tools != expected_full:
+        raise SystemExit(f"Expected full planner to backfill all tools, got {full_planner_tools}")
+
     print(
         {
             "planner": "ok",
@@ -108,6 +134,7 @@ def main() -> None:
             "hitl_file_requires_confirmation": file_step["requires_confirmation"],
             "external_tools": external_tools,
             "chinese_web_tools": chinese_web_tools,
+            "full_planner_tools": full_planner_tools,
         }
     )
 

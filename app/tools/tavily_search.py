@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 
 from app.config import Settings, settings
 from app.tools.base import ToolResult
+from app.tools.web_content_cleaner import clean_tavily_result
 
 
 TAVILY_ENDPOINT = "https://api.tavily.com/search"
@@ -26,6 +27,8 @@ def _bounded_results(value: Any, default: int) -> int:
 
 def _mock_results(query: str, limit: int) -> list[dict[str, Any]]:
     return [
+        clean_tavily_result(item)
+        for item in [
         {
             "title": "Offline Tavily demonstration result",
             "url": "https://example.invalid/offline-tavily-demo",
@@ -33,7 +36,8 @@ def _mock_results(query: str, limit: int) -> list[dict[str, Any]]:
             "score": 0.0,
             "raw_content": None,
         }
-    ][:limit]
+        ][:limit]
+    ]
 
 
 def _metadata(
@@ -146,17 +150,18 @@ def tavily_search(
                 payload = json.loads(response.read().decode("utf-8"))
             if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
                 raise ValueError("Tavily response does not contain a results list.")
-            results = [
-                {
+            results = []
+            for item in payload["results"][:max_results]:
+                if not isinstance(item, dict):
+                    continue
+                result = {
                     "title": str(item.get("title") or "<untitled>"),
                     "url": str(item.get("url") or ""),
                     "content": str(item.get("content") or ""),
                     "score": item.get("score"),
                     "raw_content": item.get("raw_content") if include_raw_content else None,
                 }
-                for item in payload["results"][:max_results]
-                if isinstance(item, dict)
-            ]
+                results.append(clean_tavily_result(result))
             return ToolResult(
                 success=True,
                 output={"query": query, "answer": payload.get("answer"), "results": results},
