@@ -50,14 +50,27 @@ DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
     "本地读取（文件 + RAG + SQL）": {
         "task": "Read local docs, query database metrics, retrieve trace evidence, and generate a markdown report",
         "allowed_tools": ["file_reader", "sql_query", "rag_search", "report_writer"],
+        "scenario_template_key": "standard",
     },
     "外部调研（GitHub + Tavily）": {
         "task": "Search GitHub repository issues and current web sources about traceable research agent, then generate a markdown report",
         "allowed_tools": ["mcp_github_search", "tavily_search", "report_writer"],
+        "scenario_template_key": "standard",
+    },
+    "深度网页调研（Tavily + Firecrawl/Exa MCP）": {
+        "task": "Deeply research current web sources about traceable research agent, discover sources, read page content, extract verifiable evidence, and generate a markdown report",
+        "allowed_tools": None,
+        "scenario_template_key": "deep_web_research",
+    },
+    "技术文档调研（GitHub + Context7/Exa MCP）": {
+        "task": "Research current technical documentation for FastAPI, Streamlit, MCP SDK, and RAG patterns; use GitHub and documentation sources, then generate a markdown report",
+        "allowed_tools": None,
+        "scenario_template_key": "technical_docs_research",
     },
     "全规划器（本地读取 + 外部调研）": {
         "task": "Read local docs, query database metrics, retrieve trace evidence, search GitHub repository issues and current web sources, then generate a markdown report",
         "allowed_tools": ALL_TOOLS,
+        "scenario_template_key": "full_planner",
     },
 }
 
@@ -71,11 +84,59 @@ STATUS_CN = {
     "rejected":      ("🚫", "已拒绝", "#B91C1C"),
 }
 
+STREAM_EVENT_CN = {
+    "create_task_started": "创建任务",
+    "plan_ready": "规划完成",
+    "run_requested": "请求执行",
+    "run_status": "任务状态",
+    "trace_created": "步骤开始",
+    "trace_finished": "步骤完成",
+    "waiting_human": "等待人工确认",
+    "report_ready": "报告已生成",
+    "done": "执行结束",
+    "heartbeat": "心跳",
+    "stream_error": "实时事件流异常",
+    "message": "事件",
+}
+
+STREAM_STATUS_CN = {
+    "pending": "待执行",
+    "running": "运行中",
+    "success": "成功",
+    "completed": "已完成",
+    "failed": "失败",
+    "waiting_human": "等待确认",
+    "rejected": "已拒绝",
+    "fallback_polling": "切换轮询",
+    "stream_timeout": "事件流超时",
+    "not_found": "任务不存在",
+}
+
+HIDDEN_REPORT_SECTION_PREFIXES = ("## 6. 证据与工具观察结果",)
+
 RAG_METADATA_FIELDS = [
     "retrieval_mode", "embedding_backend", "vector_backend",
     "fallback_used", "dense_hit_count", "bm25_hit_count", "rrf_k",
     "dimension", "collection_name",
 ]
+
+
+def _template_allowed_tools(template: dict[str, Any]) -> list[str] | None:
+    tools = template.get("allowed_tools")
+    return list(tools) if isinstance(tools, list) else None
+
+
+def _current_template() -> dict[str, Any]:
+    name = st.session_state.get("selected_template", list(DEMO_TEMPLATES.keys())[0])
+    return DEMO_TEMPLATES.get(name) or list(DEMO_TEMPLATES.values())[0]
+
+
+def _current_scenario_template_key() -> str:
+    template = _current_template()
+    explicit_key = str(template.get("scenario_template_key") or "").strip()
+    if explicit_key:
+        return explicit_key
+    return "full_planner" if st.session_state.get("allowed_tools") == ALL_TOOLS else "standard"
 
 # ── 全局 CSS（极简深色调） ────────────────────────────────────────
 GLOBAL_CSS = """
@@ -111,6 +172,7 @@ class ApiError(Exception):
 
 
 def init_state() -> None:
+    default_template = list(DEMO_TEMPLATES.values())[0]
     defaults = {
         "api_base_url": os.environ.get("STREAMLIT_API_BASE_URL", DEFAULT_API_BASE_URL),
         # AUTH_ENABLED=false 时 API Key 为空即可；若后端开启鉴权，从 DEMO_API_KEY 自动填充
@@ -134,8 +196,8 @@ def init_state() -> None:
         "last_report": None,
         "event_log": [],
         "selected_template": list(DEMO_TEMPLATES.keys())[0],
-        "task_text": list(DEMO_TEMPLATES.values())[0]["task"],
-        "allowed_tools": list(DEMO_TEMPLATES.values())[0]["allowed_tools"],
+        "task_text": default_template["task"],
+        "allowed_tools": _template_allowed_tools(default_template),
         "report_type": "summary",
         "source_mode_ui": "real",       # default: real API
     }
@@ -268,15 +330,18 @@ def _format_stream_event(event: dict[str, Any]) -> str:
     step_no = event.get("step_no")
     tool_name = event.get("tool_name")
     summary = event.get("output_summary") or event.get("error_message") or ""
-    parts = [event_type]
+    latency_ms = event.get("latency_ms")
+    parts = [STREAM_EVENT_CN.get(event_type, event_type)]
     if status:
-        parts.append(f"status={status}")
+        parts.append(f"状态={STREAM_STATUS_CN.get(status, status)}")
     if step_no:
-        parts.append(f"step={step_no}")
+        parts.append(f"步骤={step_no}")
     if tool_name:
-        parts.append(f"tool={tool_name}")
+        parts.append(f"工具={tool_name}")
+    if latency_ms is not None:
+        parts.append(f"耗时={latency_ms}ms")
     if summary:
-        parts.append(str(summary)[:180])
+        parts.append(f"摘要={str(summary)[:180]}")
     return " | ".join(parts)
 
 
@@ -334,7 +399,7 @@ def stream_task_events(run_id: str, target: Any | None = None) -> None:
             {
                 "event_type": "stream_error",
                 "status": "fallback_polling",
-                "error_message": f"SSE stream failed: {type(exc).__name__}",
+                "error_message": f"实时事件流失败，已切换轮询：{type(exc).__name__}",
             }
         )
         if target is not None:
@@ -347,9 +412,7 @@ def _sync_allowed_tools() -> None:
     Called automatically by Streamlit when the selectbox value changes.
     Must NOT touch st.session_state.selected_template (widget owns it via key=).
     """
-    name = st.session_state.get("selected_template", list(DEMO_TEMPLATES.keys())[0])
-    t = DEMO_TEMPLATES.get(name) or list(DEMO_TEMPLATES.values())[0]
-    st.session_state.allowed_tools = list(t["allowed_tools"])
+    st.session_state.allowed_tools = _template_allowed_tools(_current_template())
 
 
 def apply_template(name: str, fill_task: bool = False) -> None:
@@ -359,7 +422,7 @@ def apply_template(name: str, fill_task: bool = False) -> None:
     t = DEMO_TEMPLATES.get(name) or list(DEMO_TEMPLATES.values())[0]
     if fill_task:
         st.session_state.task_text = t["task"]
-    st.session_state.allowed_tools = list(t["allowed_tools"])
+    st.session_state.allowed_tools = _template_allowed_tools(t)
 
 
 # ── UI helpers ────────────────────────────────────────────────────
@@ -641,16 +704,17 @@ def tab_task() -> None:
                 "source_mode": st.session_state.get("source_mode_ui", "real"),
                 "execution_mode_override": st.session_state.execution_mode_display,
                 "scenario_template": st.session_state.get("selected_template", ""),
-                "scenario_template_key": (
-                    "full_planner"
-                    if st.session_state.get("allowed_tools") == ALL_TOOLS
-                    else "standard"
-                ),
+                "scenario_template_key": _current_scenario_template_key(),
             }
             try:
-                st.session_state.event_log = [
-                    "create_task_started | planner=requested | status=pending"
-                ]
+                st.session_state.event_log = []
+                _append_event_log(
+                    {
+                        "event_type": "create_task_started",
+                        "status": "pending",
+                        "output_summary": "开始创建任务并生成执行计划",
+                    }
+                )
                 terminal = st.empty()
                 render_event_console(terminal)
                 with st.spinner("正在创建任务并调用 Planner 生成执行计划，标准调研可能需要 30-90 秒..."):
@@ -682,9 +746,14 @@ def tab_task() -> None:
                 resp = api_post(run_path, {})
                 st.session_state.last_run_response = resp
                 st.session_state.realtime_auto_refresh = True
-                st.session_state.event_log = [
-                    f"run_requested | status={resp.get('status')} | run_id={run_id}"
-                ]
+                st.session_state.event_log = []
+                _append_event_log(
+                    {
+                        "event_type": "run_requested",
+                        "status": resp.get("status"),
+                        "output_summary": f"run_id={run_id}",
+                    }
+                )
                 terminal = st.empty()
                 render_event_console(terminal)
                 if run_path.endswith("/run_async"):
@@ -840,9 +909,14 @@ def _split_report_markdown(markdown: str) -> list[tuple[str, str]]:
     sections: list[tuple[str, str]] = []
     current_heading = ""
     current_lines: list[str] = []
+    in_code_block = False
 
     for line in markdown.splitlines():
-        if line.startswith("## "):
+        if line.strip().startswith("```"):
+            in_code_block = not in_code_block
+            current_lines.append(line)
+            continue
+        if not in_code_block and line.startswith("## "):
             if current_lines:
                 sections.append((current_heading, "\n".join(current_lines).strip()))
             current_heading = line.strip()
@@ -874,6 +948,8 @@ def _collapse_key_evidence_blocks(markdown: str) -> str:
 
 def render_report_markdown(markdown: str) -> None:
     for heading, body in _split_report_markdown(markdown):
+        if heading.startswith(HIDDEN_REPORT_SECTION_PREFIXES):
+            continue
         should_fold = heading.startswith(FOLDED_REPORT_SECTION_PREFIXES)
         rendered = _collapse_key_evidence_blocks(body)
         if should_fold:

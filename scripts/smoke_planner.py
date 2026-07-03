@@ -8,9 +8,46 @@ sys.path.insert(0, str(ROOT))
 
 from app.agent.planner import plan_task
 from app.agent.plan_guardrails import normalize_plan_arguments
+from app.tools.base import RiskLevel, ToolSpec
+from app.tools.registry import register_tool
+
+
+def register_fake_remote_tool(server: str, remote_name: str, input_schema: dict) -> None:
+    register_tool(
+        ToolSpec(
+            name=f"{server}.{remote_name}",
+            description=f"Fake readonly MCP tool {server}.{remote_name}",
+            input_schema=input_schema,
+            risk_level=RiskLevel.LOW,
+            requires_confirmation=False,
+            enabled=True,
+            tags=["mcp_remote", "mcp-channel-readonly", "read-only"],
+            metadata={
+                "tool_source": "mcp_remote",
+                "mcp_channel": "readonly",
+                "remote_server": server,
+                "remote_tool_name": remote_name,
+                "remote_registry_name": f"{server}.{remote_name}",
+                "read_only": True,
+                "side_effect_free": True,
+                "headers_env": ["FAKE_HEADER_ENV"],
+            },
+        ),
+        lambda args: None,
+    )
 
 
 def main() -> None:
+    for server, remote_name, schema in [
+        ("firecrawl", "search", {"properties": {"query": {"type": "string"}}}),
+        ("firecrawl", "scrape", {"properties": {"url": {"type": "string"}, "query": {"type": "string"}}}),
+        ("firecrawl", "extract", {"properties": {"query": {"type": "string"}}}),
+        ("exa", "web_search_exa", {"properties": {"query": {"type": "string"}, "numResults": {"type": "integer"}}}),
+        ("context7", "resolve-library-id", {"properties": {"libraryName": {"type": "string"}}}),
+        ("context7", "query-docs", {"properties": {"query": {"type": "string"}, "libraryId": {"type": "string"}}}),
+    ]:
+        register_fake_remote_tool(server, remote_name, schema)
+
     task = "Read local docs, query database metrics, retrieve trace evidence, and generate a markdown report"
     plan = plan_task(
         task=task,
@@ -124,6 +161,36 @@ def main() -> None:
     if full_planner_tools != expected_full:
         raise SystemExit(f"Expected full planner to backfill all tools, got {full_planner_tools}")
 
+    deep_research = plan_task(
+        task="深入调研 Stable Diffusion 和 ComfyUI 的学习资料，读取网页正文并生成可验证报告",
+        allowed_tools=None,
+        source_mode="mock",
+        planner_mode="deterministic",
+        scenario_template="deep_web_research",
+    )
+    deep_tools = [step["tool_name"] for step in deep_research["steps"]]
+    for expected_tool in ["tavily_search", "exa.web_search_exa", "firecrawl.search", "firecrawl.scrape", "firecrawl.extract", "report_writer"]:
+        if expected_tool not in deep_tools:
+            raise SystemExit(f"Expected deep research tool {expected_tool}, got {deep_tools}")
+    scrape_step = next(step for step in deep_research["steps"] if step["tool_name"] == "firecrawl.scrape")
+    if scrape_step["arguments"].get("query") is None:
+        raise SystemExit(f"Expected Firecrawl scrape fallback query argument, got {scrape_step}")
+
+    tech_docs = plan_task(
+        task="学习 FastAPI 和 Streamlit 的最新技术文档，并生成报告",
+        allowed_tools=None,
+        source_mode="mock",
+        planner_mode="deterministic",
+        scenario_template="technical_docs_research",
+    )
+    tech_tools = [step["tool_name"] for step in tech_docs["steps"]]
+    for expected_tool in ["mcp_github_search", "context7.resolve-library-id", "context7.query-docs", "report_writer"]:
+        if expected_tool not in tech_tools:
+            raise SystemExit(f"Expected technical docs tool {expected_tool}, got {tech_tools}")
+    resolve_step = next(step for step in tech_docs["steps"] if step["tool_name"] == "context7.resolve-library-id")
+    if not resolve_step["arguments"].get("libraryName"):
+        raise SystemExit(f"Expected Context7 libraryName argument, got {resolve_step}")
+
     print(
         {
             "planner": "ok",
@@ -135,6 +202,8 @@ def main() -> None:
             "external_tools": external_tools,
             "chinese_web_tools": chinese_web_tools,
             "full_planner_tools": full_planner_tools,
+            "deep_research_tools": deep_tools,
+            "technical_docs_tools": tech_tools,
         }
     )
 

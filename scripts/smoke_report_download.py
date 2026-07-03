@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.agent.executor import run_plan
 from app.agent.planner import plan_task
+from app.agent.report_exporter import _clean_inline_markdown, _pdf_inline_markup
 from app.database import SessionLocal, init_db
 from app.main import app
 from app.tools.defaults import register_default_tools
@@ -49,6 +50,24 @@ def _make_completed_run() -> str:
 
 
 def main() -> None:
+    long_encoded_url = (
+        "https://www.facebook.com/example/posts/"
+        "%E7%82%BA%E4%BB%80%E9%BA%BC%E8%A6%81%E5%AD%B8%E7%BF%92comfyui"
+    )
+    markdown_link = f"[示例来源]({long_encoded_url})"
+    _assert(
+        _clean_inline_markdown(markdown_link) == "示例来源",
+        "visible DOCX/PDF link text should not include the full encoded URL",
+    )
+    _assert(
+        "facebook.com/...</a>" in _pdf_inline_markup(long_encoded_url),
+        "PDF bare long URLs should render as short visible domains",
+    )
+    _assert(
+        f'href="{long_encoded_url}"' in _pdf_inline_markup(markdown_link),
+        "PDF markdown links should keep the original URL as hyperlink target",
+    )
+
     run_id = _make_completed_run()
     with TestClient(app) as client:
         expected = {

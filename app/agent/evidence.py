@@ -303,6 +303,8 @@ def _items_from_record(
         return _github_items(run_id, record, existing_count)
     if tool_name == "tavily_search":
         return _tavily_items(run_id, record, existing_count)
+    if _is_remote_mcp_record(record):
+        return _remote_mcp_items(run_id, record, existing_count)
     if tool_name == "finish":
         summary = str(output.get("summary") or record.get("summary") or "").strip()
         if summary:
@@ -509,6 +511,150 @@ def _tavily_items(run_id: str, record: dict[str, Any], existing_count: int) -> l
     return items
 
 
+REMOTE_DISCOVERY_TOOLS = {
+    "search",
+    "map",
+    "web_search_exa",
+    "web_search_advanced_exa",
+    "resolve-library-id",
+    "resolve_library_id",
+}
+REMOTE_SUPPORT_TOOLS = {
+    "scrape",
+    "extract",
+    "crawl",
+    "fetch",
+    "web_fetch_exa",
+    "query-docs",
+    "query_docs",
+}
+
+
+def _is_remote_mcp_record(record: dict[str, Any]) -> bool:
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    return metadata.get("tool_source") == "mcp_remote"
+
+
+def _remote_tool_name(record: dict[str, Any]) -> str:
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    tool_name = str(metadata.get("remote_tool_name") or record.get("tool_name") or "")
+    return tool_name.strip().lower()
+
+
+def _remote_evidence_role(record: dict[str, Any]) -> str:
+    if not record.get("success"):
+        return "failure"
+    tool_name = _remote_tool_name(record)
+    if tool_name in REMOTE_SUPPORT_TOOLS:
+        return "support"
+    if tool_name in REMOTE_DISCOVERY_TOOLS:
+        return "discovery"
+    if any(token in tool_name for token in ("scrape", "extract", "fetch", "docs", "crawl")):
+        return "support"
+    if any(token in tool_name for token in ("search", "map", "resolve", "discover")):
+        return "discovery"
+    return "support"
+
+
+def _remote_mcp_source_type(record: dict[str, Any]) -> str:
+    role = _remote_evidence_role(record)
+    if role == "failure":
+        return "mcp_remote_failure"
+    return f"mcp_remote_{role}"
+
+
+def _remote_result_lists(output: dict[str, Any]) -> list[dict[str, Any]]:
+    for key in ("results", "documents", "docs", "items", "sources", "data"):
+        value = output.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    nested = output.get("output")
+    if isinstance(nested, dict):
+        return _remote_result_lists(nested)
+    return []
+
+
+def _remote_text_from_item(item: dict[str, Any]) -> str:
+    for key in (
+        "clean_content",
+        "markdown",
+        "content",
+        "text",
+        "snippet",
+        "summary",
+        "description",
+        "body",
+    ):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return json.dumps(item, ensure_ascii=False, default=str)[:900]
+
+
+def _remote_url_from_item(item: dict[str, Any]) -> str:
+    for key in ("url", "source_url", "html_url", "link"):
+        value = str(item.get(key) or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    return ""
+
+
+def _remote_title_from_item(item: dict[str, Any], fallback: str) -> str:
+    for key in ("title", "name", "libraryId", "library_id", "source"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value[:160]
+    url = _remote_url_from_item(item)
+    return url or fallback
+
+
+def _remote_mcp_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
+    output = record.get("output") if isinstance(record.get("output"), dict) else {}
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    remote_server = str(metadata.get("remote_server") or "remote")
+    remote_tool = str(metadata.get("remote_tool_name") or record.get("tool_name") or "tool")
+    role = _remote_evidence_role(record)
+    source_type = _remote_mcp_source_type(record)
+    prefix = "Remote MCP support" if role == "support" else "Remote MCP discovery"
+
+    items: list[EvidenceItem] = []
+    for result in _remote_result_lists(output)[:8]:
+        title = _remote_title_from_item(result, f"{remote_server}.{remote_tool}")
+        snippet = _remote_text_from_item(result)
+        if not snippet:
+            continue
+        item = _make_item(
+            run_id,
+            record,
+            existing_count + len(items) + 1,
+            title=f"{prefix}: {title}",
+            snippet=snippet[:800],
+            source_ref=_remote_url_from_item(result) or title,
+            source_type=source_type,
+        )
+        item.metadata["evidence_role"] = role
+        items.append(item)
+
+    if items:
+        return items
+
+    content = _remote_text_from_item(output) if output else str(record.get("summary") or "").strip()
+    if not content:
+        return []
+    url = _remote_url_from_item(output)
+    item = _make_item(
+        run_id,
+        record,
+        existing_count + 1,
+        title=f"{prefix}: {remote_server}.{remote_tool}",
+        snippet=content[:800],
+        source_ref=url or str(metadata.get("remote_registry_name") or record.get("tool_name") or "mcp_remote"),
+        source_type=source_type,
+    )
+    item.metadata["evidence_role"] = role
+    return [item]
+
+
 def _generic_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
     output = record.get("output") if isinstance(record.get("output"), dict) else {}
     summary = str(record.get("summary") or "").strip()
@@ -577,7 +723,7 @@ def _source_type(record: dict[str, Any]) -> str:
     if data_source:
         return str(data_source)
     if metadata.get("tool_source") == "mcp_remote":
-        return "mcp_remote"
+        return _remote_mcp_source_type(record)
     tool_name = str(record.get("tool_name") or "")
     if tool_name == "file_reader":
         return "file"
@@ -705,7 +851,7 @@ def _warnings(items: list[EvidenceItem]) -> list[str]:
         warnings.append("存在 fallback 证据，依赖这些证据的结论需要保留限制。")
     if any(item.unsupported_reason for item in items):
         warnings.append("部分计划结论未被支持，因为工具失败或返回空结果。")
-    if any(item.source_type == "mcp_remote" and item.status == "failed" for item in items):
+    if any(item.source_type.startswith("mcp_remote") and item.status == "failed" for item in items):
         warnings.append("远端 MCP 失败已记录为失败证据，没有升级为 API 500。")
     return warnings
 

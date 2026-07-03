@@ -217,6 +217,27 @@ def test_tool_source_repair() -> None:
     assert_true("[tavily_search]" not in repaired, "tool-only source marker was not repaired")
     assert_true("https://example.com/llm-course" in repaired, "repaired source missing URL")
 
+    remote_records = [
+        {
+            "success": True,
+            "tool_name": "firecrawl.scrape",
+            "metadata": {
+                "tool_source": "mcp_remote",
+                "remote_server": "firecrawl",
+                "remote_tool_name": "scrape",
+                "remote_registry_name": "firecrawl.scrape",
+            },
+            "output": {
+                "title": "Firecrawl page",
+                "url": "https://example.com/firecrawl-page",
+                "markdown": "Readable page content.",
+            },
+        }
+    ]
+    repaired_remote = _repair_tool_only_sources("结论。来源：[firecrawl.scrape]", remote_records)
+    assert_true("[firecrawl.scrape]" not in repaired_remote, "remote tool-only source marker was not repaired")
+    assert_true("https://example.com/firecrawl-page" in repaired_remote, "remote repaired source missing URL")
+
 
 def test_fallback_trace_bundle(client: TestClient, db) -> str:
     plan = {
@@ -310,6 +331,148 @@ def test_remote_failure_bundle(client: TestClient, db) -> str:
         server.server_close()
 
 
+def test_remote_source_pack_bundle(client: TestClient, db) -> str:
+    plan = {
+        "version": "deep-research-source-pack-smoke",
+        "task": "Deeply research a topic with Firecrawl, Exa, and Context7 evidence.",
+        "source_mode": "mock",
+        "allowed_tools": ["firecrawl.search", "firecrawl.scrape", "context7.query-docs"],
+        "planner_source": "smoke",
+        "execution_mode": "planned",
+        "steps": [
+            {
+                "step_no": 1,
+                "goal": "Discover web sources.",
+                "tool_name": "firecrawl.search",
+                "arguments": {"query": "traceable research agent"},
+                "expected_output": "Search discovery results.",
+                "completion_criteria": "Discovery sources have URLs.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 2,
+                "goal": "Read page body.",
+                "tool_name": "firecrawl.scrape",
+                "arguments": {"url": "https://example.com/firecrawl-page"},
+                "expected_output": "Readable page content.",
+                "completion_criteria": "Page content is available.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 3,
+                "goal": "Query current technical docs.",
+                "tool_name": "context7.query-docs",
+                "arguments": {"query": "FastAPI docs", "libraryId": "fastapi"},
+                "expected_output": "Documentation snippets.",
+                "completion_criteria": "Docs evidence is available.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+        ],
+        "notes": [],
+    }
+    run = create_run(db, plan)
+    common_metadata = {
+        "tool_source": "mcp_remote",
+        "mcp_channel": "readonly",
+        "remote_channel": "readonly",
+        "headers_env": ["FIRECRAWL_API_KEY"],
+    }
+    record_tool_result(
+        db,
+        run.run_id,
+        1,
+        "firecrawl.search",
+        {"query": "traceable research agent"},
+        ToolResult(
+            success=True,
+            output={
+                "results": [
+                    {
+                        "title": "Discovery result",
+                        "url": "https://example.com/discovery",
+                        "content": "Search discovery snippet.",
+                    }
+                ]
+            },
+            output_summary="Firecrawl search returned one discovery result.",
+            metadata={
+                **common_metadata,
+                "remote_server": "firecrawl",
+                "remote_tool_name": "search",
+                "remote_registry_name": "firecrawl.search",
+            },
+        ),
+        latency_ms=0,
+    )
+    record_tool_result(
+        db,
+        run.run_id,
+        2,
+        "firecrawl.scrape",
+        {"url": "https://example.com/firecrawl-page"},
+        ToolResult(
+            success=True,
+            output={
+                "title": "Readable Firecrawl page",
+                "url": "https://example.com/firecrawl-page",
+                "markdown": "Full readable page body with structured evidence.",
+            },
+            output_summary="Firecrawl scrape returned readable page content.",
+            metadata={
+                **common_metadata,
+                "remote_server": "firecrawl",
+                "remote_tool_name": "scrape",
+                "remote_registry_name": "firecrawl.scrape",
+            },
+        ),
+        latency_ms=0,
+    )
+    record_tool_result(
+        db,
+        run.run_id,
+        3,
+        "context7.query-docs",
+        {"query": "FastAPI docs", "libraryId": "fastapi"},
+        ToolResult(
+            success=True,
+            output={
+                "documents": [
+                    {
+                        "title": "FastAPI current docs",
+                        "url": "https://context7.com/fastapi",
+                        "content": "Current FastAPI documentation snippet.",
+                    }
+                ]
+            },
+            output_summary="Context7 query-docs returned documentation evidence.",
+            metadata={
+                **common_metadata,
+                "remote_server": "context7",
+                "remote_tool_name": "query-docs",
+                "remote_registry_name": "context7.query-docs",
+            },
+        ),
+        latency_ms=0,
+    )
+    evidence = get_evidence(client, run.run_id)
+    source_types = {group["source_type"] for group in evidence["source_groups"]}
+    assert_true("mcp_remote_discovery" in source_types, f"remote discovery group missing: {source_types}")
+    assert_true("mcp_remote_support" in source_types, f"remote support group missing: {source_types}")
+    refs = [item["source_ref"] for item in evidence["evidence_items"]]
+    assert_true("https://example.com/firecrawl-page" in refs, "remote support URL missing")
+    serialized = json.dumps(evidence, ensure_ascii=False)
+    assert_true("FIRECRAWL_API_KEY" in serialized, "headers_env name should remain auditable")
+    assert_true("fake-firecrawl-secret" not in serialized, "secret value leaked into evidence")
+    assert_true(
+        any(item["metadata"].get("evidence_role") == "support" for item in evidence["evidence_items"]),
+        "remote support role metadata missing",
+    )
+    return run.run_id
+
+
 def test_react_limitation_bundle(client: TestClient, db) -> str:
     server, url = start_fake_server()
     try:
@@ -380,6 +543,7 @@ def main() -> None:
         with TestClient(app) as client:
             with SessionLocal() as db:
                 test_multi_source_bundle(client, db)
+                test_remote_source_pack_bundle(client, db)
                 test_fallback_trace_bundle(client, db)
                 test_remote_failure_bundle(client, db)
                 test_react_limitation_bundle(client, db)
@@ -391,6 +555,7 @@ def main() -> None:
                     "multi_source_groups": "ok",
                     "mock_and_fallback_marked": "ok",
                     "tool_source_repair": "ok",
+                    "remote_source_pack_classification": "ok",
                     "remote_mcp_failure_auditable": "ok",
                     "react_limitation_report": "ok",
                 },

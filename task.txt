@@ -256,6 +256,34 @@ python scripts/smoke_final_project.py
 - `headers_env` 只读取环境变量值用于出站请求，不写入 trace/report/evidence。
 - Streamlit 继续作为主 demo UI，不新增第二套前端。
 
+## 2026-07-03 - 板块三补强：Deep Research Source Pack
+
+目标：让 MCP 接入从“能接远端工具”升级为可解释的产品场景，优先提升搜索/调研深度，而不是把 browser/playwright 类高风险工具混入默认链路。
+
+实现方向：
+
+- 新增 Streamlit 场景模板：
+  - 深度网页调研（Tavily + Firecrawl/Exa MCP）
+  - 技术文档调研（GitHub + Context7/Exa MCP）
+- 新模板使用 `allowed_tools=None`，由后端默认工具列表 + 已注册远端 MCP 工具动态决定可用工具；无远端 MCP 配置时仍可默认离线运行。
+- Planner 识别 `deep_web_research` / `technical_docs_research`：
+  - 深度网页调研优先 Tavily、Exa `web_search_exa/web_search_advanced_exa/web_fetch_exa`、Firecrawl `search/scrape/extract/map`。
+  - 技术文档调研优先 GitHub、Context7 `resolve-library-id/query-docs`、Exa、Firecrawl。
+  - 远端工具仍遵守 channel policy；interactive/write 不进入默认只读自动链路。
+- EvidenceBundle 对 remote MCP 证据分层：
+  - `mcp_remote_discovery`：search/map/resolve 类发现证据。
+  - `mcp_remote_support`：scrape/extract/fetch/query-docs 类正文支撑证据。
+  - `mcp_remote_failure`：失败远端调用，保留 trace，不升级为 API 500。
+- Report 层识别 remote MCP URL，修复 LLM 输出中的工具名来源，例如 `来源：[firecrawl.scrape]`。
+- `.env.example` / README 增加 Firecrawl、Exa、Context7 的 readonly 示例配置和 Firecrawl interact/browser 的 interactive 边界说明。
+
+验证覆盖：
+
+- `scripts/smoke_planner.py` 覆盖 fake Firecrawl/Exa/Context7 工具下的两个新模板。
+- `scripts/smoke_mcp_channels.py` 覆盖 Firecrawl `search/scrape/map/extract/interact`、Exa、Context7、browser/database/write fake server。
+- `scripts/smoke_evidence_aggregation.py` 覆盖 remote MCP discovery/support/failure 分类、URL 来源、headers_env 脱敏。
+- `scripts/smoke_streamlit_frontend.py` 覆盖新模板、动态 allowed_tools、scenario_template_key。
+
 ### Day44 - Evidence Quality / Verifier
 
 暂缓。后续可在 EvidenceBundle 上增加轻量质量判断，例如来源质量、freshness、mock/fallback/failure 降级提示、claim support strength。优先确定性规则，必要时再考虑 LLM verifier。

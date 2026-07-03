@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+import html
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -164,12 +166,62 @@ def _iter_blocks(markdown: str) -> list[dict[str, Any]]:
     return blocks
 
 
-def _clean_inline_markdown(text: str) -> str:
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+_BARE_URL_RE = re.compile(r"https?://[^\s)）]+")
+
+
+def _display_url(url: str) -> str:
+    parsed = urlparse(url)
+    if not parsed.netloc:
+        return url
+    if len(url) <= 90 and "%" not in url:
+        return url
+    return f"{parsed.netloc}/..."
+
+
+def _strip_emphasis(text: str) -> str:
     cleaned = re.sub(r"`([^`]+)`", r"\1", text)
     cleaned = re.sub(r"\*\*([^*]+)\*\*", r"\1", cleaned)
     cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)
-    cleaned = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", cleaned)
     return cleaned
+
+
+def _clean_inline_markdown(text: str) -> str:
+    cleaned = _strip_emphasis(text)
+    cleaned = _MARKDOWN_LINK_RE.sub(lambda match: match.group(1).strip(), cleaned)
+    return _BARE_URL_RE.sub(lambda match: _display_url(match.group(0)), cleaned)
+
+
+def _pdf_inline_markup(text: str) -> str:
+    cleaned = _strip_emphasis(text)
+
+    def link_markup(label: str, url: str) -> str:
+        visible = label.strip() or _display_url(url)
+        return (
+            f'<a href="{html.escape(url, quote=True)}">'
+            f"{html.escape(visible)}"
+            "</a>"
+        )
+
+    def linkify_bare_urls(segment: str) -> str:
+        parts: list[str] = []
+        pos = 0
+        for match in _BARE_URL_RE.finditer(segment):
+            parts.append(html.escape(segment[pos:match.start()]))
+            url = match.group(0)
+            parts.append(link_markup(_display_url(url), url))
+            pos = match.end()
+        parts.append(html.escape(segment[pos:]))
+        return "".join(parts)
+
+    parts: list[str] = []
+    pos = 0
+    for match in _MARKDOWN_LINK_RE.finditer(cleaned):
+        parts.append(linkify_bare_urls(cleaned[pos:match.start()]))
+        parts.append(link_markup(match.group(1), match.group(2)))
+        pos = match.end()
+    parts.append(linkify_bare_urls(cleaned[pos:]))
+    return "".join(parts)
 
 
 def _write_docx(markdown: str, target: Path) -> None:
@@ -206,7 +258,7 @@ def _write_pdf(markdown: str, target: Path) -> None:
         style.fontName = "STSong-Light"
     story: list[Any] = []
     for block in _iter_blocks(markdown):
-        text = _clean_inline_markdown(str(block.get("text") or ""))
+        text = _pdf_inline_markup(str(block.get("text") or ""))
         if block["type"] == "heading":
             level = min(int(block.get("level") or 1), 3)
             story.append(Paragraph(text, styles[f"Heading{level}"]))

@@ -91,6 +91,9 @@ def main() -> None:
     assert_true("full_planner" in source, "full planner scenario key missing")
     assert_true("stream_task_events" in source, "Streamlit does not consume SSE task events")
     assert_true("render_event_console" in source, "Streamlit realtime event console missing")
+    assert_true("STREAM_EVENT_CN" in source and "STREAM_STATUS_CN" in source, "realtime event Chinese mapping missing")
+    assert_true("run_requested | status=" not in source, "raw English run_requested log should not be shown")
+    assert_true("create_task_started | planner=requested" not in source, "raw English create-task log should not be shown")
     assert_true("CREATE_TASK_TIMEOUT_SECONDS" in source, "create-task timeout constant missing")
     assert_true(
         'api_post("/api/tasks", payload, timeout=CREATE_TASK_TIMEOUT_SECONDS)' in source,
@@ -100,12 +103,24 @@ def main() -> None:
     assert_true('"docx"' in source and '"pdf"' in source, "report docx/pdf download formats missing")
     assert_true("本地读取（文件 + RAG + SQL）" in source, "local reading template missing")
     assert_true("外部调研（GitHub + Tavily）" in source, "external research template missing")
+    assert_true("深度网页调研（Tavily + Firecrawl/Exa MCP）" in source, "deep web research template missing")
+    assert_true("技术文档调研（GitHub + Context7/Exa MCP）" in source, "technical docs template missing")
     assert_true("全规划器（本地读取 + 外部调研）" in source, "full planner template missing")
+    assert_true("deep_web_research" in source, "deep web research scenario key missing")
+    assert_true("technical_docs_research" in source, "technical docs scenario key missing")
+    assert_true('"allowed_tools": None' in source, "dynamic remote MCP templates should allow backend defaults")
+    assert_true("_current_scenario_template_key()" in source, "scenario key helper not used in payload")
     assert_true("HITL 人工确认流程" not in source, "standalone HITL template should be removed")
     assert_true('"mcp_github_search", "tavily_search", "report_writer"' in source, "external template must include GitHub and Tavily")
     assert_true("证据聚合" in source, "evidence aggregation title should be localized")
     assert_true("证据导出" in source, "evidence export title should be localized")
     assert_true("FOLDED_REPORT_SECTION_PREFIXES" in source, "report folded section helper missing")
+    assert_true("HIDDEN_REPORT_SECTION_PREFIXES" in source, "hidden report section helper missing")
+    assert_true("in_code_block" in source, "report section splitter must ignore headings inside code blocks")
+    assert_true(
+        "heading.startswith(HIDDEN_REPORT_SECTION_PREFIXES)" in source,
+        "Streamlit report preview should hide the tool observation section",
+    )
     assert_true("render_report_markdown(md)" in source, "report markdown should use folded renderer")
     assert_true("<details><summary>关键证据片段</summary>" in source, "key evidence fragment folding missing")
     assert_true("计划步骤数" not in source and "实际执行步骤" not in source, "report summary still shows removed metrics")

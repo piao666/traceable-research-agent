@@ -28,6 +28,72 @@ def _json_preview(data: Any, max_chars: int = 500) -> str:
     return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
 
 
+def _remote_result_lists(output: dict[str, Any]) -> list[dict[str, Any]]:
+    for key in ("results", "documents", "docs", "items", "sources", "data"):
+        value = output.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    nested = output.get("output")
+    if isinstance(nested, dict):
+        return _remote_result_lists(nested)
+    return []
+
+
+def _remote_url(item: dict[str, Any]) -> str:
+    for key in ("url", "source_url", "html_url", "link"):
+        value = str(item.get(key) or "").strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    return ""
+
+
+def _remote_title(item: dict[str, Any]) -> str:
+    for key in ("title", "name", "full_name", "libraryId", "library_id", "source"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value[:160]
+    return _remote_url(item) or "Remote MCP result"
+
+
+def _remote_content(item: dict[str, Any], max_chars: int = 320) -> str:
+    for key in (
+        "clean_content",
+        "markdown",
+        "content",
+        "text",
+        "snippet",
+        "summary",
+        "description",
+        "body",
+    ):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()[:max_chars]
+    return json.dumps(item, ensure_ascii=False, default=str)[:max_chars]
+
+
+def _remote_selected_evidence(tool_name: str, output: dict[str, Any]) -> str:
+    results = _remote_result_lists(output)
+    if results:
+        return _json_preview(
+            [
+                {
+                    "title": _remote_title(item),
+                    "url": _remote_url(item),
+                    "content": _remote_content(item),
+                }
+                for item in results[:5]
+            ],
+            max_chars=1400,
+        )
+    selected = {
+        "tool": tool_name,
+        "url": _remote_url(output),
+        "content": _remote_content(output, max_chars=700),
+    }
+    return _json_preview(selected, max_chars=1000)
+
+
 def _selected_evidence(tool_name: str, output: Any) -> str:
     if not isinstance(output, dict):
         return _json_preview(output)
@@ -107,6 +173,8 @@ def _selected_evidence(tool_name: str, output: Any) -> str:
             },
             max_chars=1400,
         )
+    if "." in tool_name:
+        return _remote_selected_evidence(tool_name, output)
     return _json_preview(output)
 
 
@@ -438,6 +506,7 @@ def _source_references(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
             continue
         output = record.get("output") if isinstance(record.get("output"), dict) else {}
         tool_name = str(record.get("tool_name") or "")
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
         if tool_name in {"tavily_search", "mcp_github_search"}:
             for item in output.get("results") or []:
                 if not isinstance(item, dict):
@@ -449,6 +518,16 @@ def _source_references(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
                     or item.get("url")
                 )
                 add(title, item.get("url") or item.get("html_url"))
+        elif metadata.get("tool_source") == "mcp_remote":
+            direct_title = (
+                output.get("title")
+                or output.get("name")
+                or metadata.get("remote_registry_name")
+                or tool_name
+            )
+            add(direct_title, output.get("url") or output.get("source_url") or output.get("html_url"))
+            for item in _remote_result_lists(output):
+                add(_remote_title(item), _remote_url(item))
     return references
 
 
@@ -468,8 +547,20 @@ def _repair_tool_only_sources(answer: str, records: list[dict[str, Any]]) -> str
         return answer
     title, url = references[0]
     replacement = f"来源：{title}（{url}）"
-    repaired = re.sub(r"来源[:：]\s*\[`?(?:tavily_search|mcp_github_search)`?\]", replacement, answer)
-    repaired = re.sub(r"来源[:：]\s*(?:tavily_search|mcp_github_search)\b", replacement, repaired)
+    tool_names = [
+        re.escape(str(record.get("tool_name") or ""))
+        for record in records
+        if record.get("tool_name")
+        and (
+            str(record.get("tool_name")) in {"tavily_search", "mcp_github_search"}
+            or (isinstance(record.get("metadata"), dict) and record["metadata"].get("tool_source") == "mcp_remote")
+        )
+    ]
+    pattern = "|".join(sorted(set(tool_names), key=len, reverse=True))
+    if not pattern:
+        return answer
+    repaired = re.sub(rf"来源[:：]\s*\[`?(?:{pattern})`?\]", replacement, answer)
+    repaired = re.sub(rf"来源[:：]\s*(?:{pattern})\b", replacement, repaired)
     return repaired
 
 

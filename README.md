@@ -232,8 +232,12 @@ MCP_REMOTE_SERVERS=[{"name":"demo","base_url":"http://127.0.0.1:8001/mcp","timeo
 新版远端 MCP 推荐使用通道配置：
 
 ```ini
-MCP_CHANNEL_READONLY_SERVERS=[{"name":"firecrawl","base_url":"http://127.0.0.1:9001/mcp","transport":"http_json_rpc","timeout_seconds":10,"allowed_tools":["scrape","search"],"blocked_tools":[],"headers_env":{"Authorization":"FIRECRAWL_MCP_AUTH_HEADER"},"channel":"readonly"}]
-MCP_CHANNEL_INTERACTIVE_SERVERS=[{"name":"browser","base_url":"http://127.0.0.1:9002/mcp","transport":"http_json_rpc","allowed_tools":["navigate","screenshot"],"channel":"interactive"}]
+MCP_CHANNEL_READONLY_SERVERS=[
+  {"name":"firecrawl","base_url":"http://127.0.0.1:9001/mcp","transport":"http_json_rpc","timeout_seconds":10,"allowed_tools":["search","scrape","map","extract"],"blocked_tools":[],"headers_env":{"Authorization":"FIRECRAWL_MCP_AUTH_HEADER"},"channel":"readonly"},
+  {"name":"exa","base_url":"http://127.0.0.1:9002/mcp","transport":"http_json_rpc","timeout_seconds":10,"allowed_tools":["web_search_exa","web_fetch_exa","web_search_advanced_exa"],"blocked_tools":[],"headers_env":{"Authorization":"EXA_MCP_AUTH_HEADER"},"channel":"readonly"},
+  {"name":"context7","base_url":"http://127.0.0.1:9003/mcp","transport":"http_json_rpc","timeout_seconds":10,"allowed_tools":["resolve-library-id","query-docs"],"blocked_tools":[],"headers_env":{},"channel":"readonly"}
+]
+MCP_CHANNEL_INTERACTIVE_SERVERS=[{"name":"browser","base_url":"http://127.0.0.1:9004/mcp","transport":"http_json_rpc","allowed_tools":["navigate","screenshot"],"channel":"interactive"}]
 MCP_CHANNEL_WRITE_SERVERS=[]
 ```
 
@@ -246,6 +250,15 @@ MCP_CHANNEL_WRITE_SERVERS=[]
 每个 server 支持 `name`、`base_url`、`transport`、`timeout_seconds`、`allowed_tools`、`blocked_tools`、`headers_env` 和 `channel`。`headers_env` 只记录环境变量名，不会把 header 值写入 health、trace、report 或 evidence export。远端工具会注册为 `<server>.<tool>`，并在 trace metadata 中标记 `tool_source=mcp_remote`、`remote_server`、`remote_channel` 和 `remote_tool_name`。远端失败会变成 failed `ToolResult`，不会把任务 API 变成 500。
 
 Firecrawl 如果以 HTTP JSON-RPC MCP 形态提供只读网页抓取/搜索工具，可以放入 `readonly` 通道。browser/filesystem/database MCP 应只接入经过 allowlist 限定的只读子集；browser/playwright 类交互工具应放入 `interactive` 通道。当前实现不是无限制 MCP hub，而是可配置、可审计、默认安全的可信子集。
+
+### Deep Research Source Pack
+
+板块三新增一个明确的 MCP 产品场景：深度网页调研。它面向“已经能搜到 URL，但需要读正文、抽取证据、展开站点结构并生成可审计报告”的任务。
+
+- Streamlit 模板 `深度网页调研（Tavily + Firecrawl/Exa MCP）`：用 Tavily/Exa 做发现，用 Firecrawl `search/scrape/map/extract` 读取页面正文和结构，再进入 EvidenceBundle 与报告。
+- Streamlit 模板 `技术文档调研（GitHub + Context7/Exa MCP）`：用 GitHub 查代码和 issue，用 Context7 `resolve-library-id/query-docs` 查当前库文档，用 Exa/Firecrawl 补充网页来源。
+- EvidenceBundle 会把 remote MCP 搜索/map 结果标记为 `mcp_remote_discovery`，把 scrape/extract/fetch/query-docs 正文标记为 `mcp_remote_support`，失败标记为 `mcp_remote_failure`。
+- 默认离线 demo 不要求配置任何远端 MCP；未配置 Firecrawl/Exa/Context7 时，Planner 会保留内置 Tavily/GitHub/RAG 路径并在 notes 中记录降级。
 
 ### MCP External Client Demo
 

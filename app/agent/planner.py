@@ -106,9 +106,66 @@ REMOTE_MCP_KEYWORDS = {
     "mcp remote",
     "remote mcp",
     "remote tool",
+    "firecrawl",
+    "exa",
+    "context7",
     "远端",
     "远程",
 }
+DEEP_RESEARCH_KEYWORDS = {
+    "deep research",
+    "deep web research",
+    "source pack",
+    "scrape",
+    "crawl",
+    "extract",
+    "page content",
+    "read page",
+    "web evidence",
+    "深入调研",
+    "深度调研",
+    "深度网页调研",
+    "网页正文",
+    "正文抓取",
+    "站点展开",
+    "可验证证据",
+}
+TECH_DOCS_RESEARCH_KEYWORDS = {
+    "technical docs",
+    "technical documentation",
+    "api docs",
+    "library docs",
+    "framework docs",
+    "sdk docs",
+    "context7",
+    "fastapi",
+    "streamlit",
+    "comfyui",
+    "stable diffusion",
+    "mcp sdk",
+    "技术文档",
+    "官方文档",
+    "接口文档",
+    "库文档",
+    "框架文档",
+}
+DEEP_RESEARCH_REMOTE_PRIORITY = (
+    ("exa", "web_search_exa"),
+    ("exa", "web_search_advanced_exa"),
+    ("firecrawl", "search"),
+    ("firecrawl", "scrape"),
+    ("firecrawl", "extract"),
+    ("firecrawl", "map"),
+    ("exa", "web_fetch_exa"),
+)
+TECH_DOCS_REMOTE_PRIORITY = (
+    ("context7", "resolve-library-id"),
+    ("context7", "query-docs"),
+    ("exa", "web_search_exa"),
+    ("exa", "web_fetch_exa"),
+    ("firecrawl", "search"),
+    ("firecrawl", "scrape"),
+)
 GITHUB_REPOSITORY_RANKING_KEYWORDS = {
     "stars",
     "star ranking",
@@ -137,6 +194,120 @@ HUMAN_CONFIRM_KEYWORDS = {
 
 def _matches(task_lower: str, keywords: set[str]) -> bool:
     return any(keyword.lower() in task_lower for keyword in keywords)
+
+
+def _scenario_marker(scenario_template: str | None) -> str:
+    return str(scenario_template or "").strip().lower()
+
+
+def _is_deep_research_scenario(task_lower: str, scenario_template: str | None) -> bool:
+    marker = _scenario_marker(scenario_template)
+    return (
+        "deep_web_research" in marker
+        or "deep research" in marker
+        or "深度网页调研" in marker
+        or _matches(task_lower, DEEP_RESEARCH_KEYWORDS)
+    )
+
+
+def _is_technical_docs_scenario(task_lower: str, scenario_template: str | None) -> bool:
+    marker = _scenario_marker(scenario_template)
+    return (
+        "technical_docs_research" in marker
+        or "technical docs" in marker
+        or "技术文档调研" in marker
+        or _matches(task_lower, TECH_DOCS_RESEARCH_KEYWORDS)
+    )
+
+
+def _schema_field_names(schema: dict[str, Any]) -> set[str]:
+    fields = {str(key) for key in schema.keys()}
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        fields.update(str(key) for key in properties.keys())
+    return fields
+
+
+def _first_url(text: str) -> str | None:
+    match = re.search(r"https?://[^\s)>\]}\"']+", text)
+    return match.group(0) if match else None
+
+
+def _guess_library_name(task: str) -> str:
+    known = (
+        "FastAPI",
+        "Streamlit",
+        "ComfyUI",
+        "Stable Diffusion",
+        "MCP SDK",
+        "LangChain",
+        "LlamaIndex",
+        "Chroma",
+        "FAISS",
+    )
+    task_lower = task.lower()
+    for name in known:
+        if name.lower() in task_lower:
+            return name
+    words = re.findall(r"[A-Za-z][A-Za-z0-9_.-]{2,}", task)
+    return words[0] if words else task[:80]
+
+
+def _remote_tool_identity(spec: Any) -> tuple[str, str, str, str]:
+    metadata = spec.metadata or {}
+    server = str(metadata.get("remote_server") or "").lower()
+    remote_name = str(metadata.get("remote_tool_name") or spec.name).lower()
+    registry_name = str(metadata.get("remote_registry_name") or spec.name).lower()
+    return spec.name.lower(), server, remote_name, registry_name
+
+
+def _remote_tool_matches(spec: Any, provider: str, remote_tool_name: str) -> bool:
+    spec_name, server, remote_name, registry_name = _remote_tool_identity(spec)
+    provider = provider.lower()
+    target = remote_tool_name.lower()
+    provider_match = (
+        provider in server
+        or registry_name.startswith(f"{provider}.")
+        or spec_name.startswith(f"{provider}.")
+        or provider in spec_name
+    )
+    tool_match = remote_name == target or registry_name.endswith(f".{target}") or spec_name.endswith(f".{target}")
+    return provider_match and tool_match
+
+
+def _append_preferred_remote_steps(
+    steps: list[dict[str, Any]],
+    notes: list[str],
+    task: str,
+    allowed_set: set[str] | None,
+    priority: tuple[tuple[str, str], ...],
+) -> list[str]:
+    inserted: list[str] = []
+    remote_specs = [
+        spec
+        for spec in list_tools()
+        if spec.enabled and "mcp_remote" in spec.tags and spec.name != "report_writer"
+        and (
+            tool_channel(spec) == "readonly"
+            or (allowed_set is not None and spec.name in allowed_set)
+        )
+    ]
+    for provider, remote_tool_name in priority:
+        spec = next(
+            (
+                candidate
+                for candidate in remote_specs
+                if _remote_tool_matches(candidate, provider, remote_tool_name)
+            ),
+            None,
+        )
+        if spec is None:
+            continue
+        before = len(steps)
+        _append_step(steps, notes, spec.name, task, allowed_set)
+        if len(steps) > before:
+            inserted.append(spec.name)
+    return inserted
 
 
 def _step_template(
@@ -211,11 +382,30 @@ def _step_template(
     else:
         spec = get_tool(tool_name)
         input_schema = spec.input_schema if spec else {}
+        fields = _schema_field_names(input_schema)
         arguments: dict[str, Any] = {}
-        if "query" in input_schema:
+        url = _first_url(task)
+        remote_tool_name = str((spec.metadata or {}).get("remote_tool_name") or tool_name) if spec else tool_name
+        if "query" in fields:
             arguments["query"] = task
-        elif "text" in input_schema:
+        if "text" in fields:
             arguments["text"] = task
+        if "url" in fields and url:
+            arguments["url"] = url
+        if "libraryName" in fields:
+            arguments["libraryName"] = _guess_library_name(task)
+        if "library_id" in fields:
+            arguments.setdefault("library_id", _guess_library_name(task))
+        if "libraryId" in fields:
+            arguments.setdefault("libraryId", _guess_library_name(task))
+        if "limit" in fields:
+            arguments.setdefault("limit", 5)
+        if "max_results" in fields:
+            arguments.setdefault("max_results", 5)
+        if "numResults" in fields:
+            arguments.setdefault("numResults", 5)
+        if not arguments and remote_tool_name.lower() in {"scrape", "fetch", "web_fetch_exa"}:
+            arguments["query"] = task
         step = {
             "goal": f"Call remote MCP tool {tool_name} through the unified Tool Registry.",
             "arguments": arguments,
@@ -372,27 +562,80 @@ def deterministic_plan_task(
     notes: list[str] = []
     steps: list[dict[str, Any]] = []
 
-    if _matches(task_lower, FILE_KEYWORDS):
-        _append_step(steps, notes, "file_reader", task_text, allowed_set)
-    if _matches(task_lower, SQL_KEYWORDS):
-        _append_step(steps, notes, "sql_query", task_text, allowed_set)
-    if _matches(task_lower, WEB_SEARCH_KEYWORDS):
+    scenario_marker = _scenario_marker(scenario_template)
+    strict_deep_research = "deep_web_research" in scenario_marker
+    strict_technical_docs = "technical_docs_research" in scenario_marker
+    deep_research = _is_deep_research_scenario(task_lower, scenario_template)
+    technical_docs = _is_technical_docs_scenario(task_lower, scenario_template)
+    if strict_deep_research:
+        technical_docs = False
+    if strict_technical_docs:
+        deep_research = False
+
+    if deep_research:
         _append_step(steps, notes, "tavily_search", task_text, allowed_set)
-    if _matches(task_lower, REMOTE_MCP_KEYWORDS):
-        remote_tools = [
-            spec.name
-            for spec in list_tools()
-            if spec.enabled and "mcp_remote" in spec.tags and spec.name != "report_writer"
-        ]
-        for remote_tool_name in remote_tools:
-            if allowed_set is None or remote_tool_name in allowed_set:
-                _append_step(steps, notes, remote_tool_name, task_text, allowed_set)
-                break
-    if _matches(task_lower, RAG_KEYWORDS):
-        _append_step(steps, notes, "rag_search", task_text, allowed_set)
-    if _matches(task_lower, GITHUB_KEYWORDS):
+        inserted = _append_preferred_remote_steps(
+            steps,
+            notes,
+            task_text,
+            allowed_set,
+            DEEP_RESEARCH_REMOTE_PRIORITY,
+        )
+        if not inserted:
+            notes.append(
+                "Deep web research MCP tools were not configured; used available built-in discovery tools only."
+            )
+    if technical_docs:
         _append_step(steps, notes, "mcp_github_search", task_text, allowed_set)
-    if _matches(task_lower, REPORT_KEYWORDS):
+        inserted = _append_preferred_remote_steps(
+            steps,
+            notes,
+            task_text,
+            allowed_set,
+            TECH_DOCS_REMOTE_PRIORITY,
+        )
+        if not inserted:
+            notes.append(
+                "Technical docs MCP tools were not configured; used available built-in research tools only."
+            )
+
+    if not strict_deep_research and not strict_technical_docs:
+        if _matches(task_lower, FILE_KEYWORDS):
+            _append_step(steps, notes, "file_reader", task_text, allowed_set)
+        if _matches(task_lower, SQL_KEYWORDS):
+            _append_step(steps, notes, "sql_query", task_text, allowed_set)
+        if _matches(task_lower, WEB_SEARCH_KEYWORDS):
+            _append_step(steps, notes, "tavily_search", task_text, allowed_set)
+        if _matches(task_lower, REMOTE_MCP_KEYWORDS):
+            remote_tools = [
+                spec.name
+                for spec in list_tools()
+                if spec.enabled and "mcp_remote" in spec.tags and spec.name != "report_writer"
+                and (
+                    tool_channel(spec) == "readonly"
+                    or (allowed_set is not None and spec.name in allowed_set)
+                )
+            ]
+            for remote_tool_name in remote_tools:
+                if allowed_set is None or remote_tool_name in allowed_set:
+                    _append_step(steps, notes, remote_tool_name, task_text, allowed_set)
+                    break
+        if _matches(task_lower, RAG_KEYWORDS):
+            _append_step(steps, notes, "rag_search", task_text, allowed_set)
+        if _matches(task_lower, GITHUB_KEYWORDS):
+            _append_step(steps, notes, "mcp_github_search", task_text, allowed_set)
+        if _matches(task_lower, REPORT_KEYWORDS):
+            _append_step(
+                steps,
+                notes,
+                "report_writer",
+                task_text,
+                allowed_set,
+                requires_human_confirmation,
+            )
+    if (deep_research or technical_docs) and not any(
+        step.get("tool_name") == "report_writer" for step in steps
+    ):
         _append_step(
             steps,
             notes,
@@ -421,7 +664,12 @@ def deterministic_plan_task(
 
     default_allowed = DEFAULT_TOOL_ORDER.copy()
     for spec in list_tools():
-        if spec.enabled and "mcp_remote" in spec.tags and spec.name not in default_allowed:
+        if (
+            spec.enabled
+            and "mcp_remote" in spec.tags
+            and tool_channel(spec) == "readonly"
+            and spec.name not in default_allowed
+        ):
             default_allowed.append(spec.name)
 
     plan = {
@@ -485,7 +733,7 @@ def _is_full_planner_scenario(
     allowed_tools: list[str] | None,
     scenario_template: str | None,
 ) -> bool:
-    marker = str(scenario_template or "").strip().lower()
+    marker = _scenario_marker(scenario_template)
     if marker and ("full" in marker or "\u5168\u89c4\u5212\u5668" in marker):
         return True
     return False

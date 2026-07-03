@@ -178,6 +178,26 @@ def main() -> None:
                 "tags": ["firecrawl", "search"],
             },
             {
+                "name": "map",
+                "description": "Read-only Firecrawl-style site map.",
+                "input_schema": {"url": "string"},
+                "read_only": True,
+                "side_effect_free": True,
+                "requires_confirmation": False,
+                "risk_level": "low",
+                "tags": ["firecrawl", "map"],
+            },
+            {
+                "name": "extract",
+                "description": "Read-only Firecrawl-style extraction.",
+                "input_schema": {"query": "string"},
+                "read_only": True,
+                "side_effect_free": True,
+                "requires_confirmation": False,
+                "risk_level": "low",
+                "tags": ["firecrawl", "extract"],
+            },
+            {
                 "name": "blocked",
                 "description": "Safe but blocked by local config.",
                 "input_schema": {"query": "string"},
@@ -187,7 +207,7 @@ def main() -> None:
                 "risk_level": "low",
             },
             {
-                "name": "click",
+                "name": "interact",
                 "description": "Browser-like side-effect tool that readonly channel must skip.",
                 "input_schema": {"selector": "string"},
                 "read_only": False,
@@ -197,6 +217,68 @@ def main() -> None:
             },
         ],
         required_authorization="Bearer fake-firecrawl-secret",
+    )
+    exa, exa_url = start_fake_server(
+        [
+            {
+                "name": "web_search_exa",
+                "description": "Read-only Exa semantic search.",
+                "input_schema": {"query": "string"},
+                "read_only": True,
+                "side_effect_free": True,
+                "requires_confirmation": False,
+                "risk_level": "low",
+                "tags": ["exa", "search"],
+            },
+            {
+                "name": "web_fetch_exa",
+                "description": "Read-only Exa page fetch.",
+                "input_schema": {"url": "string"},
+                "read_only": True,
+                "side_effect_free": True,
+                "requires_confirmation": False,
+                "risk_level": "low",
+                "tags": ["exa", "fetch"],
+            },
+        ]
+    )
+    context7, context7_url = start_fake_server(
+        [
+            {
+                "name": "resolve-library-id",
+                "description": "Read-only Context7 library resolver.",
+                "input_schema": {"libraryName": "string"},
+                "read_only": True,
+                "side_effect_free": True,
+                "requires_confirmation": False,
+                "risk_level": "low",
+                "tags": ["context7", "docs"],
+            },
+            {
+                "name": "query-docs",
+                "description": "Read-only Context7 docs query.",
+                "input_schema": {"query": "string", "libraryId": "string"},
+                "read_only": True,
+                "side_effect_free": True,
+                "requires_confirmation": False,
+                "risk_level": "low",
+                "tags": ["context7", "docs"],
+            },
+        ]
+    )
+    firecrawl_interactive, firecrawl_interactive_url = start_fake_server(
+        [
+            {
+                "name": "interact",
+                "description": "Interactive Firecrawl agent action.",
+                "input_schema": {"instructions": "string"},
+                "read_only": False,
+                "side_effect_free": False,
+                "requires_confirmation": True,
+                "risk_level": "high",
+                "tags": ["firecrawl", "interactive"],
+            }
+        ]
     )
     browser, browser_url = start_fake_server(
         [
@@ -256,11 +338,17 @@ def main() -> None:
                 "firecrawl",
                 firecrawl_url,
                 2,
-                allowed_tools=("scrape", "search", "blocked"),
+                allowed_tools=("scrape", "search", "map", "extract", "interact", "blocked"),
                 blocked_tools=("blocked",),
                 headers_env={"Authorization": "FIRECRAWL_MCP_AUTH_HEADER"},
                 channel="readonly",
             )
+        )
+        exa_specs = register_remote_mcp_server(
+            MCPRemoteServer("exa", exa_url, 2, channel="readonly")
+        )
+        context7_specs = register_remote_mcp_server(
+            MCPRemoteServer("context7", context7_url, 2, channel="readonly")
         )
         database_specs = register_remote_mcp_server(
             MCPRemoteServer("database_demo", database_url, 2, channel="readonly")
@@ -268,23 +356,53 @@ def main() -> None:
         interactive_specs = register_remote_mcp_server(
             MCPRemoteServer("browser_demo", browser_url, 2, channel="interactive")
         )
+        firecrawl_interactive_specs = register_remote_mcp_server(
+            MCPRemoteServer("firecrawl_interactive", firecrawl_interactive_url, 2, channel="interactive")
+        )
         write_specs = register_remote_mcp_server(
             MCPRemoteServer("writer_demo", writer_url, 2, channel="write")
         )
 
-        registered_names = {spec.name for spec in readonly_specs + database_specs + interactive_specs + write_specs}
+        registered_names = {
+            spec.name
+            for spec in (
+                readonly_specs
+                + exa_specs
+                + context7_specs
+                + database_specs
+                + interactive_specs
+                + firecrawl_interactive_specs
+                + write_specs
+            )
+        }
         all_names = {spec.name for spec in list_tools()}
-        assert_true({"firecrawl.scrape", "firecrawl.search", "database_demo.query"} <= registered_names, "readonly tools missing")
+        assert_true(
+            {
+                "firecrawl.scrape",
+                "firecrawl.search",
+                "firecrawl.map",
+                "firecrawl.extract",
+                "exa.web_search_exa",
+                "exa.web_fetch_exa",
+                "context7.resolve-library-id",
+                "context7.query-docs",
+                "database_demo.query",
+            }
+            <= registered_names,
+            "readonly tools missing",
+        )
         assert_true("firecrawl.blocked" not in all_names, "blocked tool was registered")
-        assert_true("firecrawl.click" not in all_names, "unsafe readonly-channel tool was registered")
+        assert_true("firecrawl.interact" not in all_names, "unsafe readonly-channel interact tool was registered")
         assert_true("database_demo.execute" not in all_names, "database write tool was registered")
         assert_true("writer_demo.write_file" not in all_names, "write-channel tool was registered")
 
         scrape = get_tool("firecrawl.scrape")
         navigate = get_tool("browser_demo.navigate")
+        interact = get_tool("firecrawl_interactive.interact")
         assert_true(scrape is not None and scrape.metadata.get("mcp_channel") == "readonly", "readonly channel metadata missing")
         assert_true(navigate is not None and navigate.requires_confirmation, "interactive tool must require confirmation")
         assert_true(navigate.metadata.get("mcp_channel") == "interactive", "interactive channel metadata missing")
+        assert_true(interact is not None and interact.requires_confirmation, "Firecrawl interact must require confirmation")
 
         direct = execute_tool("firecrawl.scrape", {"url": "https://example.com"})
         assert_true(direct.success, "readonly remote call failed")
@@ -376,7 +494,7 @@ def main() -> None:
         assert_true(summary["channels"]["interactive"]["registered_tools"] >= 1, "interactive summary count missing")
         assert_true(summary["channels"]["write"]["skipped_tools"] >= 1, "write summary skipped count missing")
     finally:
-        for server in (firecrawl, browser, database, writer):
+        for server in (firecrawl, exa, context7, firecrawl_interactive, browser, database, writer):
             server.shutdown()
             server.server_close()
 
@@ -391,6 +509,7 @@ def main() -> None:
                 "headers_env_redacted": "ok",
                 "health_channel_summary": "ok",
                 "remote_failure_trace": "ok",
+                "deep_research_source_pack": "ok",
             },
             indent=2,
         )
