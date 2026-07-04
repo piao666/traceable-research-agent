@@ -169,12 +169,25 @@ def main() -> None:
         scenario_template="deep_web_research",
     )
     deep_tools = [step["tool_name"] for step in deep_research["steps"]]
-    for expected_tool in ["tavily_search", "exa.web_search_exa", "firecrawl.search", "firecrawl.scrape", "firecrawl.extract", "report_writer"]:
+    for expected_tool in ["tavily_search", "exa.web_search_exa", "firecrawl.search", "report_writer"]:
         if expected_tool not in deep_tools:
             raise SystemExit(f"Expected deep research tool {expected_tool}, got {deep_tools}")
-    scrape_step = next(step for step in deep_research["steps"] if step["tool_name"] == "firecrawl.scrape")
-    if scrape_step["arguments"].get("query") is None:
-        raise SystemExit(f"Expected Firecrawl scrape fallback query argument, got {scrape_step}")
+    if "firecrawl.scrape" in deep_tools:
+        raise SystemExit(f"Firecrawl scrape should not be planned without a concrete URL, got {deep_tools}")
+
+    deep_research_with_url = plan_task(
+        task="深入调研 https://example.com/firecrawl/source-pack 的网页正文并生成可验证报告",
+        allowed_tools=None,
+        source_mode="mock",
+        planner_mode="deterministic",
+        scenario_template="deep_web_research",
+    )
+    deep_url_tools = [step["tool_name"] for step in deep_research_with_url["steps"]]
+    if "firecrawl.scrape" not in deep_url_tools:
+        raise SystemExit(f"Expected Firecrawl scrape when URL is present, got {deep_url_tools}")
+    scrape_step = next(step for step in deep_research_with_url["steps"] if step["tool_name"] == "firecrawl.scrape")
+    if not scrape_step["arguments"].get("url"):
+        raise SystemExit(f"Expected Firecrawl scrape URL argument, got {scrape_step}")
 
     tech_docs = plan_task(
         task="学习 FastAPI 和 Streamlit 的最新技术文档，并生成报告",
@@ -203,6 +216,7 @@ def main() -> None:
             "chinese_web_tools": chinese_web_tools,
             "full_planner_tools": full_planner_tools,
             "deep_research_tools": deep_tools,
+            "deep_research_url_tools": deep_url_tools,
             "technical_docs_tools": tech_tools,
         }
     )

@@ -17,7 +17,9 @@ from app.config import Settings
 from app.database import SessionLocal, init_db
 from app.llm.base import LLMClient, LLMMessage, LLMResponse
 from app.rag.build_index import build_local_index
+from app.tools.base import RiskLevel, ToolResult, ToolSpec
 from app.tools.defaults import register_default_tools
+from app.tools.registry import register_tool
 from app.trace import store
 
 
@@ -65,6 +67,58 @@ def create_run(db, task: str, allowed_tools: list[str]):
     return store.update_agent_run_plan(db, run.run_id, plan)
 
 
+def create_scenario_run(db, task: str, scenario_template: str):
+    run = store.create_agent_run(db, task, "summary", "mock", None)
+    plan = plan_task(
+        task,
+        None,
+        "mock",
+        planner_mode="deterministic",
+        scenario_template=scenario_template,
+    )
+    plan["requested_execution_mode"] = "react"
+    plan["execution_mode"] = "react"
+    return store.update_agent_run_plan(db, run.run_id, plan)
+
+
+def register_fake_source_pack_tool() -> None:
+    register_tool(
+        ToolSpec(
+            name="source_pack.firecrawl.search",
+            description="Fake readonly Firecrawl search tool for ReAct smoke.",
+            input_schema={"properties": {"query": {"type": "string"}, "limit": {"type": "integer"}}},
+            risk_level=RiskLevel.LOW,
+            requires_confirmation=False,
+            enabled=True,
+            tags=["mcp_remote", "mcp-channel-readonly", "read-only"],
+            metadata={
+                "tool_source": "mcp_remote",
+                "mcp_channel": "readonly",
+                "remote_server": "source_pack",
+                "remote_tool_name": "firecrawl.search",
+                "remote_registry_name": "source_pack.firecrawl.search",
+                "read_only": True,
+                "side_effect_free": True,
+            },
+        ),
+        lambda args: ToolResult(
+            success=True,
+            output={
+                "query": args.get("query"),
+                "results": [
+                    {
+                        "title": "Fake Firecrawl result",
+                        "url": "https://example.com/firecrawl",
+                        "content": "Fake remote evidence for ReAct deep research.",
+                    }
+                ],
+            },
+            output_summary="Fake Firecrawl returned 1 result.",
+            metadata={"tool_source": "mcp_remote", "remote_server": "source_pack"},
+        ),
+    )
+
+
 def trace_metadata(trace) -> dict:
     try:
         output = json.loads(trace.output_json or "{}")
@@ -80,6 +134,7 @@ def report_exists(run) -> bool:
 def main() -> None:
     init_db()
     register_default_tools()
+    register_fake_source_pack_tool()
     from scripts.init_demo_db import init_demo_db
 
     init_demo_db()
@@ -248,6 +303,38 @@ def main() -> None:
         assert_true(limited_plan["react_state"]["completed_with_limitation"] is True, "limit was not recorded")
         assert_true(any(meta.get("error_type") == "tool_call_limit" for meta in limited_meta), "tool call limit trace missing")
 
+        deep = create_scenario_run(
+            db,
+            "Deeply research ComfyUI sources and generate a verifiable report.",
+            "deep_web_research",
+        )
+        deep_plan = json.loads(deep.plan_json)
+        assert_true(
+            "source_pack.firecrawl.search" in deep_plan.get("allowed_tools", []),
+            "deep research remote MCP tool missing from allowed_tools",
+        )
+        deep_summary = run_react_task(
+            db,
+            deep.run_id,
+            react_settings,
+            ScriptedLLMClient(
+                [
+                    {"thought": "Tavily evidence is enough.", "action": "finish", "args": {"summary": "Done too early."}, "finish_reason": "completed"},
+                    {"thought": "Still finish.", "action": "finish", "args": {"summary": "Still done."}, "finish_reason": "completed"},
+                ]
+            ),
+        )
+        deep_traces = store.list_tool_traces(db, deep.run_id)
+        assert_true(deep_summary["status"] == "completed", "deep ReAct fallback did not complete")
+        assert_true(
+            any(trace.tool_name == "source_pack.firecrawl.search" for trace in deep_traces),
+            "deep ReAct fallback did not execute remote MCP tool",
+        )
+        assert_true(
+            any(trace_metadata(trace).get("error_type") == "early_finish_without_remote_mcp" for trace in deep_traces),
+            "early finish rejection trace missing",
+        )
+
         outside_hitl_path = ROOT / "workspace" / "tmp" / "react_outside_allowed_root.md"
         outside_hitl_path.parent.mkdir(parents=True, exist_ok=True)
         outside_hitl_path.write_text("react outside allowed roots\n", encoding="utf-8")
@@ -296,6 +383,7 @@ def main() -> None:
                 "failure_recovery": "ok",
                 "invalid_decision": "ok",
                 "tool_call_limit": "ok",
+                "deep_research_remote_guard": "ok",
                 "hitl_guard": "ok",
             },
             indent=2,

@@ -20,6 +20,7 @@ def build_planner_messages(
     task: str,
     allowed_tools: list[str] | None,
     source_mode: str,
+    scenario_template: str | None = None,
 ) -> list[LLMMessage]:
     """Build strict JSON-only planner messages."""
 
@@ -46,6 +47,21 @@ def build_planner_messages(
     for tool_name in allowed:
         tool_defaults.setdefault(tool_name, {})
     known_tool_text = "; ".join(_tool_description(name) for name in allowed)
+    scenario = str(scenario_template or "standard").strip() or "standard"
+    scenario_guidance = ""
+    if scenario == "deep_web_research":
+        scenario_guidance = (
+            " Scenario deep_web_research means this is not a plain search task. "
+            "When remote MCP tools are available in allowed_tools, include Exa or Firecrawl "
+            "discovery tools and Firecrawl/Exa page-content tools before report_writer. "
+            "Use Tavily only as discovery, not as the only evidence source."
+        )
+    elif scenario == "technical_docs_research":
+        scenario_guidance = (
+            " Scenario technical_docs_research means prioritize technical documentation and "
+            "code/documentation sources. Include GitHub, Context7, Exa, or Firecrawl tools "
+            "when they are available in allowed_tools, then report_writer."
+        )
     system = (
         "You are the Planner for Traceable Research Agent. Output only one JSON object. "
         "Do not output markdown. Do not explain. Do not execute tools. Do not invent tools. "
@@ -70,9 +86,11 @@ def build_planner_messages(
         f"The source_mode is '{source_mode}'. If source_mode is 'real', the notes MUST say "
         "'工具将通过真实 API 访问外部数据' and NOT mention mock or simulation. "
         "If source_mode is 'mock', the notes should say '工具使用本地离线数据（mock模式）'."    )
+    system += scenario_guidance
     user = {
         "task": task,
         "source_mode": source_mode,
+        "scenario_template": scenario,
         "allowed_tools": allowed,
         "required_top_level_fields": [
             "version",
@@ -122,6 +140,7 @@ def call_llm_for_plan(
     task: str,
     allowed_tools: list[str] | None,
     source_mode: str,
+    scenario_template: str | None = None,
 ) -> LLMResponse:
     """Call an available LLM client for planning."""
 
@@ -134,5 +153,5 @@ def call_llm_for_plan(
             error_message=str(description.get("reason") or "LLM client unavailable."),
             metadata={"available": False, "error_type": "unavailable"},
         )
-    messages = build_planner_messages(task, allowed_tools, source_mode)
+    messages = build_planner_messages(task, allowed_tools, source_mode, scenario_template)
     return client.complete(messages, temperature=0.0, max_tokens=2000)

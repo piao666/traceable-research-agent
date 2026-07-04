@@ -83,6 +83,63 @@ def _allowed_tools(run: AgentRun, plan: dict[str, Any]) -> list[str]:
     return [str(item) for item in plan.get("allowed_tools") or []]
 
 
+def _research_scenario(plan: dict[str, Any]) -> str | None:
+    marker = str(plan.get("scenario_template") or "").strip().lower()
+    if "deep_web_research" in marker:
+        return "deep_web_research"
+    if "technical_docs_research" in marker:
+        return "technical_docs_research"
+    return None
+
+
+def _allowed_remote_tools(allowed_tools: list[str]) -> list[str]:
+    names: list[str] = []
+    for name in allowed_tools:
+        spec = get_tool(name)
+        if spec and spec.enabled and (spec.metadata or {}).get("tool_source") == "mcp_remote":
+            names.append(name)
+    return names
+
+
+def _remote_mcp_attempted(state: dict[str, Any], remote_tools: list[str]) -> bool:
+    remote_set = set(remote_tools)
+    for observation in state.get("observation_history") or []:
+        if not isinstance(observation, dict):
+            continue
+        metadata = observation.get("tool_result_metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        if metadata.get("tool_source") == "mcp_remote":
+            return True
+        if str(observation.get("action") or "") in remote_set:
+            return True
+    return False
+
+
+def _early_finish_rejection_reason(
+    plan: dict[str, Any],
+    allowed_tools: list[str],
+    state: dict[str, Any],
+) -> str | None:
+    scenario = _research_scenario(plan)
+    if scenario is None:
+        return None
+    remote_tools = _allowed_remote_tools(allowed_tools)
+    if not remote_tools or _remote_mcp_attempted(state, remote_tools):
+        return None
+    if scenario == "deep_web_research":
+        return (
+            "Deep web research requires at least one available remote MCP source-pack "
+            "tool call before finish. Try one of: "
+            + ", ".join(remote_tools[:5])
+        )
+    return (
+        "Technical docs research requires at least one available remote MCP documentation "
+        "or source-pack tool call before finish. Try one of: "
+        + ", ".join(remote_tools[:5])
+    )
+
+
 def _initial_state(settings: Settings, provider: str, model: str | None) -> dict[str, Any]:
     return {
         "observation_history": [],
@@ -220,6 +277,7 @@ def _prompt_history(state: dict[str, Any]) -> list[dict[str, Any]]:
                     for key in (
                         "error_type",
                         "fallback_used",
+                        "tool_source",
                         "data_source",
                         "blocked_reason",
                         "result_count",
@@ -373,6 +431,7 @@ def run_react_task(
                 allowed_tools,
                 available_specs,
                 _prompt_history(state),
+                str(plan.get("scenario_template") or "standard"),
             )
             response = client.complete(messages, temperature=0.0, max_tokens=800)
             raw = extract_json_object(response.content or "") if response.success else None
@@ -432,6 +491,50 @@ def run_react_task(
                 continue
 
         if is_finish_action(decision.action):
+            rejection_reason = _early_finish_rejection_reason(plan, allowed_tools, state)
+            if rejection_reason:
+                state["invalid_decisions"] = int(state.get("invalid_decisions") or 0) + 1
+                metadata = _react_metadata(
+                    decision,
+                    rejection_reason,
+                    0,
+                    state,
+                    error_type="early_finish_without_remote_mcp",
+                    fallback_used=settings.react_fallback_to_planned,
+                )
+                record_trace_event(
+                    db,
+                    run_id,
+                    step_no,
+                    "react_decision",
+                    "failed",
+                    {"action": "finish", "args": decision.args},
+                    rejection_reason,
+                    {"metadata": metadata},
+                    error_message=rejection_reason,
+                )
+                _append_observation(
+                    state,
+                    step_no,
+                    decision,
+                    rejection_reason,
+                    False,
+                    rejection_reason,
+                    metadata,
+                )
+                plan["react_state"] = state
+                _persist_plan(db, run_id, plan)
+                if int(state.get("invalid_decisions") or 0) >= 2 and settings.react_fallback_to_planned:
+                    return _fallback_to_plan(
+                        db,
+                        run_id,
+                        plan,
+                        state,
+                        step_no,
+                        rejection_reason,
+                        "early_finish_without_remote_mcp",
+                    )
+                continue
             summary = str(decision.args.get("summary") or decision.finish_reason or "Task complete.")[:500]
             metadata = _react_metadata(decision, summary, 0, state)
             record_trace_event(

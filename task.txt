@@ -284,6 +284,35 @@ python scripts/smoke_final_project.py
 - `scripts/smoke_evidence_aggregation.py` 覆盖 remote MCP discovery/support/failure 分类、URL 来源、headers_env 脱敏。
 - `scripts/smoke_streamlit_frontend.py` 覆盖新模板、动态 allowed_tools、scenario_template_key。
 
+## 2026-07-03 - MCP Source Pack Bridge
+
+目标：为 Deep Research Source Pack 增加一个本地 HTTP JSON-RPC MCP Bridge，解决 Firecrawl/Exa/Context7 不一定直接提供本项目所需 HTTP MCP 形态的问题，同时避免后续服务商接入变成单文件硬编码。
+
+实现内容：
+
+- 新增 `app/mcp_bridge/`：
+  - `server.py`：提供 `POST /mcp`、`GET /health`、`GET /tools`。
+  - `registry.py`：按 `MCP_BRIDGE_ENABLED_PROVIDERS` 汇总 provider。
+  - `schemas.py`：统一 Bridge tool/result 结构。
+  - `providers/base.py`：provider 接口与 HTTP helper。
+  - `providers/firecrawl.py`：fake + real Firecrawl `search/scrape/map/extract`。
+  - `providers/exa.py`：fake + real Exa `web_search_exa/web_fetch_exa/web_search_advanced_exa`。
+  - `providers/context7.py`：fake Context7 `resolve-library-id/query-docs` 与 HTTP adapter 预留。
+- 新增 `scripts/mcp_source_pack_server.py` 作为独立 uvicorn 启动入口。
+- 新增 `scripts/start_mcp_source_pack.ps1`，支持 `-Mode fake|real`、`-Port`、`-Providers`。
+- 新增 `scripts/smoke_mcp_source_pack_bridge.py`，覆盖 Bridge JSON-RPC、tools/list 安全声明、fake 工具调用、主项目 remote MCP client 注册与结构化失败。
+- `.env.example` 和 README 改为推荐单一 `source_pack` Bridge：
+  - `MCP_CHANNEL_READONLY_SERVERS=[{"name":"source_pack","base_url":"http://127.0.0.1:9001/mcp",...}]`
+  - provider API key 由 Bridge 自己从环境变量读取，不写入 MCP headers。
+
+安全边界：
+
+- Bridge 只暴露 readonly / side_effect_free / requires_confirmation=false 的调研工具。
+- 不接入 browser/playwright/click/navigate/screenshot 到 readonly。
+- Firecrawl/Exa key 只从环境变量读取；Bridge 输出、trace、report、evidence 不写 key 值。
+- Context7 real API 不猜测，未配置 `CONTEXT7_BASE_URL` 时 real mode 返回 structured failure。
+- provider 失败不会让主任务 API 500。
+
 ### Day44 - Evidence Quality / Verifier
 
 暂缓。后续可在 EvidenceBundle 上增加轻量质量判断，例如来源质量、freshness、mock/fallback/failure 降级提示、claim support strength。优先确定性规则，必要时再考虑 LLM verifier。

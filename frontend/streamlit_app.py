@@ -47,30 +47,20 @@ TOOL_CN = {
 RISK_COLOR = {"low": "#15803D", "medium": "#B45309", "high": "#B91C1C"}
 
 DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
-    "本地读取（文件 + RAG + SQL）": {
+    "本地资料分析": {
         "task": "Read local docs, query database metrics, retrieve trace evidence, and generate a markdown report",
         "allowed_tools": ["file_reader", "sql_query", "rag_search", "report_writer"],
         "scenario_template_key": "standard",
     },
-    "外部调研（GitHub + Tavily）": {
-        "task": "Search GitHub repository issues and current web sources about traceable research agent, then generate a markdown report",
-        "allowed_tools": ["mcp_github_search", "tavily_search", "report_writer"],
-        "scenario_template_key": "standard",
-    },
-    "深度网页调研（Tavily + Firecrawl/Exa MCP）": {
+    "联网深度调研": {
         "task": "Deeply research current web sources about traceable research agent, discover sources, read page content, extract verifiable evidence, and generate a markdown report",
         "allowed_tools": None,
         "scenario_template_key": "deep_web_research",
     },
-    "技术文档调研（GitHub + Context7/Exa MCP）": {
+    "技术文档调研": {
         "task": "Research current technical documentation for FastAPI, Streamlit, MCP SDK, and RAG patterns; use GitHub and documentation sources, then generate a markdown report",
         "allowed_tools": None,
         "scenario_template_key": "technical_docs_research",
-    },
-    "全规划器（本地读取 + 外部调研）": {
-        "task": "Read local docs, query database metrics, retrieve trace evidence, search GitHub repository issues and current web sources, then generate a markdown report",
-        "allowed_tools": ALL_TOOLS,
-        "scenario_template_key": "full_planner",
     },
 }
 
@@ -656,6 +646,23 @@ def render_sidebar() -> None:
             on_change=_sync_allowed_tools, # 切换时只同步 allowed_tools，不碰 task_text
             label_visibility="collapsed",
         )
+        scenario_key = _current_scenario_template_key()
+        if scenario_key in {"deep_web_research", "technical_docs_research"}:
+            try:
+                mcp_health = api_get("/mcp/health", timeout=3)
+                readonly = (
+                    mcp_health.get("channel_summary", {})
+                    .get("channels", {})
+                    .get("readonly", {})
+                )
+                registered = int(readonly.get("registered_tools") or 0)
+                servers = int(readonly.get("configured_servers") or 0)
+                if registered:
+                    st.caption(f"MCP 已注册：{registered} 个只读工具 / {servers} 个服务")
+                else:
+                    st.warning("远端 MCP 未注册，本场景会降级到内置搜索工具。", icon="⚠️")
+            except ApiError:
+                st.caption("MCP 状态暂不可用")
 
         st.divider()
         st.markdown("**⚙️ 执行模式**")

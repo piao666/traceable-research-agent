@@ -310,6 +310,37 @@ def _append_preferred_remote_steps(
     return inserted
 
 
+def _url_dependent_remote_tool(provider: str, remote_tool_name: str) -> bool:
+    return remote_tool_name.lower() in {
+        "scrape",
+        "extract",
+        "map",
+        "web_fetch_exa",
+    }
+
+
+def _append_plan_allowed_tool(plan: dict[str, Any], tool_name: str, allowed_tools: list[str] | None) -> None:
+    if allowed_tools is not None:
+        return
+    current = plan.get("allowed_tools")
+    if not isinstance(current, list):
+        current = DEFAULT_TOOL_ORDER.copy()
+    normalized = [str(item) for item in current]
+    if tool_name not in normalized:
+        normalized.append(tool_name)
+    plan["allowed_tools"] = normalized
+
+
+def _is_remote_mcp_tool_name(tool_name: str) -> bool:
+    spec = get_tool(tool_name)
+    return bool(spec and "mcp_remote" in spec.tags)
+
+
+def _append_note_once(notes: list[str], note: str) -> None:
+    if note not in notes:
+        notes.append(note)
+
+
 def _step_template(
     tool_name: str,
     task: str,
@@ -489,7 +520,7 @@ def plan_task(
     if should_try_llm:
         fallback_reason = "LLM planner unavailable; used deterministic fallback."
         client = create_llm_client(settings)
-        response = call_llm_for_plan(client, task, allowed_tools, source_mode)
+        response = call_llm_for_plan(client, task, allowed_tools, source_mode, scenario_template)
         if response.success and response.content:
             raw_plan = extract_json_object(response.content)
             if raw_plan is not None:
@@ -514,6 +545,12 @@ def plan_task(
                     except Exception:
                         pass
                     _ensure_full_planner_steps(
+                        normalized,
+                        task,
+                        allowed_tools,
+                        scenario_template,
+                    )
+                    _ensure_research_template_steps(
                         normalized,
                         task,
                         allowed_tools,
@@ -574,29 +611,48 @@ def deterministic_plan_task(
 
     if deep_research:
         _append_step(steps, notes, "tavily_search", task_text, allowed_set)
+        url = _first_url(task_text)
+        priority = tuple(
+            item
+            for item in DEEP_RESEARCH_REMOTE_PRIORITY
+            if url or not _url_dependent_remote_tool(item[0], item[1])
+        )
         inserted = _append_preferred_remote_steps(
             steps,
             notes,
             task_text,
             allowed_set,
-            DEEP_RESEARCH_REMOTE_PRIORITY,
+            priority,
         )
         if not inserted:
-            notes.append(
-                "Deep web research MCP tools were not configured; used available built-in discovery tools only."
+            _append_note_once(
+                notes,
+                "Deep web research MCP tools were not configured; used available built-in discovery tools only.",
+            )
+        elif not url:
+            _append_note_once(
+                notes,
+                "Deep web research used MCP discovery tools. Page-content MCP tools that require a URL were skipped because the task did not include a concrete URL.",
             )
     if technical_docs:
         _append_step(steps, notes, "mcp_github_search", task_text, allowed_set)
+        url = _first_url(task_text)
+        priority = tuple(
+            item
+            for item in TECH_DOCS_REMOTE_PRIORITY
+            if url or not _url_dependent_remote_tool(item[0], item[1])
+        )
         inserted = _append_preferred_remote_steps(
             steps,
             notes,
             task_text,
             allowed_set,
-            TECH_DOCS_REMOTE_PRIORITY,
+            priority,
         )
         if not inserted:
-            notes.append(
-                "Technical docs MCP tools were not configured; used available built-in research tools only."
+            _append_note_once(
+                notes,
+                "Technical docs MCP tools were not configured; used available built-in research tools only.",
             )
 
     if not strict_deep_research and not strict_technical_docs:
@@ -684,6 +740,7 @@ def deterministic_plan_task(
     if scenario_template:
         plan["scenario_template"] = scenario_template
     _ensure_full_planner_steps(plan, task_text, allowed_tools, scenario_template)
+    _ensure_research_template_steps(plan, task_text, allowed_tools, scenario_template)
     _enforce_external_tool_modes(plan, task_text, source_mode)
     normalize_plan_arguments(plan, task_text, source_mode)
     return plan
@@ -727,6 +784,93 @@ def _safe_fallback_reason(reason: str) -> str:
     if any(token in lowered for token in blocked_tokens):
         return "LLM planner failed with a redacted provider error; used deterministic fallback."
     return reason[:300]
+
+
+def _ensure_research_template_steps(
+    plan: dict[str, Any],
+    task: str,
+    allowed_tools: list[str] | None,
+    scenario_template: str | None,
+) -> None:
+    """Make research templates honor their promised source-pack tool chain."""
+
+    task_lower = task.lower()
+    deep_research = _is_deep_research_scenario(task_lower, scenario_template)
+    technical_docs = _is_technical_docs_scenario(task_lower, scenario_template)
+    marker = _scenario_marker(scenario_template)
+    if "deep_web_research" in marker:
+        technical_docs = False
+    if "technical_docs_research" in marker:
+        deep_research = False
+    if not (deep_research or technical_docs):
+        return
+
+    allowed_set = set(allowed_tools) if allowed_tools is not None else None
+    existing_steps = [step for step in plan.get("steps") or [] if isinstance(step, dict)]
+    report_steps = [step for step in existing_steps if step.get("tool_name") == "report_writer"]
+    steps = [step for step in existing_steps if step.get("tool_name") != "report_writer"]
+    notes = [str(note) for note in plan.get("notes") or []]
+    plan["steps"] = steps
+
+    if deep_research:
+        _append_step(steps, notes, "tavily_search", task, allowed_set)
+        url = _first_url(task)
+        priority = tuple(
+            item
+            for item in DEEP_RESEARCH_REMOTE_PRIORITY
+            if url or not _url_dependent_remote_tool(item[0], item[1])
+        )
+        inserted = _append_preferred_remote_steps(steps, notes, task, allowed_set, priority)
+        has_remote_step = any(_is_remote_mcp_tool_name(str(step.get("tool_name") or "")) for step in steps)
+        if not inserted and not has_remote_step:
+            _append_note_once(
+                notes,
+                "Deep web research MCP tools were not configured; used available built-in discovery tools only.",
+            )
+        elif not url:
+            _append_note_once(
+                notes,
+                "Deep web research used MCP discovery tools. Page-content MCP tools that require a URL were skipped because the task did not include a concrete URL.",
+            )
+    elif technical_docs:
+        _append_step(steps, notes, "mcp_github_search", task, allowed_set)
+        url = _first_url(task)
+        priority = tuple(
+            item
+            for item in TECH_DOCS_REMOTE_PRIORITY
+            if url or not _url_dependent_remote_tool(item[0], item[1])
+        )
+        inserted = _append_preferred_remote_steps(
+            steps,
+            notes,
+            task,
+            allowed_set,
+            priority,
+        )
+        has_remote_step = any(_is_remote_mcp_tool_name(str(step.get("tool_name") or "")) for step in steps)
+        if not inserted and not has_remote_step:
+            _append_note_once(
+                notes,
+                "Technical docs MCP tools were not configured; used available built-in research tools only.",
+            )
+
+    for step in list(steps):
+        tool_name = str(step.get("tool_name") or "")
+        if tool_name:
+            _append_plan_allowed_tool(plan, tool_name, allowed_tools)
+
+    if allowed_set is None or "report_writer" in allowed_set:
+        report_step = report_steps[0] if report_steps else _step_template("report_writer", task)
+        report_step["tool_name"] = "report_writer"
+        steps.append(report_step)
+        _append_plan_allowed_tool(plan, "report_writer", allowed_tools)
+
+    for index, step in enumerate(steps, start=1):
+        step["step_no"] = index
+    plan["steps"] = steps
+    plan["notes"] = notes
+    if scenario_template:
+        plan["scenario_template"] = scenario_template
 
 
 def _is_full_planner_scenario(

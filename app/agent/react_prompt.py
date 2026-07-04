@@ -36,11 +36,20 @@ def build_react_messages(
     allowed_tools: list[str],
     available_tool_specs: list[ToolSpec],
     observation_history: list[dict[str, Any]],
+    scenario_template: str | None = None,
 ) -> list[LLMMessage]:
     """Build a JSON-only next-action prompt without requesting hidden reasoning."""
 
     # Build a strict allowed_tools constraint string for injection
     tools_str = ", ".join(allowed_tools) if allowed_tools else "none"
+    scenario = str(scenario_template or "standard").strip() or "standard"
+    scenario_guidance = ""
+    if scenario in {"deep_web_research", "technical_docs_research"}:
+        scenario_guidance = (
+            " For this research scenario, if allowed_tools contains remote MCP tools "
+            "(tool_source=mcp_remote), call at least one of them before finish so the "
+            "answer has auditable external source-pack evidence."
+        )
     system = (
         "You are a traceable research agent. "
         f"CRITICAL: You MUST select your action ONLY from this exact list: [{tools_str}]. "
@@ -56,10 +65,12 @@ def build_react_messages(
         "If complete, use action=finish and put a concise answer in args.summary. "
         "Do not invent tools, write files directly, bypass human confirmation, "
         "use SQL writes, or request GitHub writes."
+        + scenario_guidance
     )
     payload = {
         "task": task,
         "run_id": run_id,
+        "scenario_template": scenario,
         "allowed_tools": allowed_tools,
         "available_tools": [_tool_description(spec) for spec in available_tool_specs],
         "observation_history": observation_history,
