@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.mcp.client import get_remote_mcp_channel_summary
+from app.mcp.client import get_remote_mcp_channel_summary, register_remote_mcp_tools_from_settings
 from app.database import get_db
 from app.mcp.policy import is_tool_exposable, mcp_policy_metadata
 from app.mcp.schemas import (
@@ -312,6 +312,19 @@ async def mcp_health() -> dict[str, Any]:
         or bool(settings.mcp_channel_readonly_servers)
         or bool(settings.mcp_channel_interactive_servers)
         or bool(settings.mcp_channel_write_servers),
+        "channel_summary": get_remote_mcp_channel_summary(),
+        "tool_count": len(_exposed_tool_specs()),
+    }
+
+
+@router.post("/refresh")
+async def refresh_remote_mcp_tools() -> dict[str, Any]:
+    """Rediscover configured remote MCP tools without restarting FastAPI."""
+
+    registered = register_remote_mcp_tools_from_settings(settings)
+    return {
+        "status": "ok",
+        "registered_now": len(registered),
         "channel_summary": get_remote_mcp_channel_summary(),
         "tool_count": len(_exposed_tool_specs()),
     }

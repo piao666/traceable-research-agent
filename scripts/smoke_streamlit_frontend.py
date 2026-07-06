@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_APP = ROOT / "frontend" / "streamlit_app.py"
 FRONTEND_README = ROOT / "frontend" / "README.md"
 REQUIREMENTS = ROOT / "requirements.txt"
+START_SCRIPT = ROOT / "start_traceable_demo.bat"
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -23,6 +24,7 @@ def main() -> None:
     assert_true(FRONTEND_APP.exists(), "frontend/streamlit_app.py missing")
     assert_true(FRONTEND_README.exists(), "frontend/README.md missing")
     assert_true(REQUIREMENTS.exists(), "requirements.txt missing")
+    assert_true(START_SCRIPT.exists(), "start_traceable_demo.bat missing")
 
     requirements = REQUIREMENTS.read_text(encoding="utf-8").lower()
     assert_true("streamlit" in requirements, "streamlit missing from requirements.txt")
@@ -30,6 +32,7 @@ def main() -> None:
 
     py_compile.compile(str(FRONTEND_APP), doraise=True)
     source = FRONTEND_APP.read_text(encoding="utf-8")
+    start_script = START_SCRIPT.read_text(encoding="utf-8")
 
     required_paths = [
         "/health",
@@ -41,6 +44,7 @@ def main() -> None:
         "/api/reports",
         "/download?format=",
         "/confirm",
+        "/mcp/refresh",
     ]
     missing_paths = [path for path in required_paths if path not in source]
     assert_true(not missing_paths, f"missing API paths: {missing_paths}")
@@ -75,7 +79,7 @@ def main() -> None:
     leaked_sidebar_text = [text for text in removed_sidebar_text if text in source]
     assert_true(not leaked_sidebar_text, f"removed sidebar/title text still present: {leaked_sidebar_text}")
     assert_true("api_base_url" in source and "tenant_id" in source and "user_id" in source, "default API context state missing")
-    for react_field in ["Thought", "Action", "Observation"]:
+    for react_field in ["思考摘要", "选择动作", "观察结果"]:
         assert_true(react_field in source, f"missing ReAct trace display: {react_field}")
     assert_true(
         "ReAct 思考链" in source or "ReAct Trace" in source,
@@ -104,6 +108,9 @@ def main() -> None:
     assert_true("本地资料分析" in source, "local analysis template missing")
     assert_true("联网深度调研" in source, "deep web research template missing")
     assert_true("技术文档调研" in source, "technical docs template missing")
+    assert_true("读取本地演示文档" in source, "local template should use Chinese default task")
+    assert_true("围绕 Traceable Research Agent 做联网深度调研" in source, "deep research template should use Chinese default task")
+    assert_true("_sync_template_state" in source and "task_text" in source, "template switch should sync task text")
     assert_true("外部调研（GitHub + Tavily）" not in source, "external research template should be merged into deep research")
     assert_true("全规划器（本地读取 + 外部调研）" not in source, "full planner template should be hidden from default UI")
     assert_true("deep_web_research" in source, "deep web research scenario key missing")
@@ -111,7 +118,17 @@ def main() -> None:
     assert_true('"allowed_tools": None' in source, "dynamic remote MCP templates should allow backend defaults")
     assert_true("_current_scenario_template_key()" in source, "scenario key helper not used in payload")
     assert_true("HITL 人工确认流程" not in source, "standalone HITL template should be removed")
-    assert_true("MCP 已注册" in source and "远端 MCP 未注册" in source, "MCP registration status should be visible")
+    assert_true("MCP 已注册" in source and "远端 MCP 已配置但尚未注册" in source, "MCP registration status should be visible")
+    assert_true("重新注册远端 MCP" in source, "MCP refresh action should be visible")
+    assert_true("MCP_CHANNEL_READONLY_SERVERS" in start_script, "demo starter should configure source-pack readonly MCP")
+    assert_true("source_pack=http://127.0.0.1:9001/mcp" in start_script, "demo starter should use parseable source-pack shorthand")
+    assert_true("Waiting for MCP Source Pack Bridge readiness" in start_script, "demo starter should wait for bridge readiness")
+    assert_true(start_script.find("Waiting for MCP Source Pack Bridge readiness") < start_script.find("[1/3] FastAPI backend"), "FastAPI should start after bridge readiness wait")
+    assert_true("-Providers 'firecrawl,exa'" in start_script, "demo starter should quote comma-separated providers")
+    assert_true("Exa 负责发现候选来源" in source, "MCP role explanation for Exa/Firecrawl missing")
+    assert_true("Context7 adapter 已预留" in source, "Context7 reserved-state explanation missing")
+    assert_true("降级状态" in source and "部分降级" in source, "degradation summary should be user-facing")
+    assert_true("任务状态" in source and "当前步骤" in source and "Trace 条数" in source, "trace metrics should be localized")
     assert_true("证据聚合" in source, "evidence aggregation title should be localized")
     assert_true("证据导出" in source, "evidence export title should be localized")
     assert_true("FOLDED_REPORT_SECTION_PREFIXES" in source, "report folded section helper missing")

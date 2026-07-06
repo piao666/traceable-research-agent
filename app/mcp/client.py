@@ -244,7 +244,7 @@ def get_remote_mcp_channel_summary() -> dict[str, Any]:
     channels: dict[str, dict[str, Any]] = {
         channel.value: {
             "configured_servers": set(),
-            "registered_tools": 0,
+            "registered_tools": set(),
             "skipped_tools": 0,
             "errors": 0,
         }
@@ -257,7 +257,9 @@ def get_remote_mcp_channel_summary() -> dict[str, Any]:
         if server_name:
             bucket["configured_servers"].add(str(server_name))
         if event.get("status") == "registered":
-            bucket["registered_tools"] += 1
+            registry_name = event.get("registry_name") or event.get("remote_tool_name")
+            if registry_name:
+                bucket["registered_tools"].add(str(registry_name))
         elif event.get("status") == "error":
             bucket["errors"] += 1
         else:
@@ -266,7 +268,7 @@ def get_remote_mcp_channel_summary() -> dict[str, Any]:
     for channel, data in channels.items():
         redacted[channel] = {
             "configured_servers": len(data["configured_servers"]),
-            "registered_tools": data["registered_tools"],
+            "registered_tools": len(data["registered_tools"]),
             "skipped_tools": data["skipped_tools"],
             "errors": data["errors"],
         }
@@ -517,6 +519,12 @@ def _servers_from_settings(settings_obj: Settings) -> list[MCPRemoteServer]:
         )
     )
     return servers
+
+
+def remote_mcp_servers_configured(settings_obj: Settings) -> bool:
+    """Return whether settings declare any remote MCP server endpoint."""
+
+    return bool(_servers_from_settings(settings_obj))
 
 
 def register_remote_mcp_tools_from_settings(settings_obj: Settings) -> list[ToolSpec]:

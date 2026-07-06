@@ -194,26 +194,43 @@ class FirecrawlProvider(SourcePackProvider):
         urls = [str(url).strip() for url in urls if str(url).strip()][: self.max_results]
         if not urls:
             return self._failure("extract", "Missing required argument: url or urls", error_type="invalid_arguments")
-        payload = {
-            "urls": urls,
-            "prompt": str(arguments.get("prompt") or "Extract key facts and source evidence from the provided pages."),
-            "schema": arguments.get("schema") if isinstance(arguments.get("schema"), dict) else {},
-            "showSources": True,
-            "ignoreInvalidURLs": True,
-            "scrapeOptions": {"formats": ["markdown"], "onlyMainContent": True},
-        }
-        data, failure = self._post_json(
-            f"{self.base_url}/v2/extract",
-            headers=self._headers(),
-            payload=payload,
-            tool_name="extract",
-        )
-        if failure:
-            return failure
+        pages: list[dict[str, Any]] = []
+        raw_results: list[dict[str, Any]] = []
+        for url in urls:
+            payload = {
+                "url": url,
+                "formats": ["markdown"],
+                "onlyMainContent": True,
+                "timeout": int(self.timeout_seconds * 1000),
+                "removeBase64Images": True,
+                "blockAds": True,
+            }
+            data, failure = self._post_json(
+                f"{self.base_url}/v2/scrape",
+                headers=self._headers(),
+                payload=payload,
+                tool_name="extract",
+            )
+            if failure:
+                if pages:
+                    raw_results.append({"url": url, "success": False, "error": failure.error_message})
+                    continue
+                return failure
+            page = (data or {}).get("data") if isinstance((data or {}).get("data"), dict) else {}
+            metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
+            raw_results.append(data or {})
+            pages.append(
+                {
+                    "title": metadata.get("title") or page.get("title") or url,
+                    "url": metadata.get("sourceURL") or metadata.get("url") or url,
+                    "content": trim_text(page.get("markdown") or page.get("summary") or page.get("html"), self.max_content_chars),
+                    "metadata": metadata,
+                }
+            )
         return BridgeToolResult(
-            success=bool((data or {}).get("success", True)),
-            output={"urls": urls, "content": trim_text(data, self.max_content_chars), "raw": data},
-            output_summary=f"Firecrawl extract submitted for {len(urls)} URL(s).",
+            success=True,
+            output={"urls": urls, "results": pages, "raw": raw_results},
+            output_summary=f"Firecrawl extract scraped {len(pages)} URL(s).",
             metadata={**self._metadata("extract", data_source="real_api"), "evidence_role": "support"},
         )
 
@@ -308,4 +325,3 @@ def _normalize_result(item: dict[str, Any], max_chars: int) -> dict[str, Any]:
         ),
         "score": item.get("score"),
     }
-

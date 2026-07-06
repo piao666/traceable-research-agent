@@ -46,6 +46,8 @@ logs/
 .cache/
 tmp/
 temp/
+output/
+.playwright-cli/
 
 # Build artifacts
 dist/

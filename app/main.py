@@ -1,5 +1,6 @@
 """FastAPI entrypoint for Traceable Research Agent."""
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,9 +9,23 @@ from app.api import events, reports, tasks, tools
 from app.config import settings
 from app.database import init_db
 from app.mcp import server as mcp_server
-from app.mcp.client import register_remote_mcp_tools_from_settings
+from app.mcp.client import register_remote_mcp_tools_from_settings, remote_mcp_servers_configured
 from app.schemas import HealthResponse
 from app.tools.defaults import register_default_tools
+
+
+async def _register_remote_mcp_tools_with_retry() -> None:
+    if not remote_mcp_servers_configured(settings):
+        return
+
+    attempts = max(1, int(settings.mcp_remote_registration_attempts or 1))
+    retry_seconds = max(0, int(settings.mcp_remote_registration_retry_seconds or 0))
+    for attempt in range(1, attempts + 1):
+        registered = register_remote_mcp_tools_from_settings(settings)
+        if registered:
+            return
+        if attempt < attempts and retry_seconds:
+            await asyncio.sleep(retry_seconds)
 
 
 @asynccontextmanager
@@ -19,7 +34,7 @@ async def lifespan(app: FastAPI):
 
     init_db()
     register_default_tools()
-    register_remote_mcp_tools_from_settings(settings)
+    await _register_remote_mcp_tools_with_retry()
     yield
 
 

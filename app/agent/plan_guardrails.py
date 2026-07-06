@@ -6,6 +6,7 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from app.agent.file_access_policy import (
     CONFIRMATION_REASON_OUTSIDE_ALLOWED_ROOTS,
@@ -27,6 +28,28 @@ DEFAULT_DOCUMENT_QUERY = "SELECT id, title, source, category, created_at FROM do
 DEFAULT_METRICS_QUERY = "SELECT id, name, value, unit FROM metrics"
 DEFAULT_GITHUB_QUERY = "traceable research agent"
 GITHUB_QUERY_MAX_CHARS = 120
+
+
+def _first_url(text: str) -> str | None:
+    match = re.search(r"https?://[^\s)>\]}\"']+", text)
+    return match.group(0) if match else None
+
+
+def _domain_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower().split("@")[-1].split(":")[0]
+    return host.removeprefix("www.") or None
+
+
+def _site_search_query(task: str) -> str:
+    url = _first_url(task)
+    domain = _domain_from_url(url)
+    if not domain:
+        return task
+    stem = re.sub(r"[^A-Za-z0-9]+", " ", domain.rsplit(".", 1)[0]).strip()
+    return f"site:{domain} {stem or domain} docs pricing api features"
 
 
 def normalize_plan_arguments(
@@ -289,8 +312,11 @@ def _normalize_rag_search(arguments: dict[str, Any], task: str, notes: list[str]
 
 def _normalize_tavily_search(arguments: dict[str, Any], task: str, notes: list[str]) -> None:
     if not str(arguments.get("query") or "").strip():
-        arguments["query"] = task
+        arguments["query"] = _site_search_query(task)
         notes.append("Planner guardrail filled missing tavily_search.query from task.")
+    elif _first_url(task) and str(arguments.get("query") or "").strip() == task.strip():
+        arguments["query"] = _site_search_query(task)
+        notes.append("Planner guardrail scoped tavily_search.query to the task URL domain.")
     arguments["max_results"] = _bounded_int(
         arguments.get("max_results"),
         settings.tavily_default_max_results,

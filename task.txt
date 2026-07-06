@@ -321,6 +321,71 @@ python scripts/smoke_final_project.py
 
 暂缓。后续可将 persisted trace 组织成可回放 timeline，用于审计、debug 和面试演示。不应在 Day46 前打断 MCP interoperability 主线。
 
+## 2026-07-06 - UI 事件框与 Deep Research MCP 相关性修复
+
+背景：人工截图核查发现任务页点击“执行任务”后仍会出现一个窄小的实时事件代码框；同时真实 MCP 调用虽然成功，但报告中混入“如何抓网页”的泛化搜索结果，和用户要求的 `https://newapi.chat/` 站点信息汇总不完全匹配。
+
+诊断结论：
+
+- 任务页小框来自 `frontend/streamlit_app.py` 中按钮流程临时调用 `render_event_console()`，它会渲染 `st.code()` 事件日志。任务页不应展示这类内部事件流，Trace 页保留即可。
+- Planner 给 Tavily、Exa、Firecrawl search 传入了整句任务，例如“抓取以下页面...提取所有信息...”，导致搜索类工具更容易返回网页抓取教程，而不是目标站内容。
+- Firecrawl map/search/extract 受 `MCP_BRIDGE_MAX_RESULTS=5` 限制，站点展开能力偏弱。
+- Firecrawl real `extract` 使用 `/v2/extract`，当前 API 返回 deprecated/submitted 信息，不是稳定正文证据。
+- MCP provider 超时此前统一归类为 `http_error`，不利于排查 timeout。
+
+实现内容：
+
+- `frontend/streamlit_app.py`
+  - 移除任务页创建/执行按钮后的临时 `render_event_console()` 代码框。
+  - 任务页不再阻塞式展示 SSE 日志；实时事件仍保留在“执行追踪”Tab 中查看。
+- `app/agent/planner.py`
+  - URL 型深度网页调研生成站内限定查询，例如 `site:newapi.chat newapi docs pricing api features`。
+  - Exa advanced 搜索在有 URL 时自动补 `includeDomains`。
+  - Firecrawl map 默认 limit 提升到 20，并将 map 顺序放在 scrape/extract 前。
+- `app/agent/plan_guardrails.py`
+  - 对 LLM/自由计划中的 Tavily 查询做同样的 URL 域名限定，避免把整句抓取指令直接发给搜索工具。
+- `app/mcp_bridge/providers/firecrawl.py`
+  - real `firecrawl.extract` 改为基于 `/v2/scrape` 读取 URL 正文，避免 deprecated `/v2/extract` 只返回提交信息。
+- `app/mcp_bridge/providers/base.py`
+  - 将 `requests.Timeout` 明确记录为 `error_type=timeout`。
+- `.env.example`
+  - `MCP_BRIDGE_MAX_RESULTS` 默认值从 5 调整为 20。
+- 本地 `.env`
+  - 同步把 `MCP_BRIDGE_MAX_RESULTS` 调整为 20；该文件仍不应提交。
+- 新增 `PRODUCT.md`
+  - 记录 UI register、用户、产品目的、反模式和设计原则，供后续 UI 调整保持一致。
+
+验证结果：
+
+- `.\.venv\Scripts\python.exe -m compileall frontend\streamlit_app.py app\agent\planner.py app\agent\plan_guardrails.py app\mcp_bridge\providers`
+- `.\.venv\Scripts\python.exe scripts\smoke_planner.py`
+- `.\.venv\Scripts\python.exe scripts\smoke_mcp_source_pack_bridge.py`
+- `.\.venv\Scripts\python.exe scripts\smoke_streamlit_frontend.py`
+- 额外手动检查：`https://newapi.chat/` 深度网页调研计划现在为 Tavily/Exa/Firecrawl search 生成站内限定查询，Exa advanced 带 `includeDomains=["newapi.chat"]`，Firecrawl map 使用 `limit=20`。
+
+## 2026-07-06 - README 首尾与项目复盘文档化
+
+目标：将 README 从阶段性任务说明整理为 GitHub 开源项目首页，覆盖项目介绍、核心功能、架构、安装启动、配置、API、MCP、验证、安全边界和后续路线。
+
+实现内容：
+
+- 重写 `README.md`
+  - 增加项目定位和适用场景。
+  - 补充 Traceable 执行链路：任务输入 -> Planner -> 工具执行 -> Trace -> Evidence -> 报告。
+  - 按功能分组说明 Planner、Executor、Tool Registry、Trace/Evidence/Report、Streamlit UI、MCP Source Pack。
+  - 增加目录结构说明。
+  - 增加快速开始、一键本地演示、Docker 运行说明。
+  - 按配置域说明基础执行、LLM Planner、外部搜索、文件 HITL、RAG、MCP Source Pack。
+  - 补充 API 示例和常用端点表。
+  - 补充 MCP 外部客户端演示、验证命令、安全边界、运行产物、当前状态与后续路线。
+  - 标注当前仓库尚未声明 License，后续公开发布前建议补充 `LICENSE` 文件。
+
+验证计划：
+
+- 检查 README 不包含真实 key/token。
+- 运行 `.\.venv\Scripts\python.exe scripts\smoke_streamlit_frontend.py` 确认文档相关启动脚本引用仍匹配。
+- 保留无关 `docs/rag_chunk_experiment.md` 本地基准数值刷新，不纳入本次文档提交。
+
 ## 当前注意事项
 
 - 不提交 `.env`、token、key、本地模型、SQLite DB、RAG index、Chroma 数据、cache、reports、exports、eval outputs。

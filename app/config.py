@@ -54,6 +54,8 @@ class Settings(BaseModel):
     mcp_channel_readonly_servers: str = ""
     mcp_channel_interactive_servers: str = ""
     mcp_channel_write_servers: str = ""
+    mcp_remote_registration_attempts: int = 3
+    mcp_remote_registration_retry_seconds: int = 1
     parallel_execution_enabled: bool = False
     parallel_max_workers: int = 3
     parallel_group_strategy: str = "independent_tools"
@@ -255,6 +257,12 @@ class Settings(BaseModel):
             mcp_channel_write_servers=os.getenv(
                 "MCP_CHANNEL_WRITE_SERVERS", ""
             ).strip(),
+            mcp_remote_registration_attempts=_env_bounded_int(
+                "MCP_REMOTE_REGISTRATION_ATTEMPTS", 3, 1, 10
+            ),
+            mcp_remote_registration_retry_seconds=_env_bounded_int(
+                "MCP_REMOTE_REGISTRATION_RETRY_SECONDS", 1, 0, 10
+            ),
             parallel_execution_enabled=_env_bool(
                 "PARALLEL_EXECUTION_ENABLED", False
             ),
@@ -458,6 +466,8 @@ class Settings(BaseModel):
             "mcp_channel_readonly_servers_configured": bool(self.mcp_channel_readonly_servers),
             "mcp_channel_interactive_servers_configured": bool(self.mcp_channel_interactive_servers),
             "mcp_channel_write_servers_configured": bool(self.mcp_channel_write_servers),
+            "mcp_remote_registration_attempts": self.mcp_remote_registration_attempts,
+            "mcp_remote_registration_retry_seconds": self.mcp_remote_registration_retry_seconds,
             "parallel_execution_enabled": self.parallel_execution_enabled,
             "parallel_max_workers": self.parallel_max_workers,
             "parallel_group_strategy": self.parallel_group_strategy,
