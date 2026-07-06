@@ -363,6 +363,29 @@ python scripts/smoke_final_project.py
 - `.\.venv\Scripts\python.exe scripts\smoke_streamlit_frontend.py`
 - 额外手动检查：`https://newapi.chat/` 深度网页调研计划现在为 Tavily/Exa/Firecrawl search 生成站内限定查询，Exa advanced 带 `includeDomains=["newapi.chat"]`，Firecrawl map 使用 `limit=20`。
 
+## 2026-07-06 - README 首尾与项目复盘文档化
+
+目标：将 README 从阶段性任务说明整理为 GitHub 开源项目首页，覆盖项目介绍、核心功能、架构、安装启动、配置、API、MCP、验证、安全边界和后续路线。
+
+实现内容：
+
+- 重写 `README.md`
+  - 增加项目定位和适用场景。
+  - 补充 Traceable 执行链路：任务输入 -> Planner -> 工具执行 -> Trace -> Evidence -> 报告。
+  - 按功能分组说明 Planner、Executor、Tool Registry、Trace/Evidence/Report、Streamlit UI、MCP Source Pack。
+  - 增加目录结构说明。
+  - 增加快速开始、一键本地演示、Docker 运行说明。
+  - 按配置域说明基础执行、LLM Planner、外部搜索、文件 HITL、RAG、MCP Source Pack。
+  - 补充 API 示例和常用端点表。
+  - 补充 MCP 外部客户端演示、验证命令、安全边界、运行产物、当前状态与后续路线。
+  - 标注当前仓库尚未声明 License，后续公开发布前建议补充 `LICENSE` 文件。
+
+验证计划：
+
+- 检查 README 不包含真实 key/token。
+- 运行 `.\.venv\Scripts\python.exe scripts\smoke_streamlit_frontend.py` 确认文档相关启动脚本引用仍匹配。
+- 保留无关 `docs/rag_chunk_experiment.md` 本地基准数值刷新，不纳入本次文档提交。
+
 ## 当前注意事项
 
 - 不提交 `.env`、token、key、本地模型、SQLite DB、RAG index、Chroma 数据、cache、reports、exports、eval outputs。
