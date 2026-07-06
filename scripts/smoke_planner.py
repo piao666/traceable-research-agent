@@ -6,7 +6,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.agent.planner import plan_task
+from app.agent.planner import _ensure_research_template_steps, plan_task
 from app.agent.plan_guardrails import normalize_plan_arguments
 from app.tools.base import RiskLevel, ToolSpec
 from app.tools.registry import register_tool
@@ -43,6 +43,7 @@ def main() -> None:
         ("firecrawl", "scrape", {"properties": {"url": {"type": "string"}, "query": {"type": "string"}}}),
         ("firecrawl", "extract", {"properties": {"query": {"type": "string"}}}),
         ("exa", "web_search_exa", {"properties": {"query": {"type": "string"}, "numResults": {"type": "integer"}}}),
+        ("exa", "web_search_advanced_exa", {"properties": {"query": {"type": "string"}, "numResults": {"type": "integer"}}}),
         ("context7", "resolve-library-id", {"properties": {"libraryName": {"type": "string"}}}),
         ("context7", "query-docs", {"properties": {"query": {"type": "string"}, "libraryId": {"type": "string"}}}),
     ]:
@@ -175,6 +176,103 @@ def main() -> None:
     if "firecrawl.scrape" in deep_tools:
         raise SystemExit(f"Firecrawl scrape should not be planned without a concrete URL, got {deep_tools}")
 
+    llm_like_plan = {
+        "steps": [
+            {
+                "step_no": 1,
+                "tool_name": "firecrawl.scrape",
+                "goal": "LLM should not keep page-content tools without a concrete URL.",
+                "arguments": {},
+                "risk_level": "medium",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 2,
+                "tool_name": "report_writer",
+                "goal": "Write report.",
+                "arguments": {},
+                "risk_level": "medium",
+                "requires_confirmation": False,
+            },
+        ],
+        "notes": [],
+    }
+    _ensure_research_template_steps(
+        llm_like_plan,
+        task="深入调研 Stable Diffusion 和 ComfyUI 的学习资料并生成可验证报告",
+        allowed_tools=None,
+        scenario_template="deep_web_research",
+    )
+    llm_like_tools = [step["tool_name"] for step in llm_like_plan["steps"]]
+    if "firecrawl.scrape" in llm_like_tools:
+        raise SystemExit(f"LLM post-processing should remove scrape without URL, got {llm_like_tools}")
+
+    llm_like_url_plan = {
+        "steps": [
+            {
+                "step_no": 1,
+                "tool_name": "firecrawl.extract",
+                "goal": "LLM may omit URL arguments for page-content tools.",
+                "arguments": {},
+                "risk_level": "medium",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 2,
+                "tool_name": "report_writer",
+                "goal": "Write report.",
+                "arguments": {},
+                "risk_level": "medium",
+                "requires_confirmation": False,
+            },
+        ],
+        "notes": [],
+    }
+    _ensure_research_template_steps(
+        llm_like_url_plan,
+        task="深入调研 https://example.com/firecrawl/source-pack 的网页正文并生成可验证报告",
+        allowed_tools=None,
+        scenario_template="deep_web_research",
+    )
+    extract_step = next(
+        step for step in llm_like_url_plan["steps"] if step["tool_name"] == "firecrawl.extract"
+    )
+    if extract_step["arguments"].get("url") != "https://example.com/firecrawl/source-pack":
+        raise SystemExit(f"LLM post-processing should fill extract URL, got {extract_step}")
+
+    llm_like_discovery_plan = {
+        "steps": [
+            {
+                "step_no": 1,
+                "tool_name": "exa.web_search_advanced_exa",
+                "goal": "LLM may omit query arguments for discovery tools.",
+                "arguments": {},
+                "risk_level": "medium",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 2,
+                "tool_name": "report_writer",
+                "goal": "Write report.",
+                "arguments": {},
+                "risk_level": "medium",
+                "requires_confirmation": False,
+            },
+        ],
+        "notes": [],
+    }
+    _ensure_research_template_steps(
+        llm_like_discovery_plan,
+        task="深入调研 Traceable Research Agent 的公开来源并生成可验证报告",
+        allowed_tools=None,
+        scenario_template="deep_web_research",
+    )
+    advanced_step = next(
+        step for step in llm_like_discovery_plan["steps"] if step["tool_name"] == "exa.web_search_advanced_exa"
+    )
+    if not advanced_step["arguments"].get("query") or not advanced_step["arguments"].get("numResults"):
+        raise SystemExit(f"LLM post-processing should fill Exa discovery arguments, got {advanced_step}")
+
     deep_research_with_url = plan_task(
         task="深入调研 https://example.com/firecrawl/source-pack 的网页正文并生成可验证报告",
         allowed_tools=None,
@@ -188,6 +286,12 @@ def main() -> None:
     scrape_step = next(step for step in deep_research_with_url["steps"] if step["tool_name"] == "firecrawl.scrape")
     if not scrape_step["arguments"].get("url"):
         raise SystemExit(f"Expected Firecrawl scrape URL argument, got {scrape_step}")
+    for url_tool in ["firecrawl.scrape", "firecrawl.extract", "firecrawl.map", "exa.web_fetch_exa"]:
+        if url_tool not in deep_url_tools:
+            continue
+        url_step = next(step for step in deep_research_with_url["steps"] if step["tool_name"] == url_tool)
+        if not url_step["arguments"].get("url"):
+            raise SystemExit(f"Expected {url_tool} URL argument, got {url_step}")
 
     tech_docs = plan_task(
         task="学习 FastAPI 和 Streamlit 的最新技术文档，并生成报告",

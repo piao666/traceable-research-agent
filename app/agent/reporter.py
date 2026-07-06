@@ -209,6 +209,8 @@ def _rag_metadata_lines(metadata: dict[str, Any]) -> list[str]:
 def _failure_category(error_message: str | None, metadata: dict[str, Any]) -> str:
     error_type = str(metadata.get("error_type") or "").lower()
     text = f"{error_type} {error_message or ''}".lower()
+    if "api_key is not configured" in text:
+        return "远端服务未配置"
     if "same_tool_max_calls" in text or error_type == "tool_call_limit":
         return "调用次数上限保护"
     if any(term in text for term in ("safety_rejected", "read-only", "readonly", "sql")):
@@ -216,6 +218,37 @@ def _failure_category(error_message: str | None, metadata: dict[str, Any]) -> st
     if any(term in text for term in ("no_hit", "no hit", "empty")):
         return "检索为空"
     return "工具失败"
+
+
+def _is_remote_mcp_trace(trace: ToolTrace) -> bool:
+    tool_name = (trace.tool_name or "").lower()
+    return (
+        "source_pack." in tool_name
+        or tool_name.startswith(("firecrawl.", "exa.", "context7."))
+    )
+
+
+def _degradation_state(plan: dict[str, Any], traces: list[ToolTrace]) -> tuple[str, str]:
+    react_state = plan.get("react_state") if isinstance(plan.get("react_state"), dict) else {}
+    if bool(react_state.get("fallback_used")):
+        return "已降级", "ReAct 触发 fallback，运行由可追踪的兜底执行完成。"
+    remote_failures = [
+        trace
+        for trace in traces
+        if trace.status in {"failed", "rejected"} and _is_remote_mcp_trace(trace)
+    ]
+    if remote_failures:
+        return "部分降级", f"{len(remote_failures)} 个远端 MCP 调用失败，报告保留失败证据并继续使用可用来源。"
+    return "未降级", "未记录远端 MCP 失败或 fallback。"
+
+
+def _friendly_report_error(error_message: str | None) -> str:
+    text = error_message or "<none>"
+    if "EXA_API_KEY is not configured" in text:
+        return "Exa 远端服务凭证未配置。"
+    if "FIRECRAWL_API_KEY is not configured" in text:
+        return "Firecrawl 远端服务凭证未配置。"
+    return text
 
 
 def _trace_output(trace: ToolTrace) -> dict[str, Any]:
@@ -755,6 +788,10 @@ def generate_markdown_report(
     Falls back to template automatically if LLM is unavailable or call fails.
     """
 
+    degradation_label, degradation_note = _degradation_state(plan, traces)
+    execution_mode = plan.get("execution_mode") or "planned"
+    requested_execution_mode = plan.get("requested_execution_mode") or execution_mode
+
     lines: list[str] = [
         "# Traceable Research Agent 调研报告",
         "",
@@ -764,9 +801,10 @@ def generate_markdown_report(
         "",
         "## 2. 运行摘要",
         "",
-        f"* 执行模式 (`execution_mode`): `{plan.get('execution_mode') or 'planned'}`",
-        f"* 请求执行模式 (`requested_execution_mode`): `{plan.get('requested_execution_mode') or plan.get('execution_mode') or 'planned'}`",
-        f"* 是否降级 (`fallback_used`): `{bool((plan.get('react_state') or {}).get('fallback_used'))}`",
+        f"* 执行模式 (`execution_mode`): `{execution_mode}`",
+        f"* 请求执行模式 (`requested_execution_mode`): `{requested_execution_mode}`",
+        f"* 降级状态: `{degradation_label}`",
+        f"* 降级说明: {degradation_note}",
         "",
     ]
 
@@ -942,6 +980,7 @@ def generate_markdown_report(
                     "",
                     f"* 状态 (`status`): `{trace.status}`",
                     f"* 类型: {_failure_category(trace.error_message, trace_metadata)}",
+                    f"* 错误说明: {_friendly_report_error(trace.error_message)}",
                     f"* 原始错误 (`error_message`): {trace.error_message or '<none>'}",
                     f"* 输出摘要 (`output_summary`): {trace.output_summary or '<none>'}",
                     "",

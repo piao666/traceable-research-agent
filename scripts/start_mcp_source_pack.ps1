@@ -3,7 +3,7 @@ param(
     [string]$Mode = "fake",
     [string]$HostName = "127.0.0.1",
     [int]$Port = 9001,
-    [string]$Providers = "firecrawl,exa,context7"
+    [string[]]$Providers = @("firecrawl", "exa", "context7")
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,19 +19,32 @@ if (-not (Test-Path $Python)) {
     $Python = $cmd.Source
 }
 
+$ProviderList = @()
+foreach ($Provider in $Providers) {
+    foreach ($Item in ([string]$Provider -split ",")) {
+        $Name = $Item.Trim()
+        if ($Name) {
+            $ProviderList += $Name
+        }
+    }
+}
+if (-not $ProviderList) {
+    throw "At least one MCP Source Pack provider must be specified."
+}
+$ProviderCsv = ($ProviderList -join ",")
+
 $env:MCP_BRIDGE_HOST = $HostName
 $env:MCP_BRIDGE_PORT = [string]$Port
-$env:MCP_BRIDGE_ENABLED_PROVIDERS = $Providers
+$env:MCP_BRIDGE_ENABLED_PROVIDERS = $ProviderCsv
 $env:MCP_BRIDGE_FAKE_MODE = $(if ($Mode -eq "fake") { "true" } else { "false" })
 
 Write-Host "MCP Source Pack Bridge"
 Write-Host "  mode      = $Mode"
-Write-Host "  providers = $Providers"
+Write-Host "  providers = $ProviderCsv"
 Write-Host "  mcp       = http://$HostName`:$Port/mcp"
 Write-Host "  health    = http://$HostName`:$Port/health"
 Write-Host ""
 Write-Host "Keep this window running, then restart the FastAPI backend so it can rediscover remote MCP tools."
 Write-Host ""
 
-& $Python scripts\mcp_source_pack_server.py --host $HostName --port $Port --fake-mode $env:MCP_BRIDGE_FAKE_MODE --providers $Providers
-
+& $Python scripts\mcp_source_pack_server.py --host $HostName --port $Port --fake-mode $env:MCP_BRIDGE_FAKE_MODE --providers $ProviderCsv

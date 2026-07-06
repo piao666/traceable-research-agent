@@ -67,6 +67,12 @@ class SourcePackProvider(ABC):
             if not isinstance(data, dict):
                 return None, self._failure(tool_name, "Provider returned non-object JSON.", error_type="invalid_response")
             return data, None
+        except requests.Timeout:
+            return None, self._failure(
+                tool_name,
+                f"HTTP request timed out after {self.timeout_seconds:g} seconds.",
+                error_type="timeout",
+            )
         except requests.RequestException as exc:
             return None, self._failure(tool_name, f"HTTP request failed: {type(exc).__name__}", error_type="http_error")
         except json.JSONDecodeError:
@@ -90,4 +96,3 @@ def env_int(name: str, default: int) -> int:
 def trim_text(value: Any, max_chars: int) -> str:
     text = str(value or "").strip()
     return text[:max_chars]
-

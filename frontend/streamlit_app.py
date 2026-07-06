@@ -6,6 +6,7 @@ import json
 import html
 import os
 import re
+import textwrap
 import time
 from pathlib import Path
 from typing import Any
@@ -48,20 +49,34 @@ RISK_COLOR = {"low": "#15803D", "medium": "#B45309", "high": "#B91C1C"}
 
 DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
     "本地资料分析": {
-        "task": "Read local docs, query database metrics, retrieve trace evidence, and generate a markdown report",
+        "task": "读取本地演示文档，查询示例数据库指标，检索本地 RAG 证据，并生成一份可审计的中文 Markdown 调研报告。",
+        "description": "适合演示本地文件、只读 SQL、RAG 检索和报告生成的闭环。",
         "allowed_tools": ["file_reader", "sql_query", "rag_search", "report_writer"],
         "scenario_template_key": "standard",
     },
     "联网深度调研": {
-        "task": "Deeply research current web sources about traceable research agent, discover sources, read page content, extract verifiable evidence, and generate a markdown report",
+        "task": "围绕 Traceable Research Agent 做联网深度调研：先发现公开来源；如果任务提供具体 URL，再读取网页正文或抽取证据；最后生成带来源链接的中文报告。",
+        "description": "适合演示 Exa/Firecrawl Source Pack：先做来源发现，有明确 URL 时再进入网页正文读取。",
         "allowed_tools": None,
         "scenario_template_key": "deep_web_research",
     },
     "技术文档调研": {
-        "task": "Research current technical documentation for FastAPI, Streamlit, MCP SDK, and RAG patterns; use GitHub and documentation sources, then generate a markdown report",
+        "task": "调研 FastAPI、Streamlit、MCP SDK 与 RAG 相关技术文档，结合 GitHub、文档来源和本地证据生成中文技术报告。",
+        "description": "适合演示技术文档型调研；Context7 adapter 已预留，当前以已注册的只读 MCP 工具为准。",
         "allowed_tools": None,
         "scenario_template_key": "technical_docs_research",
     },
+}
+
+EXECUTION_MODE_CN = {
+    "planned": "固定计划",
+    "react": "ReAct 动态决策",
+}
+
+PLANNER_SOURCE_CN = {
+    "llm": "LLM 规划器",
+    "deterministic": "规则规划器",
+    "deterministic_fallback": "规则兜底",
 }
 
 STATUS_CN = {
@@ -131,12 +146,386 @@ def _current_scenario_template_key() -> str:
 # ── 全局 CSS（极简深色调） ────────────────────────────────────────
 GLOBAL_CSS = """
 <style>
+:root {
+    --ra-bg: #EDF1F5;
+    --ra-panel: #F8FAFC;
+    --ra-panel-soft: #F1F5F9;
+    --ra-border: #CBD5E1;
+    --ra-border-soft: #D9E2EC;
+    --ra-text: #142033;
+    --ra-muted: #526278;
+    --ra-faint: #7A8798;
+    --ra-accent: #078F80;
+    --ra-accent-strong: #06756B;
+    --ra-blue: #2563EB;
+    --ra-green-soft: #DDF2EA;
+    --ra-blue-soft: #E4EEF9;
+    --ra-red: #C2413A;
+    --ra-shadow: 0 8px 24px rgba(15, 23, 42, 0.07);
+}
+
+html, body, [data-testid="stAppViewContainer"] {
+    background: var(--ra-bg);
+    color: var(--ra-text);
+}
+
+[data-testid="stHeader"] {
+    background: rgba(237, 241, 245, 0.88);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid rgba(203, 213, 225, 0.82);
+}
+
+[data-testid="stSidebar"] {
+    background: #F3F6FA;
+    border-right: 1px solid var(--ra-border);
+}
+
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] span {
+    color: var(--ra-text);
+}
+
+.block-container {
+    max-width: 1260px;
+    padding-top: 3.2rem;
+    padding-bottom: 3rem;
+}
+
+h1, h2, h3, h4 {
+    color: var(--ra-text);
+    letter-spacing: 0;
+}
+
+div[data-testid="stButton"] > button,
+div[data-testid="stDownloadButton"] > button {
+    border-radius: 8px;
+    min-height: 42px;
+    border: 1px solid var(--ra-border);
+    color: var(--ra-text);
+    background: var(--ra-panel);
+    box-shadow: none;
+    font-weight: 600;
+}
+
+div[data-testid="stButton"] > button[kind="primary"],
+div[data-testid="stButton"] > button[data-testid="baseButton-primary"] {
+    background: var(--ra-accent);
+    border-color: var(--ra-accent);
+    color: #FFFFFF;
+}
+
+div[data-testid="stButton"] > button:hover,
+div[data-testid="stDownloadButton"] > button:hover {
+    border-color: var(--ra-accent);
+    color: var(--ra-accent-strong);
+}
+
+div[data-testid="stButton"] > button[kind="primary"]:hover,
+div[data-testid="stButton"] > button[data-testid="baseButton-primary"]:hover {
+    background: var(--ra-accent-strong);
+    border-color: var(--ra-accent-strong);
+    color: #FFFFFF;
+}
+
+div[data-testid="stTextArea"] textarea,
+div[data-baseweb="select"] > div,
+div[data-testid="stTextInput"] input {
+    border-radius: 8px;
+    border-color: var(--ra-border);
+    background: var(--ra-panel);
+    color: var(--ra-text);
+}
+
+div[data-testid="stTextArea"] textarea:focus,
+div[data-testid="stTextInput"] input:focus {
+    border-color: var(--ra-accent);
+    box-shadow: 0 0 0 2px rgba(8, 154, 134, 0.12);
+}
+
+div[data-testid="stTabs"] [role="tablist"] {
+    border-bottom: 1px solid var(--ra-border);
+    gap: 18px;
+}
+
+div[data-testid="stTabs"] [role="tab"] {
+    color: var(--ra-muted);
+    font-weight: 700;
+}
+
+div[data-testid="stTabs"] [aria-selected="true"] {
+    color: var(--ra-accent-strong);
+}
+
+.ra-shell-title {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    margin-bottom: 18px;
+}
+
+.ra-eyebrow {
+    color: var(--ra-accent-strong);
+    font-size: 13px;
+    font-weight: 800;
+    margin-bottom: 6px;
+}
+
+.ra-title {
+    font-size: 34px;
+    line-height: 1.12;
+    font-weight: 800;
+    color: var(--ra-text);
+    margin: 0;
+}
+
+.ra-subtitle {
+    color: var(--ra-muted);
+    font-size: 15px;
+    margin-top: 8px;
+}
+
+.ra-workflow {
+    background: var(--ra-panel);
+    border: 1px solid var(--ra-border);
+    border-radius: 8px;
+    padding: 16px 18px;
+    margin: 8px 0 20px;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    box-shadow: var(--ra-shadow);
+}
+
+.ra-workflow-step {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    min-width: 0;
+}
+
+.ra-step-index {
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #EFF3F8;
+    color: var(--ra-muted);
+    font-weight: 800;
+}
+
+.ra-workflow-step.active .ra-step-index,
+.ra-workflow-step.done .ra-step-index {
+    background: var(--ra-accent);
+    color: #FFFFFF;
+}
+
+.ra-step-title {
+    font-weight: 800;
+    font-size: 14px;
+    color: var(--ra-text);
+}
+
+.ra-step-caption {
+    color: var(--ra-muted);
+    font-size: 12px;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ra-status-strip {
+    background: var(--ra-panel);
+    border: 1px solid var(--ra-border);
+    border-radius: 8px;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin: 18px 0;
+    box-shadow: var(--ra-shadow);
+}
+
+.ra-status-item {
+    padding: 16px 18px;
+    border-right: 1px solid var(--ra-border-soft);
+}
+
+.ra-status-item:last-child {
+    border-right: none;
+}
+
+.ra-status-label {
+    color: var(--ra-muted);
+    font-size: 12px;
+    font-weight: 700;
+    margin-bottom: 5px;
+}
+
+.ra-status-value {
+    color: var(--ra-text);
+    font-size: 17px;
+    font-weight: 800;
+}
+
+.ra-status-note {
+    color: var(--ra-faint);
+    font-size: 12px;
+    margin-top: 3px;
+}
+
+.ra-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 0 0 12px;
+}
+
+.ra-section-title {
+    font-size: 18px;
+    font-weight: 800;
+    color: var(--ra-text);
+}
+
+.ra-chip {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    background: var(--ra-green-soft);
+    color: #067A63;
+    font-size: 12px;
+    font-weight: 800;
+    padding: 5px 10px;
+}
+
+.ra-panel {
+    background: var(--ra-panel);
+    border: 1px solid var(--ra-border);
+    border-radius: 8px;
+    padding: 18px;
+    min-height: 232px;
+    box-shadow: var(--ra-shadow);
+}
+
+.ra-row {
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--ra-border-soft);
+}
+
+.ra-row:last-child {
+    border-bottom: none;
+}
+
+.ra-row-index {
+    width: 26px;
+    height: 26px;
+    border-radius: 999px;
+    background: #DEF7EC;
+    color: #087F73;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+}
+
+.ra-row-title {
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--ra-text);
+}
+
+.ra-row-caption {
+    font-size: 12px;
+    color: var(--ra-muted);
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ra-tool-pill {
+    border-radius: 999px;
+    background: #F1F5F9;
+    color: #475569;
+    padding: 5px 9px;
+    font-size: 11px;
+    font-weight: 700;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ra-empty-box {
+    border: 1px dashed #CBD5E1;
+    border-radius: 8px;
+    min-height: 132px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: var(--ra-muted);
+    background: var(--ra-panel-soft);
+    padding: 18px;
+}
+
+.ra-empty-title {
+    color: var(--ra-text);
+    font-weight: 800;
+    margin-bottom: 5px;
+}
+
+.ra-help-strip {
+    background: var(--ra-blue-soft);
+    color: #24548F;
+    border: 1px solid #D7E8FF;
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 13px;
+    margin-top: 18px;
+}
+
+.ra-sidebar-card {
+    border: 1px solid var(--ra-border);
+    border-radius: 8px;
+    padding: 14px;
+    background: var(--ra-panel);
+    margin: 12px 0;
+}
+
+.ra-sidebar-card strong {
+    color: var(--ra-text);
+}
+
+.ra-sidebar-muted {
+    color: var(--ra-muted);
+    font-size: 12px;
+    margin-top: 6px;
+}
+
+.ra-sidebar-ok {
+    color: #087F73;
+    font-size: 12px;
+    font-weight: 800;
+}
+
 .step-card {
-    border-left: 3px solid #3B82F6;
+    border-left: 3px solid var(--ra-accent);
     padding: 10px 14px;
     margin: 8px 0;
     border-radius: 0 8px 8px 0;
-    background: rgba(59,130,246,0.07);
+    background: var(--ra-panel);
+    border-top: 1px solid var(--ra-border-soft);
+    border-right: 1px solid var(--ra-border-soft);
+    border-bottom: 1px solid var(--ra-border-soft);
 }
 .step-card-success { border-left-color: #15803D; background: rgba(21,128,61,0.07); }
 .step-card-failed  { border-left-color: #B91C1C; background: rgba(185,28,28,0.07); }
@@ -145,13 +534,34 @@ GLOBAL_CSS = """
 .step-meta   { font-size: 12px; opacity: 0.7; }
 .risk-badge  { display:inline-block; padding:1px 8px; border-radius:10px;
                font-size:11px; color:white; margin-left:6px; }
-.section-tip { font-size:12px; color:#888; margin:-8px 0 10px; padding-left:2px; }
+.section-tip { font-size:13px; color:var(--ra-muted); margin:-4px 0 12px; padding-left:2px; }
 .metric-row  { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
-.metric-box  { flex:1; min-width:90px; background:rgba(255,255,255,0.04);
-               border:0.5px solid rgba(255,255,255,0.12); border-radius:8px;
+.metric-box  { flex:1; min-width:90px; background:var(--ra-panel);
+               border:1px solid var(--ra-border); border-radius:8px;
                padding:10px 14px; }
-.metric-label{ font-size:11px; opacity:0.6; margin-bottom:2px; }
+.metric-label{ font-size:11px; color:var(--ra-muted); margin-bottom:2px; }
 .metric-value{ font-size:20px; font-weight:600; }
+
+@media (max-width: 920px) {
+    .ra-workflow,
+    .ra-status-strip {
+        grid-template-columns: 1fr;
+    }
+    .ra-status-item {
+        border-right: none;
+        border-bottom: 1px solid var(--ra-border-soft);
+    }
+    .ra-status-item:last-child {
+        border-bottom: none;
+    }
+    .ra-shell-title {
+        display: block;
+    }
+    .ra-guide-pill {
+        margin-top: 12px;
+        display: inline-flex;
+    }
+}
 </style>
 """
 
@@ -331,7 +741,7 @@ def _format_stream_event(event: dict[str, Any]) -> str:
     if latency_ms is not None:
         parts.append(f"耗时={latency_ms}ms")
     if summary:
-        parts.append(f"摘要={str(summary)[:180]}")
+        parts.append(f"摘要={_friendly_summary(summary)[:180]}")
     return " | ".join(parts)
 
 
@@ -346,6 +756,17 @@ def render_event_console(target: Any | None = None) -> None:
     text = "\n".join(lines[-80:]) if lines else "暂无实时事件。"
     writer = target if target is not None else st
     writer.code(text, language="text")
+
+
+def render_event_summary() -> None:
+    lines = st.session_state.get("event_log") or []
+    if not lines:
+        return
+    latest = lines[-1]
+    if len(lines) > 1:
+        st.caption(f"已记录 {len(lines)} 条实时事件，最新：{latest}")
+    else:
+        st.caption(latest)
 
 
 def stream_task_events(run_id: str, target: Any | None = None) -> None:
@@ -397,12 +818,29 @@ def stream_task_events(run_id: str, target: Any | None = None) -> None:
         st.session_state.realtime_auto_refresh = True
 
 
-def _sync_allowed_tools() -> None:
-    """on_change callback for the template selectbox — syncs allowed_tools only.
-    Called automatically by Streamlit when the selectbox value changes.
-    Must NOT touch st.session_state.selected_template (widget owns it via key=).
+def _sync_template_state() -> None:
+    """Switching a scenario starts a fresh demo context.
+
+    The selectbox owns selected_template through its key, so this callback only
+    synchronizes dependent state.
     """
-    st.session_state.allowed_tools = _template_allowed_tools(_current_template())
+    template = _current_template()
+    st.session_state.allowed_tools = _template_allowed_tools(template)
+    st.session_state.task_text = str(template.get("task") or "")
+    for key, empty_value in {
+        "run_id": "",
+        "last_task_response": None,
+        "last_run_response": None,
+        "last_status": None,
+        "last_plan": None,
+        "last_trace": [],
+        "last_evidence": None,
+        "last_evidence_export": None,
+        "last_evidence_export_content": None,
+        "last_report": None,
+        "event_log": [],
+    }.items():
+        st.session_state[key] = empty_value
 
 
 def apply_template(name: str, fill_task: bool = False) -> None:
@@ -422,17 +860,332 @@ def status_chip(status: str | None) -> str:
             f"color:white;font-size:12px'>{icon} {label}</span>")
 
 
+def _execution_mode_label(value: str | None) -> str:
+    raw = str(value or "planned")
+    return EXECUTION_MODE_CN.get(raw, raw)
+
+
+def _planner_source_label(value: str | None) -> str:
+    raw = str(value or "—")
+    return PLANNER_SOURCE_CN.get(raw, raw)
+
+
+def _remote_failures(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for trace in traces:
+        tool_name = str(trace.get("tool_name") or "")
+        if (
+            trace.get("status") in {"failed", "rejected"}
+            and ("source_pack." in tool_name or tool_name.startswith(("firecrawl.", "exa.", "context7.")))
+        ):
+            failures.append(trace)
+    return failures
+
+
+def _degradation_summary(plan: dict[str, Any], traces: list[dict[str, Any]]) -> tuple[str, str]:
+    react_state = plan.get("react_state") if isinstance(plan.get("react_state"), dict) else {}
+    if bool(react_state.get("fallback_used")):
+        return "已降级", "ReAct 触发 fallback，任务由可追踪的兜底执行完成。"
+    remote_failed = _remote_failures(traces)
+    if remote_failed:
+        return "部分降级", f"{len(remote_failed)} 个远端 MCP 调用失败，系统保留失败证据并继续使用可用来源。"
+    return "未降级", "本次运行未记录远端工具失败或 fallback。"
+
+
+def _html_text(value: Any) -> str:
+    return html.escape(str(value or ""))
+
+
+def _short_tool_name(tool_name: Any) -> str:
+    value = str(tool_name or "—")
+    for prefix in ("source_pack.",):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+    return value
+
+
+def _run_status_label(status_obj: dict[str, Any]) -> str:
+    raw = str(status_obj.get("status") or "未创建")
+    return STREAM_STATUS_CN.get(raw, raw)
+
+
+def _mcp_status_snapshot() -> tuple[str, str, str]:
+    try:
+        mcp_health = api_get("/mcp/health", timeout=2)
+        readonly = (
+            mcp_health.get("channel_summary", {})
+            .get("channels", {})
+            .get("readonly", {})
+        )
+        registered = int(readonly.get("registered_tools") or 0)
+        servers = int(readonly.get("configured_servers") or 0)
+        if registered:
+            return "MCP 工具", f"{registered} 个只读工具", f"{servers} 个服务已注册"
+        if mcp_health.get("remote_registry_enabled"):
+            return "MCP 工具", "待注册", "Bridge 已配置，等待发现"
+        return "MCP 工具", "未配置", "使用内置搜索工具"
+    except ApiError:
+        return "MCP 工具", "状态未知", "后端连接后刷新"
+
+
+def render_page_header() -> None:
+    st.markdown(
+        textwrap.dedent("""
+        <div class="ra-shell-title">
+            <div>
+                <h1 class="ra-title">Traceable Research Agent</h1>
+            </div>
+        </div>
+        """).strip(),
+        unsafe_allow_html=True,
+    )
+
+
+def render_workflow_strip() -> None:
+    plan = st.session_state.get("last_plan") or {}
+    traces = st.session_state.get("last_trace") or []
+    report = st.session_state.get("last_report") or {}
+    steps = [
+        ("1", "任务描述", "输入研究问题或资料来源", True),
+        ("2", "执行计划", "生成可执行研究计划", bool(plan)),
+        ("3", "执行追踪", "实时查看执行与证据链", bool(traces)),
+        ("4", "研究报告", "生成结构化研究报告", bool(report.get("exists"))),
+    ]
+    html_steps = []
+    for index, title, caption, done in steps:
+        active = index == "1" and not bool(plan)
+        class_name = "ra-workflow-step"
+        if done:
+            class_name += " done"
+        elif active:
+            class_name += " active"
+        html_steps.append(
+            textwrap.dedent(f"""
+            <div class="{class_name}">
+                <div class="ra-step-index">{index}</div>
+                <div>
+                    <div class="ra-step-title">{title}</div>
+                    <div class="ra-step-caption">{caption}</div>
+                </div>
+            </div>
+            """).strip()
+        )
+    st.markdown(f"<div class='ra-workflow'>{''.join(html_steps)}</div>", unsafe_allow_html=True)
+
+
+def render_status_strip() -> None:
+    status_obj = st.session_state.get("last_status") or {}
+    plan = st.session_state.get("last_plan") or {}
+    traces = st.session_state.get("last_trace") or []
+    report = st.session_state.get("last_report") or {}
+    mcp_label, mcp_value, mcp_note = _mcp_status_snapshot()
+    planner_source = _planner_source_label(plan.get("planner_source") or status_obj.get("planner_source"))
+    report_value = "已生成" if report.get("exists") else "待生成"
+    items = [
+        (mcp_label, mcp_value, mcp_note),
+        ("Planner", planner_source if planner_source != "—" else "就绪", "可生成执行计划"),
+        ("Trace", f"{len(traces)} 条", _run_status_label(status_obj)),
+        ("研究报告", report_value, "Markdown / Word / PDF"),
+    ]
+    item_html = "".join(
+        textwrap.dedent(f"""
+        <div class="ra-status-item">
+            <div class="ra-status-label">{_html_text(label)}</div>
+            <div class="ra-status-value">{_html_text(value)}</div>
+            <div class="ra-status-note">{_html_text(note)}</div>
+        </div>
+        """).strip()
+        for label, value, note in items
+    )
+    st.markdown(f"<div class='ra-status-strip'>{item_html}</div>", unsafe_allow_html=True)
+
+
+def _plan_rows_html(steps: list[dict[str, Any]]) -> str:
+    rows = []
+    preview_steps = steps[:4]
+    if not preview_steps:
+        preview_steps = [
+            {
+                "step_no": 1,
+                "tool_name": "source_pack.firecrawl.search",
+                "goal": "发现与主题相关的高质量网页与文献。",
+            },
+            {
+                "step_no": 2,
+                "tool_name": "source_pack.firecrawl.extract",
+                "goal": "提取关键内容，去重与归纳要点。",
+            },
+            {
+                "step_no": 3,
+                "tool_name": "report_writer",
+                "goal": "形成结构化报告并保留来源链接。",
+            },
+        ]
+    for index, step in enumerate(preview_steps, start=1):
+        step_no = step.get("step_no") or index
+        tool_name = _short_tool_name(step.get("tool_name"))
+        goal = _friendly_goal(step.get("goal") or step.get("completion_criteria") or "等待 Planner 生成计划。")
+        rows.append(
+            textwrap.dedent(f"""
+            <div class="ra-row">
+                <div class="ra-row-index">{_html_text(step_no)}</div>
+                <div>
+                    <div class="ra-row-title">{_html_text(tool_name)}</div>
+                    <div class="ra-row-caption">{_html_text(goal)}</div>
+                </div>
+                <div class="ra-tool-pill">{_html_text(tool_name)}</div>
+            </div>
+            """).strip()
+        )
+    return "".join(rows)
+
+
+def render_plan_preview_panel() -> None:
+    plan = st.session_state.get("last_plan") or {}
+    steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+    badge = f"{len(steps)} 步" if steps else "预览"
+    st.markdown(
+        textwrap.dedent(f"""
+        <div class="ra-panel">
+            <div class="ra-section-head">
+                <div class="ra-section-title">执行计划</div>
+                <div class="ra-chip">{_html_text(badge)}</div>
+            </div>
+            {_plan_rows_html(steps)}
+        </div>
+        """).strip(),
+        unsafe_allow_html=True,
+    )
+
+
+def render_trace_preview_panel() -> None:
+    traces = st.session_state.get("last_trace") or []
+    status_obj = st.session_state.get("last_status") or {}
+    if traces:
+        recent = traces[-4:]
+        rows = []
+        for index, trace in enumerate(recent, start=1):
+            tool_name = _short_tool_name(trace.get("tool_name"))
+            trace_status = STREAM_STATUS_CN.get(str(trace.get("status")), trace.get("status") or "未知")
+            summary = _friendly_summary(trace.get("output_summary") or trace.get("error_message") or "已记录工具调用。")
+            rows.append(
+                textwrap.dedent(f"""
+                <div class="ra-row">
+                    <div class="ra-row-index">{index}</div>
+                    <div>
+                        <div class="ra-row-title">{_html_text(tool_name)} · {_html_text(trace_status)}</div>
+                        <div class="ra-row-caption">{_html_text(summary)}</div>
+                    </div>
+                    <div class="ra-tool-pill">{_html_text(trace.get("latency_ms", "—"))} ms</div>
+                </div>
+                """).strip()
+            )
+        body = "".join(rows)
+    else:
+        body = textwrap.dedent("""
+        <div class="ra-empty-box">
+            <div>
+                <div class="ra-empty-title">暂无执行记录</div>
+                <div>创建并执行任务后，工具调用、状态和证据链会显示在这里。</div>
+            </div>
+        </div>
+        """).strip()
+    st.markdown(
+        textwrap.dedent(f"""
+        <div class="ra-panel">
+            <div class="ra-section-head">
+                <div class="ra-section-title">Trace 追踪</div>
+                <div class="ra-chip">{_html_text(_run_status_label(status_obj))}</div>
+            </div>
+            {body}
+        </div>
+        """).strip(),
+        unsafe_allow_html=True,
+    )
+
+
+def render_report_preview_panel() -> None:
+    report = st.session_state.get("last_report") or {}
+    evidence = st.session_state.get("last_evidence") or {}
+    report_exists = bool(report.get("exists"))
+    title = "报告已生成" if report_exists else "报告待生成"
+    note = "可预览、下载 Markdown / Word / PDF。" if report_exists else "执行任务后，摘要、关键发现、证据链和来源链接会汇总在这里。"
+    evidence_count = evidence.get("total_evidence_items", 0) if isinstance(evidence, dict) else 0
+    body = textwrap.dedent(f"""
+    <div class="ra-empty-box">
+        <div>
+            <div class="ra-empty-title">{_html_text(title)}</div>
+            <div>{_html_text(note)}</div>
+            <div style="margin-top:10px;color:#087F73;font-weight:800;">证据条目：{_html_text(evidence_count)}</div>
+        </div>
+    </div>
+    """).strip()
+    st.markdown(
+        textwrap.dedent(f"""
+        <div class="ra-panel">
+            <div class="ra-section-head">
+                <div class="ra-section-title">研究报告</div>
+                <div class="ra-chip">{'已生成' if report_exists else '待生成'}</div>
+            </div>
+            {body}
+        </div>
+        """).strip(),
+        unsafe_allow_html=True,
+    )
+
+
 def risk_badge(level: str) -> str:
     c = RISK_COLOR.get(level, "#6B7280")
     cn = {"low": "低", "medium": "中", "high": "高"}.get(level, level)
     return f"<span class='risk-badge' style='background:{c}'>风险 {cn}</span>"
 
 
+def _friendly_summary(text: Any) -> str:
+    value = str(text or "—")
+    replacements = {
+        "EXA_API_KEY is not configured.": "Exa 凭证未配置，本次记录为远端 MCP 失败。",
+        "FIRECRAWL_API_KEY is not configured.": "Firecrawl 凭证未配置，本次记录为远端 MCP 失败。",
+        "Report is ready.": "报告已生成。",
+        "Returned": "返回",
+        "row(s) with columns": "行，字段",
+        "Read ": "已读取 ",
+        " chars": " 个字符",
+        "rag_search returned": "RAG 检索返回",
+        "hits using": "条结果，模式",
+        "tavily_search returned": "Tavily 搜索返回",
+        "Tavily API results.": "条结果。",
+    }
+    for raw, localized in replacements.items():
+        value = value.replace(raw, localized)
+    return value
+
+
+def _friendly_goal(goal: Any) -> str:
+    value = str(goal or "")
+    prefix = "Call remote MCP tool "
+    suffix = " through the unified Tool Registry."
+    if value.startswith(prefix) and value.endswith(suffix):
+        tool_name = value[len(prefix):-len(suffix)]
+        return f"通过统一工具注册表调用远端只读工具 {tool_name}。"
+    if value == "Search current external web sources through the read-only Tavily API.":
+        return "通过只读 Tavily 搜索当前外部来源。"
+    return value
+
+
+def _friendly_error(text: Any) -> str:
+    value = str(text or "")
+    if "EXA_API_KEY is not configured" in value:
+        return "Exa 远端服务凭证未配置，已作为可追踪失败记录。"
+    if "FIRECRAWL_API_KEY is not configured" in value:
+        return "Firecrawl 远端服务凭证未配置，已作为可追踪失败记录。"
+    return value
+
+
 def plan_step_card(step: dict) -> None:
     tool  = step.get("tool_name", "")
     icon  = TOOL_ICON.get(tool, "🔧")
     cn    = TOOL_CN.get(tool, tool)
-    goal  = step.get("goal", "")
+    goal  = _friendly_goal(step.get("goal", ""))
     risk  = step.get("risk_level", "low")
     st.markdown(
         f"<div class='step-card'>"
@@ -468,8 +1221,8 @@ def trace_step_card(trace: dict) -> None:
         f"</div>"
         f"<div class='step-meta'>"
         f"输入：{trace.get('input_summary','—')}<br>"
-        f"输出：{trace.get('output_summary','—')}"
-        + (f"<br>⚠️ {trace.get('error_message')}" if trace.get("error_message") else "")
+        f"输出：{_friendly_summary(trace.get('output_summary','—'))}"
+        + (f"<br>⚠️ {_friendly_error(trace.get('error_message'))}" if trace.get("error_message") else "")
         + f"</div></div>",
         unsafe_allow_html=True,
     )
@@ -482,15 +1235,15 @@ def trace_step_card(trace: dict) -> None:
         except Exception:
             trace_meta = {}
     if isinstance(trace_meta, dict) and trace_meta.get("parallel") is True:
-        with st.expander(f"Parallel group {trace_meta.get('parallel_group_id')}", expanded=False):
+        with st.expander(f"并行执行组 {trace_meta.get('parallel_group_id')}", expanded=False):
             cols = st.columns(4)
-            cols[0].metric("parallel", str(trace_meta.get("parallel")))
-            cols[1].metric("worker", trace_meta.get("parallel_worker_id", "-"))
-            cols[2].metric("group size", trace_meta.get("parallel_group_size", "-"))
-            cols[3].metric("latency", f"{trace_meta.get('latency_ms', '-')} ms")
+            cols[0].metric("是否并行", "是" if trace_meta.get("parallel") else "否")
+            cols[1].metric("工作线程", trace_meta.get("parallel_worker_id", "-"))
+            cols[2].metric("组大小", trace_meta.get("parallel_group_size", "-"))
+            cols[3].metric("耗时", f"{trace_meta.get('latency_ms', '-')} ms")
             st.caption(
-                f"started_at={trace_meta.get('started_at')} | "
-                f"finished_at={trace_meta.get('finished_at')}"
+                f"开始时间={trace_meta.get('started_at')} | "
+                f"完成时间={trace_meta.get('finished_at')}"
             )
 
     out = trace.get("output") or {}
@@ -498,10 +1251,10 @@ def trace_step_card(trace: dict) -> None:
         thought = out.get("thought") or (out.get("metadata") or {}).get("thought")
         if thought:
             with st.expander(f"🧠 ReAct 思考链（步骤 {trace.get('step_no')}）"):
-                st.write(f"**Thought：** {thought}")
-                st.write(f"**Action：**  {out.get('action', tool)}")
+                st.write(f"**思考摘要：** {thought}")
+                st.write(f"**选择动作：**  {out.get('action', tool)}")
                 obs = out.get("observation_summary") or trace.get("output_summary", "")
-                st.write(f"**Observation：** {obs}")
+                st.write(f"**观察结果：** {_friendly_summary(obs)}")
 
     # RAG 检索元数据
     meta_src = (out if isinstance(out, dict) else {}) or {}
@@ -520,12 +1273,12 @@ def trace_step_card(trace: dict) -> None:
             cols[1].metric("稠密命中", meta.get("dense_hit_count", "—"))
             cols[2].metric("BM25 命中", meta.get("bm25_hit_count", "—"))
             cols2 = st.columns(3)
-            cols2[0].metric("Embedding", meta.get("embedding_backend", "—"))
-            cols2[1].metric("是否 Fallback", "是" if meta.get("fallback_used") else "否")
+            cols2[0].metric("Embedding 后端", meta.get("embedding_backend", "—"))
+            cols2[1].metric("是否降级", "是" if meta.get("fallback_used") else "否")
             cols2[2].metric("RRF-k", meta.get("rrf_k", "—"))
             cols3 = st.columns(2)
             cols3[0].metric("向量维度", meta.get("dimension", "—"))
-            cols3[1].metric("Collection", meta.get("collection_name", "—"))
+            cols3[1].metric("集合名", meta.get("collection_name", "—"))
 
 
 def render_evidence_summary() -> None:
@@ -584,15 +1337,15 @@ def _render_evidence_export_controls() -> None:
                 content = api_get(f"/api/tasks/{run_id}/evidence/export/content?format={export_format}")
                 st.session_state.last_evidence_export = result
                 st.session_state.last_evidence_export_content = content
-                st.success(f"export_path={result.get('export_path')}")
+                st.success("已生成证据包")
             except ApiError as exc:
                 st.error(str(exc))
     last_export = st.session_state.get("last_evidence_export")
     content_payload = st.session_state.get("last_evidence_export_content")
     if isinstance(last_export, dict) and last_export.get("run_id") == run_id:
         st.caption(
-            f"{last_export.get('format')} | {last_export.get('item_count')} items | "
-            f"{last_export.get('export_path')}"
+            f"格式：{last_export.get('format')} | 条目：{last_export.get('item_count')} | "
+            f"本地路径：{last_export.get('export_path')}"
         )
     if (
         isinstance(content_payload, dict)
@@ -626,26 +1379,29 @@ def _evidence_export_filename(run_id: str, export_format: str) -> str:
 # ── 侧边栏 ────────────────────────────────────────────────────────
 def render_sidebar() -> None:
     with st.sidebar:
-        st.markdown("## 🕹️ 演示控制台")
+        st.markdown("## Traceable Research Agent")
 
         # 健康检查
-        if st.button("🩺 检查后端连接", use_container_width=True):
+        if st.button("检查后端连接", use_container_width=True):
             try:
                 h = api_get("/health")
                 st.session_state.health = h
-                st.success(f"✅ 连接正常  ·  后端默认模式：{h.get('execution_mode','planned')}")
+                st.success(f"连接正常 · 默认模式：{h.get('execution_mode','planned')}")
             except ApiError as e:
                 st.error(str(e))
 
         st.divider()
-        st.markdown("**📋 场景模板**")
+        st.markdown("**场景模板**")
         st.selectbox(
             "选择演示场景",
             list(DEMO_TEMPLATES.keys()),
             key="selected_template",       # Streamlit 独占管理此 key，禁止在回调外赋值
-            on_change=_sync_allowed_tools, # 切换时只同步 allowed_tools，不碰 task_text
+            on_change=_sync_template_state,
             label_visibility="collapsed",
         )
+        template_description = str(_current_template().get("description") or "")
+        if template_description:
+            st.caption(template_description)
         scenario_key = _current_scenario_template_key()
         if scenario_key in {"deep_web_research", "technical_docs_research"}:
             try:
@@ -658,30 +1414,71 @@ def render_sidebar() -> None:
                 registered = int(readonly.get("registered_tools") or 0)
                 servers = int(readonly.get("configured_servers") or 0)
                 if registered:
-                    st.caption(f"MCP 已注册：{registered} 个只读工具 / {servers} 个服务")
+                    st.markdown(
+                        textwrap.dedent(f"""
+                        <div class="ra-sidebar-card">
+                            <strong>MCP 已注册</strong>
+                            <div class="ra-sidebar-ok">{registered} 个只读工具 · {servers} 个服务</div>
+                        </div>
+                        """).strip(),
+                        unsafe_allow_html=True,
+                    )
+                    if scenario_key == "deep_web_research":
+                        st.caption("Exa 负责发现候选来源；Firecrawl 负责搜索和有 URL 时的网页正文读取。")
+                    else:
+                        st.caption("技术文档场景会优先使用 GitHub/RAG/搜索；Context7 adapter 已预留，未注册时不会强行调用。")
                 else:
-                    st.warning("远端 MCP 未注册，本场景会降级到内置搜索工具。", icon="⚠️")
+                    enabled = bool(mcp_health.get("remote_registry_enabled"))
+                    if enabled:
+                        st.warning("远端 MCP 已配置但尚未注册，Bridge 可能刚启动完成。", icon="⚠️")
+                        if st.button("重新注册远端 MCP", use_container_width=True):
+                            try:
+                                refreshed = api_post("/mcp/refresh", timeout=10)
+                                summary = (
+                                    refreshed.get("channel_summary", {})
+                                    .get("channels", {})
+                                    .get("readonly", {})
+                                )
+                                refreshed_count = int(summary.get("registered_tools") or 0)
+                                if refreshed_count:
+                                    st.success(f"远端 MCP 已注册：{refreshed_count} 个只读工具")
+                                    st.rerun()
+                                else:
+                                    st.warning("仍未发现可注册的远端 MCP 工具，请确认 Bridge 窗口已启动。")
+                            except ApiError as exc:
+                                st.error(str(exc))
+                    else:
+                        st.warning("远端 MCP 未配置，本场景会降级到内置搜索工具。", icon="⚠️")
             except ApiError:
                 st.caption("MCP 状态暂不可用")
 
         st.divider()
-        st.markdown("**⚙️ 执行模式**")
+        st.markdown("**执行模式**")
         st.selectbox(
             "执行模式",
             ["planned", "react"],
-            format_func=lambda x: "📋 Planned（固定计划）" if x == "planned" else "🤖 ReAct（动态决策）",
+            format_func=lambda x: "固定计划（推荐）" if x == "planned" else "ReAct 动态决策",
             key="execution_mode_display",
             label_visibility="collapsed",
         )
+        st.caption("先生成计划，经确认后执行；过程可追踪、可干预。")
 
         st.divider()
         if st.session_state.get("run_id"):
-            st.code(st.session_state.run_id[:16] + "…", language=None)
-            if st.button("🔄 刷新全部", use_container_width=True):
+            st.markdown(
+                textwrap.dedent(f"""
+                <div class="ra-sidebar-card">
+                    <strong>会话信息</strong>
+                    <div class="ra-sidebar-muted">Run ID：{_html_text(st.session_state.run_id[:16])}…</div>
+                </div>
+                """).strip(),
+                unsafe_allow_html=True,
+            )
+            if st.button("刷新全部", use_container_width=True):
                 refresh_all()
                 # 不显式 st.rerun()：按钮点击本身会触发 Streamlit 的一次 rerun
                 # 避免双重 rerun 导致 selectbox index 重计算、task_text 被覆盖
-        if st.button("🗑️ 清空会话", use_container_width=True):
+        if st.button("清空会话", use_container_width=True):
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
             init_state()
@@ -690,20 +1487,20 @@ def render_sidebar() -> None:
 
 # ── Tab 1：任务与规划 ─────────────────────────────────────────────
 def tab_task() -> None:
-    st.markdown("#### 📝 调研任务描述")
-    st.markdown('<p class="section-tip">系统会将自然语言任务转化为结构化执行计划，每一步工具调用都有明确的目标和风险等级。</p>', unsafe_allow_html=True)
+    st.markdown("### 输入任务")
+    st.markdown('<p class="section-tip">描述研究目标或粘贴资料来源。URL 建议单独一行，Planner 会据此决定是否进入网页正文读取。</p>', unsafe_allow_html=True)
 
     st.text_area(
         "任务内容",
-        height=90,
+        height=132,
         key="task_text",
         label_visibility="collapsed",
     )
     task_text = st.session_state.task_text  # 从 session state 读取，避免 value= 与 key= 冲突
 
-    col1, col2 = st.columns([1, 1])
+    col1, col2, col3 = st.columns([1.15, 1.15, 5])
     with col1:
-        if st.button("① 创建任务", type="primary", use_container_width=True):
+        if st.button("创建任务", type="primary", use_container_width=True):
             payload = {
                 "task": task_text,
                 "allowed_tools": st.session_state.allowed_tools,
@@ -722,8 +1519,6 @@ def tab_task() -> None:
                         "output_summary": "开始创建任务并生成执行计划",
                     }
                 )
-                terminal = st.empty()
-                render_event_console(terminal)
                 with st.spinner("正在创建任务并调用 Planner 生成执行计划，标准调研可能需要 30-90 秒..."):
                     resp = api_post("/api/tasks", payload, timeout=CREATE_TASK_TIMEOUT_SECONDS)
                 st.session_state.last_task_response = resp
@@ -735,7 +1530,6 @@ def tab_task() -> None:
                         "output_summary": f"run_id={st.session_state.run_id}",
                     }
                 )
-                render_event_console(terminal)
                 refresh_all(show_errors=False)
                 st.rerun()
             except ApiError as exc:
@@ -743,7 +1537,7 @@ def tab_task() -> None:
 
     with col2:
         run_id = st.session_state.get("run_id", "")
-        if run_id and st.button("② 执行任务 ▶", type="primary", use_container_width=True):
+        if st.button("执行任务", type="primary", use_container_width=True, disabled=not bool(run_id)):
             run_path = (
                 f"/api/tasks/{run_id}/run_async"
                 if st.session_state.use_async_run
@@ -761,42 +1555,28 @@ def tab_task() -> None:
                         "output_summary": f"run_id={run_id}",
                     }
                 )
-                terminal = st.empty()
-                render_event_console(terminal)
-                if run_path.endswith("/run_async"):
-                    stream_task_events(run_id, terminal)
                 refresh_all(show_errors=False)
                 st.rerun()
             except ApiError as exc:
                 st.error(str(exc))
+    with col3:
+        # 暂时隐藏实时事件摘要，避免在控制台首屏出现“请求执行/状态=运行”等内部状态文案。
+        pass
 
     # 当前状态摘要
     status_obj = st.session_state.get("last_status")
     if status_obj:
         cur = status_obj.get("status", "unknown")
-        st.markdown(status_chip(cur), unsafe_allow_html=True)
+        # 暂时隐藏状态胶囊，减少控制台内部运行状态噪声。
+        # st.markdown(status_chip(cur), unsafe_allow_html=True)
         if cur == "waiting_human":
             _render_hitl()
 
-    st.divider()
+    render_status_strip()
 
-    # 计划可视化
     plan = st.session_state.get("last_plan")
-    if plan:
-        ps = plan.get("planner_source", "deterministic")
-        if ps == "llm":
-            st.success("🤖 LLM 规划器已激活")
-        elif ps == "deterministic_fallback":
-            st.warning("⚠️ LLM 规划器降级为确定性模式")
-        else:
-            st.info("📋 当前使用确定性规划器（无 LLM 调用）")
-
-        steps = plan.get("steps") or []
-        st.markdown(f"#### 📋 执行计划  ·  共 {len(steps)} 步")
-        st.markdown('<p class="section-tip">计划由 Planner 根据任务描述和可用工具生成，每步有固定的 goal、参数和风险等级。</p>', unsafe_allow_html=True)
-        for step in steps:
-            plan_step_card(step)
-    elif st.session_state.get("run_id"):
+    # 图 3 圈出的三列功能看板暂时移除；完整计划、Trace 和报告仍保留在各自 Tab 中查看。
+    if not plan and st.session_state.get("run_id"):
         st.info("计划加载中…点击侧边栏「刷新全部」获取最新状态。")
 
 
@@ -860,18 +1640,20 @@ def tab_trace() -> None:
             st.code(realtime_events_url(), language=None)
         render_event_console()
         cols = st.columns(4)
-        cols[0].metric("status", status_obj.get("status", "-"))
-        cols[1].metric("current step", status_obj.get("current_step", 0))
-        cols[2].metric("trace events", len(traces))
+        raw_status = status_obj.get("status", "-")
+        cols[0].metric("任务状态", STREAM_STATUS_CN.get(str(raw_status), raw_status))
+        cols[1].metric("当前步骤", status_obj.get("current_step", 0))
+        cols[2].metric("Trace 条数", len(traces))
         cols[3].metric(
-            "auto polling",
-            "on" if st.session_state.get("realtime_auto_refresh") else "off",
+            "自动轮询",
+            "开启" if st.session_state.get("realtime_auto_refresh") else "关闭",
         )
         if traces:
             latest = traces[-1]
+            latest_status = STREAM_STATUS_CN.get(str(latest.get("status")), latest.get("status"))
             st.caption(
-                f"latest={latest.get('tool_name')} status={latest.get('status')} "
-                f"finished_at={latest.get('finished_at')}"
+                f"最新工具={latest.get('tool_name')} | 状态={latest_status} | "
+                f"完成时间={latest.get('finished_at')}"
             )
 
     if not traces:
@@ -901,15 +1683,15 @@ def tab_trace() -> None:
     exec_mode   = status_obj.get("execution_mode", "planned")
     with st.expander("📊 执行元信息（点击展开）", expanded=False):
         mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("规划器来源", plan_source)
-        mc2.metric("执行模式",   exec_mode)
+        mc1.metric("规划器来源", _planner_source_label(plan_source))
+        mc2.metric("执行模式",   _execution_mode_label(exec_mode))
         mc3.metric("总延迟",     f"{status_obj.get('total_latency_ms', '—')} ms")
         if status_obj.get("llm_provider"):
             mc1.metric("LLM 提供商", status_obj.get("llm_provider"))
             mc2.metric("LLM 模型",   status_obj.get("llm_model", "—"))
 
 
-FOLDED_REPORT_SECTION_PREFIXES = ("## 4.", "## 5.", "## 6.", "## 7.")
+FOLDED_REPORT_SECTION_PREFIXES = ("## 4.", "## 5.", "## 6.", "## 7.", "## 8.")
 
 
 def _split_report_markdown(markdown: str) -> list[tuple[str, str]]:
@@ -990,12 +1772,14 @@ def tab_report() -> None:
         "requested_execution_mode",
         plan.get("requested_execution_mode", exec_mode),
     )
-    fallback_used = bool(react_state.get("fallback_used"))
+    traces = st.session_state.get("last_trace") or []
+    degradation_label, degradation_note = _degradation_summary(plan, traces)
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("执行模式", exec_mode)
-    col2.metric("请求执行模式", requested_mode)
-    col3.metric("是否降级", "是" if fallback_used else "否")
+    col1.metric("执行模式", _execution_mode_label(exec_mode))
+    col2.metric("请求执行模式", _execution_mode_label(requested_mode))
+    col3.metric("降级状态", degradation_label)
+    st.caption(degradation_note)
 
     render_evidence_summary()
 
@@ -1045,10 +1829,10 @@ def main() -> None:
     init_state()
     render_sidebar()
 
-    st.markdown("# 🔬 Traceable Research Agent")
-    st.divider()
+    render_page_header()
+    render_workflow_strip()
 
-    tab1, tab2, tab3 = st.tabs(["⚡ 任务与规划", "🔍 执行追踪", "📝 研究报告"])
+    tab1, tab2, tab3 = st.tabs(["任务与规划", "执行追踪", "研究报告"])
     with tab1:  tab_task()
     with tab2:  tab_trace()
     with tab3:  tab_report()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from app.config import settings
 from app.agent.plan_guardrails import normalize_plan_arguments
@@ -153,9 +154,9 @@ DEEP_RESEARCH_REMOTE_PRIORITY = (
     ("exa", "web_search_exa"),
     ("exa", "web_search_advanced_exa"),
     ("firecrawl", "search"),
+    ("firecrawl", "map"),
     ("firecrawl", "scrape"),
     ("firecrawl", "extract"),
-    ("firecrawl", "map"),
     ("exa", "web_fetch_exa"),
 )
 TECH_DOCS_REMOTE_PRIORITY = (
@@ -231,6 +232,34 @@ def _schema_field_names(schema: dict[str, Any]) -> set[str]:
 def _first_url(text: str) -> str | None:
     match = re.search(r"https?://[^\s)>\]}\"']+", text)
     return match.group(0) if match else None
+
+
+def _domain_from_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower().split("@")[-1].split(":")[0]
+    return host.removeprefix("www.") or None
+
+
+def _site_search_query(task: str) -> str:
+    """Turn URL-crawl prompts into site-scoped discovery queries."""
+
+    url = _first_url(task)
+    domain = _domain_from_url(url)
+    if not domain:
+        return task
+    stem = re.sub(r"[^A-Za-z0-9]+", " ", domain.rsplit(".", 1)[0]).strip()
+    return f"site:{domain} {stem or domain} docs pricing api features"
+
+
+def _remote_default_limit(tool_name: str) -> int:
+    normalized = tool_name.lower()
+    if normalized.endswith(".firecrawl.map") or normalized.endswith("firecrawl.map"):
+        return 20
+    if normalized.endswith(".firecrawl.extract") or normalized.endswith("firecrawl.extract"):
+        return 10
+    return 5
 
 
 def _guess_library_name(task: str) -> str:
@@ -317,6 +346,94 @@ def _url_dependent_remote_tool(provider: str, remote_tool_name: str) -> bool:
         "map",
         "web_fetch_exa",
     }
+
+
+def _remote_step_requires_task_url(tool_name: str) -> bool:
+    normalized = tool_name.lower()
+    return any(
+        normalized.endswith(suffix)
+        for suffix in (
+            ".firecrawl.scrape",
+            ".firecrawl.extract",
+            ".firecrawl.map",
+            ".exa.web_fetch_exa",
+            "firecrawl.scrape",
+            "firecrawl.extract",
+            "firecrawl.map",
+            "exa.web_fetch_exa",
+        )
+    )
+
+
+def _drop_url_dependent_remote_steps_without_task_url(
+    steps: list[dict[str, Any]],
+    notes: list[str],
+    task: str,
+) -> list[dict[str, Any]]:
+    url = _first_url(task)
+    if url:
+        for step in steps:
+            tool_name = str(step.get("tool_name") or "")
+            if not _remote_step_requires_task_url(tool_name):
+                continue
+            arguments = step.setdefault("arguments", {})
+            if not isinstance(arguments, dict):
+                arguments = {}
+                step["arguments"] = arguments
+            if not arguments.get("url") and not arguments.get("urls"):
+                arguments["url"] = url
+        return steps
+    kept: list[dict[str, Any]] = []
+    removed: list[str] = []
+    for step in steps:
+        tool_name = str(step.get("tool_name") or "")
+        if _remote_step_requires_task_url(tool_name):
+            removed.append(tool_name)
+            continue
+        kept.append(step)
+    if removed:
+        _append_note_once(
+            notes,
+            "Page-content MCP tools that require a concrete URL were removed because the task did not include a URL: "
+            + ", ".join(sorted(set(removed))),
+        )
+    return kept
+
+
+def _fill_remote_step_arguments(step: dict[str, Any], task: str) -> None:
+    tool_name = str(step.get("tool_name") or "")
+    spec = get_tool(tool_name)
+    if not spec or "mcp_remote" not in spec.tags:
+        return
+    arguments = step.setdefault("arguments", {})
+    if not isinstance(arguments, dict):
+        arguments = {}
+        step["arguments"] = arguments
+    fields = _schema_field_names(spec.input_schema or {})
+    url = _first_url(task)
+    domain = _domain_from_url(url)
+    if "query" in fields and not str(arguments.get("query") or "").strip():
+        arguments["query"] = _site_search_query(task)
+    if "text" in fields and not str(arguments.get("text") or "").strip():
+        arguments["text"] = task
+    if "url" in fields and url and not arguments.get("url"):
+        arguments["url"] = url
+    if url and not arguments.get("url") and not arguments.get("urls") and _remote_step_requires_task_url(tool_name):
+        arguments["url"] = url
+    if "libraryName" in fields and not str(arguments.get("libraryName") or "").strip():
+        arguments["libraryName"] = _guess_library_name(task)
+    if "library_id" in fields and not str(arguments.get("library_id") or "").strip():
+        arguments["library_id"] = _guess_library_name(task)
+    if "libraryId" in fields and not str(arguments.get("libraryId") or "").strip():
+        arguments["libraryId"] = _guess_library_name(task)
+    if "limit" in fields and not arguments.get("limit"):
+        arguments["limit"] = _remote_default_limit(tool_name)
+    if "max_results" in fields and not arguments.get("max_results"):
+        arguments["max_results"] = 5
+    if "numResults" in fields and not arguments.get("numResults"):
+        arguments["numResults"] = 5
+    if domain and "includeDomains" in fields and not arguments.get("includeDomains"):
+        arguments["includeDomains"] = [domain]
 
 
 def _append_plan_allowed_tool(plan: dict[str, Any], tool_name: str, allowed_tools: list[str] | None) -> None:
@@ -418,10 +535,12 @@ def _step_template(
         url = _first_url(task)
         remote_tool_name = str((spec.metadata or {}).get("remote_tool_name") or tool_name) if spec else tool_name
         if "query" in fields:
-            arguments["query"] = task
+            arguments["query"] = _site_search_query(task)
         if "text" in fields:
             arguments["text"] = task
         if "url" in fields and url:
+            arguments["url"] = url
+        if url and "url" not in arguments and _remote_step_requires_task_url(tool_name):
             arguments["url"] = url
         if "libraryName" in fields:
             arguments["libraryName"] = _guess_library_name(task)
@@ -430,11 +549,14 @@ def _step_template(
         if "libraryId" in fields:
             arguments.setdefault("libraryId", _guess_library_name(task))
         if "limit" in fields:
-            arguments.setdefault("limit", 5)
+            arguments.setdefault("limit", _remote_default_limit(tool_name))
         if "max_results" in fields:
             arguments.setdefault("max_results", 5)
         if "numResults" in fields:
             arguments.setdefault("numResults", 5)
+        domain = _domain_from_url(url)
+        if domain and "includeDomains" in fields:
+            arguments.setdefault("includeDomains", [domain])
         if not arguments and remote_tool_name.lower() in {"scrape", "fetch", "web_fetch_exa"}:
             arguments["query"] = task
         step = {
@@ -810,6 +932,9 @@ def _ensure_research_template_steps(
     report_steps = [step for step in existing_steps if step.get("tool_name") == "report_writer"]
     steps = [step for step in existing_steps if step.get("tool_name") != "report_writer"]
     notes = [str(note) for note in plan.get("notes") or []]
+    steps = _drop_url_dependent_remote_steps_without_task_url(steps, notes, task)
+    for step in steps:
+        _fill_remote_step_arguments(step, task)
     plan["steps"] = steps
 
     if deep_research:
