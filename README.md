@@ -6,7 +6,7 @@ Traceable Research Agent 是一个面向商业调研、技术选型和客户/竞
 任务输入 -> Planner 生成计划 -> 工具执行 -> Trace 记录 -> Evidence 聚合 -> Markdown / Word / PDF 报告
 ```
 
-项目默认可以离线运行；配置 API Key 后可接入真实 LLM、GitHub Public API、Tavily Search、Firecrawl/Exa Source Pack 和真实 RAG 后端。当前主交互界面是 Streamlit，后端由 FastAPI 提供 API，MCP 端点用于外部只读工具发现与调用演示。
+项目默认可以离线运行，并通过显式运行模式避免因本机存在 API Key 而隐式联网；配置 Provider 后可接入真实 LLM、GitHub Public API、Tavily Search、Firecrawl/Exa Source Pack 和真实 RAG 后端。当前主交互界面是 Streamlit，后端由 FastAPI 提供 API，MCP 端点用于外部只读工具发现与调用演示。
 
 ## 项目定位
 
@@ -20,7 +20,7 @@ Traceable Research Agent 是一个面向商业调研、技术选型和客户/竞
 - **产品/运营专题调研**：追踪某个新功能、行业趋势、用户反馈或政策变化，把公开网页与内部知识库证据合并。
 - **内部知识库 + 外部网页混合调研**：同时读取本地文档、SQL 指标、RAG 语料和网页来源，形成可复核报告。
 
-商业价值不在于“多接了几个工具”，而在于每个结论都能回到证据链：谁调用了什么工具、用了什么输入、拿到了什么来源、哪里失败或降级、最终报告为什么可信。
+商业价值不在于“多接了几个工具”，而在于每个结论都能回到不可变证据链：谁调用了什么工具、用了什么输入、拿到了哪个原文片段、来源是否独立可靠、哪里失败或降级、冲突如何处理以及最终报告为什么可信。
 
 ## 典型落地场景
 
@@ -50,6 +50,7 @@ Traceable Research Agent 是一个面向商业调研、技术选型和客户/竞
 - Planned Executor：按计划顺序执行。
 - Parallel Executor：可并行执行安全、互不依赖的只读工具。
 - ReAct Executor：支持逐步观察、失败恢复和受限动态决策。
+- Reporter 使用显式 `REPORT_GENERATION_MODE=deterministic|llm`；默认 deterministic，即使环境中存在模型凭据也不会隐式发起报告生成调用。
 
 ### 工具系统
 
@@ -65,11 +66,18 @@ Traceable Research Agent 是一个面向商业调研、技术选型和客户/竞
 | `report_writer` | 报告生成 | 不对外暴露为写工具，由 Reporter 内部调用 |
 | remote MCP tools | Firecrawl / Exa / Context7 等 | 默认只注册 readonly、side-effect-free、无需确认的工具 |
 
+所有工具结果通过统一错误分类和递归脱敏流程，稳定区分超时、限流、鉴权、Provider、非法结果和内部错误，同时保留原始供应商错误类型用于兼容和审计。
+
 ### Trace、Evidence 与报告
 
 - ToolTrace 持久化到 SQLite，记录 step、tool、input/output summary、latency、error、metadata。
 - EvidenceBundle 从 trace 中提取证据，并标记 source、mock/fallback、failure、remote MCP discovery/support 等类型。
-- Reporter 基于任务、计划、观察和证据生成 Markdown 调研报告。
+- Claim 级证据图将 `ToolTrace -> SourceDocument -> SourceSnapshot -> EvidencePassage -> EvidenceAssertion -> ResearchClaim -> ClaimEvidenceEdge -> Citation -> ReportClaim` 串成可反向审计的引用链。
+- Web、RAG、SQL、GitHub 和本地文件分别保存 URL/字符区间、document/chunk、查询哈希/表列/行标识、repo/commit/path/line 等定位信息。
+- 原始工具输出按 SHA-256 进行 gzip 压缩并保存为不可变制品，SQLite 只保留图关系、定位器、哈希和结构化字段。
+- 来源策略从权威性、可溯源性、时效性、相关性、独立性和提取完整性六个维度评分，并通过内容哈希、转载识别和同组织聚类避免重复计算独立支持。
+- 百分比、数量级、单位、时间范围和极性会先标准化，再将证据标记为 `supports`、`refutes` 或 `contextualizes`；无法解决的冲突保留为 `unresolved` 或 `requires_human`。
+- Reporter 基于任务、计划、观察和证据生成报告，只接受持久化的 Citation ID；缺失或编造引用会触发校验失败，未解决冲突会显示在最终回答和限制章节。
 - 报告支持 Markdown、Word、PDF 下载。
 - Evidence packet 支持 JSON、JSONL、Markdown 导出和预览，并过滤明显密钥字段。
 
@@ -113,7 +121,13 @@ Streamlit UI / API Client / External MCP Client
  local tools + remote MCP readonly tools
                     |
                     v
-     Trace Store -> EvidenceBundle -> Reporter
+     Trace Store -> Claim Provenance Graph
+                         |
+                         v
+         Reliability / Conflict Reasoning
+                         |
+                         v
+                      Reporter
                     |
                     v
    Markdown report / DOCX / PDF / Evidence export
@@ -125,6 +139,7 @@ Streamlit UI / API Client / External MCP Client
 app/
   api/                  FastAPI routers: tasks, reports, tools, events
   agent/                Planner, executors, reporter, evidence, guardrails
+  evidence/             Provenance graph, immutable artifacts, reliability and conflicts
   llm/                  LLM provider abstraction and planner client
   mcp/                  MCP server, remote client, channel policy
   mcp_bridge/           Firecrawl / Exa / Context7 Source Pack bridge
@@ -132,6 +147,7 @@ app/
   security/             API key and tenant/user request context
   tools/                Tool Registry and local tool implementations
   trace/                SQLAlchemy models, persistence and SSE events
+config/                 Versioned source reliability policy
 frontend/
   streamlit_app.py      Main Streamlit demo UI
 scripts/                Init, RAG build, smoke checks, bridge startup
@@ -149,12 +165,15 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-### 2. 初始化 demo 数据
+### 2. 初始化数据库和 demo 数据
 
 ```powershell
+.\.venv\Scripts\python.exe scripts\migrate_database.py
 .\.venv\Scripts\python.exe scripts\init_demo_db.py
 .\.venv\Scripts\python.exe scripts\build_rag_index.py
 ```
+
+迁移脚本会将新数据库或完整的旧版 Demo 数据库升级到当前 Alembic head，其中包括 Claim 证据链和可靠性/冲突审计表；部分缺失的旧 Schema 会直接拒绝启动，避免错误标记版本。
 
 ### 3. 启动 FastAPI
 
@@ -231,6 +250,22 @@ DEEPSEEK_API_KEY=
 LLM Key，Reporter 也不会隐式联网，只有显式设置为 `llm` 且配置通过校验后才会调用模型。
 
 默认关闭 LLM Planner，保持离线稳定。开启后，LLM 输出仍会经过 schema 校验和 plan guardrails。
+
+### 证据链与可靠性策略
+
+```ini
+EVIDENCE_PIPELINE_VERSION=v2
+EVIDENCE_EXTRACTOR_VERSION=v2-rule-1
+EVIDENCE_ARTIFACT_ROOT=workspace/artifacts
+EVIDENCE_PASSAGE_MAX_CHARS=4000
+EVIDENCE_REASONING_ENABLED=true
+SOURCE_POLICY_PATH=config/source_policy.v1.json
+```
+
+- V2 将 ToolTrace 物化为 Claim 级证据图，并把大正文保存到内容寻址的压缩制品中。
+- 来源策略按 Claim 类型配置来源等级、时效、域名、最低可靠性和独立来源数；修改策略内容不需要改核心代码。
+- 每次推理保存策略版本、策略哈希、引擎版本、评分分项和调和理由，重复读取不会静默覆盖历史策略结果。
+- 回退到 V1 时需要同时设置 `EVIDENCE_PIPELINE_VERSION=v1` 和 `EVIDENCE_REASONING_ENABLED=false`。
 
 ### 外部搜索
 
@@ -322,97 +357,6 @@ MCP_REMOTE_REGISTRATION_RETRY_SECONDS=1
 Invoke-RestMethod -Method Post http://127.0.0.1:8000/mcp/refresh
 ```
 
-## API 示例
-
-创建任务：
-
-```powershell
-$body = @{
-  task = "读取本地文档，查询数据库指标，检索 RAG 证据，并生成中文调研报告"
-  report_type = "markdown"
-  source_mode = "mock"
-  allowed_tools = @("file_reader", "sql_query", "rag_search", "report_writer")
-  execution_mode_override = "planned"
-} | ConvertTo-Json
-
-$created = Invoke-RestMethod `
-  -Method Post `
-  -Uri http://127.0.0.1:8000/api/tasks `
-  -ContentType "application/json" `
-  -Body $body
-```
-
-查看计划并执行：
-
-```powershell
-Invoke-RestMethod "http://127.0.0.1:8000/api/tasks/$($created.run_id)/plan"
-Invoke-RestMethod -Method Post "http://127.0.0.1:8000/api/tasks/$($created.run_id)/run"
-```
-
-读取 trace 和报告：
-
-```powershell
-Invoke-RestMethod "http://127.0.0.1:8000/api/tasks/$($created.run_id)/trace"
-Invoke-RestMethod "http://127.0.0.1:8000/api/reports/$($created.run_id)"
-```
-
-下载报告：
-
-```powershell
-Invoke-WebRequest `
-  -Uri "http://127.0.0.1:8000/api/reports/$($created.run_id)/download?format=pdf" `
-  -OutFile "research_report.pdf"
-```
-
-常用端点：
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/health` | 服务、配置和安全状态摘要 |
-| `POST` | `/api/tasks` | 创建任务并生成计划 |
-| `GET` | `/api/tasks/{run_id}` | 查询任务状态 |
-| `GET` | `/api/tasks/{run_id}/plan` | 查看执行计划 |
-| `POST` | `/api/tasks/{run_id}/run` | 同步执行 |
-| `POST` | `/api/tasks/{run_id}/run_async` | 后台执行 |
-| `POST` | `/api/tasks/{run_id}/confirm` | HITL 确认或拒绝 |
-| `GET` | `/api/tasks/{run_id}/trace` | 查看工具调用 trace |
-| `GET` | `/api/tasks/{run_id}/events` | SSE 实时事件 |
-| `GET` | `/api/tasks/{run_id}/evidence` | 查看 EvidenceBundle |
-| `GET` | `/api/tasks/{run_id}/evidence/export` | 生成 evidence artifact metadata |
-| `GET` | `/api/tasks/{run_id}/evidence/export/content` | 预览 evidence export 内容 |
-| `GET` | `/api/tasks/{run_id}/evidence/export/download` | 下载 evidence packet |
-| `GET` | `/api/reports/{run_id}` | 读取 Markdown 报告 |
-| `GET` | `/api/reports/{run_id}/download` | 下载 Markdown / DOCX / PDF |
-| `GET` | `/api/tools` | 列出 Tool Registry 工具 |
-| `POST` | `/api/tools/{tool_name}/execute` | 直接调用工具 |
-| `GET` | `/mcp/health` | MCP 只读工具服务状态 |
-| `GET` | `/mcp/tools` | MCP 工具发现 |
-| `POST` | `/mcp/tools/call` | MCP 工具调用 |
-| `POST` | `/mcp` | JSON-RPC MCP endpoint |
-| `POST` | `/mcp/refresh` | 重新发现远端 MCP 工具 |
-
-## MCP 外部客户端演示
-
-默认离线 demo：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\demo_mcp_external_client.py
-```
-
-该脚本用 FastAPI `TestClient` 直接调用 `/mcp`，完成：
-
-- `initialize`
-- `tools/list`
-- `tools/call`
-- 携带 `_trace.run_id` 写入 MCP 调用 trace
-- 用 `trace_reader` / `report_reader` 读回 trace 和报告
-
-真实 HTTP client smoke：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\smoke_mcp_external_http_client.py
-```
-
 ## Docker
 
 轻量 Docker 默认使用 deterministic/json RAG，不打包本地 embedding 模型：
@@ -420,6 +364,8 @@ Invoke-WebRequest `
 ```powershell
 docker compose up --build
 ```
+
+API 容器启动时会先执行 Alembic 迁移，再按配置初始化 Demo 数据和 RAG 索引，最后启动 Uvicorn。`workspace` 以宿主机目录挂载到 API 和 Streamlit，因此 SQLite、不可变证据制品和生成报告在容器重建后仍然保留。
 
 访问：
 
@@ -439,60 +385,11 @@ $env:RAG_MODEL_HOST_PATH="E:/Models/bge-small-zh-v1.5"
 docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up --build
 ```
 
-## 验证与测试
-
-离线单元/契约测试：
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests
-.\.venv\Scripts\python.exe -m pytest tests
-```
-
-常用快速检查：
-
-```powershell
-.\.venv\Scripts\python.exe -m compileall app scripts frontend
-.\.venv\Scripts\python.exe scripts\smoke_planner.py
-.\.venv\Scripts\python.exe scripts\smoke_planner_guardrails.py
-.\.venv\Scripts\python.exe scripts\smoke_streamlit_frontend.py
-.\.venv\Scripts\python.exe scripts\smoke_mcp_source_pack_bridge.py
-```
-
-核心 smoke：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\smoke_hitl.py
-.\.venv\Scripts\python.exe scripts\smoke_evidence_export.py
-.\.venv\Scripts\python.exe scripts\smoke_report_download.py
-.\.venv\Scripts\python.exe scripts\smoke_evidence_aggregation.py
-.\.venv\Scripts\python.exe scripts\smoke_realtime_trace.py
-.\.venv\Scripts\python.exe scripts\smoke_mcp_server.py
-.\.venv\Scripts\python.exe scripts\smoke_mcp_client.py
-.\.venv\Scripts\python.exe scripts\smoke_mcp_channels.py
-.\.venv\Scripts\python.exe scripts\demo_mcp_external_client.py
-.\.venv\Scripts\python.exe scripts\smoke_mcp_external_http_client.py
-.\.venv\Scripts\python.exe scripts\smoke_parallel_execution.py
-.\.venv\Scripts\python.exe scripts\smoke_react_executor.py
-.\.venv\Scripts\python.exe scripts\smoke_auth_async.py
-.\.venv\Scripts\python.exe -m app.eval.run_eval
-```
-
-完整聚合验证：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\smoke_final_project.py
-```
-
-测试分层说明：
-
-- `tests/` 放离线、快速、无密钥的单元/契约测试，适合作为 CI 基线。
-- `scripts/smoke_*.py` 是集成/冒烟脚本，覆盖 FastAPI、Streamlit、MCP、trace、report 等链路。
-- `app/eval/` 的 `27/27` 是确定性工程 eval case 数字，不等同于公开 benchmark，也不要求真实 API Key。
-- 真实 LLM、真实网页搜索、真实 SentenceTransformers/Chroma 属于可选本地验证，应单独记录运行环境和产物。
-
 ## 安全边界
 
 - 不提交 `.env`、API Key、GitHub Token、本地模型、SQLite 数据库、RAG 索引、缓存、导出文件或生成报告。
+- 运行模式、Provider 凭据、证据版本和互斥配置会在启动期校验，错误配置不会进入任务执行阶段。
+- ToolResult、Trace、事件、报告上下文和证据导出使用统一递归脱敏策略，并保留稳定的错误分类用于审计。
 - 本地文件读取默认限制在 `workspace/docs`，白名单外路径进入 HITL。
 - SQL 只允许只读查询。
 - GitHub、Tavily、Firecrawl、Exa 均按只读工具处理。
@@ -500,42 +397,18 @@ docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up --build
 - interactive/write channel 不进入默认自动执行链路。
 - `headers_env` 只记录环境变量名，不把 header 值写入 health、trace、report 或 evidence export。
 - 远端工具失败会变成 failed `ToolResult` 和 evidence，不应让任务 API 直接 500。
+- Citation 必须来自持久化证据图并能够反查不可变 Passage、Snapshot 和 ToolTrace，Reporter 不接受模型编造的引用标识。
+- 高置信结论必须满足来源可靠性和独立来源门禁；未解决冲突不能被静默改写为确定事实。
 
-## 运行产物
+## 后续可以继续增强
 
-以下目录用于本地运行、缓存、导出或测试产物，默认不应提交：
-
-- `workspace/reports/`
-- `workspace/exports/`
-- `workspace/cache/`
-- `workspace/index/`
-- `workspace/chroma/`
-- `workspace/eval_outputs/`
-- `workspace/demo.sqlite`
-- `output/`
-- `.playwright-cli/`
-
-## 当前状态与路线
-
-当前项目已具备完整 demo 闭环：
-
-- FastAPI task lifecycle
-- Streamlit Research Console Lite
-- Planned / Parallel / ReAct executor
-- ToolTrace persistence
-- EvidenceBundle aggregation and export
-- Markdown / Word / PDF report download
-- MCP readonly server
-- Remote MCP channels
-- Firecrawl / Exa / Context7 Source Pack bridge
-
-后续可以继续增强：
-
-- Evidence quality / verifier
-- Trace replay / run replay
-- 更完整的真实网页站点展开策略
-- 更多 eval cases 和报告质量评分
-- 更完善的 PR/CI 自动化
+- 任务级 Research Skills、统一 Policy Engine、预算控制、重复动作检测和 re-planning。
+- Evidence quality / verifier、来源权重校准和更细粒度的报告 Claim 对齐。
+- 单 Tavily、多原子工具、多工具 + MCP 与完整证据流水线的标准化对照评测。
+- Trace replay / run replay、持久任务队列、断点续跑和失败恢复。
+- 更完整的真实网页站点展开、动态页面抓取和 Provider fallback 策略。
+- PostgreSQL、对象存储、六个月 Trace 生命周期、租户隔离和审计授权。
+- 更多 eval cases、报告质量评分、可观测性以及更完善的 PR/CI 自动化。
 
 ## License
 
