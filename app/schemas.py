@@ -204,6 +204,9 @@ class ProvenanceBundleResponse(BaseModel):
     report_claims: list[dict[str, Any]]
     citations: list[dict[str, Any]]
     integrity: dict[str, Any]
+    reasoning: dict[str, Any] | None = None
+    reliability_scores: list[dict[str, Any]] = Field(default_factory=list)
+    resolutions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class EvidenceExportResponse(BaseModel):

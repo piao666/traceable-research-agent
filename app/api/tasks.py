@@ -25,6 +25,7 @@ from app.agent.planner import plan_task
 from app.config import settings
 from app.database import SessionLocal, get_db
 from app.evidence.service import get_provenance_bundle, materialize_execution_provenance
+from app.evidence.reasoning_service import materialize_reasoning
 from app.schemas import (
     AsyncRunResponse,
     EvidenceBundleResponse,
@@ -547,6 +548,13 @@ async def get_task_provenance(
                 status_code=409,
                 detail="Evidence Pipeline V2 is disabled by configuration",
             )
+    if settings.evidence_reasoning_enabled:
+        reasoning = materialize_reasoning(db, run_id, settings.source_policy_path)
+        payload = get_provenance_bundle(
+            db,
+            run_id,
+            reasoning_run_id=reasoning["reasoning"]["reasoning_run_id"],
+        )
     return ProvenanceBundleResponse(**payload)
 
 

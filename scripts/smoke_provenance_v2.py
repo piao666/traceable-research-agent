@@ -64,6 +64,14 @@ def main() -> None:
         assert_true(payload["assertions"], "assertions missing")
         assert_true(payload["claims"], "claims missing")
         assert_true(payload["citations"], "citations missing")
+        assert_true(payload["reasoning"]["status"] == "complete", str(payload["reasoning"]))
+        assert_true(payload["reasoning"]["engine_version"] == "p2-rule-1", str(payload["reasoning"]))
+        assert_true(payload["reliability_scores"], "reliability scores missing")
+        assert_true(payload["resolutions"], "claim resolutions missing")
+        assert_true(
+            len(payload["reliability_scores"]) == len(payload["edges"]),
+            "every edge must have a reliability score",
+        )
         assert_true(payload["integrity"]["all_passages_resolve"], str(payload["integrity"]))
         assert_true(payload["integrity"]["all_assertions_resolve"], str(payload["integrity"]))
         assert_true(payload["integrity"]["all_edges_resolve"], str(payload["integrity"]))
@@ -78,6 +86,7 @@ def main() -> None:
         artifact_store.read_bytes(snapshot["artifact_path"], snapshot["content_hash"])
         markdown = report.json()["markdown"]
         assert_true("Claim Provenance V2" in markdown, "report provenance section missing")
+        assert_true("可靠性、冲突与限制" in markdown, "report reasoning section missing")
         assert_true(
             payload["citations"][0]["citation_label"] in markdown,
             "report citation label missing",

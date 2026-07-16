@@ -11,7 +11,6 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from app.agent.evidence import ClaimEvidenceMap, EvidenceBundle, EvidenceItem
 from app.agent.reporter import _valid_synthesis_citations
@@ -20,7 +19,7 @@ from app.evidence.artifact_store import ArtifactIntegrityError, ArtifactStore
 from app.evidence.normalizers import canonicalize_url, passage_locator
 from app.evidence.service import materialize_provenance_bundle
 from app.trace.models import AgentRun, ToolTrace
-from scripts.migrate_database import V1_TABLES, V2_TABLES, bootstrap_revision_for_tables
+from scripts.migrate_database import P2_TABLES, V1_TABLES, V2_TABLES, bootstrap_revision_for_tables
 
 
 class ArtifactStoreTests(unittest.TestCase):
@@ -123,11 +122,10 @@ class SourceNormalizerTests(unittest.TestCase):
 
 
 class ProvenanceMaterializationTests(unittest.TestCase):
-    def _engine(self):
+    def _engine(self, database_path: Path):
         engine = create_engine(
-            "sqlite://",
+            f"sqlite:///{database_path.as_posix()}",
             connect_args={"check_same_thread": False},
-            poolclass=StaticPool,
         )
 
         @event.listens_for(engine, "connect")
@@ -135,79 +133,82 @@ class ProvenanceMaterializationTests(unittest.TestCase):
             connection.execute("PRAGMA foreign_keys=ON")
 
         Base.metadata.create_all(engine)
-        self.addCleanup(engine.dispose)
         return engine
 
     def test_materialized_chain_is_complete_and_idempotent(self) -> None:
-        engine = self._engine()
-        with tempfile.TemporaryDirectory() as directory, Session(engine) as db:
-            run = AgentRun(
-                run_id="p1-run",
-                task="Verify revenue growth",
-                report_type="summary",
-                source_mode="real",
-                status="completed",
-            )
-            trace = ToolTrace(
-                trace_id="p1-trace",
-                run_id=run.run_id,
-                step_no=1,
-                tool_name="tavily_search",
-                input_json=json.dumps({"query": "revenue"}),
-                output_json=json.dumps({"results": [{"url": "https://example.com/report"}]}),
-                output_summary="One source",
-                status="success",
-                created_at=datetime.now(timezone.utc),
-                finished_at=datetime.now(timezone.utc),
-            )
-            db.add_all([run, trace])
-            db.commit()
-            item = EvidenceItem(
-                evidence_id="E001",
-                run_id=run.run_id,
-                trace_id=trace.trace_id,
-                step_no=1,
-                tool_name="tavily_search",
-                source_type="web",
-                source_ref="https://example.com/report?utm_source=test#results",
-                title="Official report",
-                snippet="Revenue grew 10% in 2025 Q3.",
-                status="success",
-                confidence="high",
-                metadata={"data_source": "tavily_api"},
-            )
-            claim = ClaimEvidenceMap(
-                claim_id="C001",
-                claim="Revenue growth: 10% in 2025 Q3",
-                evidence_ids=[item.evidence_id],
-                support_level="high",
-            )
-            bundle = EvidenceBundle(
-                run_id=run.run_id,
-                task=run.task,
-                total_evidence_items=1,
-                source_groups=[],
-                claims=[claim],
-                evidence_items=[item],
-                unsupported_claims=[],
-            )
+        with tempfile.TemporaryDirectory() as directory:
+            engine = self._engine(Path(directory) / "provenance.sqlite")
+            with Session(engine) as db:
+                run = AgentRun(
+                    run_id="p1-run",
+                    task="Verify revenue growth",
+                    report_type="summary",
+                    source_mode="real",
+                    status="completed",
+                )
+                trace = ToolTrace(
+                    trace_id="p1-trace",
+                    run_id=run.run_id,
+                    step_no=1,
+                    tool_name="tavily_search",
+                    input_json=json.dumps({"query": "revenue"}),
+                    output_json=json.dumps(
+                        {"results": [{"url": "https://example.com/report"}]}
+                    ),
+                    output_summary="One source",
+                    status="success",
+                    created_at=datetime.now(timezone.utc),
+                    finished_at=datetime.now(timezone.utc),
+                )
+                db.add_all([run, trace])
+                db.commit()
+                item = EvidenceItem(
+                    evidence_id="E001",
+                    run_id=run.run_id,
+                    trace_id=trace.trace_id,
+                    step_no=1,
+                    tool_name="tavily_search",
+                    source_type="web",
+                    source_ref="https://example.com/report?utm_source=test#results",
+                    title="Official report",
+                    snippet="Revenue grew 10% in 2025 Q3.",
+                    status="success",
+                    confidence="high",
+                    metadata={"data_source": "tavily_api"},
+                )
+                claim = ClaimEvidenceMap(
+                    claim_id="C001",
+                    claim="Revenue growth: 10% in 2025 Q3",
+                    evidence_ids=[item.evidence_id],
+                    support_level="high",
+                )
+                bundle = EvidenceBundle(
+                    run_id=run.run_id,
+                    task=run.task,
+                    total_evidence_items=1,
+                    source_groups=[],
+                    claims=[claim],
+                    evidence_items=[item],
+                    unsupported_claims=[],
+                )
 
-            first = materialize_provenance_bundle(
-                db,
-                run,
-                bundle,
-                [trace],
-                ArtifactStore(Path(directory)),
-                extractor_version="test-v1",
-            )
-            second = materialize_provenance_bundle(
-                db,
-                run,
-                bundle,
-                [trace],
-                ArtifactStore(Path(directory)),
-                extractor_version="test-v1",
-            )
+                first = materialize_provenance_bundle(
+                    db,
+                    run,
+                    bundle,
+                    [trace],
+                    ArtifactStore(Path(directory)),
+                    extractor_version="test-v1",
+                )
+                second = materialize_provenance_bundle(
+                    db,
+                    run,
+                    bundle,
+                    [trace],
+                    ArtifactStore(Path(directory)),
+                    extractor_version="test-v1",
+                )
+            engine.dispose()
 
         self.assertEqual(first["schema_version"], "2.0")
         self.assertEqual(len(first["source_documents"]), 1)
@@ -258,13 +259,42 @@ class MigrationBootstrapTests(unittest.TestCase):
             bootstrap_revision_for_tables(set(V1_TABLES)),
             "0001_initial_trace_schema",
         )
-        self.assertEqual(bootstrap_revision_for_tables(V1_TABLES | V2_TABLES), "head")
+        self.assertEqual(
+            bootstrap_revision_for_tables(V1_TABLES | V2_TABLES),
+            "0002_claim_provenance_schema",
+        )
+        self.assertEqual(
+            bootstrap_revision_for_tables(V1_TABLES | V2_TABLES | P2_TABLES),
+            "0003_evidence_reasoning",
+        )
+
+    def test_versioned_schema_ahead_state_is_reconciled(self) -> None:
+        self.assertIsNone(
+            bootstrap_revision_for_tables(
+                V1_TABLES | V2_TABLES,
+                current_revision="0002_claim_provenance_schema",
+            )
+        )
+        self.assertEqual(
+            bootstrap_revision_for_tables(
+                V1_TABLES | V2_TABLES | P2_TABLES,
+                current_revision="0002_claim_provenance_schema",
+            ),
+            "0003_evidence_reasoning",
+        )
+        with self.assertRaises(RuntimeError):
+            bootstrap_revision_for_tables(
+                V1_TABLES | V2_TABLES,
+                current_revision="0003_evidence_reasoning",
+            )
 
     def test_partial_legacy_schemas_are_rejected(self) -> None:
         with self.assertRaises(RuntimeError):
             bootstrap_revision_for_tables({"agent_runs"})
         with self.assertRaises(RuntimeError):
             bootstrap_revision_for_tables(V1_TABLES | {"source_documents"})
+        with self.assertRaises(RuntimeError):
+            bootstrap_revision_for_tables(V1_TABLES | V2_TABLES | {"claim_resolutions"})
 
 
 if __name__ == "__main__":

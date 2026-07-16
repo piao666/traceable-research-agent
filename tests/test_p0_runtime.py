@@ -132,6 +132,7 @@ class TraceRedactionTests(unittest.TestCase):
                 ),
                 10,
             )
+        engine.dispose()
 
         serialized = " ".join(
             value or ""

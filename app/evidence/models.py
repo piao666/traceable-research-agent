@@ -231,3 +231,90 @@ class Citation(Base):
     )
     citation_label: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EvidenceReasoningRun(Base):
+    __tablename__ = "evidence_reasoning_runs"
+    __table_args__ = (
+        Index("ix_evidence_reasoning_runs_run_id", "run_id"),
+        Index("ix_evidence_reasoning_runs_policy_version", "policy_version"),
+    )
+
+    reasoning_run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("agent_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
+class EvidenceReliabilityScore(Base):
+    __tablename__ = "evidence_reliability_scores"
+    __table_args__ = (
+        Index("ix_evidence_reliability_scores_reasoning_run", "reasoning_run_id"),
+        Index("ix_evidence_reliability_scores_edge_id", "edge_id"),
+        Index("ix_evidence_reliability_scores_cluster", "source_cluster_id"),
+    )
+
+    score_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reasoning_run_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("evidence_reasoning_runs.reasoning_run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    edge_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("claim_evidence_edges.edge_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    claim_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_class: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_cluster_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    authority: Mapped[float] = mapped_column(Float, nullable=False)
+    traceability: Mapped[float] = mapped_column(Float, nullable=False)
+    freshness: Mapped[float] = mapped_column(Float, nullable=False)
+    relevance: Mapped[float] = mapped_column(Float, nullable=False)
+    independence: Mapped[float] = mapped_column(Float, nullable=False)
+    extraction_completeness: Mapped[float] = mapped_column(Float, nullable=False)
+    total_score: Mapped[float] = mapped_column(Float, nullable=False)
+    rationale_json: Mapped[str] = mapped_column(Text, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ClaimResolution(Base):
+    __tablename__ = "claim_resolutions"
+    __table_args__ = (
+        Index("ix_claim_resolutions_reasoning_run", "reasoning_run_id"),
+        Index("ix_claim_resolutions_claim_id", "claim_id"),
+        Index("ix_claim_resolutions_status", "status"),
+    )
+
+    resolution_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reasoning_run_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("evidence_reasoning_runs.reasoning_run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    claim_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("research_claims.claim_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    support_quality: Mapped[float] = mapped_column(Float, nullable=False)
+    refute_quality: Mapped[float] = mapped_column(Float, nullable=False)
+    independent_support_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    independent_refute_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    rationale_json: Mapped[str] = mapped_column(Text, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

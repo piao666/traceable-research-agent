@@ -33,6 +33,7 @@ from app.evidence.normalizers import (
     source_organization,
     source_provider,
 )
+from app.evidence.reasoning_service import get_reasoning_bundle, materialize_reasoning
 from app.trace.models import AgentRun, ToolTrace
 
 
@@ -47,7 +48,7 @@ def materialize_execution_provenance(
     if settings.evidence_pipeline_version != "v2":
         return None
     bundle = build_evidence_bundle(run, plan, observations, traces)
-    return materialize_provenance_bundle(
+    payload = materialize_provenance_bundle(
         db,
         run,
         bundle,
@@ -56,6 +57,14 @@ def materialize_execution_provenance(
         extractor_version=settings.evidence_extractor_version,
         passage_max_chars=settings.evidence_passage_max_chars,
     )
+    if settings.evidence_reasoning_enabled:
+        reasoning = materialize_reasoning(db, run.run_id, settings.source_policy_path)
+        payload = get_provenance_bundle(
+            db,
+            run.run_id,
+            reasoning_run_id=reasoning["reasoning"]["reasoning_run_id"],
+        )
+    return payload
 
 
 def materialize_provenance_bundle(
@@ -179,7 +188,12 @@ def materialize_provenance_bundle(
     return get_provenance_bundle(db, run.run_id)
 
 
-def get_provenance_bundle(db: Session, run_id: str) -> dict[str, Any]:
+def get_provenance_bundle(
+    db: Session,
+    run_id: str,
+    *,
+    reasoning_run_id: str | None = None,
+) -> dict[str, Any]:
     pipeline = db.get(EvidencePipelineRun, run_id)
     if pipeline is None:
         raise ValueError("Evidence Pipeline V2 has not been materialized for this run")
@@ -219,6 +233,11 @@ def get_provenance_bundle(db: Session, run_id: str) -> dict[str, Any]:
     assertion_ids_set = {item.assertion_id for item in assertions}
     claim_ids_set = set(claim_ids)
     report_claim_ids_set = set(report_claim_ids)
+    reasoning_bundle = get_reasoning_bundle(
+        db,
+        run_id,
+        reasoning_run_id=reasoning_run_id,
+    )
     return {
         "run_id": run_id,
         "schema_version": pipeline.schema_version,
@@ -254,6 +273,7 @@ def get_provenance_bundle(db: Session, run_id: str) -> dict[str, Any]:
                 for citation in citations
             ),
         },
+        **reasoning_bundle,
     }
 
 

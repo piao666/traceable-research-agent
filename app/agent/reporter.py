@@ -686,7 +686,9 @@ def _llm_synthesize_answer(
             role="system",
             content=(
                 "When CIT-* identifiers are present, every factual conclusion must cite one or more "
-                "of those exact identifiers in square brackets. Never invent a citation identifier."
+                "of those exact identifiers in square brackets. Never invent a citation identifier. "
+                "When conflict_status is unresolved or requires_human, state the conflict explicitly "
+                "and do not select one side as a definitive fact."
             ),
         ),
         LLMMessage(
@@ -716,6 +718,9 @@ def _provenance_llm_context(bundle: dict[str, Any]) -> str:
     report_claims = {
         item["report_claim_id"]: item for item in bundle.get("report_claims") or []
     }
+    resolutions = {
+        item["claim_id"]: item for item in bundle.get("resolutions") or []
+    }
     grouped: dict[str, list[dict[str, Any]]] = {}
     for citation in bundle.get("citations") or []:
         claim = report_claims.get(citation.get("report_claim_id"))
@@ -736,6 +741,8 @@ def _provenance_llm_context(bundle: dict[str, Any]) -> str:
         "claims": [
             {
                 "claim": claim.get("claim_text"),
+                "conflict_status": (resolutions.get(claim.get("claim_id")) or {}).get("status"),
+                "confidence": (resolutions.get(claim.get("claim_id")) or {}).get("confidence"),
                 "citations": grouped.get(claim_id, []),
             }
             for claim_id, claim in report_claims.items()
@@ -794,6 +801,74 @@ def _render_provenance_markdown(bundle: dict[str, Any] | None) -> list[str]:
                     f"  Locator: `{locator}`",
                     f"  Evidence: {str(passage.get('text') or '')[:500]}",
                 ]
+            )
+        lines.append("")
+    return lines
+
+
+def _conflict_alert_lines(bundle: dict[str, Any] | None) -> list[str]:
+    if not bundle:
+        return []
+    claims = {item.get("claim_id"): item for item in bundle.get("claims") or []}
+    disputed = [
+        item
+        for item in bundle.get("resolutions") or []
+        if item.get("status") in {"unresolved", "requires_human"}
+    ]
+    if not disputed:
+        return []
+    lines = ["> **冲突提示：** 以下结论存在未解决的高影响证据冲突，不得作为确定性事实使用："]
+    for resolution in disputed:
+        claim = claims.get(resolution.get("claim_id")) or {}
+        lines.append(
+            f"> * {claim.get('claim_text') or resolution.get('claim_id')} "
+            f"(status=`{resolution.get('status')}`, confidence=`{resolution.get('confidence')}`)"
+        )
+    return [*lines, ""]
+
+
+def _render_reasoning_markdown(bundle: dict[str, Any] | None) -> list[str]:
+    if not bundle or not bundle.get("reasoning"):
+        return []
+    claims = {item.get("claim_id"): item for item in bundle.get("claims") or []}
+    score_by_edge = {
+        item.get("edge_id"): item for item in bundle.get("reliability_scores") or []
+    }
+    edges_by_claim: dict[str, list[dict[str, Any]]] = {}
+    for edge in bundle.get("edges") or []:
+        edges_by_claim.setdefault(str(edge.get("claim_id")), []).append(edge)
+    reasoning = bundle["reasoning"]
+    lines = [
+        "## 8. 可靠性、冲突与限制",
+        "",
+        f"* 策略版本: `{reasoning.get('policy_version')}`",
+        f"* 策略哈希: `{reasoning.get('policy_hash')}`",
+        "",
+    ]
+    for resolution in bundle.get("resolutions") or []:
+        claim_id = str(resolution.get("claim_id"))
+        claim = claims.get(claim_id) or {}
+        status = str(resolution.get("status"))
+        gate = (resolution.get("rationale") or {}).get("quality_gate") or {}
+        lines.extend(
+            [
+                f"### {claim.get('claim_text') or claim_id}",
+                "",
+                f"* 冲突状态: `{status}`",
+                f"* 聚合置信度: `{resolution.get('confidence')}`",
+                f"* 独立支持/反驳来源: `{resolution.get('independent_support_count')}` / "
+                f"`{resolution.get('independent_refute_count')}`",
+                f"* 高置信质量门禁: `{'passed' if gate.get('passed') else 'not_passed'}`",
+            ]
+        )
+        if status in {"unresolved", "requires_human"}:
+            lines.append("* **结论限制：该冲突尚未解决，报告不得选择单一确定答案。**")
+        for edge in edges_by_claim.get(claim_id, []):
+            score = score_by_edge.get(edge.get("edge_id")) or {}
+            lines.append(
+                f"* `{edge.get('relation')}` score=`{score.get('total_score')}` "
+                f"source_class=`{score.get('source_class')}` "
+                f"cluster=`{score.get('source_cluster_id')}`"
             )
         lines.append("")
     return lines
@@ -1111,6 +1186,7 @@ def generate_markdown_report(
         if _llm_answer
         else (_render_final_answer(run.task, observations, traces) or [])
     )
+    _final_answer_lines.extend(_conflict_alert_lines(provenance_bundle))
 
     lines += [
         "## 3. 最终回答",
@@ -1256,10 +1332,11 @@ def generate_markdown_report(
         lines.extend(["未记录可执行工具的观察结果。", ""])
 
     lines.extend(_render_provenance_markdown(provenance_bundle))
+    lines.extend(_render_reasoning_markdown(provenance_bundle))
 
     problem_traces = [trace for trace in traces if trace.status in {"failed", "rejected"}]
     if problem_traces:
-        lines.extend(["", "## 8. 失败与拒绝详情", ""])
+        lines.extend(["", "## 9. 失败与拒绝详情", ""])
         for trace in problem_traces:
             trace_metadata = _trace_metadata(trace)
             lines.extend(

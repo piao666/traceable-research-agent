@@ -37,6 +37,10 @@ CHECKS = [
         "smoke_provenance_capacity",
         [sys.executable, "scripts/smoke_provenance_capacity.py"],
     ),
+    (
+        "smoke_reasoning_capacity",
+        [sys.executable, "scripts/smoke_reasoning_capacity.py"],
+    ),
     ("app_eval", [sys.executable, "-m", "app.eval.run_eval"]),
 ]
 CHECK_TIMEOUT_SECONDS = {

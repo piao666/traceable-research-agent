@@ -48,10 +48,11 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    """Create required database tables."""
+    """Upgrade the application database to the current Alembic revision."""
 
     from app.trace import models  # noqa: F401
     from app.evidence import models as evidence_models  # noqa: F401
+    from scripts.migrate_database import migrate_database
 
     WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
-    Base.metadata.create_all(bind=engine)
+    migrate_database()

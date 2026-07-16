@@ -22,6 +22,7 @@ REQUIRED_FILES = (
     ROOT / "migrations" / "env.py",
     ROOT / "migrations" / "versions" / "0001_initial_trace_schema.py",
     ROOT / "migrations" / "versions" / "0002_claim_provenance_schema.py",
+    ROOT / "migrations" / "versions" / "0003_evidence_reasoning.py",
 )
 
 ALLOWED_QUERIES = (
@@ -74,6 +75,9 @@ def _migration_smoke() -> list[str]:
             "claim_evidence_edges",
             "report_claims",
             "citations",
+            "evidence_reasoning_runs",
+            "evidence_reliability_scores",
+            "claim_resolutions",
         }
         tables = sorted(name for (name,) in rows if name in required_tables)
         assert set(tables) == required_tables, tables

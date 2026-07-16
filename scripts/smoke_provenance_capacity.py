@@ -154,9 +154,9 @@ def run_case(size: int) -> dict[str, float | int]:
                 raise AssertionError(f"citation integrity failed for {size} items")
 
         max_query_count = max(query_counts)
-        if max_query_count > 9:
+        if max_query_count > 10:
             raise AssertionError(
-                f"V2 graph read used {max_query_count} statements; expected at most 9"
+                f"V2 graph read used {max_query_count} statements; expected at most 10"
             )
         return {
             "evidence_items": size,

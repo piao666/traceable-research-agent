@@ -89,6 +89,8 @@ class Settings(BaseModel):
     evidence_extractor_version: str = "v2-rule-1"
     evidence_artifact_root: str = "workspace/artifacts"
     evidence_passage_max_chars: int = 4000
+    evidence_reasoning_enabled: bool = True
+    source_policy_path: str = "config/source_policy.v1.json"
     rag_embedding_backend: str = "deterministic"
     rag_vector_backend: str = "json"
     rag_model_path: str | None = r"E:\Models\bge-small-zh-v1.5"
@@ -194,6 +196,17 @@ class Settings(BaseModel):
             raise ValueError("Offline ReAct mode requires REACT_LLM_PROVIDER=deterministic")
         if self.mcp_readonly_mode and self.mcp_allow_write_tools:
             raise ValueError("MCP_ALLOW_WRITE_TOOLS=true conflicts with MCP_READONLY_MODE=true")
+        if self.evidence_reasoning_enabled:
+            if self.evidence_pipeline_version != "v2":
+                raise ValueError("Evidence reasoning requires EVIDENCE_PIPELINE_VERSION=v2")
+            if not Path(self.source_policy_path).is_file():
+                raise ValueError(f"Source policy file does not exist: {self.source_policy_path}")
+            from app.evidence.policy import load_source_policy
+
+            try:
+                load_source_policy(self.source_policy_path)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"Invalid source policy: {self.source_policy_path}") from exc
         return self
 
     @field_validator("parallel_max_workers", mode="before")
@@ -389,6 +402,11 @@ class Settings(BaseModel):
             evidence_passage_max_chars=_env_bounded_int(
                 "EVIDENCE_PASSAGE_MAX_CHARS", 4000, 500, 20000
             ),
+            evidence_reasoning_enabled=_env_bool("EVIDENCE_REASONING_ENABLED", True),
+            source_policy_path=os.getenv(
+                "SOURCE_POLICY_PATH", "config/source_policy.v1.json"
+            ).strip()
+            or "config/source_policy.v1.json",
             rag_embedding_backend=os.getenv(
                 "RAG_EMBEDDING_BACKEND", "deterministic"
             ).strip()
@@ -522,6 +540,8 @@ class Settings(BaseModel):
             "evidence_extractor_version": self.evidence_extractor_version,
             "evidence_artifact_root": self.evidence_artifact_root,
             "evidence_passage_max_chars": self.evidence_passage_max_chars,
+            "evidence_reasoning_enabled": self.evidence_reasoning_enabled,
+            "source_policy_path": self.source_policy_path,
             "github_token_configured": bool(self.github_token),
             "tavily_configured": bool(self.tavily_api_key),
         }
