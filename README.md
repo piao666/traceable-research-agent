@@ -218,6 +218,7 @@ ASYNC_RUN_ENABLED=true
 
 ```ini
 LLM_PLANNER_ENABLED=false
+REPORT_GENERATION_MODE=deterministic
 LLM_PROVIDER=qwen
 LLM_PLANNER_MODE=auto
 LLM_MODEL=qwen-plus
@@ -225,6 +226,9 @@ LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 QWEN_API_KEY=
 DEEPSEEK_API_KEY=
 ```
+
+`REPORT_GENERATION_MODE=deterministic` 是离线安全默认值；即使进程环境中存在
+LLM Key，Reporter 也不会隐式联网，只有显式设置为 `llm` 且配置通过校验后才会调用模型。
 
 默认关闭 LLM Planner，保持离线稳定。开启后，LLM 输出仍会经过 schema 校验和 plan guardrails。
 

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.agent.evidence import EvidenceBundle
+from app.security.redaction import redact_sensitive_data
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,23 +26,6 @@ _FORMAT_MEDIA_TYPES = {
     "jsonl": "application/x-ndjson",
     "markdown": "text/markdown",
 }
-_SENSITIVE_KEY_PARTS = (
-    "api_key",
-    "apikey",
-    "authorization",
-    "credential",
-    "password",
-    "private_key",
-    "secret",
-    "token",
-)
-_SECRET_VALUE_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b"),
-    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE),
-)
-
-
 @dataclass(frozen=True)
 class EvidenceExportResult:
     run_id: str
@@ -137,27 +121,7 @@ def read_export_text(export_path: str) -> str:
 def sanitize_export_data(value: Any) -> Any:
     """Remove obvious secret-bearing keys and redact common token-shaped values."""
 
-    if isinstance(value, dict):
-        sanitized: dict[str, Any] = {}
-        for key, item in value.items():
-            key_text = str(key)
-            if _is_sensitive_key(key_text):
-                continue
-            sanitized[key_text] = sanitize_export_data(item)
-        return sanitized
-    if isinstance(value, list):
-        return [sanitize_export_data(item) for item in value]
-    if isinstance(value, str):
-        redacted = value
-        for pattern in _SECRET_VALUE_PATTERNS:
-            redacted = pattern.sub("[REDACTED]", redacted)
-        return redacted
-    return value
-
-
-def _is_sensitive_key(key: str) -> bool:
-    lowered = key.lower().replace("-", "_")
-    return any(part in lowered for part in _SENSITIVE_KEY_PARTS)
+    return redact_sensitive_data(value, drop_sensitive_keys=True)
 
 
 def _export_path(export_root: Path, run_id: str, export_format: str) -> Path:

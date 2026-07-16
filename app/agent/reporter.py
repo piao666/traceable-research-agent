@@ -17,6 +17,7 @@ except ImportError:
 from app.trace.models import AgentRun, ToolTrace
 from app.agent.context_compressor import compress_evidence, has_useful_evidence
 from app.agent.evidence import build_evidence_bundle, render_evidence_markdown
+from app.security.redaction import redact_text
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -359,6 +360,22 @@ def _rag_metadata_lines(metadata: dict[str, Any]) -> list[str]:
 
 
 def _failure_category(error_message: str | None, metadata: dict[str, Any]) -> str:
+    category = str(metadata.get("error_category") or "").lower()
+    category_labels = {
+        "timeout": "远程调用超时",
+        "rate_limited": "远程服务限流",
+        "auth_error": "认证或凭据错误",
+        "provider_error": "远程服务失败",
+        "invalid_result": "工具结果格式无效",
+        "internal_error": "系统内部错误",
+        "invalid_request": "工具参数无效",
+        "policy_error": "安全策略拒绝",
+        "unavailable": "工具或服务不可用",
+        "not_found": "目标资源不存在",
+        "unknown": "未分类工具失败",
+    }
+    if category in category_labels:
+        return category_labels[category]
     error_type = str(metadata.get("error_type") or "").lower()
     text = f"{error_type} {error_message or ''}".lower()
     if "api_key is not configured" in text:
@@ -395,7 +412,7 @@ def _degradation_state(plan: dict[str, Any], traces: list[ToolTrace]) -> tuple[s
 
 
 def _friendly_report_error(error_message: str | None) -> str:
-    text = error_message or "<none>"
+    text = redact_text(error_message or "<none>")
     if "EXA_API_KEY is not configured" in text:
         return "Exa 远端服务凭证未配置。"
     if "FIRECRAWL_API_KEY is not configured" in text:
@@ -671,7 +688,7 @@ def _llm_synthesize_answer(
             return response.content.strip()
     except Exception as exc:
         import logging
-        logging.getLogger(__name__).warning("LLM synthesis failed: %s", exc)
+        logging.getLogger(__name__).warning("LLM synthesis failed: %s", redact_text(exc))
     return None
 
 

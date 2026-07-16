@@ -1,6 +1,8 @@
 """FastAPI entrypoint for Traceable Research Agent."""
 
 import asyncio
+import json
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -32,6 +34,10 @@ async def _register_remote_mcp_tools_with_retry() -> None:
 async def lifespan(app: FastAPI):
     """Initialize local SQLite tables and default tool metadata."""
 
+    logging.getLogger(__name__).info(
+        "Runtime configuration: %s",
+        json.dumps(settings.get_safe_runtime_config_summary(), sort_keys=True),
+    )
     init_db()
     register_default_tools()
     await _register_remote_mcp_tools_with_retry()

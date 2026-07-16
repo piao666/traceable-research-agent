@@ -13,6 +13,7 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.agent.file_access_policy import file_reader_execution_arguments
+from app.agent.report_generation import resolve_report_llm_client
 from app.agent.executor import (
     EXECUTABLE_TOOLS,
     _failed_observation,
@@ -25,7 +26,6 @@ from app.agent.executor import (
 )
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings
-from app.llm.providers import create_llm_client
 from app.mcp.policy import is_parallel_safe_tool
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool, get_tool
@@ -392,7 +392,7 @@ def run_plan_parallel(
         traces = store.list_tool_traces(db, run_id)
         run.status = "completed"
         run.error_message = None
-        llm_client = create_llm_client(settings_obj)
+        llm_client = resolve_report_llm_client(settings_obj)
         markdown = generate_markdown_report(run, plan, observations, traces, llm_client=llm_client)
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)

@@ -9,9 +9,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agent.file_access_policy import file_reader_execution_arguments
+from app.agent.report_generation import resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
-from app.llm.providers import create_llm_client
-from app.config import settings as _exec_settings
+from app.config import Settings, settings as _exec_settings
+from app.llm.base import LLMClient
 from app.mcp.policy import MCPChannel, requires_interactive_confirmation, tool_channel
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool, get_tool
@@ -103,7 +104,12 @@ def _message_summary(run: AgentRun, message: str) -> dict[str, Any]:
     return summary
 
 
-def run_plan(db: Session, run_id: str) -> dict[str, Any]:
+def run_plan(
+    db: Session,
+    run_id: str,
+    settings_obj: Settings = _exec_settings,
+    report_llm_client: LLMClient | None = None,
+) -> dict[str, Any]:
     """Execute a run plan step by step and generate a Markdown report."""
 
     run = store.get_agent_run(db, run_id)
@@ -191,7 +197,7 @@ def run_plan(db: Session, run_id: str) -> dict[str, Any]:
         traces = store.list_tool_traces(db, run_id)
         run.status = "completed"
         run.error_message = None
-        _llm = create_llm_client(_exec_settings)  # Phase A: LLM synthesis
+        _llm = resolve_report_llm_client(settings_obj, report_llm_client)
         markdown = generate_markdown_report(run, plan, observations, traces, llm_client=_llm)
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)

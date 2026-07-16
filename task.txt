@@ -84,6 +84,18 @@
 
 目标：在增加 Deep Research 能力前，消除隐式联网、配置漂移、凭据泄漏和不可复现测试。
 
+实施状态（2026-07-16）：工程改造与本地、强制离线、Docker 复验已完成；真实 Provider Key 轮换仍需由密钥所有者在对应控制台执行。
+
+已完成结果：
+
+- 新增显式 `REPORT_GENERATION_MODE=deterministic|llm`，默认 deterministic。
+- Planned、Parallel、ReAct 三条报告路径均通过统一策略解析 LLM Client。
+- Tool Registry 增加稳定 `error_category`，同时保留原 `error_type` 兼容字段。
+- ToolResult、Trace、事件 Trace 和证据导出统一使用递归敏感信息脱敏。
+- 新增 P0 契约测试；本地 14 个测试和 7 个 subtest 通过。
+- 强制离线聚合套件 21/21 通过，补充的 10 项 smoke 全部通过。
+- Docker Server 29.5.2 完成镜像构建、双服务健康检查、容器 E2E、API 重启恢复和报告下载复验。
+
 ### 3.1 实施任务
 
 - 增加显式 `REPORT_GENERATION_MODE=deterministic|llm`，由 Executor 注入 Reporter/LLM Client，不再因本机存在 Key 自动联网。

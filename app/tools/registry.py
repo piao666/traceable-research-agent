@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.tools.base import ToolResult, ToolSpec
+from app.tools.errors import normalize_tool_result
 
 ToolHandler = Callable[[dict[str, Any]], ToolResult]
 
@@ -56,6 +57,10 @@ def _with_registry_metadata(
     )
 
 
+def _finalize_result(name: str, spec: ToolSpec | None, result: ToolResult) -> ToolResult:
+    return normalize_tool_result(_with_registry_metadata(name, spec, result))
+
+
 def execute_tool(
     name: str,
     arguments: dict[str, Any] | None = None,
@@ -68,37 +73,51 @@ def execute_tool(
 
     spec = get_tool(name)
     if spec is None:
-        return ToolResult(
-            success=False,
-            error_message=f"Tool '{name}' is not registered.",
-            metadata={"tool_name": name, "tool_source": "unknown", "error_type": "not_found"},
+        return _finalize_result(
+            name,
+            None,
+            ToolResult(
+                success=False,
+                error_message=f"Tool '{name}' is not registered.",
+                metadata={"error_type": "not_found"},
+            ),
         )
 
     if not spec.enabled:
-        return ToolResult(
-            success=False,
-            error_message=f"Tool '{name}' is disabled.",
-            metadata={"tool_name": name, "tool_source": _tool_source(spec), "error_type": "disabled"},
+        return _finalize_result(
+            name,
+            spec,
+            ToolResult(
+                success=False,
+                error_message=f"Tool '{name}' is disabled.",
+                metadata={"error_type": "disabled"},
+            ),
         )
 
     handler = _tool_handlers.get(name)
     if handler is None:
-        return ToolResult(
-            success=False,
-            error_message="Tool handler is not implemented yet.",
-            metadata={
-                "tool_name": name,
-                "tool_source": _tool_source(spec),
-                "arguments": arguments or {},
-                "error_type": "not_implemented",
-            },
+        return _finalize_result(
+            name,
+            spec,
+            ToolResult(
+                success=False,
+                error_message="Tool handler is not implemented yet.",
+                metadata={
+                    "arguments": arguments or {},
+                    "error_type": "not_implemented",
+                },
+            ),
         )
 
     try:
-        return _with_registry_metadata(name, spec, handler(arguments or {}))
+        return _finalize_result(name, spec, handler(arguments or {}))
     except Exception as exc:  # pragma: no cover - handler path is future work
-        return ToolResult(
-            success=False,
-            error_message=str(exc),
-            metadata={"tool_name": name, "tool_source": _tool_source(spec), "error_type": "handler_error"},
+        return _finalize_result(
+            name,
+            spec,
+            ToolResult(
+                success=False,
+                error_message=str(exc),
+                metadata={"error_type": "handler_error"},
+            ),
         )

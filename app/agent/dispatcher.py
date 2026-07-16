@@ -39,4 +39,4 @@ def run_task_by_mode(
     if effective_mode == "planned" and settings_obj.parallel_execution_enabled:
         from app.agent.parallel_executor import run_plan_parallel
         return run_plan_parallel(db, run_id, settings_obj)
-    return run_plan(db, run_id)
+    return run_plan(db, run_id, settings_obj=settings_obj)

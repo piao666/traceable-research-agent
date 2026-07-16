@@ -16,6 +16,7 @@ from app.agent.file_access_policy import (
     resolve_file_reader_path,
 )
 from app.agent.executor import run_plan
+from app.agent.report_generation import resolve_report_llm_client
 from app.agent.react_prompt import build_react_messages
 from app.agent.react_schema import (
     ReActDecision,
@@ -312,7 +313,7 @@ def _complete_report(
     traces = store.list_tool_traces(db, run_id)
     run.status = "completed"
     run.error_message = None
-    _llm = llm_client or create_llm_client(settings_obj)  # Phase A: LLM synthesis
+    _llm = resolve_report_llm_client(settings_obj, llm_client)
     markdown = generate_markdown_report(run, plan, observations, traces, llm_client=_llm)
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
@@ -328,6 +329,7 @@ def _fallback_to_plan(
     state: dict[str, Any],
     step_no: int,
     reason: str,
+    settings_obj: Settings,
     error_type: str = "invalid_decision",
 ) -> dict:
     state["fallback_used"] = True
@@ -356,7 +358,7 @@ def _fallback_to_plan(
         },
         error_message=reason,
     )
-    return run_plan(db, run_id)
+    return run_plan(db, run_id, settings_obj=settings_obj)
 
 
 def run_react_task(
@@ -422,7 +424,7 @@ def run_react_task(
                 reason = _safe_error(description.get("reason") or "ReAct LLM is unavailable.")
                 if settings.react_fallback_to_planned and not state.get("observation_history"):
                     return _fallback_to_plan(
-                        db, run_id, plan, state, step_no, reason, "llm_unavailable"
+                        db, run_id, plan, state, step_no, reason, settings, "llm_unavailable"
                     )
                 return _complete_report(db, run_id, plan, state, reason, settings, client, limitation=True)
             messages = build_react_messages(
@@ -485,7 +487,7 @@ def run_react_task(
                     continue  # Let LLM retry with the rejection feedback visible
                 # After 2 invalid decisions, fall back
                 if settings.react_fallback_to_planned and not state.get("observation_history", [{}])[0].get("success"):
-                    return _fallback_to_plan(db, run_id, plan, state, step_no, reason)
+                    return _fallback_to_plan(db, run_id, plan, state, step_no, reason, settings)
                 if settings.react_finish_on_invalid_decision:
                     return _complete_report(db, run_id, plan, state, reason, settings, client, limitation=True)
                 continue
@@ -532,6 +534,7 @@ def run_react_task(
                         state,
                         step_no,
                         rejection_reason,
+                        settings,
                         "early_finish_without_remote_mcp",
                     )
                 continue

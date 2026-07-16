@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from dotenv import load_dotenv
 
 
@@ -75,6 +75,7 @@ class Settings(BaseModel):
     react_fallback_to_planned: bool = True
     react_finish_on_invalid_decision: bool = True
     llm_planner_enabled: bool = False
+    report_generation_mode: str = "deterministic"
     llm_provider: str = "qwen"
     llm_planner_mode: str = "auto"
     llm_model: str | None = None
@@ -134,6 +135,49 @@ class Settings(BaseModel):
     def validate_execution_mode(cls, value: object) -> str:
         normalized = str(value or "planned").strip().lower()
         return normalized if normalized in {"planned", "react"} else "planned"
+
+    @field_validator("report_generation_mode", mode="before")
+    @classmethod
+    def validate_report_generation_mode(cls, value: object) -> str:
+        normalized = str(value or "deterministic").strip().lower()
+        if normalized not in {"deterministic", "llm"}:
+            raise ValueError("REPORT_GENERATION_MODE must be deterministic or llm")
+        return normalized
+
+    @field_validator("llm_provider", "react_llm_provider", mode="before")
+    @classmethod
+    def validate_llm_provider(cls, value: object) -> str:
+        normalized = str(value or "qwen").strip().lower()
+        if normalized not in {"deterministic", "qwen", "deepseek"}:
+            raise ValueError("LLM provider must be deterministic, qwen, or deepseek")
+        return normalized
+
+    @field_validator("llm_planner_mode", mode="before")
+    @classmethod
+    def validate_llm_planner_mode(cls, value: object) -> str:
+        normalized = str(value or "auto").strip().lower()
+        if normalized not in {"deterministic", "auto", "llm"}:
+            raise ValueError("LLM_PLANNER_MODE must be deterministic, auto, or llm")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_runtime_contract(self) -> "Settings":
+        if self.report_generation_mode == "llm":
+            if self.offline_mode:
+                raise ValueError("REPORT_GENERATION_MODE=llm conflicts with OFFLINE_MODE=true")
+            if self.llm_provider == "deterministic":
+                raise ValueError("REPORT_GENERATION_MODE=llm requires a remote LLM provider")
+            if not self.get_llm_api_key(self.llm_provider):
+                raise ValueError(
+                    f"REPORT_GENERATION_MODE=llm requires {self.llm_provider.upper()} API credentials"
+                )
+        if self.offline_mode and self.llm_planner_enabled and self.llm_planner_mode != "deterministic":
+            raise ValueError("Offline mode requires deterministic LLM planner mode")
+        if self.offline_mode and self.execution_mode == "react" and self.react_llm_provider != "deterministic":
+            raise ValueError("Offline ReAct mode requires REACT_LLM_PROVIDER=deterministic")
+        if self.mcp_readonly_mode and self.mcp_allow_write_tools:
+            raise ValueError("MCP_ALLOW_WRITE_TOOLS=true conflicts with MCP_READONLY_MODE=true")
+        return self
 
     @field_validator("parallel_max_workers", mode="before")
     @classmethod
@@ -302,6 +346,9 @@ class Settings(BaseModel):
                 "REACT_FINISH_ON_INVALID_DECISION", True
             ),
             llm_planner_enabled=_env_bool("LLM_PLANNER_ENABLED", False),
+            report_generation_mode=os.getenv(
+                "REPORT_GENERATION_MODE", "deterministic"
+            ),
             llm_provider=os.getenv("LLM_PROVIDER", "qwen").strip() or "qwen",
             llm_planner_mode=os.getenv("LLM_PLANNER_MODE", "auto").strip() or "auto",
             llm_model=_env_optional("LLM_MODEL"),
@@ -403,6 +450,7 @@ class Settings(BaseModel):
 
         return {
             "llm_planner_enabled": self.llm_planner_enabled,
+            "report_generation_mode": self.report_generation_mode,
             "llm_provider": self.llm_provider,
             "llm_planner_mode": self.llm_planner_mode,
             "llm_model": self.llm_model,
@@ -421,6 +469,26 @@ class Settings(BaseModel):
             "react_decision_strict_json": self.react_decision_strict_json,
             "react_fallback_to_planned": self.react_fallback_to_planned,
             "react_finish_on_invalid_decision": self.react_finish_on_invalid_decision,
+        }
+
+    def get_safe_runtime_config_summary(self) -> dict:
+        """Return startup-relevant settings without credential values."""
+
+        return {
+            "service_name": self.service_name,
+            "phase": self.phase,
+            "offline_mode": self.offline_mode,
+            "external_tools_default_mode": self.external_tools_default_mode,
+            "execution_mode": self.execution_mode,
+            "parallel_execution_enabled": self.parallel_execution_enabled,
+            "mcp_remote_registry_enabled": self.mcp_remote_registry_enabled,
+            "report_generation_mode": self.report_generation_mode,
+            "llm_provider": self.llm_provider,
+            "llm_planner_enabled": self.llm_planner_enabled,
+            "llm_planner_mode": self.llm_planner_mode,
+            "llm_provider_has_key": bool(self.get_llm_api_key(self.llm_provider)),
+            "github_token_configured": bool(self.github_token),
+            "tavily_configured": bool(self.tavily_api_key),
         }
 
     def get_safe_auth_config_summary(self) -> dict:

@@ -9,6 +9,14 @@ jobs:
   lightweight:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      OFFLINE_MODE: "true"
+      EXTERNAL_TOOLS_DEFAULT_MODE: mock
+      GITHUB_TOOL_DEFAULT_MODE: mock
+      LLM_PLANNER_ENABLED: "false"
+      LLM_PROVIDER: deterministic
+      REPORT_GENERATION_MODE: deterministic
+      MCP_REMOTE_REGISTRY_ENABLED: "false"
 
     steps:
       - uses: actions/checkout@v4

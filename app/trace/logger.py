@@ -9,20 +9,26 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.security.redaction import redact_sensitive_data, redact_text
 from app.tools.base import ToolResult
+from app.tools.errors import normalize_error_metadata, normalize_tool_result
 from app.trace.models import ToolTrace
 
 
 def _safe_json(data: Any) -> str:
     try:
-        return json.dumps(data, ensure_ascii=False, default=str)
+        return json.dumps(redact_sensitive_data(data), ensure_ascii=False, default=str)
     except Exception:
-        return json.dumps({"unserializable": str(data)}, ensure_ascii=False)
+        return json.dumps(
+            {"unserializable": redact_text(data)},
+            ensure_ascii=False,
+        )
 
 
 def _summarize_input(input_data: dict[str, Any]) -> str:
     parts: list[str] = []
-    for key, value in input_data.items():
+    safe_input = redact_sensitive_data(input_data)
+    for key, value in safe_input.items():
         if isinstance(value, str):
             value_summary = value if len(value) <= 120 else value[:117] + "..."
         else:
@@ -50,6 +56,7 @@ def record_tool_result(
 ) -> ToolTrace:
     """Persist one tool execution result as a trace row."""
 
+    result = normalize_tool_result(result)
     if isinstance(result.output, dict):
         output_payload = dict(result.output)
         if result.metadata:
@@ -66,11 +73,11 @@ def record_tool_result(
         tool_name=tool_name,
         input_summary=_summarize_input(input_data),
         input_json=_safe_json(input_data),
-        output_summary=result.output_summary,
+        output_summary=redact_text(result.output_summary) if result.output_summary else None,
         output_json=_safe_json(output_payload),
         status=_trace_status(result),
         latency_ms=latency_ms,
-        error_message=result.error_message,
+        error_message=redact_text(result.error_message) if result.error_message else None,
         created_at=now,
         finished_at=now,
     )
@@ -94,6 +101,12 @@ def record_trace_event(
 ) -> ToolTrace:
     """Persist a non-tool executor event such as finish, fallback, or HITL wait."""
 
+    safe_output = redact_sensitive_data(output_data)
+    if isinstance(safe_output, dict) and isinstance(safe_output.get("metadata"), dict):
+        safe_output["metadata"] = normalize_error_metadata(
+            safe_output["metadata"],
+            error_message,
+        )
     now = datetime.now(timezone.utc)
     trace = ToolTrace(
         trace_id=uuid4().hex,
@@ -102,11 +115,11 @@ def record_trace_event(
         tool_name=tool_name,
         input_summary=_summarize_input(input_data),
         input_json=_safe_json(input_data),
-        output_summary=output_summary,
-        output_json=_safe_json(output_data),
+        output_summary=redact_text(output_summary),
+        output_json=_safe_json(safe_output),
         status=status,
         latency_ms=latency_ms,
-        error_message=error_message,
+        error_message=redact_text(error_message) if error_message else None,
         created_at=now,
         finished_at=now,
     )
