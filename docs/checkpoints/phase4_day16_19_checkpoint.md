@@ -113,7 +113,8 @@ Do not commit:
 - No background job queue.
 - No real LLM planner.
 - No persistent migrations.
-- MCP is represented by an adapter, not a full MCP server.
+- At this checkpoint, MCP is represented by an adapter; Day38 later adds a
+  bounded read-only MCP-compatible JSON-RPC server.
 
 ## Final Demo Flow
 

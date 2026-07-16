@@ -3,7 +3,8 @@
 ## 5-minute Demo
 
 1. Open Streamlit at `http://127.0.0.1:8501` and show the backend health card.
-2. Select the full-tools task template and create a task. Explain that creation
+2. Select a business research template, such as competitive intelligence or
+   technical vendor evaluation, and create a task. Explain that creation
    persists a pending run and plan but does not auto-execute tools.
 3. Open Plan and point out `planner_source`, provider/model metadata, allowed
    tools, risk level, and confirmation policy.
@@ -20,8 +21,8 @@
 Suggested task:
 
 ```text
-Read local docs, query database metrics, retrieve hybrid trace evidence,
-search GitHub mock evidence, and generate a markdown report.
+调研 OpenAI-compatible API 网关产品的竞品格局：比较定价、模型支持、
+限流策略、文档成熟度和迁移风险，生成带来源链接的中文报告。
 ```
 
 ## 10-minute Demo
@@ -47,6 +48,9 @@ search GitHub mock evidence, and generate a markdown report.
 
 * This is not a simple RAG QA application. It models task planning, bounded
   execution, tool safety, trace persistence, HITL, and evidence reporting.
+* The business target is repeatable research work: competitor analysis,
+  technical vendor evaluation, sales/account briefing, and internal experiment
+  review.
 * Traceability is the product boundary: every success, failure, rejection,
   fallback, and confirmation can be inspected after execution.
 * Planned and ReAct modes are deliberate complements. Planned is predictable;

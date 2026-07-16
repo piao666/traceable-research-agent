@@ -49,20 +49,20 @@ RISK_COLOR = {"low": "#15803D", "medium": "#B45309", "high": "#B91C1C"}
 
 DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
     "本地资料分析": {
-        "task": "读取本地演示文档，查询示例数据库指标，检索本地 RAG 证据，并生成一份可审计的中文 Markdown 调研报告。",
-        "description": "适合演示本地文件、只读 SQL、RAG 检索和报告生成的闭环。",
+        "task": "结合本地产品资料、示例 SQL 指标和 RAG 证据，复盘一个 AI 调研功能的效果、风险和下一步优化建议，生成可审计中文报告。",
+        "description": "适合演示内部资料复盘：本地文件、只读 SQL、RAG 检索和报告生成。",
         "allowed_tools": ["file_reader", "sql_query", "rag_search", "report_writer"],
         "scenario_template_key": "standard",
     },
     "联网深度调研": {
-        "task": "围绕 Traceable Research Agent 做联网深度调研：先发现公开来源；如果任务提供具体 URL，再读取网页正文或抽取证据；最后生成带来源链接的中文报告。",
-        "description": "适合演示 Exa/Firecrawl Source Pack：先做来源发现，有明确 URL 时再进入网页正文读取。",
+        "task": "调研 OpenAI-compatible API 网关产品的竞品格局：比较定价、模型支持、限流策略、文档成熟度和迁移风险，生成带来源链接的中文报告。",
+        "description": "适合演示竞品/市场情报：Exa/Tavily 做来源发现，Firecrawl 读取网页正文。",
         "allowed_tools": None,
         "scenario_template_key": "deep_web_research",
     },
     "技术文档调研": {
-        "task": "调研 FastAPI、Streamlit、MCP SDK 与 RAG 相关技术文档，结合 GitHub、文档来源和本地证据生成中文技术报告。",
-        "description": "适合演示技术文档型调研；Context7 adapter 已预留，当前以已注册的只读 MCP 工具为准。",
+        "task": "比较 FastAPI、LangGraph、MCP SDK 在企业 Agent 工具链落地中的适用边界、集成成本、风险点和推荐采用路径。",
+        "description": "适合演示技术选型/供应商评估；Context7 adapter 已预留，当前以已注册的只读 MCP 工具为准。",
         "allowed_tools": None,
         "scenario_template_key": "technical_docs_research",
     },

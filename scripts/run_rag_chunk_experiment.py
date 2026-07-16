@@ -290,7 +290,7 @@ def _markdown(payload: dict[str, Any]) -> str:
                 "",
                 "## Results - Real SentenceTransformers Embedding",
                 "",
-                "To be executed in Day36-B. No real-embedding result is claimed in Day36-A.",
+                "No real-embedding table is committed in this report. Run `RUN_REAL_RAG_CHUNK_EXPERIMENT=true python scripts/run_rag_chunk_experiment.py` in a local environment with `RAG_REAL_BACKEND_ENABLED=true`, `RAG_EMBEDDING_BACKEND=sentence_transformers`, and a valid `RAG_MODEL_PATH` to produce an explicit local result.",
             ]
         )
     else:
@@ -299,7 +299,7 @@ def _markdown(payload: dict[str, Any]) -> str:
                 "",
                 "## Results - Deterministic Embedding, for CI reproducibility",
                 "",
-                "Run the default command separately in Day36-B and preserve both measured tables in the final report.",
+                "Run the default deterministic command separately if you want to compare both measured tables in the same final report.",
             ]
         )
     lines.extend(
@@ -309,13 +309,13 @@ def _markdown(payload: dict[str, Any]) -> str:
             "",
             "The previous one-document/eight-query experiment saturated Recall@3 and Recall@5 at 1.0 for every chunk size because the corpus was too small and the retrieval task was too easy. The expanded corpus improves topic diversity, document length, and boundary-sensitive evidence. Results remain honestly computed; saturation is still possible and must be explained rather than artificially prevented.",
             "",
-            f"The deterministic baseline currently recommends chunk size {payload['recommended_chunk_size']} by sorting Recall@5, Recall@3, then measured latency. The final recommendation will be revisited after the explicit real-embedding run in Day36-B.",
+            f"The deterministic baseline currently recommends chunk size {payload['recommended_chunk_size']} by sorting Recall@5, Recall@3, then measured latency. Treat this as the CI-stable baseline, not a universal retrieval benchmark.",
             "",
             "## Current Limitations",
             "",
             "* This is still a small repository demo corpus, not a public large-scale benchmark.",
             "* Deterministic embeddings are the default so CI and smoke do not require a model.",
-            "* Real SentenceTransformers results are intentionally deferred to Day36-B.",
+            "* Real SentenceTransformers results are not claimed unless the explicit local-model command is run and the resulting table is preserved.",
             "* No reranker or production vector database cluster is included.",
             "* Raw JSON output is written to ignored `workspace/eval_outputs`.",
             "",

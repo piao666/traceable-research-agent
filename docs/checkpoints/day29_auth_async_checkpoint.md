@@ -84,7 +84,7 @@
   Streamlit, and enhanced auth/async smoke scripts: passed.
 - `smoke_auth_async.py`: all 11 summary checks returned `ok`.
 - Eval: 15/15 passed, failed=0, task success rate 1.0, trace complete rate 1.0.
-- The only warning was FastAPI TestClient's future `httpx2` migration warning.
+- The only warning was FastAPI TestClient's future `httpx` migration warning.
 
 ## Docker Status
 

@@ -1,6 +1,6 @@
 # Traceable Research Agent
 
-Traceable Research Agent 是一个面向工程演示、审计复盘和 Agent 能力验证的可追踪调研系统。它不是只返回一段黑盒答案的聊天机器人，而是把一次调研任务拆成可检查的执行链路：
+Traceable Research Agent 是一个面向商业调研、技术选型和客户/竞品情报整理的可追踪调研系统。它不是只返回一段黑盒答案的聊天机器人，而是把一次真实调研任务拆成可检查的执行链路：
 
 ```text
 任务输入 -> Planner 生成计划 -> 工具执行 -> Trace 记录 -> Evidence 聚合 -> Markdown / Word / PDF 报告
@@ -10,15 +10,27 @@ Traceable Research Agent 是一个面向工程演示、审计复盘和 Agent 能
 
 ## 项目定位
 
-很多 Agent demo 能“给出答案”，但难以解释答案来自哪里、哪些工具成功或失败、哪些结果是 fallback、哪些外部调用超时或缺少凭证。Traceable Research Agent 的核心目标是让调研过程可以被追踪、审计和复盘。
+很多 Agent demo 能“给出答案”，但难以解释答案来自哪里、哪些工具成功或失败、哪些结果是 fallback、哪些外部调用超时或缺少凭证。Traceable Research Agent 的核心目标是把原本需要运营、产品、销售或技术负责人手动搜索、复制、比对、整理来源的调研任务，变成一个可复跑、可审计、可交付报告的 Agent 工作流。
 
 它适合用于：
 
-- 演示多工具 Agent 的任务规划、执行和报告闭环。
-- 检查每次工具调用的输入摘要、输出摘要、延迟、错误、元数据和证据来源。
-- 对比 Planned Executor、Parallel Executor 和 ReAct Executor 的行为。
-- 验证只读 MCP 工具服务如何安全接入外部 Agent。
-- 展示网页调研、技术文档调研、本地 RAG/SQL/文件读取等可审计工作流。
+- **竞品与市场情报**：调研竞品官网、定价页、文档、更新日志和公开评价，输出带来源链接的对比报告。
+- **技术选型与供应商评估**：比较 API 平台、RAG 框架、MCP 工具、数据库或云服务，保留每条结论的出处、限制和风险。
+- **销售/BD 会前研究**：围绕目标公司、产品、近期动态和潜在痛点生成 briefing，减少人工资料搜集时间。
+- **产品/运营专题调研**：追踪某个新功能、行业趋势、用户反馈或政策变化，把公开网页与内部知识库证据合并。
+- **内部知识库 + 外部网页混合调研**：同时读取本地文档、SQL 指标、RAG 语料和网页来源，形成可复核报告。
+
+商业价值不在于“多接了几个工具”，而在于每个结论都能回到证据链：谁调用了什么工具、用了什么输入、拿到了什么来源、哪里失败或降级、最终报告为什么可信。
+
+## 典型落地场景
+
+| 场景 | 用户问题示例 | 调用链路 | 交付物 |
+| --- | --- | --- | --- |
+| 竞品分析 | “调研三家 AI API 网关的定价、模型支持、限流和文档成熟度。” | Tavily/Exa 发现来源 -> Firecrawl 读取页面 -> Evidence 聚合 -> 报告 | 竞品对比 Markdown / Word / PDF |
+| 技术选型 | “比较 FastAPI、LangGraph、MCP SDK 在 Agent 工具编排中的适用边界。” | GitHub/文档搜索 -> RAG 本地笔记 -> trace 审计 | 技术选型建议和风险表 |
+| 客户研究 | “为某家 SaaS 公司准备售前会前 briefing，找业务线、产品动态和可切入痛点。” | 外部搜索 -> URL 正文读取 -> 结构化摘要 | 会前 briefing 和来源列表 |
+| 内部复盘 | “结合本地实验记录、SQL 指标和外部资料，复盘某次 RAG 方案效果。” | file_reader -> sql_query -> rag_search -> report_writer | 可追踪复盘报告 |
+| 合规/审计型调研 | “生成报告时标出哪些结论来自 mock/fallback/失败工具，避免把不确定信息当事实。” | Trace -> EvidenceBundle -> hallucination risk / limitation | 带风险声明的审计报告 |
 
 ## 核心功能
 
@@ -425,6 +437,13 @@ docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up --build
 
 ## 验证与测试
 
+离线单元/契约测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+.\.venv\Scripts\python.exe -m pytest tests
+```
+
 常用快速检查：
 
 ```powershell
@@ -459,6 +478,13 @@ docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up --build
 ```powershell
 .\.venv\Scripts\python.exe scripts\smoke_final_project.py
 ```
+
+测试分层说明：
+
+- `tests/` 放离线、快速、无密钥的单元/契约测试，适合作为 CI 基线。
+- `scripts/smoke_*.py` 是集成/冒烟脚本，覆盖 FastAPI、Streamlit、MCP、trace、report 等链路。
+- `app/eval/` 的 `27/27` 是确定性工程 eval case 数字，不等同于公开 benchmark，也不要求真实 API Key。
+- 真实 LLM、真实网页搜索、真实 SentenceTransformers/Chroma 属于可选本地验证，应单独记录运行环境和产物。
 
 ## 安全边界
 

@@ -75,7 +75,8 @@ Tracked workspace content remains limited to:
 * Streamlit is a demo UI, not a production frontend.
 * FastAPI `BackgroundTasks` is not a durable distributed queue.
 * Tenant/User context is request-scoped and is not persisted.
-* MCP support is a read-only adapter, not a full MCP server.
+* MCP support is a read-only adapter at this checkpoint; Day38 later adds a
+  bounded MCP-compatible JSON-RPC server while keeping write tools out of scope.
 * GitHub write tools are intentionally not implemented.
 * Real LLM evaluation is optional and provider-dependent.
 * Agent/RAG benchmarks are small engineering datasets.

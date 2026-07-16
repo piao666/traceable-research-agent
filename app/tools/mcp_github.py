@@ -18,7 +18,7 @@ from app.tools.github_cache import get_cache_key, get_cached_result, put_cached_
 
 
 ROOT = Path(__file__).resolve().parents[2]
-MAX_LIMIT = 10
+MAX_LIMIT = 20
 DEFAULT_LIMIT = 5
 VALID_MODES = {"mock", "public_api"}
 REPO_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")

@@ -35,7 +35,7 @@ class SourcePackRegistry:
         ]
         fake_mode = env_bool("MCP_BRIDGE_FAKE_MODE", True)
         timeout_seconds = float(os.getenv("MCP_BRIDGE_TIMEOUT_SECONDS", "20") or 20)
-        max_results = env_int("MCP_BRIDGE_MAX_RESULTS", 5)
+        max_results = env_int("MCP_BRIDGE_MAX_RESULTS", 20)
         max_content_chars = env_int("MCP_BRIDGE_MAX_CONTENT_CHARS", 12000)
         providers: list[SourcePackProvider] = []
         for name in enabled:
@@ -68,4 +68,3 @@ class SourcePackRegistry:
             "providers": [provider.name for provider in self.providers],
             "tool_count": len(self._tool_map),
         }
-

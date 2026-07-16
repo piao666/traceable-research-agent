@@ -1,4 +1,5 @@
-﻿fastapi
+fastapi
+httpx
 uvicorn
 pydantic
 pydantic-settings
@@ -9,3 +10,4 @@ python-dotenv
 sqlglot
 rank-bm25
 streamlit
+pytest

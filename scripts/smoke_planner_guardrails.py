@@ -122,7 +122,7 @@ def main() -> None:
     _assert(github_args["repo"] is None, f"bad github repo: {github_args}")
     _assert(github_args["mode"] == "mock", f"bad github mode: {github_args}")
     _assert(github_args["search_type"] == "issues", f"bad github search_type: {github_args}")
-    _assert(github_args["limit"] == 10, f"bad github limit: {github_args}")
+    _assert(github_args["limit"] == 20, f"bad github limit: {github_args}")
     _assert(len(github_args["query"]) <= 120, f"github query too long: {github_args}")
     github_result = github_search(github_args)
     _assert(github_result.success, github_result.error_message or "github_search failed")

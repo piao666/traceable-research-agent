@@ -6,11 +6,11 @@ product
 
 ## Users
 
-Engineers, reviewers, and demo evaluators use this project to inspect how a research agent turns a task into a planned, traceable execution chain. They are usually checking reliability, source quality, tool boundaries, and whether every answer can be audited after the run.
+Product managers, engineering leads, sales/BD users, analysts, reviewers, and demo evaluators use this project to turn messy research questions into sourced reports. They are usually checking competitor facts, technical vendor fit, account context, source quality, tool boundaries, and whether every answer can be audited after the run.
 
 ## Product Purpose
 
-Traceable Research Agent demonstrates a research workflow where planning, tool calls, trace records, evidence bundles, and report artifacts stay connected. Success means the UI makes the execution path legible without exposing noisy internals on the primary task screen.
+Traceable Research Agent demonstrates a research workflow where planning, tool calls, trace records, evidence bundles, and report artifacts stay connected. Success means a user can ask a business research question, run the tool chain, inspect evidence, and export a report without trusting a black-box answer.
 
 ## Brand Personality
 
@@ -27,6 +27,7 @@ Avoid landing-page hero treatment, decorative dashboard cards, loud gradients, o
 - Make failures inspectable: errors, fallbacks, and timeouts should be preserved in trace and report context.
 - Prefer operational density over decoration: this is a repeated-use engineering tool.
 - Preserve safety boundaries: read-only tools, HITL, and source limitations should be visible when relevant.
+- Lead with the job to be done: templates and examples should mention competitor research, technical evaluation, account research, or internal review before mentioning trace internals.
 
 ## Accessibility & Inclusion
 

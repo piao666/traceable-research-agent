@@ -1,5 +1,5 @@
 fastapi
-httpx2
+httpx
 uvicorn[standard]
 pydantic
 python-dotenv
@@ -13,3 +13,4 @@ reportlab
 sentence-transformers
 chromadb
 rank-bm25
+pytest

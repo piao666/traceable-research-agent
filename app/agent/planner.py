@@ -176,6 +176,7 @@ GITHUB_REPOSITORY_RANKING_KEYWORDS = {
     "star 排名",
     "最受欢迎仓库",
 }
+GITHUB_TRENDING_URL = "https://github.com/trending?since=daily"
 REPORT_KEYWORDS = {
     "report",
     "summary",
@@ -242,6 +243,37 @@ def _domain_from_url(url: str | None) -> str | None:
     return host.removeprefix("www.") or None
 
 
+def _requested_result_count(task: str, default: int | None = None) -> int | None:
+    patterns = (
+        r"(?:top|前)\s*(\d{1,2})",
+        r"(?:输出|返回|列出|找出|检索|显示|要)\s*(\d{1,2})\s*(?:个|条|项)?",
+        r"(\d{1,2})\s*(?:个|条|项|篇|款)\s*(?:项目|仓库|结果|来源)?",
+        r"(\d{1,2})\s*(?:projects|repositories|repos|results|sources)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, task, flags=re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            return max(1, min(int(match.group(1)), 20))
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
+def _is_github_trending_task(task_lower: str) -> bool:
+    if "github" not in task_lower or "star" not in task_lower:
+        return False
+    time_terms = ("today", "daily", "今日", "今天", "当天", "日榜")
+    growth_terms = ("growth", "growing", "trending", "增长", "增量", "增长量", "飙升")
+    ranking_terms = ("top", "最大", "最多", "排名", "排行", "榜")
+    return (
+        any(term in task_lower for term in time_terms)
+        and any(term in task_lower for term in growth_terms)
+        and any(term in task_lower for term in ranking_terms)
+    )
+
+
 def _site_search_query(task: str) -> str:
     """Turn URL-crawl prompts into site-scoped discovery queries."""
 
@@ -260,6 +292,10 @@ def _remote_default_limit(tool_name: str) -> int:
     if normalized.endswith(".firecrawl.extract") or normalized.endswith("firecrawl.extract"):
         return 10
     return 5
+
+
+def _remote_result_limit(tool_name: str, task: str) -> int:
+    return _requested_result_count(task, _remote_default_limit(tool_name)) or _remote_default_limit(tool_name)
 
 
 def _guess_library_name(task: str) -> str:
@@ -388,6 +424,10 @@ def _drop_url_dependent_remote_steps_without_task_url(
     for step in steps:
         tool_name = str(step.get("tool_name") or "")
         if _remote_step_requires_task_url(tool_name):
+            arguments = step.get("arguments")
+            if isinstance(arguments, dict) and (arguments.get("url") or arguments.get("urls")):
+                kept.append(step)
+                continue
             removed.append(tool_name)
             continue
         kept.append(step)
@@ -427,11 +467,11 @@ def _fill_remote_step_arguments(step: dict[str, Any], task: str) -> None:
     if "libraryId" in fields and not str(arguments.get("libraryId") or "").strip():
         arguments["libraryId"] = _guess_library_name(task)
     if "limit" in fields and not arguments.get("limit"):
-        arguments["limit"] = _remote_default_limit(tool_name)
+        arguments["limit"] = _remote_result_limit(tool_name, task)
     if "max_results" in fields and not arguments.get("max_results"):
-        arguments["max_results"] = 5
+        arguments["max_results"] = _requested_result_count(task, 5)
     if "numResults" in fields and not arguments.get("numResults"):
-        arguments["numResults"] = 5
+        arguments["numResults"] = _requested_result_count(task, 5)
     if domain and "includeDomains" in fields and not arguments.get("includeDomains"):
         arguments["includeDomains"] = [domain]
 
@@ -451,6 +491,79 @@ def _append_plan_allowed_tool(plan: dict[str, Any], tool_name: str, allowed_tool
 def _is_remote_mcp_tool_name(tool_name: str) -> bool:
     spec = get_tool(tool_name)
     return bool(spec and "mcp_remote" in spec.tags)
+
+
+def _append_github_trending_steps(
+    steps: list[dict[str, Any]],
+    notes: list[str],
+    task: str,
+    allowed_set: set[str] | None,
+) -> None:
+    """Use the GitHub Trending page as primary evidence for daily star-growth tasks."""
+
+    requested_count = _requested_result_count(task, 20) or 20
+    trending_task = f"{task} {GITHUB_TRENDING_URL}"
+    inserted_remote = False
+    remote_specs = [
+        spec
+        for spec in list_tools()
+        if spec.enabled
+        and "mcp_remote" in spec.tags
+        and spec.name != "report_writer"
+        and tool_channel(spec) == "readonly"
+        and (allowed_set is None or spec.name in allowed_set)
+    ]
+    for provider, remote_tool_name in (
+        ("firecrawl", "scrape"),
+        ("firecrawl", "extract"),
+        ("exa", "web_fetch_exa"),
+    ):
+        spec = next(
+            (
+                candidate
+                for candidate in remote_specs
+                if _remote_tool_matches(candidate, provider, remote_tool_name)
+            ),
+            None,
+        )
+        if spec is None:
+            continue
+        before = len(steps)
+        _append_step(steps, notes, spec.name, trending_task, allowed_set)
+        if len(steps) == before:
+            continue
+        step = steps[-1]
+        arguments = step.setdefault("arguments", {})
+        if isinstance(arguments, dict):
+            arguments["url"] = GITHUB_TRENDING_URL
+            fields = _schema_field_names(spec.input_schema or {})
+            if "limit" in fields:
+                arguments["limit"] = requested_count
+        inserted_remote = True
+
+    if inserted_remote:
+        _append_note_once(
+            notes,
+            "GitHub trending task uses https://github.com/trending?since=daily as primary evidence.",
+        )
+        _append_note_once(
+            notes,
+            "GitHub Public API repository search is not used as the primary source because it does not expose today's star-growth ranking.",
+        )
+        return
+
+    _append_step(steps, notes, "tavily_search", task, allowed_set)
+    if steps and steps[-1].get("tool_name") == "tavily_search":
+        steps[-1]["arguments"].update(
+            {
+                "query": "site:github.com/trending GitHub trending repositories today stars",
+                "max_results": requested_count,
+            }
+        )
+    _append_note_once(
+        notes,
+        "GitHub trending page reader was unavailable; fell back to web discovery evidence.",
+    )
 
 
 def _append_note_once(notes: list[str], note: str) -> None:
@@ -549,11 +662,11 @@ def _step_template(
         if "libraryId" in fields:
             arguments.setdefault("libraryId", _guess_library_name(task))
         if "limit" in fields:
-            arguments.setdefault("limit", _remote_default_limit(tool_name))
+            arguments.setdefault("limit", _remote_result_limit(tool_name, task))
         if "max_results" in fields:
-            arguments.setdefault("max_results", 5)
+            arguments.setdefault("max_results", _requested_result_count(task, 5))
         if "numResults" in fields:
-            arguments.setdefault("numResults", 5)
+            arguments.setdefault("numResults", _requested_result_count(task, 5))
         domain = _domain_from_url(url)
         if domain and "includeDomains" in fields:
             arguments.setdefault("includeDomains", [domain])
@@ -672,6 +785,7 @@ def plan_task(
                         allowed_tools,
                         scenario_template,
                     )
+                    _ensure_github_trending_steps(normalized, task, allowed_tools)
                     _ensure_research_template_steps(
                         normalized,
                         task,
@@ -679,6 +793,7 @@ def plan_task(
                         scenario_template,
                     )
                     normalize_plan_arguments(normalized, task, source_mode)
+                    _apply_requested_result_count(normalized, task)
                     return _apply_execution_mode(normalized, execution_mode_override)
                 fallback_reason = "LLM output failed schema validation; used deterministic fallback."
             else:
@@ -692,6 +807,7 @@ def plan_task(
         plan["llm_model"] = client.describe().get("model")
         plan["notes"] = list(plan.get("notes") or []) + [_safe_fallback_reason(fallback_reason)]
         _synchronize_confirmation_notes(plan)
+        _apply_requested_result_count(plan, task)
         return _apply_execution_mode(plan, execution_mode_override)
 
     plan = deterministic_plan_task(task, allowed_tools, source_mode, scenario_template)
@@ -699,6 +815,7 @@ def plan_task(
     plan["llm_provider"] = None
     plan["llm_model"] = None
     _synchronize_confirmation_notes(plan)
+    _apply_requested_result_count(plan, task)
     return _apply_execution_mode(plan, execution_mode_override)
 
 
@@ -726,12 +843,24 @@ def deterministic_plan_task(
     strict_technical_docs = "technical_docs_research" in scenario_marker
     deep_research = _is_deep_research_scenario(task_lower, scenario_template)
     technical_docs = _is_technical_docs_scenario(task_lower, scenario_template)
+    github_trending = _is_github_trending_task(task_lower)
     if strict_deep_research:
         technical_docs = False
     if strict_technical_docs:
         deep_research = False
 
-    if deep_research:
+    if github_trending:
+        _append_github_trending_steps(steps, notes, task_text, allowed_set)
+        if allowed_set is None or "report_writer" in allowed_set:
+            _append_step(
+                steps,
+                notes,
+                "report_writer",
+                task_text,
+                allowed_set,
+                requires_human_confirmation,
+            )
+    elif deep_research:
         _append_step(steps, notes, "tavily_search", task_text, allowed_set)
         url = _first_url(task_text)
         priority = tuple(
@@ -756,7 +885,7 @@ def deterministic_plan_task(
                 notes,
                 "Deep web research used MCP discovery tools. Page-content MCP tools that require a URL were skipped because the task did not include a concrete URL.",
             )
-    if technical_docs:
+    if not github_trending and technical_docs:
         _append_step(steps, notes, "mcp_github_search", task_text, allowed_set)
         url = _first_url(task_text)
         priority = tuple(
@@ -777,7 +906,7 @@ def deterministic_plan_task(
                 "Technical docs MCP tools were not configured; used available built-in research tools only.",
             )
 
-    if not strict_deep_research and not strict_technical_docs:
+    if not github_trending and not strict_deep_research and not strict_technical_docs:
         if _matches(task_lower, FILE_KEYWORDS):
             _append_step(steps, notes, "file_reader", task_text, allowed_set)
         if _matches(task_lower, SQL_KEYWORDS):
@@ -811,7 +940,7 @@ def deterministic_plan_task(
                 allowed_set,
                 requires_human_confirmation,
             )
-    if (deep_research or technical_docs) and not any(
+    if (deep_research or technical_docs) and not github_trending and not any(
         step.get("tool_name") == "report_writer" for step in steps
     ):
         _append_step(
@@ -865,6 +994,7 @@ def deterministic_plan_task(
     _ensure_research_template_steps(plan, task_text, allowed_tools, scenario_template)
     _enforce_external_tool_modes(plan, task_text, source_mode)
     normalize_plan_arguments(plan, task_text, source_mode)
+    _apply_requested_result_count(plan, task_text)
     return plan
 
 
@@ -898,6 +1028,35 @@ def _enforce_external_tool_modes(
             arguments.setdefault("search_depth", "advanced")
 
 
+def _apply_requested_result_count(plan: dict[str, Any], task: str) -> None:
+    requested_count = _requested_result_count(task)
+    if requested_count is None:
+        return
+    plan["requested_result_count"] = requested_count
+    for step in plan.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        tool_name = str(step.get("tool_name") or "")
+        arguments = step.setdefault("arguments", {})
+        if not isinstance(arguments, dict):
+            arguments = {}
+            step["arguments"] = arguments
+        if tool_name == "mcp_github_search":
+            arguments["limit"] = requested_count
+        elif tool_name == "tavily_search":
+            arguments["max_results"] = requested_count
+        else:
+            spec = get_tool(tool_name)
+            if spec and "mcp_remote" in spec.tags:
+                fields = _schema_field_names(spec.input_schema or {})
+                if "limit" in fields:
+                    arguments["limit"] = requested_count
+                if "max_results" in fields:
+                    arguments["max_results"] = requested_count
+                if "numResults" in fields:
+                    arguments["numResults"] = requested_count
+
+
 def _safe_fallback_reason(reason: str) -> str:
     """Return a fallback reason without provider secrets or headers."""
 
@@ -906,6 +1065,32 @@ def _safe_fallback_reason(reason: str) -> str:
     if any(token in lowered for token in blocked_tokens):
         return "LLM planner failed with a redacted provider error; used deterministic fallback."
     return reason[:300]
+
+
+def _ensure_github_trending_steps(
+    plan: dict[str, Any],
+    task: str,
+    allowed_tools: list[str] | None,
+) -> None:
+    if not _is_github_trending_task(task.lower()):
+        return
+    allowed_set = set(allowed_tools) if allowed_tools is not None else None
+    existing_steps = [step for step in plan.get("steps") or [] if isinstance(step, dict)]
+    report_steps = [step for step in existing_steps if step.get("tool_name") == "report_writer"]
+    notes = [str(note) for note in plan.get("notes") or []]
+    steps: list[dict[str, Any]] = []
+    _append_github_trending_steps(steps, notes, task, allowed_set)
+    if allowed_set is None or "report_writer" in allowed_set:
+        report_step = report_steps[0] if report_steps else _step_template("report_writer", task)
+        report_step["tool_name"] = "report_writer"
+        steps.append(report_step)
+    for index, step in enumerate(steps, start=1):
+        step["step_no"] = index
+        tool_name = str(step.get("tool_name") or "")
+        if tool_name:
+            _append_plan_allowed_tool(plan, tool_name, allowed_tools)
+    plan["steps"] = steps
+    plan["notes"] = _dedupe_notes(notes)
 
 
 def _ensure_research_template_steps(
@@ -917,6 +1102,8 @@ def _ensure_research_template_steps(
     """Make research templates honor their promised source-pack tool chain."""
 
     task_lower = task.lower()
+    if _is_github_trending_task(task_lower):
+        return
     deep_research = _is_deep_research_scenario(task_lower, scenario_template)
     technical_docs = _is_technical_docs_scenario(task_lower, scenario_template)
     marker = _scenario_marker(scenario_template)

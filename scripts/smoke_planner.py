@@ -136,6 +136,24 @@ def main() -> None:
     if chinese_web_tools != ["tavily_search", "report_writer"]:
         raise SystemExit(f"Expected Chinese web keywords to trigger Tavily, got {chinese_web_tools}")
 
+    github_trending = plan_task(
+        task="调研今日 GitHub 页面 star 数增长量最大的 20 个项目，输出项目名称、项目介绍和项目地址。",
+        allowed_tools=None,
+        source_mode="mock",
+        planner_mode="deterministic",
+        scenario_template="deep_web_research",
+    )
+    github_trending_tools = [step["tool_name"] for step in github_trending["steps"]]
+    if "firecrawl.scrape" not in github_trending_tools:
+        raise SystemExit(f"Expected GitHub trending plan to scrape GitHub page, got {github_trending_tools}")
+    if "tavily_search" in github_trending_tools:
+        raise SystemExit(f"GitHub trending plan should not use generic Tavily first, got {github_trending_tools}")
+    trending_scrape = next(step for step in github_trending["steps"] if step["tool_name"] == "firecrawl.scrape")
+    if trending_scrape["arguments"].get("url") != "https://github.com/trending?since=daily":
+        raise SystemExit(f"Expected GitHub trending URL argument, got {trending_scrape}")
+    if github_trending.get("requested_result_count") != 20:
+        raise SystemExit(f"Expected requested_result_count=20, got {github_trending}")
+
     full_planner = plan_task(
         task="Create an LLM learning roadmap with online course links.",
         allowed_tools=[
@@ -318,6 +336,7 @@ def main() -> None:
             "hitl_file_requires_confirmation": file_step["requires_confirmation"],
             "external_tools": external_tools,
             "chinese_web_tools": chinese_web_tools,
+            "github_trending_tools": github_trending_tools,
             "full_planner_tools": full_planner_tools,
             "deep_research_tools": deep_tools,
             "deep_research_url_tools": deep_url_tools,

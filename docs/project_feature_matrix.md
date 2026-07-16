@@ -20,7 +20,7 @@
 | RAG | Chunk-size experiment | Done with documented limitation | `docs/rag_chunk_experiment.md` | Small fixed corpus; not a public benchmark. |
 | GitHub | GitHub mock search | Done | `app/tools/mcp_github.py` | Offline default, no token required. |
 | GitHub | Cache/retry/fallback | Done | `app/tools/github_cache.py` | TTL cache, bounded retry, stable mock fallback. |
-| MCP | Read-only policy | Done with documented limitation | `app/mcp/readonly.py`, `docs/mcp_readonly_direction.md` | Adapter only, not a full MCP server. |
+| MCP | Read-only MCP-compatible server | Done with documented limitation | `app/mcp/server.py`, `scripts/smoke_mcp_server.py` | JSON-RPC `initialize`, `tools/list`, `tools/call`; no write-capable hub. |
 | Trace | Persistent run/tool trace | Done | `app/trace/models.py`, `app/trace/store.py` | SQLite persistence for runs and tool traces. |
 | Reporting | Markdown report | Done | `app/agent/reporter.py` | Evidence, failures, trace summary, limitations. |
 | Control | HITL confirmation | Done | `/api/tasks/{run_id}/confirm` | `waiting_human` cannot be bypassed by ReAct/async. |
@@ -37,5 +37,5 @@
 
 The research-agent demonstration path is complete. Remaining items are
 productionization work, not blockers for the local GitHub/resume/interview
-demo: durable distributed jobs, persisted tenant isolation, full MCP server,
-GitHub write tools, production frontend, and a larger external benchmark.
+demo: durable distributed jobs, persisted tenant isolation, write-capable MCP
+hub, GitHub write tools, production frontend, and a larger external benchmark.

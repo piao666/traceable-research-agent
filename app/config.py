@@ -11,7 +11,12 @@ load_dotenv()
 
 
 class Settings(BaseModel):
-    """Small settings object; expanded later for model providers."""
+    """Runtime settings loaded from environment variables.
+
+    The object is intentionally flat for the demo so scripts, Docker, and
+    Streamlit can share the same names. Split it into nested settings groups
+    before adding another large feature family.
+    """
 
     service_name: str = "traceable-research-agent"
     phase: str = "traceable-research-agent"

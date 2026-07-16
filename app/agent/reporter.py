@@ -21,11 +21,43 @@ from app.agent.evidence import build_evidence_bundle, render_evidence_markdown
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORTS_ROOT = ROOT / "workspace" / "reports"
+GITHUB_TRENDING_URL = "https://github.com/trending?since=daily"
 
 
 def _json_preview(data: Any, max_chars: int = 500) -> str:
     text = json.dumps(data, ensure_ascii=False, default=str, indent=2)
     return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
+
+
+def _requested_result_count(task: str, default: int = 5) -> int:
+    patterns = (
+        r"(?:top|前)\s*(\d{1,2})",
+        r"(?:输出|返回|列出|找出|检索|显示|要)\s*(\d{1,2})\s*(?:个|条|项)?",
+        r"(\d{1,2})\s*(?:个|条|项|篇|款)\s*(?:项目|仓库|结果|来源)?",
+        r"(\d{1,2})\s*(?:projects|repositories|repos|results|sources)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, task, flags=re.IGNORECASE)
+        if not match:
+            continue
+        try:
+            return max(1, min(int(match.group(1)), 20))
+        except (TypeError, ValueError):
+            continue
+    return default
+
+
+def _is_github_trending_task(task_lower: str) -> bool:
+    if "github" not in task_lower or "star" not in task_lower:
+        return False
+    time_terms = ("today", "daily", "今日", "今天", "当天", "日榜")
+    growth_terms = ("growth", "growing", "trending", "增长", "增量", "增长量", "飙升")
+    ranking_terms = ("top", "最大", "最多", "排名", "排行", "榜")
+    return (
+        any(term in task_lower for term in time_terms)
+        and any(term in task_lower for term in growth_terms)
+        and any(term in task_lower for term in ranking_terms)
+    )
 
 
 def _remote_result_lists(output: dict[str, Any]) -> list[dict[str, Any]]:
@@ -70,6 +102,126 @@ def _remote_content(item: dict[str, Any], max_chars: int = 320) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()[:max_chars]
     return json.dumps(item, ensure_ascii=False, default=str)[:max_chars]
+
+
+def _record_text_chunks(record: dict[str, Any]) -> list[str]:
+    chunks: list[str] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key in (
+                "markdown",
+                "content",
+                "clean_content",
+                "text",
+                "summary",
+                "description",
+                "snippet",
+                "body",
+            ):
+                item = value.get(key)
+                if isinstance(item, str) and item.strip():
+                    chunks.append(item.strip())
+            for key in ("results", "items", "data", "sources", "documents"):
+                nested = value.get(key)
+                if isinstance(nested, list):
+                    for child in nested:
+                        visit(child)
+                elif isinstance(nested, dict):
+                    visit(nested)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(record.get("output") or {})
+    return chunks
+
+
+def _extract_github_trending_repositories(records: list[dict[str, Any]], limit: int) -> list[dict[str, str]]:
+    text = "\n".join(
+        chunk
+        for record in records
+        if record.get("success")
+        for chunk in _record_text_chunks(record)
+    )
+    if not text:
+        return []
+
+    candidates: list[tuple[str, int]] = []
+    patterns = (
+        r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        r"\[([A-Za-z0-9_.-]+\s*/\s*[A-Za-z0-9_.-]+)\]\(https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+[^)]*\)",
+        r"(?:^|\n)\s*#{1,4}\s*([A-Za-z0-9_.-]+)\s*/\s*([A-Za-z0-9_.-]+)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            if len(match.groups()) == 2:
+                name = f"{match.group(1)}/{match.group(2)}"
+            else:
+                name = match.group(1).replace(" ", "")
+            if name.lower().startswith(("topics/", "collections/", "features/")):
+                continue
+            candidates.append((name, match.start()))
+
+    seen: set[str] = set()
+    repositories: list[dict[str, str]] = []
+    for name, position in sorted(candidates, key=lambda item: item[1]):
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        window = re.sub(r"\s+", " ", text[position : position + 700]).strip()
+        description = ""
+        name_pattern = re.escape(name).replace("/", r"\s*/\s*")
+        desc_match = re.search(
+            rf"{name_pattern}\s+(.+?)(?:\d[\d,]*\s+stars?\s+today|Built by|Language:|$)",
+            window,
+            flags=re.IGNORECASE,
+        )
+        if desc_match:
+            description = desc_match.group(1).strip(" -:|")
+        repositories.append(
+            {
+                "name": name,
+                "url": f"https://github.com/{name}",
+                "description": description[:260] or "页面证据未返回稳定简介字段，请以 GitHub 页面为准。",
+            }
+        )
+        if len(repositories) >= limit:
+            break
+    return repositories
+
+
+def _github_trending_final_answer(
+    records: list[dict[str, Any]],
+    task: str,
+    requested_limit: int,
+) -> list[str] | None:
+    repositories = _extract_github_trending_repositories(records, requested_limit)
+    if not repositories:
+        return None
+    lines = [
+        f"以下是根据 GitHub Trending 今日页面证据整理的前 {len(repositories)} 个项目：",
+        "",
+    ]
+    for index, item in enumerate(repositories, 1):
+        lines.extend(
+            [
+                f"{index}、**{item['name']}**",
+                "",
+                f"* 项目地址：[{item['url']}]({item['url']})",
+                f"* 项目简介：{item['description']}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            f"> **数据来源说明：** 优先使用 `{GITHUB_TRENDING_URL}` 的页面读取证据；"
+            "如果实际返回少于请求数量，说明工具抓取到的页面证据不足。",
+            "",
+        ]
+    )
+    return lines
 
 
 def _remote_selected_evidence(tool_name: str, output: dict[str, Any]) -> str:
@@ -339,7 +491,7 @@ def _github_final_answer(record: dict[str, Any], task: str) -> list[str] | None:
             return 0
 
     repositories.sort(key=stars, reverse=True)
-    requested_limit = 3 if any(term in task.lower() for term in ("top 3", "top3", "最高的 3", "最高3")) else 5
+    requested_limit = _requested_result_count(task, 5)
     repositories = repositories[:requested_limit]
     source = str(record["metadata"].get("data_source") or "unknown")
     source_intro = {
@@ -371,7 +523,7 @@ def _github_final_answer(record: dict[str, Any], task: str) -> list[str] | None:
     return lines
 
 
-def _tavily_final_answer(record: dict[str, Any]) -> list[str] | None:
+def _tavily_final_answer(record: dict[str, Any], task: str) -> list[str] | None:
     output = record["output"]
     results = [item for item in (output.get("results") or []) if isinstance(item, dict)]
     answer = str(output.get("answer") or "").strip()
@@ -386,7 +538,8 @@ def _tavily_final_answer(record: dict[str, Any]) -> list[str] | None:
     lines = [intro, ""]
     if answer:
         lines.extend([f"**综合回答：** {answer}", ""])
-    for index, item in enumerate(results[:5], 1):
+    requested_limit = _requested_result_count(task, 5)
+    for index, item in enumerate(results[:requested_limit], 1):
         title = item.get("title") or "未命名来源"
         lines.extend([f"{index}、**{title}**", ""])
         if item.get("url"):
@@ -604,6 +757,7 @@ def _render_final_answer(
 
     records = _evidence_records(observations, traces)
     successful = [record for record in records if record["success"]]
+    requested_limit = _requested_result_count(task, 5)
 
     # Handle ReAct finish action as first-class answer
     finish_record = next(
@@ -636,12 +790,14 @@ def _render_final_answer(
         for term in ("学习路线", "学习路径", "roadmap", "curriculum")
     )
 
-    if github_record:
+    if _is_github_trending_task(task_lower):
+        answer = _github_trending_final_answer(successful, task, requested_limit)
+    elif github_record:
         answer = _github_final_answer(github_record, task)
     elif learning_route:
         answer = _learning_route_final_answer(records)
     elif tavily_record:
-        answer = _tavily_final_answer(tavily_record)
+        answer = _tavily_final_answer(tavily_record, task)
     else:
         answer = None
 

@@ -2,22 +2,23 @@
 
 ## What This Project Is
 
-Traceable Research Agent is a task-oriented FastAPI agent backend. A request is
-turned into a persisted plan, executed through a stable planned executor or an
-optional observation-driven ReAct loop, recorded as auditable traces, and
-rendered as an evidence-based Markdown report. Streamlit provides a demo layer
-over the same HTTP API.
+Traceable Research Agent is a research-operations agent for competitive
+intelligence, technical vendor evaluation, account research, and internal
+experiment review. A request is turned into a persisted plan, executed through a
+stable planned executor or an optional observation-driven ReAct loop, recorded
+as auditable traces, and rendered as an evidence-based Markdown report.
+Streamlit provides a demo layer over the same HTTP API.
 
 ## Why It Is Valuable
 
-The project goes beyond ordinary RAG question answering:
+The project goes beyond ordinary RAG question answering because it turns
+business research into a repeatable tool workflow:
 
-* It supports both plan-first and Thought/Action/Observation execution.
-* It executes multiple tools instead of returning only model text.
-* It persists success, failure, rejection, fallback, and HITL state.
-* Reports are generated from collected observations and trace evidence.
-* Safety and fallback behavior remains deterministic and testable.
-* Planned and ReAct behavior is compared through a quantitative experiment.
+* Product teams can compare competitors, pricing, docs, and changelogs.
+* Engineering teams can evaluate APIs, frameworks, and integration risk.
+* Sales or BD teams can generate account briefs from public sources.
+* Operators can merge internal notes, SQL metrics, RAG evidence, and web pages.
+* Reviewers can audit which claims came from which tool calls and sources.
 
 ## Core Technical Highlights
 
@@ -67,7 +68,8 @@ The Day35 checkpoint records the final run-specific verification numbers.
 * Streamlit is a demo UI, not a production web frontend.
 * `BackgroundTasks` is not a durable distributed queue.
 * Tenant/User context is not persisted or isolated at database level.
-* MCP support is a read-only adapter, not a full server.
+* MCP support is a read-only JSON-RPC server foundation, not a write-capable
+  general MCP hub.
 * Real RAG requires a separately managed local model.
 * Default ReAct evaluation uses a deterministic fake policy for reproducibility.
 * The retrieval and agent benchmarks are small engineering datasets.
@@ -75,5 +77,6 @@ The Day35 checkpoint records the final run-specific verification numbers.
   regression as passed.
 
 Future production work should live on a separate branch and begin with durable
-jobs, tenant persistence/isolation, observability, deployment, and larger human
-and public benchmarks rather than adding more demo features to the frozen core.
+jobs, tenant persistence/isolation, observability, deployment, write-capable MCP
+governance, and larger human/public benchmarks rather than adding more demo
+features to the frozen core.
