@@ -23,11 +23,16 @@ env/
 
 # Local app data
 workspace/cache/
+workspace/artifacts/
 workspace/exports/
 workspace/reports/
 workspace/*.sqlite
 workspace/*.sqlite-journal
+workspace/*.sqlite-shm
+workspace/*.sqlite-wal
 workspace/*.db
+workspace/*.db-shm
+workspace/*.db-wal
 workspace/tmp/
 workspace/index/
 workspace/chroma/

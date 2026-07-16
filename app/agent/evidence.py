@@ -231,15 +231,19 @@ def _evidence_records(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     observed_keys: set[tuple[Any, str]] = set()
+    trace_by_key = {(trace.step_no, trace.tool_name): trace for trace in traces}
     for observation in observations:
         tool_name = str(observation.get("tool_name") or observation.get("action") or "unknown")
         key = (observation.get("step_no"), tool_name)
+        persisted_trace = trace_by_key.get(key)
         observed_keys.add(key)
         output = observation.get("output") if isinstance(observation.get("output"), dict) else {}
         metadata = _observation_metadata(observation)
         records.append(
             {
-                "trace_id": observation.get("trace_id"),
+                "trace_id": observation.get("trace_id") or (
+                    persisted_trace.trace_id if persisted_trace else None
+                ),
                 "step_no": observation.get("step_no"),
                 "tool_name": tool_name,
                 "status": "success" if bool(observation.get("success")) else "failed",

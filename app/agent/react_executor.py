@@ -28,6 +28,7 @@ from app.agent.react_schema import (
 )
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings
+from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
 from app.llm.providers import create_llm_client
 from app.mcp.policy import requires_interactive_confirmation
@@ -313,8 +314,23 @@ def _complete_report(
     traces = store.list_tool_traces(db, run_id)
     run.status = "completed"
     run.error_message = None
+    provenance_bundle = materialize_execution_provenance(
+        db,
+        run,
+        plan,
+        observations,
+        traces,
+        settings_obj,
+    )
     _llm = resolve_report_llm_client(settings_obj, llm_client)
-    markdown = generate_markdown_report(run, plan, observations, traces, llm_client=_llm)
+    markdown = generate_markdown_report(
+        run,
+        plan,
+        observations,
+        traces,
+        llm_client=_llm,
+        provenance_bundle=provenance_bundle,
+    )
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
     run = store.update_agent_run_status(db, run_id, "completed", None)

@@ -24,11 +24,13 @@ from app.agent.file_access_policy import (
 from app.agent.planner import plan_task
 from app.config import settings
 from app.database import SessionLocal, get_db
+from app.evidence.service import get_provenance_bundle, materialize_execution_provenance
 from app.schemas import (
     AsyncRunResponse,
     EvidenceBundleResponse,
     EvidenceExportContentResponse,
     EvidenceExportResponse,
+    ProvenanceBundleResponse,
     TaskCreateRequest,
     TaskCreateResponse,
     TaskConfirmRequest,
@@ -516,6 +518,36 @@ async def get_task_evidence(
     traces = store.list_tool_traces(db, run_id)
     bundle = build_evidence_bundle(run, _parse_run_plan(run), [], traces)
     return EvidenceBundleResponse(**bundle.to_dict())
+
+
+@router.get("/{run_id}/evidence/v2", response_model=ProvenanceBundleResponse)
+async def get_task_provenance(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> ProvenanceBundleResponse:
+    """Return the materialized Claim-level provenance graph for a run."""
+
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    try:
+        payload = get_provenance_bundle(db, run_id)
+    except ValueError:
+        traces = store.list_tool_traces(db, run_id)
+        payload = materialize_execution_provenance(
+            db,
+            run,
+            _parse_run_plan(run),
+            [],
+            traces,
+            settings,
+        )
+        if payload is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Evidence Pipeline V2 is disabled by configuration",
+            )
+    return ProvenanceBundleResponse(**payload)
 
 
 @router.get("/{run_id}/evidence/export", response_model=EvidenceExportResponse)

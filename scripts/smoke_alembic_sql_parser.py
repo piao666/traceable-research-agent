@@ -21,6 +21,7 @@ REQUIRED_FILES = (
     ROOT / "alembic.ini",
     ROOT / "migrations" / "env.py",
     ROOT / "migrations" / "versions" / "0001_initial_trace_schema.py",
+    ROOT / "migrations" / "versions" / "0002_claim_provenance_schema.py",
 )
 
 ALLOWED_QUERIES = (
@@ -61,8 +62,21 @@ def _migration_smoke() -> list[str]:
             ).fetchall()
         finally:
             connection.close()
-        tables = sorted(name for (name,) in rows if name in {"agent_runs", "tool_traces"})
-        assert tables == ["agent_runs", "tool_traces"], tables
+        required_tables = {
+            "agent_runs",
+            "tool_traces",
+            "evidence_pipeline_runs",
+            "source_documents",
+            "source_snapshots",
+            "evidence_passages",
+            "evidence_assertions",
+            "research_claims",
+            "claim_evidence_edges",
+            "report_claims",
+            "citations",
+        }
+        tables = sorted(name for (name,) in rows if name in required_tables)
+        assert set(tables) == required_tables, tables
         return tables
     finally:
         TEMP_DB_PATH.unlink(missing_ok=True)

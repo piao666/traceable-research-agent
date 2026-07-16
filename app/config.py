@@ -85,6 +85,10 @@ class Settings(BaseModel):
     llm_timeout_seconds: int = 20
     llm_max_retries: int = 1
     llm_strict_json: bool = True
+    evidence_pipeline_version: str = "v2"
+    evidence_extractor_version: str = "v2-rule-1"
+    evidence_artifact_root: str = "workspace/artifacts"
+    evidence_passage_max_chars: int = 4000
     rag_embedding_backend: str = "deterministic"
     rag_vector_backend: str = "json"
     rag_model_path: str | None = r"E:\Models\bge-small-zh-v1.5"
@@ -159,6 +163,19 @@ class Settings(BaseModel):
         if normalized not in {"deterministic", "auto", "llm"}:
             raise ValueError("LLM_PLANNER_MODE must be deterministic, auto, or llm")
         return normalized
+
+    @field_validator("evidence_pipeline_version", mode="before")
+    @classmethod
+    def validate_evidence_pipeline_version(cls, value: object) -> str:
+        normalized = str(value or "v2").strip().lower()
+        if normalized not in {"v1", "v2"}:
+            raise ValueError("EVIDENCE_PIPELINE_VERSION must be v1 or v2")
+        return normalized
+
+    @field_validator("evidence_passage_max_chars", mode="before")
+    @classmethod
+    def validate_evidence_passage_max_chars(cls, value: object) -> int:
+        return _bounded_value(value, 4000, 500, 20000)
 
     @model_validator(mode="after")
     def validate_runtime_contract(self) -> "Settings":
@@ -358,6 +375,20 @@ class Settings(BaseModel):
             llm_timeout_seconds=_env_int("LLM_TIMEOUT_SECONDS", 20),
             llm_max_retries=_env_int("LLM_MAX_RETRIES", 1),
             llm_strict_json=_env_bool("LLM_STRICT_JSON", True),
+            evidence_pipeline_version=os.getenv(
+                "EVIDENCE_PIPELINE_VERSION", "v2"
+            ),
+            evidence_extractor_version=os.getenv(
+                "EVIDENCE_EXTRACTOR_VERSION", "v2-rule-1"
+            ).strip()
+            or "v2-rule-1",
+            evidence_artifact_root=os.getenv(
+                "EVIDENCE_ARTIFACT_ROOT", "workspace/artifacts"
+            ).strip()
+            or "workspace/artifacts",
+            evidence_passage_max_chars=_env_bounded_int(
+                "EVIDENCE_PASSAGE_MAX_CHARS", 4000, 500, 20000
+            ),
             rag_embedding_backend=os.getenv(
                 "RAG_EMBEDDING_BACKEND", "deterministic"
             ).strip()
@@ -487,6 +518,10 @@ class Settings(BaseModel):
             "llm_planner_enabled": self.llm_planner_enabled,
             "llm_planner_mode": self.llm_planner_mode,
             "llm_provider_has_key": bool(self.get_llm_api_key(self.llm_provider)),
+            "evidence_pipeline_version": self.evidence_pipeline_version,
+            "evidence_extractor_version": self.evidence_extractor_version,
+            "evidence_artifact_root": self.evidence_artifact_root,
+            "evidence_passage_max_chars": self.evidence_passage_max_chars,
             "github_token_configured": bool(self.github_token),
             "tavily_configured": bool(self.tavily_api_key),
         }

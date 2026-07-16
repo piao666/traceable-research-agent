@@ -43,3 +43,4 @@ jobs:
           python scripts/smoke_planner_guardrails.py
           python scripts/smoke_mcp_server.py
           python scripts/smoke_streamlit_frontend.py
+          python scripts/smoke_provenance_v2.py

@@ -80,6 +80,15 @@
 - 当前 ReAct/Planned 评测使用 deterministic fake decision，尚不能证明多工具方案在真实研究质量上优于单 Tavily。
 - SQLite 和 FastAPI BackgroundTasks 适合 Demo，不满足长期审计、水平扩展和崩溃恢复要求。
 
+## 2.4 当前实施状态（2026-07-16）
+
+- P0 已完成并提交（`d96c995`）：报告生成模式已显式化，离线测试不再隐式调用外部 LLM，配置前置校验、错误分类、双层敏感信息脱敏、离线 CI 与 Docker 复验均已完成。
+- P0 Docker 补充复验已通过：镜像构建、API/Streamlit 健康检查、容器内任务执行、报告下载、API 重启后的 SQLite 状态恢复和容器内单元测试均正常。
+- P1 已完成实现与复验：新增 Claim 级证据图、不可变压缩快照、Web/RAG/SQL/GitHub 定位器、V2 API、Reporter 引用校验、Alembic 迁移及 V1 兼容适配。
+- P1 容量复验已通过：20/100/1000 条证据的图查询固定为 9 条 SQL；1000 条证据本机查询 p95 为 206.4ms，没有 N+1。
+- P1 Docker 复验已通过：旧的无版本 Demo 数据库被安全标记并升级到 `0002_claim_provenance_schema (head)`，真实 HTTP 任务的 V1/V2 API、报告引用和 API 重启后持久化读取均正常。
+- P2 尚未开始；可靠性评分、来源独立性去重、冲突状态机与报告争议约束仍按后续规划实施。
+
 ## 3. P0：稳定并固化工程基线
 
 目标：在增加 Deep Research 能力前，消除隐式联网、配置漂移、凭据泄漏和不可复现测试。

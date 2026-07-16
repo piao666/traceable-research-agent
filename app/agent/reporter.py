@@ -664,6 +664,7 @@ def _llm_synthesize_answer(
     task: str,
     observations: list[dict[str, Any]],
     llm_client: "LLMClient",
+    provenance_bundle: dict[str, Any] | None = None,
 ) -> str | None:
     """Call LLM to synthesize tool evidence into a coherent answer.
     Returns synthesized text, or None if LLM call fails / no useful evidence.
@@ -672,11 +673,22 @@ def _llm_synthesize_answer(
         return None
     if not has_useful_evidence(observations):
         return None
-    evidence = compress_evidence(observations, max_total_chars=5000)
+    evidence = (
+        _provenance_llm_context(provenance_bundle)
+        if provenance_bundle
+        else compress_evidence(observations, max_total_chars=5000)
+    )
     if not evidence.strip():
         return None
     messages = [
         LLMMessage(role="system", content=_SYNTHESIS_SYSTEM),
+        LLMMessage(
+            role="system",
+            content=(
+                "When CIT-* identifiers are present, every factual conclusion must cite one or more "
+                "of those exact identifiers in square brackets. Never invent a citation identifier."
+            ),
+        ),
         LLMMessage(
             role="user",
             content=_SYNTHESIS_USER_TMPL.format(task=task, evidence=evidence),
@@ -685,11 +697,106 @@ def _llm_synthesize_answer(
     try:
         response = llm_client.complete(messages)
         if response.success and response.content:
-            return response.content.strip()
+            content = response.content.strip()
+            if provenance_bundle and not _valid_synthesis_citations(content, provenance_bundle):
+                import logging
+                logging.getLogger(__name__).warning(
+                    "LLM synthesis rejected because citation identifiers were missing or invalid."
+                )
+                return None
+            return content
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning("LLM synthesis failed: %s", redact_text(exc))
     return None
+
+
+def _provenance_llm_context(bundle: dict[str, Any]) -> str:
+    passages = {item["passage_id"]: item for item in bundle.get("passages") or []}
+    report_claims = {
+        item["report_claim_id"]: item for item in bundle.get("report_claims") or []
+    }
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for citation in bundle.get("citations") or []:
+        claim = report_claims.get(citation.get("report_claim_id"))
+        passage = passages.get(citation.get("passage_id"))
+        if not claim or not passage:
+            continue
+        grouped.setdefault(claim["report_claim_id"], []).append(
+            {
+                "citation_id": citation.get("citation_label"),
+                "passage_id": passage.get("passage_id"),
+                "text": str(passage.get("text") or "")[:1200],
+                "locator": passage.get("locator"),
+                "trace_id": passage.get("trace_id"),
+            }
+        )
+    payload = {
+        "schema_version": bundle.get("schema_version"),
+        "claims": [
+            {
+                "claim": claim.get("claim_text"),
+                "citations": grouped.get(claim_id, []),
+            }
+            for claim_id, claim in report_claims.items()
+            if grouped.get(claim_id)
+        ],
+    }
+    return json.dumps(payload, ensure_ascii=False, default=str)[:7000]
+
+
+def _valid_synthesis_citations(content: str, bundle: dict[str, Any]) -> bool:
+    available = {
+        str(item.get("citation_label"))
+        for item in bundle.get("citations") or []
+        if item.get("citation_label")
+    }
+    if not available:
+        return True
+    used = set(re.findall(r"CIT-\d{3}-\d{2}", content))
+    return bool(used) and used.issubset(available)
+
+
+def _render_provenance_markdown(bundle: dict[str, Any] | None) -> list[str]:
+    if not bundle:
+        return []
+    passages = {item["passage_id"]: item for item in bundle.get("passages") or []}
+    report_claims = {
+        item["report_claim_id"]: item for item in bundle.get("report_claims") or []
+    }
+    citations_by_claim: dict[str, list[dict[str, Any]]] = {}
+    for citation in bundle.get("citations") or []:
+        citations_by_claim.setdefault(str(citation.get("report_claim_id")), []).append(citation)
+    lines = [
+        "## 7. Claim Provenance V2",
+        "",
+        f"* Schema: `{bundle.get('schema_version')}`",
+        f"* Extractor: `{bundle.get('extractor_version')}`",
+        f"* Citation integrity: `{(bundle.get('integrity') or {}).get('all_citations_resolve')}`",
+        "",
+    ]
+    for claim_id, claim in sorted(
+        report_claims.items(),
+        key=lambda item: int(item[1].get("ordinal") or 0),
+    ):
+        lines.extend([f"### {claim.get('claim_text')}", ""])
+        claim_citations = citations_by_claim.get(claim_id, [])
+        if not claim_citations:
+            lines.extend(["* No supporting citation was materialized.", ""])
+            continue
+        for citation in claim_citations:
+            passage = passages.get(citation.get("passage_id")) or {}
+            locator = json.dumps(passage.get("locator") or {}, ensure_ascii=False, default=str)
+            lines.extend(
+                [
+                    f"* [{citation.get('citation_label')}] passage=`{citation.get('passage_id')}` "
+                    f"trace=`{passage.get('trace_id') or '<none>'}`",
+                    f"  Locator: `{locator}`",
+                    f"  Evidence: {str(passage.get('text') or '')[:500]}",
+                ]
+            )
+        lines.append("")
+    return lines
 
 
 def _source_references(records: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -953,6 +1060,7 @@ def generate_markdown_report(
     observations: list[dict[str, Any]],
     traces: list[ToolTrace],
     llm_client: "LLMClient | None" = None,
+    provenance_bundle: dict[str, Any] | None = None,
 ) -> str:
     """Build a Markdown report from persisted run evidence.
 
@@ -984,7 +1092,12 @@ def generate_markdown_report(
     # ── Phase A: LLM synthesis if available, else template ──────────────────
     _llm_answer: str | None = None
     if llm_client is not None:
-        _llm_answer = _llm_synthesize_answer(run.task, observations, llm_client)
+        _llm_answer = _llm_synthesize_answer(
+            run.task,
+            observations,
+            llm_client,
+            provenance_bundle,
+        )
         if _llm_answer:
             _llm_answer = _repair_tool_only_sources(
                 _llm_answer,
@@ -1141,6 +1254,8 @@ def generate_markdown_report(
                 )
     else:
         lines.extend(["未记录可执行工具的观察结果。", ""])
+
+    lines.extend(_render_provenance_markdown(provenance_bundle))
 
     problem_traces = [trace for trace in traces if trace.status in {"failed", "rejected"}]
     if problem_traces:

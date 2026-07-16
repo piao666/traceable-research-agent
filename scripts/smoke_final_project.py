@@ -32,6 +32,11 @@ CHECKS = [
     ("smoke_react_executor", [sys.executable, "scripts/smoke_react_executor.py"]),
     ("smoke_hybrid_rag", [sys.executable, "scripts/smoke_hybrid_rag.py"]),
     ("smoke_react_vs_planned_eval", [sys.executable, "scripts/smoke_react_vs_planned_eval.py"]),
+    ("smoke_provenance_v2", [sys.executable, "scripts/smoke_provenance_v2.py"]),
+    (
+        "smoke_provenance_capacity",
+        [sys.executable, "scripts/smoke_provenance_capacity.py"],
+    ),
     ("app_eval", [sys.executable, "-m", "app.eval.run_eval"]),
 ]
 CHECK_TIMEOUT_SECONDS = {

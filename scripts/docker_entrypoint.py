@@ -19,6 +19,7 @@ def _run(command: list[str]) -> None:
 
 
 def main() -> None:
+    _run([sys.executable, "scripts/migrate_database.py"])
     if _is_enabled(os.getenv("DOCKER_INIT_DEMO_DATA"), default=True):
         _run([sys.executable, "scripts/init_demo_db.py"])
         _run([sys.executable, "scripts/build_rag_index.py"])

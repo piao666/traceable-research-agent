@@ -12,6 +12,7 @@ from app.agent.file_access_policy import file_reader_execution_arguments
 from app.agent.report_generation import resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings as _exec_settings
+from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
 from app.mcp.policy import MCPChannel, requires_interactive_confirmation, tool_channel
 from app.tools.base import ToolResult
@@ -197,8 +198,23 @@ def run_plan(
         traces = store.list_tool_traces(db, run_id)
         run.status = "completed"
         run.error_message = None
+        provenance_bundle = materialize_execution_provenance(
+            db,
+            run,
+            plan,
+            observations,
+            traces,
+            settings_obj,
+        )
         _llm = resolve_report_llm_client(settings_obj, report_llm_client)
-        markdown = generate_markdown_report(run, plan, observations, traces, llm_client=_llm)
+        markdown = generate_markdown_report(
+            run,
+            plan,
+            observations,
+            traces,
+            llm_client=_llm,
+            provenance_bundle=provenance_bundle,
+        )
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)
         run = store.update_agent_run_status(db, run_id, "completed", None)

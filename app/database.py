@@ -28,6 +28,7 @@ def _configure_sqlite_connection(dbapi_connection, connection_record) -> None:
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.execute("PRAGMA foreign_keys=ON")
     finally:
         cursor.close()
 
@@ -50,6 +51,7 @@ def init_db() -> None:
     """Create required database tables."""
 
     from app.trace import models  # noqa: F401
+    from app.evidence import models as evidence_models  # noqa: F401
 
     WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)

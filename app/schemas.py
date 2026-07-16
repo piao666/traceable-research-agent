@@ -190,6 +190,22 @@ class EvidenceBundleResponse(BaseModel):
     warnings: list[str]
 
 
+class ProvenanceBundleResponse(BaseModel):
+    run_id: str
+    schema_version: str
+    extractor_version: str
+    status: str
+    source_documents: list[dict[str, Any]]
+    source_snapshots: list[dict[str, Any]]
+    passages: list[dict[str, Any]]
+    assertions: list[dict[str, Any]]
+    claims: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+    report_claims: list[dict[str, Any]]
+    citations: list[dict[str, Any]]
+    integrity: dict[str, Any]
+
+
 class EvidenceExportResponse(BaseModel):
     run_id: str
     format: str
