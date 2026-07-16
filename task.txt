@@ -1,394 +1,285 @@
-# Traceable Research Agent - Task Plan
-
-更新时间：2026-06-29
-
-## 项目定位
-
-Traceable Research Agent 的核心目标是构建一个可追踪、可审计、可复盘的多工具调研 Agent。当前主线不是扩展第二套前端，也不是转向企业知识库 RAG 平台，而是继续强化：
-
-- 任务规划与工具调用的稳定性
-- Trace / Evidence / Report 的闭环
-- MCP 只读工具协议互操作
-- 真实演示问题下的端到端可靠性
-
-Streamlit 继续作为主 demo UI；FastAPI 是稳定后端；MCP 端点用于外部客户端发现和只读调用。
-
-## 当前已具备的闭环
-
-- FastAPI 任务生命周期：create / plan / run / run_async / confirm / status
-- Planned 与 ReAct 两种执行模式
-- Tool Registry 统一注册本地工具和可选远端 MCP 工具
-- file_reader / sql_query / rag_search / mcp_github_search / tavily_search / report_writer
-- SQLGlot 只读校验、文件路径白名单、GitHub GET-only、HITL、ReAct 循环上限
-- SQLite AgentRun / ToolTrace 持久化
-- SSE 实时 Trace 事件流
-- Streamlit 任务创建、计划查看、执行追踪、报告渲染
-- EvidenceBundle 聚合、多来源证据分组、mock/fallback/failure 标记
-- Evidence Export：JSON / JSONL / Markdown metadata、content preview、download
-- MCP Server：只读工具发现、工具调用、trace_reader、report_reader
-- MCP Client / Remote Tool Registry：可选发现安全远端只读工具
-
-## 当前未提交改动状态
-
-Day42 Evidence Export、Day43 Evidence Export Download Polish 和 Day43.5 Stabilization 处于未提交状态。不要自动执行 git pull、commit 或 push。
-
-当前预期涉及文件：
-
-- `.gitignore`
-- `README.md`
-- `task.txt`
-- `app/api/tasks.py`
-- `app/schemas.py`
-- `app/config.py`
-- `app/agent/evidence_exporter.py`
-- `app/agent/plan_guardrails.py`
-- `app/agent/planner.py`
-- `app/llm/planner_client.py`
-- `frontend/streamlit_app.py`
-- `scripts/smoke_evidence_export.py`
-- `scripts/smoke_planner_guardrails.py`
-- `scripts/smoke_final_project.py`
-
-## 2026-06-29 - Day43 Evidence Export Download Polish
-
-目标：补齐 Day42 evidence export 的预览和下载体验，同时保留原 metadata endpoint。
-
-已实现：
-
-- 保留 `GET /api/tasks/{run_id}/evidence/export?format=json|jsonl|markdown`
-- 新增 `GET /api/tasks/{run_id}/evidence/export/content?format=json|jsonl|markdown`
-- 新增 `GET /api/tasks/{run_id}/evidence/export/download?format=json|jsonl|markdown`
-- content/download 复用任务路由 auth 和 request context
-- run 不存在返回 404
-- 无 trace run 导出空 EvidenceBundle，不返回 500
-- 只读取 exporter 在 `workspace/exports/` 下生成的 artifact
-- Streamlit Report tab 支持导出后预览 Markdown/JSON/JSONL，并提供 download button
-- `scripts/smoke_evidence_export.py` 覆盖 metadata/content/download、empty trace、fallback/mock、remote MCP failure、exports path guard、secret filter、missing run 404
-
-## 2026-06-29 - Day43.5 Stabilization
-
-背景：深度排查 Day40-Day43 后发现核心 API、Streamlit、SSE、MCP、Evidence Export 都能闭环运行，但真实 LLM Planner 在自由问题下可能生成不匹配本地工具边界的参数，例如：
-
-- `file_reader.path` 带 `workspace/docs/` 前缀或引用不存在文件
-- `sql_query.query` 查询 demo schema 中不存在的列或表
-- `mcp_github_search.query` 过长、包含混乱换行或无效参数，可能触发 GitHub Search HTTP 422
-
-修复目标：
-
-- 在计划落库前对工具参数做语义归一化
-- 保持工具自身安全边界不放松
-- 不新增重型依赖
-- 不破坏 Planned、parallel、ReAct、Trace、SSE、MCP、Evidence Export
-
-实现内容：
-
-- 新增 `app/agent/plan_guardrails.py`
-  - `normalize_plan_arguments(plan, task, source_mode)`
-  - 文件路径归一化到 `workspace/docs` 下已存在相对路径
-  - 文件缺失时按任务关键词选择已有 demo 文档，默认回退 `demo_research_note.md`
-  - SQL 只读校验后用 SQLite `EXPLAIN QUERY PLAN` 预检 schema
-  - SQL 无效时按任务语义回退到 demo schema 下的安全 SELECT
-  - GitHub query 压缩为短 plain text
-  - GitHub repo/search_type/sort/order/limit/mode 归一化
-  - RAG/Tavily 缺省 query、top_k/max_results、mode 参数归一化
-  - report_writer 参数清空
-  - 归一化原因写入 `plan["notes"]`
-- 修改 `app/agent/planner.py`
-  - deterministic plan 和 LLM plan 返回前统一调用 guardrail
-  - LLM 子问题分解后再次归一化，防止后处理引入参数偏移
-- 修改 `app/llm/planner_client.py`
-  - Planner prompt 明确列出 workspace/docs 文件边界
-  - 明确 demo SQLite schema
-  - 明确 GitHub query/repo/search_type/read-only 边界
-- 新增 `scripts/smoke_planner_guardrails.py`
-  - 模拟坏 LLM plan
-  - 覆盖文件前缀修正、SQL schema 修正、GitHub 参数修正、RAG 参数修正、report_writer 参数清理
-  - 真实调用 file_reader、sql_query、GitHub mock 工具确认修正后可执行
-- 修改 `scripts/smoke_final_project.py`
-  - 聚合验证加入 `smoke_planner_guardrails.py`
-- 修改 `README.md`
-  - 重写为正常项目 README
-  - 删除阶段流水账、过时限制和旧 MCP 定位表述
-- 修改 `task.txt`
-  - 删除早期历史规划和旧前端扩展路线
-  - 更新当前任务状态和下一步路线
-
-## 验证计划
-
-本轮需要至少运行：
-
-```powershell
-python -m compileall app scripts frontend
-python scripts/smoke_planner_guardrails.py
-python scripts/smoke_llm_planner.py
-python scripts/smoke_evidence_export.py
-python scripts/smoke_evidence_aggregation.py
-python scripts/smoke_realtime_trace.py
-python scripts/smoke_mcp_server.py
-python scripts/smoke_mcp_client.py
-python scripts/demo_mcp_external_client.py
-python scripts/smoke_mcp_external_http_client.py
-python scripts/smoke_parallel_execution.py
-python scripts/smoke_react_executor.py
-python scripts/smoke_streamlit_frontend.py
-python scripts/smoke_auth_async.py
-python -m app.eval.run_eval
-```
-
-如时间允许，补充：
-
-```powershell
-python scripts/smoke_final_project.py
-```
-
-## 2026-06-29 - Day46 MCP External Client Demo
-
-目标：暂不进入 Day44/Day45，优先做一个清晰的外部 MCP client demo，验证本项目作为只读 MCP 工具服务对外可发现、可调用、可审计。
-
-实现内容：
-
-- 新增 `scripts/demo_mcp_external_client.py`
-  - 使用 FastAPI `TestClient` 直接调用 `/mcp`，默认不需要启动 uvicorn
-  - 初始化 demo DB 和默认工具注册
-  - 通过任务 API 创建并执行一个最小 demo run，让 trace_reader/report_reader 有真实内容可读
-  - 调用 JSON-RPC `initialize`
-  - 调用 JSON-RPC `tools/list`，验证只读工具可见：
-    - `file_reader`
-    - `rag_search`
-    - `sql_query_readonly`
-    - `github_search`
-    - `tavily_search`
-    - `trace_reader`
-    - `report_reader`
-  - 验证 `report_writer` 和写类/高风险工具不暴露
-  - 调用 JSON-RPC `tools/call` 执行 `file_reader`
-  - 调用 `trace_reader` 读取 persisted ToolTrace
-  - 调用 `report_reader` 读取生成的 Markdown report
-  - 通过 `_trace: {run_id, step_no}` 验证 MCP 调用可写入 trace row
-  - 输出结构化 JSON summary，便于 smoke 检查和演示
-- 更新 `README.md`
-  - 增加 MCP External Client Demo 使用说明
-  - 说明默认离线可跑、输出字段含义和只读审计边界
-  - 将 `python scripts/demo_mcp_external_client.py` 加入验证命令
-- 更新 `scripts/smoke_final_project.py`
-  - 将 Day46 demo 加入最终聚合验证
-- 新增 `scripts/smoke_mcp_external_http_client.py`
-  - 启动临时 uvicorn 子进程
-  - 使用 `requests` 通过 localhost TCP 调用 `/mcp`
-  - 验证真实 HTTP client 也能完成 initialize、tools/list、tools/call、trace 写入和 report readback
-- 修改 `app/database.py`
-  - SQLite 连接增加 `timeout=30`
-  - 连接时设置 `PRAGMA busy_timeout=30000`
-  - 连接时设置 `PRAGMA journal_mode=WAL` 和 `PRAGMA synchronous=NORMAL`
-  - 降低多个 smoke/API 进程并发写同一 SQLite 数据库时的 `database is locked` 概率
-
-验收标准：
-
-- 默认离线可跑
-- 不要求真实 GitHub/Tavily/LLM key
-- 不新增重型依赖
-- 不改变本地工具安全边界
-- 不暴露 `report_writer`
-- 不破坏已有 MCP server/client、Trace、Evidence、Export、Streamlit
-
-验证结果：
-
-- `python -m compileall app scripts frontend` 通过
-- `python scripts/smoke_mcp_server.py` 通过
-- `python scripts/smoke_mcp_client.py` 通过
-- `python scripts/demo_mcp_external_client.py` 通过
-- `python scripts/smoke_mcp_external_http_client.py` 通过
-- `python scripts/smoke_planner_guardrails.py` 通过
-- `python scripts/smoke_evidence_export.py` 通过
-- `python scripts/smoke_realtime_trace.py` 通过
-- `python scripts/smoke_auth_async.py` 通过
-- 并行压力复测：同时运行 `smoke_evidence_export.py`、`smoke_realtime_trace.py`、`smoke_auth_async.py` 通过，未再出现 `database is locked`。
-
-## 2026-06-30 - 板块一：场景模板、路径白名单 HITL、报告下载
-
-目标：不进入 Day44/Day45，优先完成 demo 场景收敛、file_reader 白名单路径权限，以及研究报告 Markdown/Word/PDF 下载。
-
-实现内容：
-
-- Streamlit 场景模板收敛为三种：
-  - 本地读取（文件 + RAG + SQL）
-  - 外部调研（GitHub + Tavily）
-  - 全规划器（本地读取 + 外部调研）
-- `file_reader` 支持 `FILE_READER_ALLOWED_ROOTS`，默认仍为 `workspace/docs`。
-- `FILE_READER_HITL_OUTSIDE_ALLOWED_ROOTS=true` 时，白名单外路径不再静默 fallback 到 demo 文档，而是进入 per-file HITL。
-- HITL 批准只写入 `approved_file_reader_paths` 中的具体 resolved path，不放开目录或磁盘。
-- Planned、Parallel、ReAct 三条执行路径均复用同一套 file access policy。
-- `GET /api/reports/{run_id}/download?format=markdown|docx|pdf` 支持报告下载。
-- 新增 `app/agent/report_exporter.py`，以 Markdown 为源生成 DOCX/PDF 派生文件。
-- Streamlit 研究报告页增加 Markdown/Word/PDF 下载按钮。
-- 新增或更新 smoke：
-  - `scripts/smoke_hitl.py`
-  - `scripts/smoke_report_download.py`
-  - `scripts/smoke_streamlit_frontend.py`
-  - `scripts/smoke_planner.py`
-  - `scripts/smoke_planner_guardrails.py`
-
-## 后续扩展方向（暂缓）
-
-## 2026-07-01 - 板块三：MCP 通道升级
-
-目标：把远端 MCP 从单一只读配置升级为通道化策略，保持默认安全、可审计、可接真实 HTTP JSON-RPC MCP 的工程子集，不做无限制 MCP hub。
-
-规划实现：
-
-- 新增远端 MCP 通道配置：
-  - `MCP_CHANNEL_READONLY_SERVERS`
-  - `MCP_CHANNEL_INTERACTIVE_SERVERS`
-  - `MCP_CHANNEL_WRITE_SERVERS`
-- 每个 server 支持 `name`、`base_url`、`transport`、`timeout_seconds`、`allowed_tools`、`blocked_tools`、`headers_env`、`channel`。
-- 保留旧 `MCP_REMOTE_REGISTRY_ENABLED` / `MCP_REMOTE_SERVERS` 兼容入口，按 readonly channel 处理。
-- `readonly` 通道只自动注册 `read_only=true`、`side_effect_free=true`、`requires_confirmation=false` 的远端工具。
-- `interactive` 通道注册为需要 HITL，不进入默认只读 MCP 暴露，不进入 parallel 自动执行。
-- `write` 通道默认禁用，即使配置也不自动注册可执行工具。
-- 远端工具 trace metadata 写入 `tool_source=mcp_remote`、`remote_server`、`remote_channel`、`remote_tool_name`、`mcp_transport` 等字段。
-- `/mcp/health` 返回 channel summary；`/mcp/tools` 显示 channel / policy / remote metadata。
-- 新增 `scripts/smoke_mcp_channels.py` 覆盖 Firecrawl/browser/database/write fake server、allowlist/blocklist、headers_env 脱敏、HITL 和远端失败 trace。
-
-安全边界：
-
-- 不放松本地 `file_reader` path guard 和 SQL read-only guard。
-- browser/playwright 类工具默认属于 interactive；write channel 默认不执行。
-- `headers_env` 只读取环境变量值用于出站请求，不写入 trace/report/evidence。
-- Streamlit 继续作为主 demo UI，不新增第二套前端。
-
-## 2026-07-03 - 板块三补强：Deep Research Source Pack
-
-目标：让 MCP 接入从“能接远端工具”升级为可解释的产品场景，优先提升搜索/调研深度，而不是把 browser/playwright 类高风险工具混入默认链路。
-
-实现方向：
-
-- 新增 Streamlit 场景模板：
-  - 深度网页调研（Tavily + Firecrawl/Exa MCP）
-  - 技术文档调研（GitHub + Context7/Exa MCP）
-- 新模板使用 `allowed_tools=None`，由后端默认工具列表 + 已注册远端 MCP 工具动态决定可用工具；无远端 MCP 配置时仍可默认离线运行。
-- Planner 识别 `deep_web_research` / `technical_docs_research`：
-  - 深度网页调研优先 Tavily、Exa `web_search_exa/web_search_advanced_exa/web_fetch_exa`、Firecrawl `search/scrape/extract/map`。
-  - 技术文档调研优先 GitHub、Context7 `resolve-library-id/query-docs`、Exa、Firecrawl。
-  - 远端工具仍遵守 channel policy；interactive/write 不进入默认只读自动链路。
-- EvidenceBundle 对 remote MCP 证据分层：
-  - `mcp_remote_discovery`：search/map/resolve 类发现证据。
-  - `mcp_remote_support`：scrape/extract/fetch/query-docs 类正文支撑证据。
-  - `mcp_remote_failure`：失败远端调用，保留 trace，不升级为 API 500。
-- Report 层识别 remote MCP URL，修复 LLM 输出中的工具名来源，例如 `来源：[firecrawl.scrape]`。
-- `.env.example` / README 增加 Firecrawl、Exa、Context7 的 readonly 示例配置和 Firecrawl interact/browser 的 interactive 边界说明。
-
-验证覆盖：
-
-- `scripts/smoke_planner.py` 覆盖 fake Firecrawl/Exa/Context7 工具下的两个新模板。
-- `scripts/smoke_mcp_channels.py` 覆盖 Firecrawl `search/scrape/map/extract/interact`、Exa、Context7、browser/database/write fake server。
-- `scripts/smoke_evidence_aggregation.py` 覆盖 remote MCP discovery/support/failure 分类、URL 来源、headers_env 脱敏。
-- `scripts/smoke_streamlit_frontend.py` 覆盖新模板、动态 allowed_tools、scenario_template_key。
-
-## 2026-07-03 - MCP Source Pack Bridge
-
-目标：为 Deep Research Source Pack 增加一个本地 HTTP JSON-RPC MCP Bridge，解决 Firecrawl/Exa/Context7 不一定直接提供本项目所需 HTTP MCP 形态的问题，同时避免后续服务商接入变成单文件硬编码。
-
-实现内容：
-
-- 新增 `app/mcp_bridge/`：
-  - `server.py`：提供 `POST /mcp`、`GET /health`、`GET /tools`。
-  - `registry.py`：按 `MCP_BRIDGE_ENABLED_PROVIDERS` 汇总 provider。
-  - `schemas.py`：统一 Bridge tool/result 结构。
-  - `providers/base.py`：provider 接口与 HTTP helper。
-  - `providers/firecrawl.py`：fake + real Firecrawl `search/scrape/map/extract`。
-  - `providers/exa.py`：fake + real Exa `web_search_exa/web_fetch_exa/web_search_advanced_exa`。
-  - `providers/context7.py`：fake Context7 `resolve-library-id/query-docs` 与 HTTP adapter 预留。
-- 新增 `scripts/mcp_source_pack_server.py` 作为独立 uvicorn 启动入口。
-- 新增 `scripts/start_mcp_source_pack.ps1`，支持 `-Mode fake|real`、`-Port`、`-Providers`。
-- 新增 `scripts/smoke_mcp_source_pack_bridge.py`，覆盖 Bridge JSON-RPC、tools/list 安全声明、fake 工具调用、主项目 remote MCP client 注册与结构化失败。
-- `.env.example` 和 README 改为推荐单一 `source_pack` Bridge：
-  - `MCP_CHANNEL_READONLY_SERVERS=[{"name":"source_pack","base_url":"http://127.0.0.1:9001/mcp",...}]`
-  - provider API key 由 Bridge 自己从环境变量读取，不写入 MCP headers。
-
-安全边界：
-
-- Bridge 只暴露 readonly / side_effect_free / requires_confirmation=false 的调研工具。
-- 不接入 browser/playwright/click/navigate/screenshot 到 readonly。
-- Firecrawl/Exa key 只从环境变量读取；Bridge 输出、trace、report、evidence 不写 key 值。
-- Context7 real API 不猜测，未配置 `CONTEXT7_BASE_URL` 时 real mode 返回 structured failure。
-- provider 失败不会让主任务 API 500。
-
-### Day44 - Evidence Quality / Verifier
-
-暂缓。后续可在 EvidenceBundle 上增加轻量质量判断，例如来源质量、freshness、mock/fallback/failure 降级提示、claim support strength。优先确定性规则，必要时再考虑 LLM verifier。
-
-### Day45 - Trace Replay / Run Replay
-
-暂缓。后续可将 persisted trace 组织成可回放 timeline，用于审计、debug 和面试演示。不应在 Day46 前打断 MCP interoperability 主线。
-
-## 2026-07-06 - UI 事件框与 Deep Research MCP 相关性修复
-
-背景：人工截图核查发现任务页点击“执行任务”后仍会出现一个窄小的实时事件代码框；同时真实 MCP 调用虽然成功，但报告中混入“如何抓网页”的泛化搜索结果，和用户要求的 `https://newapi.chat/` 站点信息汇总不完全匹配。
-
-诊断结论：
-
-- 任务页小框来自 `frontend/streamlit_app.py` 中按钮流程临时调用 `render_event_console()`，它会渲染 `st.code()` 事件日志。任务页不应展示这类内部事件流，Trace 页保留即可。
-- Planner 给 Tavily、Exa、Firecrawl search 传入了整句任务，例如“抓取以下页面...提取所有信息...”，导致搜索类工具更容易返回网页抓取教程，而不是目标站内容。
-- Firecrawl map/search/extract 受 `MCP_BRIDGE_MAX_RESULTS=5` 限制，站点展开能力偏弱。
-- Firecrawl real `extract` 使用 `/v2/extract`，当前 API 返回 deprecated/submitted 信息，不是稳定正文证据。
-- MCP provider 超时此前统一归类为 `http_error`，不利于排查 timeout。
-
-实现内容：
-
-- `frontend/streamlit_app.py`
-  - 移除任务页创建/执行按钮后的临时 `render_event_console()` 代码框。
-  - 任务页不再阻塞式展示 SSE 日志；实时事件仍保留在“执行追踪”Tab 中查看。
-- `app/agent/planner.py`
-  - URL 型深度网页调研生成站内限定查询，例如 `site:newapi.chat newapi docs pricing api features`。
-  - Exa advanced 搜索在有 URL 时自动补 `includeDomains`。
-  - Firecrawl map 默认 limit 提升到 20，并将 map 顺序放在 scrape/extract 前。
-- `app/agent/plan_guardrails.py`
-  - 对 LLM/自由计划中的 Tavily 查询做同样的 URL 域名限定，避免把整句抓取指令直接发给搜索工具。
-- `app/mcp_bridge/providers/firecrawl.py`
-  - real `firecrawl.extract` 改为基于 `/v2/scrape` 读取 URL 正文，避免 deprecated `/v2/extract` 只返回提交信息。
-- `app/mcp_bridge/providers/base.py`
-  - 将 `requests.Timeout` 明确记录为 `error_type=timeout`。
-- `.env.example`
-  - `MCP_BRIDGE_MAX_RESULTS` 默认值从 5 调整为 20。
-- 本地 `.env`
-  - 同步把 `MCP_BRIDGE_MAX_RESULTS` 调整为 20；该文件仍不应提交。
-- 新增 `PRODUCT.md`
-  - 记录 UI register、用户、产品目的、反模式和设计原则，供后续 UI 调整保持一致。
-
-验证结果：
-
-- `.\.venv\Scripts\python.exe -m compileall frontend\streamlit_app.py app\agent\planner.py app\agent\plan_guardrails.py app\mcp_bridge\providers`
-- `.\.venv\Scripts\python.exe scripts\smoke_planner.py`
-- `.\.venv\Scripts\python.exe scripts\smoke_mcp_source_pack_bridge.py`
-- `.\.venv\Scripts\python.exe scripts\smoke_streamlit_frontend.py`
-- 额外手动检查：`https://newapi.chat/` 深度网页调研计划现在为 Tavily/Exa/Firecrawl search 生成站内限定查询，Exa advanced 带 `includeDomains=["newapi.chat"]`，Firecrawl map 使用 `limit=20`。
-
-## 2026-07-06 - README 首尾与项目复盘文档化
-
-目标：将 README 从阶段性任务说明整理为 GitHub 开源项目首页，覆盖项目介绍、核心功能、架构、安装启动、配置、API、MCP、验证、安全边界和后续路线。
-
-实现内容：
-
-- 重写 `README.md`
-  - 增加项目定位和适用场景。
-  - 补充 Traceable 执行链路：任务输入 -> Planner -> 工具执行 -> Trace -> Evidence -> 报告。
-  - 按功能分组说明 Planner、Executor、Tool Registry、Trace/Evidence/Report、Streamlit UI、MCP Source Pack。
-  - 增加目录结构说明。
-  - 增加快速开始、一键本地演示、Docker 运行说明。
-  - 按配置域说明基础执行、LLM Planner、外部搜索、文件 HITL、RAG、MCP Source Pack。
-  - 补充 API 示例和常用端点表。
-  - 补充 MCP 外部客户端演示、验证命令、安全边界、运行产物、当前状态与后续路线。
-  - 标注当前仓库尚未声明 License，后续公开发布前建议补充 `LICENSE` 文件。
-
-验证计划：
-
-- 检查 README 不包含真实 key/token。
-- 运行 `.\.venv\Scripts\python.exe scripts\smoke_streamlit_frontend.py` 确认文档相关启动脚本引用仍匹配。
-- 保留无关 `docs/rag_chunk_experiment.md` 本地基准数值刷新，不纳入本次文档提交。
-
-## 当前注意事项
-
-- 不提交 `.env`、token、key、本地模型、SQLite DB、RAG index、Chroma 数据、cache、reports、exports、eval outputs。
-- Day43.5 的 guardrail 只修正计划参数，不放宽工具自身安全校验。
-- 如果真实外部 API 失败，应转化为 traceable failed/fallback evidence，不应导致任务 API 500。
-- Streamlit 继续作为主 demo UI，不新增第二套前端。
+# Traceable Research Agent：闭环验证记录与 P0-P5 实施规划
+
+更新时间：2026-07-16
+
+## 1. 当前项目结论
+
+项目已经形成可运行的 Demo 闭环：创建任务 -> 生成计划 -> 执行工具 -> 持久化 Trace -> 聚合证据 -> 生成并导出报告，同时具备异步任务、SSE 状态流、HITL 确认、MCP 工具桥接、SQL/RAG/GitHub 等工具接入和基础评测能力。
+
+当前闭环解决的是“任务可以完成、过程可以观察、结果可以导出”的工程问题，但还没有完成 Deep Research 所需的三个核心能力：Claim 级来源可靠性计算、观点冲突检测与调和、报告结论到不可变原文片段的完整引用链。
+
+## 2. 已完成的端到端闭环验证
+
+### 2.1 验证环境
+
+- 项目目录：`E:\BOSS\traceable-research-agent`
+- 运行方式：项目 `.venv` 中的 Python；测试以离线、mock 或 deterministic 路径为主。
+- 数据与产物：SQLite Trace、`workspace/reports/` 报告及证据导出文件。
+- Docker：已检测到 Docker 客户端，但验证时 Docker Engine 未运行，因此容器部署链路尚未复验。
+
+### 2.2 已通过的检查
+
+1. Python 编译检查
+   - 命令：`python -m compileall -q app scripts frontend`
+   - 结果：通过，未发现语法错误。
+
+2. 单元测试
+   - 命令：`.venv\Scripts\python.exe -m unittest discover -s tests -v`
+   - 结果：7/7 通过。
+   - 覆盖：只读 SQL、写语句与多语句拒绝、RAG chunk offset、非法 overlap、MCP JSON-RPC 契约、embedding deterministic fallback。
+
+3. 主 E2E 闭环
+   - 命令：`.venv\Scripts\python.exe scripts\smoke_e2e.py`
+   - 结果：通过，任务状态为 `completed`。
+   - Run ID：`76291a79d7d342dca54f6750997c38f1`。
+   - 产物：3 条工具 Trace；重复执行没有重复追加 Trace；成功生成 Markdown 报告。
+
+4. 多源证据聚合
+   - 命令：`.venv\Scripts\python.exe scripts\smoke_evidence_aggregation.py`
+   - 结果：通过。
+   - 覆盖：多来源分组、mock/fallback 标记、工具来源修复、远端来源分类、远端失败审计、ReAct 限制说明。
+
+5. 证据导出
+   - 命令：`.venv\Scripts\python.exe scripts\smoke_evidence_export.py`
+   - 结果：通过。
+   - 覆盖：JSON、JSONL、Markdown 导出，内容预览、下载、空 Trace、MCP 失败、路径保护、密钥过滤、缺失任务 404。
+
+6. MCP Source Pack Bridge
+   - 命令：`.venv\Scripts\python.exe scripts\smoke_mcp_source_pack_bridge.py`
+   - 结果：通过。
+   - 覆盖：fake 模式、9 个只读工具、远端注册、结构化失败及敏感信息脱敏。
+
+7. ReAct 与 Planned 评测链路
+   - 命令：在子进程中强制 `LLM_PROVIDER=deterministic`、禁用 LLM Planner 并清除外部 Key 后执行 `scripts\smoke_react_vs_planned_eval.py`。
+   - 结果：18 个全量案例和 5 个子集案例通过，指标与报告能够生成。
+   - 已发现问题：本机存在 LLM Key 时 Reporter 会隐式访问外部模型，离线评测不完全确定，列入 P0 修复。
+
+8. 实时状态与 HITL
+   - 命令：`.venv\Scripts\python.exe scripts\smoke_realtime_trace.py`
+   - 结果：通过。
+   - 覆盖：SSE 格式、完成事件、`waiting_human`、并行元数据、远端 MCP 失败可见性。
+
+9. 报告下载
+   - 命令：`.venv\Scripts\python.exe scripts\smoke_report_download.py`
+   - 结果：通过。
+   - 产物：Markdown、DOCX、PDF 均可生成和下载。
+
+10. 鉴权与异步任务
+    - 命令：`.venv\Scripts\python.exe scripts\smoke_auth_async.py`
+    - 结果：通过。
+    - 覆盖：鉴权默认值、Key 校验、受保护接口、健康检查豁免、租户上下文、异步状态、HITL guard、同步 fallback、重复执行 guard。
+
+### 2.3 当前闭环的已知边界
+
+- `EvidenceBundle` 当前主要按 Plan step 关联证据，并非报告级原子 Claim 图谱。
+- 证据置信度仍以成功、mock、fallback 等状态做粗粒度判断，没有基于来源和内容的校准评分。
+- 尚未检测 RAG、SQL、网页和 GitHub 数据之间的语义冲突。
+- Reporter 消费压缩后的文本上下文，不能保证每个报告事实都绑定可验证引用。
+- 网页引用主要依赖 URL，网页变化后无法证明生成报告时实际看到的内容。
+- Tool Registry 仍是原子工具层，没有任务级 Skill 的输入、输出、策略、预算和质量门禁。
+- 当前 ReAct/Planned 评测使用 deterministic fake decision，尚不能证明多工具方案在真实研究质量上优于单 Tavily。
+- SQLite 和 FastAPI BackgroundTasks 适合 Demo，不满足长期审计、水平扩展和崩溃恢复要求。
+
+## 3. P0：稳定并固化工程基线
+
+目标：在增加 Deep Research 能力前，消除隐式联网、配置漂移、凭据泄漏和不可复现测试。
+
+### 3.1 实施任务
+
+- 增加显式 `REPORT_GENERATION_MODE=deterministic|llm`，由 Executor 注入 Reporter/LLM Client，不再因本机存在 Key 自动联网。
+- 将测试划分为 `offline`、`integration`、`live-provider`，所有离线脚本在进程内部固定 deterministic 配置。
+- 统一工具错误类型：`timeout`、`rate_limited`、`auth_error`、`provider_error`、`invalid_result`、`internal_error`。
+- 增加启动配置校验和脱敏后的配置摘要，错误配置在任务执行前失败。
+- 轮换开发环境中的真实 Token，统一日志、Trace、ToolResult、报告导出的敏感字段脱敏。
+- 固化基线运行文档、命令、预期结果、已知限制和 Docker 复验步骤。
+
+### 3.2 P0 复验
+
+- 重跑编译检查、单元测试和全部 smoke 脚本。
+- 在断网且无 Key 环境执行完整 E2E 和评测。
+- 在保留真实 Key 的情况下使用 deterministic 模式，确认外部网络调用数为 0。
+- 注入 429、超时、鉴权失败和非法响应，检查统一错误码、Trace 与报告降级声明。
+- 扫描 Git 历史、工作区、SQLite、日志和导出文件中的密钥模式。
+- Docker Engine 可用后执行容器启动、健康检查、任务运行、容器重启和报告下载。
+
+### 3.3 P0 完成标准
+
+- 离线测试不依赖任何外部 Provider。
+- 没有隐式 LLM 调用和明文凭据泄漏。
+- 当前 API、Trace、报告与前端 Demo 行为不回归。
+
+## 4. P1：建立 Claim 级证据与引用链
+
+目标：将当前以 ToolTrace/Plan step 为中心的证据组织升级为以原子 Claim 为中心、能够反向审计的证据图谱。
+
+### 4.1 目标数据链
+
+`ToolTrace -> SourceDocument -> SourceSnapshot -> Passage -> EvidenceAssertion -> ResearchClaim -> ClaimEvidenceEdge -> Citation -> ReportClaim`
+
+### 4.2 实施任务
+
+- 新增 `SourceDocument`：规范化来源身份、URI、Provider、来源类型和所属组织。
+- 新增不可变 `SourceSnapshot`：抓取时间、内容哈希、提取器版本、原始制品路径、Trace ID 和提取状态。
+- 新增 `Passage`：保存证据片段、片段哈希及可重放定位器。
+- 新增 `EvidenceAssertion`：主体、谓词、值、单位、时间、限定条件、极性和提取置信度。
+- 新增 `ResearchClaim` 和 `ReportClaim`，区分研究阶段事实与最终报告实际陈述。
+- 新增 `ClaimEvidenceEdge`，表达 `supports`、`refutes` 和 `contextualizes` 关系。
+- 新增 `Citation`，将报告 Claim 绑定到 Passage、Snapshot 和 ToolTrace。
+- 为 Web、RAG、SQL、GitHub 分别实现 ToolResult 标准化适配器。
+- Web 定位器保存 URL、快照、字符区间；RAG 保存 corpus/document/chunk/offset；SQL 保存查询哈希、数据快照、表列和行标识；GitHub 保存 repo/commit/path/line。
+- SQLite 只保存索引和结构化字段，大正文按 SHA-256 压缩存入 `workspace/artifacts/`。
+- 增加数据库 schema 版本和迁移脚本，保留旧 `EvidenceItem` API 的 V1/V2 兼容适配器。
+- Reporter 只接受结构化证据和有效 Citation ID，报告完成后执行引用完整性校验。
+
+### 4.3 P1 复验
+
+- 对四类来源适配器执行正常、空结果、缺字段、超长正文和非法定位器单元测试。
+- 验证每条 EvidenceAssertion 都能反查 Passage、Snapshot 和 ToolTrace。
+- 验证每条 Citation 都能定位到当时使用的不可变原文，而不是只返回当前 URL。
+- 注入 LLM 编造的 Citation ID，确认报告校验失败或降级，不能静默接受。
+- 使用 Web、RAG、SQL、GitHub 混合任务跑 E2E，逐条反查报告关键事实。
+- 使用 20、100、1000 条工具证据检查批量写入、索引查询和 N+1 问题。
+- 重跑旧证据 API、导出、前端和报告下载，确保兼容。
+
+### 4.4 P1 完成标准
+
+- 100% EvidenceAssertion 关联原始 Passage 和 ToolTrace。
+- 100% 报告 Citation 可反向解析，不存在悬空引用。
+- 原始正文不会导致 SQLite 体积无控制增长。
+
+## 5. P2：来源可靠性、去重与冲突调和
+
+目标：使系统能够解释“为什么相信某条证据”，识别多源矛盾，并在无法裁决时明确保留不确定性。
+
+### 5.1 实施任务
+
+- 增加版本化 `source_policy` 配置，按 Claim 类型配置来源先验、时效要求、允许域、禁用域和阈值。
+- 初始可靠性公式：权威性 25%、可溯源性 20%、时效性 15%、Claim 相关性 20%、来源独立性 10%、提取完整性 10%。
+- 根据 Claim 类型调整来源优先级：财务数据优先监管披露和受治理 SQL，产品能力优先官方文档，社会评价不能因来自官方渠道直接获得最高客观性。
+- 实现 URL 规范化、内容哈希、转载识别、同组织聚类和独立来源簇。
+- 规范化实体别名、币种、单位、百分比、时间范围、版本、正负极性和统计口径。
+- 优先使用确定性数值、时间、范围和极性规则识别冲突。
+- LLM 仅作为候选语义关系分类器，必须返回结构化关系和理由，不直接充当最终事实裁判。
+- 实现冲突状态机：`no_conflict`、`resolved_by_scope`、`resolved_by_authority`、`resolved_by_recency`、`unresolved`、`requires_human`。
+- 按独立来源簇聚合支持和反驳质量，不对冲突数值简单求平均。
+- Reporter 必须显式展示未解决冲突、适用口径和可信度限制。
+- 每次评分保存分项结果、策略版本、计算时间和调和原因，确保可解释和可复算。
+
+### 5.2 P2 复验
+
+- 建立数值相反、时间不同、单位不同、转载重复、官方更正、SQL/网页冲突、无法裁决七类黄金样例。
+- 确定性样例的冲突识别和状态转换必须 100% 符合预期。
+- 同一文章转载十次时，独立来源数量仍应为一。
+- 修改策略权重后不改核心代码即可改变评分，并保留策略版本。
+- 相同输入重复运行时，非 LLM 评分和冲突结果必须一致。
+- LLM 输出非法 Schema 时必须降级为 `unresolved`，不能自动选边。
+- 高置信结论必须满足最低独立来源数和最低可靠性阈值。
+- 以 10,000 条 Evidence 做索引查询压测，本地 Claim 证据查询目标 `p95 < 300ms`，不包含外部 LLM 时间。
+
+### 5.3 P2 完成标准
+
+- 系统能区分真实矛盾、口径差异和补充上下文。
+- 所有可靠性评分可解释、可复算、可通过配置调整。
+- 未解决冲突不会被报告隐藏或表述成确定事实。
+
+## 6. P3：从原子工具升级为任务级 Skills
+
+目标：将“模型自由拼工具”升级为可复用、可治理、可评测的研究任务能力。
+
+### 6.1 实施任务
+
+- 定义 `ResearchSkillSpec`：名称、版本、输入/输出 Schema、允许工具、来源策略、最少独立来源数、DAG、重试、fallback、预算、超时、确认规则、质量门禁和评测 Profile。
+- 首批实现 `web_fact_check`、`company_deep_research`、`metric_reconciliation` 三个 Skill。
+- Planner 优先选择 Skill，只有 Skill 内部才编排原子 Tool。
+- 将 `allowed_tools`、`risk_level`、`requires_confirmation`、内容访问策略统一放入 Policy Engine，在计划解析和执行层双重强制。
+- 支持“禁止查询包含薪资关键词文档”等配置化规则，并记录策略拒绝 Trace。
+- 增加 Skill 预算控制、幂等键、重复动作检测、re-planning 和 fallback 链。
+
+### 6.2 P3 复验
+
+- 验证三个 Skill 的输入/输出契约、成功路径、超时、fallback 和预算耗尽。
+- 验证 Planner 不能绕过 Skill 调用未授权工具。
+- 修改内容策略配置后无需修改核心代码即可生效。
+- 对重复工具调用、相同 Observation 和循环计划执行死循环防护测试。
+- 比较原子工具模式与 Skill 模式的步骤数、失败恢复率和 Trace 可读性。
+
+### 6.3 P3 完成标准
+
+- 常见研究任务可以通过版本化 Skill 稳定复用。
+- 工具权限和内容策略无法被 Prompt 或 Planner 绕过。
+- Skill 的每次执行均有预算、质量门禁和完整 Trace。
+
+## 7. P4：建立标准 Deep Research 评测体系
+
+目标：用可复现实验回答“多工具、MCP、证据评分和冲突处理是否真的优于单 Tavily”。
+
+### 7.1 实施任务
+
+- 建立覆盖事实核查、公司研究、指标对账、技术调研和冲突信息的标注数据集。
+- 设置四组消融实验：A 单 Tavily；B 多原子工具；C 多工具 + MCP；D 完整可靠性/冲突/引用链流水线。
+- 指标包括：事实正确率、引用准确率、引用覆盖率、权威来源占比、独立来源覆盖、无证据 Claim 率、冲突 Precision/Recall、冲突调和准确率、置信度校准 ECE/Brier、任务成功率、延迟、成本和恢复率。
+- 建立 deterministic 回归集、真实 Provider 固定快照集和人工盲评集。
+- 保存数据集版本、Prompt、模型、Provider、策略、Skill 和代码 Commit，确保实验可复现。
+- 输出机器可读结果、对比表、失败案例和置信区间，不只输出单个平均分。
+
+### 7.2 P4 复验
+
+- 同一固定快照重复评测，核心指标波动应在设定范围内。
+- 随机抽查引用，验证引用片段确实蕴含对应 Claim。
+- 对评分权重、来源去重、冲突检测和 Skill 编排分别做消融。
+- 由人工标注者复核冲突和引用错误，计算一致性。
+- 初始质量目标：关键 Claim 引用覆盖率 >= 95%，引用蕴含准确率 >= 90%，无证据事实 <= 3%，冲突召回率 >= 85%；最终阈值以标注集校准结果为准。
+
+### 7.3 P4 完成标准
+
+- 能用数据说明每项能力带来的质量、延迟和成本变化。
+- 评测结果可在固定版本环境中复现。
+- 发布前质量门禁由指标驱动，而不是依赖 Demo 主观观察。
+
+## 8. P5：生产化存储、调度与治理
+
+目标：支持六个月以上审计保留、任务恢复、多实例部署和租户隔离。
+
+### 8.1 实施任务
+
+- 将任务、Trace、Claim、Citation 和策略审计数据迁移到 PostgreSQL。
+- 将网页快照、报告、导出和大体积 ToolResult 放入 S3/MinIO 等对象存储。
+- 使用 Redis/RabbitMQ 与 Celery/Dramatiq/Arq 等持久任务队列替代 FastAPI BackgroundTasks。
+- 实现 worker lease、heartbeat、幂等执行、断点续跑、死信队列和任务取消。
+- 为 SSE 增加断线重连、Last-Event-ID 和长期任务事件保留。
+- 实现租户级 RBAC、行级访问控制、MCP Client 身份认证和审计查询授权。
+- 实现 Trace 生命周期管理：热数据、冷归档、保留期、合法冻结、自动清理和删除审计。
+- 增加 OpenTelemetry、指标、结构化日志、告警、备份恢复和容量监控。
+- 完善 Docker Compose/生产部署配置和数据库迁移流程。
+
+### 8.2 P5 复验
+
+- 在工具执行、证据写入和报告生成阶段分别杀死 worker，验证任务能够恢复且不重复产生副作用。
+- 重启 API、队列、数据库和宿主机，验证任务与 Trace 不丢失。
+- 执行多租户越权测试，恶意 MCP Client 不能读取其他租户 Trace。
+- 模拟六个月数据量，测试分区、归档、查询、清理和恢复时间。
+- 执行 PostgreSQL 备份恢复演练和对象存储快照恢复。
+- 执行并发、限流、队列堆积、OOM、Provider 故障和网络分区压测。
+
+### 8.3 P5 完成标准
+
+- 任务在单个容器或宿主机故障后可以自动恢复。
+- 六个月审计数据可查询、可归档、可按策略清理。
+- 租户隔离、授权、备份恢复和可观测性达到生产部署要求。
+
+## 9. 推荐实施顺序与依赖
+
+1. P0 必须先完成，否则后续实验会被隐式模型调用和配置漂移污染。
+2. P1 是 P2、P4 的数据基础；没有不可变 Passage 和 Claim，就无法可靠评分或评测引用。
+3. P2 完成后再做 P3，Skill 的质量门禁才能基于可靠性和冲突状态表达。
+4. P4 在 P1-P3 形成稳定接口后执行，避免评测对象持续变化。
+5. P5 在研究质量链路得到评测证明后推进，避免提前为未验证的能力增加基础设施复杂度。
+
+## 10. 全阶段回归要求
+
+- 每个阶段都必须重跑现有编译检查、单元测试和 smoke 测试。
+- 所有 Schema、Policy、Skill、Prompt、Extractor 和评测数据都必须版本化。
+- 新能力默认通过特性开关灰度启用，并提供迁移、回滚和兼容方案。
+- 任何高置信结论必须可回溯到不可变 Passage、SourceSnapshot 和 ToolTrace。
+- 任何无法解决的冲突必须保留为不确定状态，不允许由 LLM 静默裁决。
+- P0-P2 保持 SQLite Demo 可运行；P5 再完成 PostgreSQL、对象存储和持久队列迁移。
