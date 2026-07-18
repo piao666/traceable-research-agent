@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL_PATH = Path(r"E:\Models\bge-small-zh-v1.5")
+MODEL_PATH = Path(os.getenv("RAG_MODEL_PATH", r"E:\Models\bge-small-zh-v1.5"))
 
 
 def _print_and_exit(payload: dict, code: int = 0) -> None:

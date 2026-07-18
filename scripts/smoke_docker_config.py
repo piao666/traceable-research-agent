@@ -26,6 +26,7 @@ def main() -> None:
     dockerignore = _read(".dockerignore")
     entrypoint = _read("scripts/docker_entrypoint.py")
     real_rag = _read("docker-compose.real-rag.yml")
+    rag_requirements = _read("requirements-docker-rag.txt")
 
     _assert("api:" in compose, "docker-compose.yml missing api service")
     _assert("streamlit:" in compose, "docker-compose.yml missing streamlit service")
@@ -46,6 +47,10 @@ def main() -> None:
     _assert("EXPOSE 8000 8501" in dockerfile, "Dockerfile should expose api and streamlit ports")
     _assert("scripts/docker_entrypoint.py" in dockerfile, "Dockerfile does not use docker entrypoint")
     _assert("requirements-docker-light.txt" in dockerfile, "Dockerfile should use light requirements")
+    _assert("AS light" in dockerfile, "Dockerfile light target missing")
+    _assert("AS semantic-rag" in dockerfile, "Dockerfile semantic-rag target missing")
+    _assert("download.pytorch.org/whl/cpu" in dockerfile, "semantic-rag must install CPU-only torch")
+    _assert("target: light" in compose, "default compose should build the light target")
 
     for token in (
         "AUTH_ENABLED=false",
@@ -58,13 +63,21 @@ def main() -> None:
         "RAG_REAL_BACKEND_ENABLED=false",
         "RAG_EMBEDDING_BACKEND=deterministic",
         "RAG_VECTOR_BACKEND=json",
+        "DOCKER_REBUILD_RAG_INDEX=false",
     ):
         _assert(token in env_example, f".env.docker.example missing {token}")
 
     _assert(".env.*" in gitignore and "!.env.docker.example" in gitignore, ".gitignore env exception missing")
     _assert(".env.*" in dockerignore and "!.env.docker.example" in dockerignore, ".dockerignore env handling missing")
+    for runtime_dir in ("output", "tmp", "workspace/chroma", "workspace/artifacts"):
+        _assert(runtime_dir in dockerignore, f".dockerignore missing {runtime_dir}")
     _assert("init_demo_db.py" in entrypoint and "build_rag_index.py" in entrypoint, "entrypoint init steps missing")
+    _assert("DOCKER_REBUILD_RAG_INDEX" in entrypoint, "entrypoint RAG index reuse control missing")
+    _assert("target: semantic-rag" in real_rag, "real-rag build target missing")
     _assert("sentence_transformers" in real_rag and "/models/bge-small-zh-v1.5" in real_rag, "real-rag override incomplete")
+    _assert("/models/bge-small-zh-v1.5:ro" in real_rag, "local model mount must be read-only")
+    for package in ("sentence-transformers", "chromadb", "python-docx", "reportlab"):
+        _assert(package in rag_requirements, f"semantic-rag image missing {package}")
 
     print(
         json.dumps(

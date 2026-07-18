@@ -8,8 +8,15 @@ workspace/*.sqlite
 workspace/*.db
 workspace/index
 workspace/reports
+workspace/artifacts
+workspace/cache
+workspace/chroma
+workspace/exports
 workspace/tmp
 workspace/eval_outputs
+output
+tmp
+.playwright-cli
 .env
 .env.*
 !.env.docker.example

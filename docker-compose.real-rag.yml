@@ -1,9 +1,15 @@
 services:
   api:
+    build:
+      context: .
+      target: semantic-rag
     volumes:
       - ./workspace:/app/workspace
       - ${RAG_MODEL_HOST_PATH:-E:/Models/bge-small-zh-v1.5}:/models/bge-small-zh-v1.5:ro
     environment:
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      ANONYMIZED_TELEMETRY: "false"
       RAG_REAL_BACKEND_ENABLED: "true"
       RAG_EMBEDDING_BACKEND: sentence_transformers
       RAG_VECTOR_BACKEND: chroma
@@ -13,3 +19,6 @@ services:
       RAG_DEVICE: cpu
       RAG_NORMALIZE_EMBEDDINGS: "true"
       RAG_RETRIEVAL_MODE: hybrid
+    healthcheck:
+      start_period: 180s
+      retries: 12

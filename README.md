@@ -385,6 +385,11 @@ $env:RAG_MODEL_HOST_PATH="E:/Models/bge-small-zh-v1.5"
 docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up --build
 ```
 
+该 override 会构建 `semantic-rag` 镜像目标，额外安装 SentenceTransformers、Chroma、DOCX/PDF 依赖，并以只读方式挂载本地 BGE 模型；模型只从本地目录加载，不会在容器启动时访问 Hugging Face。首次构建需要下载较大的 Python/CPU 推理依赖，后续会复用 Docker 构建缓存；Chroma 索引继续保存在宿主机 `workspace/chroma`。
+首次索引完成后，容器重启会复用 `workspace/chroma/chroma.sqlite3` 和 `workspace/index/bm25_index.json`，避免重复执行 CPU 向量编码；当本地文档或模型发生变化时，可设置 `DOCKER_REBUILD_RAG_INDEX=true` 强制重建。
+
+默认 `docker compose up --build` 仍使用 `light` 目标，适合无模型环境和 CI。
+
 ## 安全边界
 
 - 不提交 `.env`、API Key、GitHub Token、本地模型、SQLite 数据库、RAG 索引、缓存、导出文件或生成报告。

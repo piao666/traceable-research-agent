@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from pydantic import ValidationError
 from sqlalchemy import create_engine
@@ -19,6 +23,7 @@ from app.tools.errors import ToolErrorCategory, classify_tool_error
 from app.tools.registry import execute_tool, register_tool
 from app.trace.logger import record_tool_result
 from app.trace.models import AgentRun
+from scripts.docker_entrypoint import _rag_index_is_ready, _should_build_rag_index
 
 
 class ExplodingLLMClient(LLMClient):
@@ -147,6 +152,36 @@ class TraceRedactionTests(unittest.TestCase):
         self.assertNotIn(token, serialized)
         self.assertIn("[REDACTED]", serialized)
         self.assertEqual(json.loads(trace.output_json)["metadata"]["error_category"], "timeout")
+
+
+class DockerEntrypointTests(unittest.TestCase):
+    def test_persisted_chroma_and_bm25_indexes_are_reused_unless_forced(self) -> None:
+        previous_cwd = Path.cwd()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chroma_dir = root / "workspace" / "chroma"
+            index_dir = root / "workspace" / "index"
+            chroma_dir.mkdir(parents=True)
+            index_dir.mkdir(parents=True)
+            (chroma_dir / "chroma.sqlite3").write_bytes(b"sqlite")
+            (index_dir / "bm25_index.json").write_text("{}", encoding="utf-8")
+
+            try:
+                os.chdir(root)
+                with patch.dict(
+                    os.environ,
+                    {
+                        "RAG_VECTOR_BACKEND": "chroma",
+                        "RAG_CHROMA_DIR": str(chroma_dir),
+                    },
+                    clear=True,
+                ):
+                    self.assertTrue(_rag_index_is_ready())
+                    self.assertFalse(_should_build_rag_index())
+                    os.environ["DOCKER_REBUILD_RAG_INDEX"] = "true"
+                    self.assertTrue(_should_build_rag_index())
+            finally:
+                os.chdir(previous_cwd)
 
 
 if __name__ == "__main__":
