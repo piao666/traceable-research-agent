@@ -359,34 +359,57 @@ Invoke-RestMethod -Method Post http://127.0.0.1:8000/mcp/refresh
 
 ## Docker
 
-轻量 Docker 默认使用 deterministic/json RAG，不打包本地 embedding 模型：
+Docker 支持一键启动完整的 FastAPI + Streamlit 闭环。`workspace` 会挂载到宿主机，因此 SQLite、Trace、证据制品、报告和 RAG 索引在容器重建后仍会保留。
+
+### 默认轻量模式
+
+默认镜像使用 deterministic/json RAG，不需要本地 embedding 模型，适合快速体验、离线演示和 CI：
 
 ```powershell
-docker compose up --build
+docker compose up -d --build
 ```
 
-API 容器启动时会先执行 Alembic 迁移，再按配置初始化 Demo 数据和 RAG 索引，最后启动 Uvicorn。`workspace` 以宿主机目录挂载到 API 和 Streamlit，因此 SQLite、不可变证据制品和生成报告在容器重建后仍然保留。
+已有本地镜像时可省略构建：
+
+```powershell
+docker compose up -d --no-build
+```
 
 访问：
 
 - FastAPI health: `http://127.0.0.1:8000/health`
 - Streamlit UI: `http://127.0.0.1:8501`
 
-停止：
+停止服务但保留 `workspace` 中的数据：
 
 ```powershell
 docker compose down
 ```
 
-真实 RAG Docker override：
+### 本地模型语义 RAG 模式
+
+如本机已有 BGE 模型，可通过 override 启动真实的 SentenceTransformers + Chroma 混合检索。模型不复制进镜像，而是以只读方式挂载，所以镜像可复刻、模型仍由本机统一管理。
 
 ```powershell
 $env:RAG_MODEL_HOST_PATH="E:/Models/bge-small-zh-v1.5"
-docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up -d --build
 ```
 
-该 override 会构建 `semantic-rag` 镜像目标，额外安装 SentenceTransformers、Chroma、DOCX/PDF 依赖，并以只读方式挂载本地 BGE 模型；模型只从本地目录加载，不会在容器启动时访问 Hugging Face。首次构建需要下载较大的 Python/CPU 推理依赖，后续会复用 Docker 构建缓存；Chroma 索引继续保存在宿主机 `workspace/chroma`。
-首次索引完成后，容器重启会复用 `workspace/chroma/chroma.sqlite3` 和 `workspace/index/bm25_index.json`，避免重复执行 CPU 向量编码；当本地文档或模型发生变化时，可设置 `DOCKER_REBUILD_RAG_INDEX=true` 强制重建。
+该模式构建 `semantic-rag` 镜像目标，安装 CPU PyTorch、SentenceTransformers、Chroma 和 DOCX/PDF 依赖；`TRANSFORMERS_OFFLINE=1` 与 `HF_HUB_OFFLINE=1` 确保模型只从本地目录加载，不会在启动时访问 Hugging Face。首次构建需要下载推理依赖，首次索引也会进行 CPU 向量编码；之后会复用 Docker 镜像层和 `workspace/chroma/chroma.sqlite3`、`workspace/index/bm25_index.json`，日常重启无需重复编码。
+
+已有语义 RAG 镜像时：
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up -d --no-build
+```
+
+本地文档或模型更新后，显式强制重建索引：
+
+```powershell
+$env:DOCKER_REBUILD_RAG_INDEX="true"
+docker compose -f docker-compose.yml -f docker-compose.real-rag.yml up -d --force-recreate api
+Remove-Item Env:DOCKER_REBUILD_RAG_INDEX
+```
 
 默认 `docker compose up --build` 仍使用 `light` 目标，适合无模型环境和 CI。
 
