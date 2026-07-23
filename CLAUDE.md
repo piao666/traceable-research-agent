@@ -2,6 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Current Work
+
+- **Branch**: `feature/improvements`
+- **Task driver**: `TASK.md` — the authoritative task list for the current upgrade project. Read it before starting any work session.
+- **Upgrade theme**: 把 GPT Researcher 的调研深度嫁接到本项目审计骨架上，6 个 Phase 渐进式改造。
+
+### Phase Overview
+
+| Phase | 内容 | 预估 |
+|-------|------|------|
+| Phase 1 | 记忆模块确定性部分 + 配置快照 | 2-3 天 |
+| Phase 2 | 全文抓取管道 + 子查询扇出 | 3-4 天 |
+| Phase 3 | 报告质量与 RAG 工程（递归切分 + rerank + 报告重构） | 2-3 天 |
+| Phase 4 | 用户画像提取 + 记忆面板 | 2 天 |
+| Phase 5 | 迭代深化 + 行内引用 + LLM 蒸馏 + 冲突仪表板 | 3-4 天 |
+| Phase 6 | 工程增强（多报告类型/成本追踪/学术检索器/claim校验）+ demo 脚本 | 2-3 天 |
+
 ## Project Identity
 
 Traceable Research Agent — turns research questions into auditable reports with a full chain of custody: task → plan → tool execution → trace → evidence → report. Every tool call is persisted to SQLite and linked through a Claim-level evidence graph so answers can be verified back to their original source fragments.
@@ -132,14 +149,28 @@ SQLite at `workspace/traceable_research_agent.sqlite`, managed via Alembic migra
 - `RAG_VECTOR_BACKEND=json|chroma` — vector storage
 - `MCP_REMOTE_REGISTRY_ENABLED=false` — register remote MCP tools at startup
 
+## Commit Discipline (每次提交前必须执行)
+
+Every commit MUST pass this pre-commit checklist, in order:
+
+1. **Syntax check**: `python -m compileall -q app scripts frontend`
+2. **Unit tests**: `.\.venv\Scripts\python.exe -m unittest discover -s tests -v` (all must pass)
+3. **Relevant smoke checks**: run the smoke script(s) that cover the changed module(s)
+4. **Secrets audit**: `git diff --cached --name-only` — verify no `.env`, tokens, keys, `.sqlite`, caches, `.venv`, model artifacts, or bulky generated files are staged
+5. **Update TASK.md**: record completed work, changed files, commands run, test results, known limitations, and commit hash in the Phase execution log section
+6. **Commit**: use clear, generic commit messages (no company/project names). Format: `phase(N): <brief description>`
+7. **Push**: `git push` to `origin/feature/improvements`
+
+If any step fails, fix the issue before proceeding to the next step. Do not commit broken code.
+
 ## Constraints from AGENTS.md
 
 1. All work stays inside the project directory; do not add this project under `agent-service-toolkit`.
 2. Tools are read-only by default. Risky operations must support dry-run and/or human confirmation.
 3. Do not use concrete company/project names in code, docs, commit messages, examples, or demo data.
 4. Never commit secrets, tokens, `.env`, private data, local databases, caches, virtual environments, or model artifacts.
-5. Before every phase checkpoint: update `task.txt`, run available tests, verify API, update README if usage changed, verify no secrets staged, commit, and push.
-6. All meaningful work must be recorded in repository-root `task.txt` before and after implementation.
+5. Before every phase checkpoint: update `TASK.md`, run available tests, verify API, update README if usage changed, verify no secrets staged, commit, and push.
+6. All meaningful work must be recorded in `TASK.md` before and after implementation.
 
 ## Test Structure
 
