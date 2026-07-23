@@ -45,7 +45,7 @@
 
 ## 三、Phase 1：记忆模块确定性部分 + 配置快照
 
-> 预估：2-3 天　状态：待开始
+> 预估：2-3 天　状态：✅ 已完成
 
 ### 3.1 数据模型（Alembic 0004_memory_schema）
 
@@ -133,14 +133,14 @@ DELETE /api/memory                   # 清空画像（写 trace）
 
 ### 3.7 验收标准
 
-- [ ] 三张表迁移成功，Alembic 升级到 0004
-- [ ] `agent_runs` 含 `session_id` 和 `run_config_snapshot` 列
-- [ ] 同一对话框内问"对比上次调研的 X 和这次的 Y"，agent 自动关联历史 run
-- [ ] 新用户空召回有 `cold_start` trace 记录
-- [ ] `memory_search` 工具出现在 `GET /api/tools` 列表中
-- [ ] Streamlit 会话切换器可用
-- [ ] 离线可测（不依赖 LLM）
-- [ ] 语法检查 + 单元测试 + 相关 smoke 全部通过
+- [x] 三张表迁移成功，Alembic 升级到 0004
+- [x] `agent_runs` 含 `session_id` 和 `run_config_snapshot` 列
+- [x] 同一对话框内问"对比上次调研的 X 和这次的 Y"，agent 自动关联历史 run
+- [x] 新用户空召回有 `cold_start` trace 记录
+- [x] `memory_search` 工具出现在 `GET /api/tools` 列表中
+- [x] Streamlit 会话切换器可用
+- [x] 离线可测（不依赖 LLM）
+- [x] 语法检查 + 单元测试 + 相关 smoke 全部通过
 
 ---
 
@@ -450,7 +450,33 @@ EvidencePassage 增加 `content_basis` 列，三值枚举：
 
 ### Phase 1 执行记录
 
-（待开始）
+- **日期**：2026-07-23
+- **变更文件**（18 个）：
+  - 新增：`migrations/versions/0004_memory_schema.py`、`app/memory/__init__.py`、`app/memory/models.py`、`app/memory/store.py`、`app/memory/policy.py`、`app/api/sessions.py`、`app/api/memory.py`、`tests/test_memory.py`、`docs/phase1_plan.md`
+  - 修改：`app/trace/models.py`、`app/trace/store.py`、`app/database.py`、`app/schemas.py`、`app/api/tasks.py`、`app/main.py`、`app/tools/defaults.py`、`scripts/migrate_database.py`、`frontend/streamlit_app.py`
+- **实现内容**：
+  - Alembic 0004 迁移：conversation_sessions、chat_turns、user_memories 三张新表
+  - agent_runs 表新增 session_id（可空）和 run_config_snapshot（JSON TEXT）列
+  - app/memory 模块：models（3 个 ORM 模型）、store（17 个 CRUD 函数）、policy（冷启动、注入预算 ≤800 字、recency+confidence 排序）
+  - /api/sessions CRUD 端点（create/list/get/turns）
+  - /api/memory CRUD + confirm/delete 端点
+  - 创建任务时自动写入 run_config_snapshot（settings.get_safe_runtime_config_summary()）
+  - memory_search 工具注册到 Tool Registry（handler 推迟到 Phase 4）
+  - Streamlit 侧边栏：会话切换器 + 记忆面板（加载/确认/拒绝）
+  - 27 个新单元测试
+- **命令与结果**：
+  - `python scripts/migrate_database.py` → 0001→0004 连续迁移成功
+  - `python -m compileall -q app scripts frontend` → 无语法错误
+  - `python -m unittest discover -s tests -v` → 75/75 通过（原 48 + 新增 27）
+  - `python scripts/smoke_e2e.py` → e2e: ok, run completed, 3 traces, report generated
+  - `curl /api/sessions` → 会话 CRUD 正常
+  - `curl /api/memory` → 记忆列表正常（cold_start: total=0）
+  - `curl /api/tools` → memory_search 出现在工具列表中（共 7 个工具）
+- **已知限制**：
+  - memory_search 工具无 handler（Phase 4 实现向量召回）
+  - 记忆提取器（extractor.py）和向量检索器（retriever.py）在 Phase 4 实现
+  - 样本门槛（MIN_SAMPLE_THRESHOLD=2）常量已定义，逻辑在 Phase 4 生效
+- **Commit**：`bba4a4b` → pushed to `origin/feature/improvements`
 
 ### Phase 2 执行记录
 
