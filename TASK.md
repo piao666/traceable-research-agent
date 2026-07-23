@@ -1,8 +1,8 @@
 # TASK.md — Traceable Research Agent 改造任务书
 
-> 版本：v1.0　创建日期：2026-07-23
-> 依据：`TraceableResearchAgent项目改造方案v2.md` + Claude Code 补充建议
-> 状态：进行中
+> 版本：v2.0　更新日期：2026-07-23
+> 依据：`TraceableResearchAgent项目改造方案v2.md` + Claude Code 补充建议 + 用户决策（RAG 降级 + Skills 系统）
+> 状态：进行中（Phase 1 ✅，Phase 2-6 待开始）
 
 ---
 
@@ -202,9 +202,11 @@ EvidencePassage 增加 `content_basis` 列，三值枚举：
 
 ---
 
-## 五、Phase 3：报告质量与 RAG 工程
+## 五、Phase 3：报告重构 + Skills 系统
 
 > 预估：2-3 天　状态：待开始
+>
+> **v2.0 修订说明**：原计划中的递归切分 v2（4.2）和 Rerank 层（4.3）已移除。理由：RAG 是强用户定制场景——不同用户的语料、切分需求、检索策略完全不同，继续打磨内置 RAG 组件是低杠杆投入。`app/rag/` 全部代码保留不动（离线演示依赖它，记忆模块依赖它的 embedding 后端），但不再做深度优化。空出的工作量投入 Skills 系统——把 planner 中 hardcode 的场景模板和步骤模板抽成可注册、可发现、用户可自定义的数据文件。
 
 ### 5.1 deterministic 报告重构
 
@@ -215,37 +217,105 @@ EvidencePassage 增加 `content_basis` 列，三值枚举：
 
 **涉及模块：** `app/agent/reporter.py`、`app/agent/report_generation.py`
 
-### 5.2 递归切分 v2
+### 5.2 Skill 文件格式与加载器
 
-1. 递归切分：优先按 `\n\n`（段落）→ 句号/换行 → 最后字符硬切
-2. markdown heading 感知：heading 路径写入 chunk metadata
-3. 保留旧切分器为 `chunker_version=v1`，新索引用 `v2`，`build_rag_index.py` 支持版本参数
+Skill 是 JSON 文件，放在 `workspace/skills/` 目录下，用户可自行添加/修改，不需要改 Python 代码。
 
-**五类边界处理策略（记录进 `docs/rag_chunk_experiment.md`）：**
+**Skill JSON Schema：**
 
-| 边界情况 | 处理策略 |
-|---|---|
-| 代码块（``` 围栏） | 视为不可切单元：整个代码块进一个 chunk，超限时整体保留首部并在 metadata 标记 `truncated_code=true` |
-| 表格 | 按行组切分，每个 chunk 重复表头行；metadata 记录 `table_header` |
-| 列表 | 按列表项边界切分，不切断单个列表项；嵌套列表按顶级项切 |
-| 超长无换行文本 | 兜底字符硬切（等价 v1 行为），metadata 标记 `hard_cut=true` |
-| 中英混排 | 切分窗口按字符数计，不按词数（与 v1 实验口径一致） |
+```json
+{
+  "name": "deep_web_research",
+  "version": "1.0",
+  "description": "深度网页调研：搜索发现 URL → 正文抓取 → 证据压缩 → 报告",
+  "required_tools": ["tavily_search", "web_fetcher", "report_writer"],
+  "parameters": {
+    "query": {"type": "string", "required": true},
+    "max_urls": {"type": "integer", "default": 5}
+  },
+  "steps": [
+    {
+      "tool_name": "tavily_search",
+      "goal": "发现与查询相关的网页 URL 列表",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "max_results": "{{parameters.max_urls}}",
+        "include_raw_content": false
+      }
+    },
+    {
+      "tool_name": "web_fetcher",
+      "goal": "抓取上一步发现的所有 URL 正文",
+      "arguments": {
+        "urls": "{{steps[0].output.urls}}"
+      }
+    },
+    {
+      "tool_name": "report_writer",
+      "goal": "从抓取正文中提取证据并生成报告",
+      "arguments": {}
+    }
+  ]
+}
+```
 
-**涉及模块：** `app/rag/chunker.py`、`app/rag/build_index.py`、`docs/rag_chunk_experiment.md`
+**关键设计点：**
 
-### 5.3 Rerank 层
+| 特性 | 机制 | 说明 |
+|------|------|------|
+| 参数化 | `{{parameters.query}}` | 引用用户创建任务时传入的参数 |
+| 步骤间数据传递 | `{{steps[0].output.urls}}` | 复用 Phase 2 的 `arguments_from` 机制 |
+| 可组合 | `{{skill.other_skill.steps[0].output}}` | Skill 步骤可引用另一个 Skill 的输出 |
+| 文件即代码 | `workspace/skills/*.json` | 用户不改 Python 代码即可定制 |
 
-1. RRF 后加 cross-encoder 精排：有网络用 bge-reranker 类模型，离线用规则特征（词项重叠度 + 来源权威性分）
-2. rerank 分数写入 chunk metadata 并进入 trace
-3. 与现有「来源六维评分」组合成「文档级可靠性 + chunk 级相关性」双层排序
+**涉及模块：** 新增 `app/skills/loader.py`、`workspace/skills/` 目录
 
-**涉及模块：** `app/rag/hybrid_search.py`、新增 `app/rag/reranker.py`
+### 5.3 Skill Registry + API
 
-### 5.4 验收标准
+1. 启动时扫描 `workspace/skills/*.json`，校验 schema，注册到内存
+2. `GET /api/skills` 返回所有已安装 Skill 的元数据（name, version, description, required_tools, parameters）
+3. `GET /api/skills/{name}` 返回完整 Skill 定义
+4. Skill 校验：required_tools 必须已注册在 Tool Registry 中；参数引用必须解析成功
+
+**涉及模块：** 新增 `app/skills/registry.py`、`app/api/skills.py`、修改 `app/main.py`
+
+### 5.4 Planner 集成
+
+1. `plan_task()` 接受 `skill_name` 参数（优先级高于 keyword 匹配）
+2. 若传入 `skill_name`，加载 Skill 模板，用用户参数填充 `{{parameters.*}}` 占位符，直接生成步骤
+3. executor 执行时解析 `{{steps[N].output.field}}` 引用（复用 Phase 2 的 `arguments_from` 解析器）
+4. 不传 `skill_name` 时保持现有 keyword-matching 行为不变——向后兼容
+
+**涉及模块：** `app/agent/planner.py`、`app/agent/executor.py`、`app/schemas.py`（TaskCreateRequest 加 `skill_name`）
+
+### 5.5 预置 Skill 文件
+
+| Skill 文件 | 说明 | 步骤 |
+|------------|------|------|
+| `deep_web_research.json` | 深度网页调研 | tavily_search → web_fetcher → report_writer |
+| `technical_docs_research.json` | 技术文档调研 | mcp_github_search → rag_search → web_fetcher → report_writer |
+| `local_audit.json` | 本地资料复盘 | file_reader → sql_query → rag_search → report_writer |
+| `quick_search.json` | 快速搜索（无抓取） | tavily_search → report_writer |
+
+### 5.6 Streamlit 集成
+
+1. 场景模板下拉改为从 `GET /api/skills` 动态加载
+2. 选中 Skill 后展示其描述、所需工具、参数表单
+3. 创建任务时传 `skill_name` 替代 `scenario_template_key`
+
+**涉及模块：** `frontend/streamlit_app.py`
+
+### 5.7 验收标准
 
 - [ ] deterministic 报告按子主题分组，带引用编号和 content_basis 标记
-- [ ] 递归切分 v2 可用，切分对比实验文档更新（含边界用例）
-- [ ] rerank 层在离线/在线模式均可工作
+- [ ] `workspace/skills/` 下 4 个预置 Skill 文件可被 loader 正确解析
+- [ ] `GET /api/skills` 返回 Skill 列表，`GET /api/skills/{name}` 返回完整定义
+- [ ] `POST /api/tasks` 传 `skill_name` 时 planner 用 Skill 模板生成步骤
+- [ ] `{{parameters.*}}` 占位符被正确填充
+- [ ] `{{steps[N].output.field}}` 引用在 executor 中被正确解析
+- [ ] Streamlit 场景模板从 `/api/skills` 动态加载
+- [ ] 不传 `skill_name` 时保持现有 behavior（向后兼容）
+- [ ] `app/rag/` 全部代码保留不动
 - [ ] 语法检查 + 单元测试 + 相关 smoke 全部通过
 
 ---
@@ -416,11 +486,11 @@ EvidencePassage 增加 `content_basis` 列，三值枚举：
 |---|---|---|---|---|---|
 | 1 | BeautifulSoup 对 SPA/反爬页面抓取成功率仅 40-60% | Phase 2 | 中 | 标注为已知限制；EvidencePassage 增加 `content_basis` 标记；报告区分"基于全文"与"仅基于摘要"；失败原因进结构化 trace，转为审计亮点 | 已纳入方案 |
 | 2 | 并发子查询写 SQLite 触发 `database is locked`；visited_urls 多 worker 竞争 | Phase 2 | 高 | `trace/store.py` 加进程内写锁；visited_urls 用 `threading.Lock + set`；补两个并发 pytest 用例 | 已纳入方案 |
-| 3 | 递归切分在代码块/表格/列表处出边界 bug | Phase 3 | 中 | 五类边界情况处理策略写入文档；每类策略配测试用例 | 已纳入方案 |
-| 4 | 新用户记忆冷启动行为未定义 | Phase 1/4 | 低 | 空召回为正常行为且记 trace；不产生兜底文案；UI 进度提示；规则提取设 ≥2 次样本门槛 | 已纳入方案 |
-| 5 | 迭代深化在离线模式耗时长、上下文裁剪易出边界 bug | Phase 5 | 中 | 优先级固定在 Phase 5；MAX_DEPTH 默认 2 保守起步；裁剪逻辑重点写边界测试 | 已降级处理 |
-| 6 | 子查询扇出 + 全文抓取后报告信息量暴增，用户难以快速定位关键结论 | Phase 5 | 中 | Reporter 生成"执行摘要"章节（≤500 字）放在报告最前；Streamlit 报告页增加侧边目录导航 | 已纳入方案 |
-| 7 | 记忆系统积累后注入上下文挤占 Planner 有效 token 预算 | Phase 4 | 中 | `memory/policy.py` 设置注入预算上限（≤800 字），超出按 recency + confidence 排序裁剪；裁剪动作写 trace | 已纳入方案 |
+| 3 | 新用户记忆冷启动行为未定义 | Phase 1/4 | 低 | 空召回为正常行为且记 trace；不产生兜底文案；UI 进度提示；规则提取设 ≥2 次样本门槛 | 已纳入方案 |
+| 4 | 迭代深化在离线模式耗时长、上下文裁剪易出边界 bug | Phase 5 | 中 | 优先级固定在 Phase 5；MAX_DEPTH 默认 2 保守起步；裁剪逻辑重点写边界测试 | 已降级处理 |
+| 5 | 子查询扇出 + 全文抓取后报告信息量暴增，用户难以快速定位关键结论 | Phase 5 | 中 | Reporter 生成"执行摘要"章节（≤500 字）放在报告最前；Streamlit 报告页增加侧边目录导航 | 已纳入方案 |
+| 6 | 记忆系统积累后注入上下文挤占 Planner 有效 token 预算 | Phase 4 | 中 | `memory/policy.py` 设置注入预算上限（≤800 字），超出按 recency + confidence 排序裁剪；裁剪动作写 trace | 已纳入方案 |
+| 7 | Skill 文件被用户误改导致 schema 校验失败 | Phase 3 | 中 | loader 校验时返回结构化错误（文件名 + 原因）；校验失败不影响其他 Skill 加载；`GET /api/skills` 返回每个 Skill 的 `status: valid\|invalid` | 已纳入方案 |
 
 ---
 
@@ -428,9 +498,9 @@ EvidencePassage 增加 `content_basis` 列，三值枚举：
 
 | 阶段 | 内容 | 预估 | 核心验收项 |
 |---|---|---|---|
-| Phase 1 | 记忆模块 + 配置快照 | 2-3 天 | 三表迁移成功；session_id 关联；memory_search 工具；冷启动 trace |
+| Phase 1 | 记忆模块 + 配置快照 | ✅ 已完成 | 三表迁移成功；session_id 关联；memory_search 工具；冷启动 trace |
 | Phase 2 | 全文抓取 + 子查询扇出 | 3-4 天 | discover→fetch→compress 自动完成；content_basis 标记；并发安全 |
-| Phase 3 | 报告重构 + 递归切分 + rerank | 2-3 天 | 报告按主题分组；切分 v2 可用；双层排序 |
+| Phase 3 | 报告重构 + Skills 系统 | 2-3 天 | 报告按主题分组；4 个预置 Skill；`/api/skills` 端点；planner 集成；向后兼容 |
 | Phase 4 | 画像提取 + 记忆面板 | 2 天 | pending→active 状态机；记忆面板交互；注入预算控制 |
 | Phase 5 | 迭代深化 + 行内引用 + 冲突仪表板 | 3-4 天 | 行内引用可点击弹窗；冲突并排对比；Word/PDF 保留引用 |
 | Phase 6 | 工程增强 + demo 脚本 | 2-3 天 | detailed_report；成本追踪；学术检索器；demo 脚本一句跑通 |

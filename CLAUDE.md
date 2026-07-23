@@ -12,12 +12,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | Phase | 内容 | 预估 |
 |-------|------|------|
-| Phase 1 | 记忆模块确定性部分 + 配置快照 | 2-3 天 |
+| Phase 1 | 记忆模块确定性部分 + 配置快照 | ✅ 已完成 |
 | Phase 2 | 全文抓取管道 + 子查询扇出 | 3-4 天 |
-| Phase 3 | 报告质量与 RAG 工程（递归切分 + rerank + 报告重构） | 2-3 天 |
+| Phase 3 | 报告重构 + Skills 系统（替代原 RAG 深度优化） | 2-3 天 |
 | Phase 4 | 用户画像提取 + 记忆面板 | 2 天 |
 | Phase 5 | 迭代深化 + 行内引用 + LLM 蒸馏 + 冲突仪表板 | 3-4 天 |
 | Phase 6 | 工程增强（多报告类型/成本追踪/学术检索器/claim校验）+ demo 脚本 | 2-3 天 |
+
+### Design Decision: RAG Module — Downgraded, Not Deleted
+
+`app/rag/` is preserved as-is but will not receive further optimization (no recursive chunking v2, no rerank layer). Rationale:
+- RAG is heavily user-specific — different corpora need different chunking/retrieval strategies
+- `rag_search` is already a Tool Registry entry, not an architectural coupling point
+- The offline demo chain (`file_reader + sql_query + rag_search`) depends on it
+- Phase 5 memory vector recall reuses `app/rag`'s embedding backends
 
 ## Project Identity
 
