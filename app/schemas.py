@@ -22,6 +22,7 @@ class TaskCreateRequest(BaseModel):
     execution_mode_override: str | None = None  # "planned" | "react" | None (use server default)
     scenario_template: str | None = None
     scenario_template_key: str | None = None
+    session_id: str | None = None
 
 
 class TaskCreateResponse(BaseModel):
@@ -264,3 +265,67 @@ class ReportResponse(BaseModel):
     report_path: str | None = None
     exists: bool = False
     message: str | None = None
+
+
+# ── Session schemas ───────────────────────────────────────────────────
+
+class SessionCreateRequest(BaseModel):
+    title: str | None = None
+
+
+class SessionResponse(BaseModel):
+    session_id: str
+    tenant_id: str
+    user_id: str
+    title: str | None = None
+    turn_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChatTurnResponse(BaseModel):
+    turn_id: str
+    session_id: str
+    role: str
+    content: str
+    run_id: str | None = None
+    created_at: datetime
+
+
+class SessionDetailResponse(BaseModel):
+    session_id: str
+    tenant_id: str
+    user_id: str
+    title: str | None = None
+    turns: list[ChatTurnResponse]
+    created_at: datetime
+    updated_at: datetime
+
+
+# ── Memory schemas ────────────────────────────────────────────────────
+
+class UserMemoryResponse(BaseModel):
+    memory_id: str
+    tenant_id: str
+    user_id: str
+    kind: str
+    extraction_method: str
+    content: str
+    confidence: float
+    status: str
+    source_session_id: str | None = None
+    source_run_id: str | None = None
+    valid_until: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class MemoryListResponse(BaseModel):
+    memories: list[UserMemoryResponse]
+    total: int
+    active_count: int = 0
+    pending_count: int = 0
+
+
+class MemoryConfirmRequest(BaseModel):
+    approved: bool

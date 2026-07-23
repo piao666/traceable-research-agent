@@ -40,6 +40,9 @@ class AgentRun(Base):
         onupdate=utc_now,
     )
 
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    run_config_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     traces: Mapped[list["ToolTrace"]] = relationship(
         back_populates="run",
         cascade="all, delete-orphan",

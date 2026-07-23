@@ -239,12 +239,19 @@ async def create_task(
 ) -> TaskCreateResponse:
     """Accept a task, create a pending run, and persist a deterministic plan."""
 
+    run_config_snapshot = json.dumps(
+        settings.get_safe_runtime_config_summary(),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     run = store.create_agent_run(
         db=db,
         task=request.task,
         report_type=request.report_type,
         source_mode=request.source_mode,
         allowed_tools=request.allowed_tools,
+        session_id=request.session_id,
+        run_config_snapshot=run_config_snapshot,
     )
     plan = plan_task(
         task=request.task,

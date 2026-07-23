@@ -96,6 +96,21 @@ def register_default_tools() -> None:
     )
     register_tool(
         ToolSpec(
+            name="memory_search",
+            description=(
+                "Search the user's cross-session memory for relevant preferences, "
+                "facts, and research history. Read-only, returns active memories "
+                "for the current tenant/user context."
+            ),
+            input_schema={"query": "string", "top_k": "integer"},
+            output_schema={"memories": "array", "recalled": "integer"},
+            risk_level=RiskLevel.LOW,
+            tags=["memory", "search", "read-only"],
+        ),
+        handler=None,  # handler implemented in Phase 4 (vector recall)
+    )
+    register_tool(
+        ToolSpec(
             name="report_writer",
             description="Generate a Markdown report from collected observations and evidence.",
             input_schema={"run_id": "string", "observations": "array"},

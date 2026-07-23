@@ -600,6 +600,11 @@ def init_state() -> None:
         "allowed_tools": _template_allowed_tools(default_template),
         "report_type": "summary",
         "source_mode_ui": "real",       # default: real API
+        # ── Memory & Session state ──
+        "active_session_id": "",
+        "sessions": [],
+        "sessions_loaded": False,
+        "memory_list": None,
     }
     for k, v in defaults.items():
         st.session_state.setdefault(k, v)
@@ -1376,6 +1381,51 @@ def _evidence_export_filename(run_id: str, export_format: str) -> str:
     return f"evidence_{safe_run_id}.{extension}"
 
 
+# ── Session & Memory helpers ─────────────────────────────────────────
+
+def _load_sessions() -> list[dict[str, Any]]:
+    """Fetch session list from the backend."""
+    try:
+        return api_get("/api/sessions", timeout=5)
+    except ApiError:
+        return []
+
+
+def _create_session(title: str | None = None) -> dict[str, Any] | None:
+    """Create a new session via the backend."""
+    try:
+        return api_post("/api/sessions", {"title": title}, timeout=5)
+    except ApiError:
+        return None
+
+
+def _load_memories(status: str | None = None) -> dict[str, Any] | None:
+    """Fetch memory list from the backend."""
+    try:
+        params = f"?status={status}" if status else ""
+        return api_get(f"/api/memory{params}", timeout=5)
+    except ApiError:
+        return None
+
+
+def _confirm_memory(memory_id: str, approved: bool) -> bool:
+    """Confirm or reject a pending memory."""
+    try:
+        api_post(f"/api/memory/{memory_id}/confirm", {"approved": approved}, timeout=5)
+        return True
+    except ApiError:
+        return False
+
+
+def _delete_memory(memory_id: str) -> bool:
+    """Delete a single memory."""
+    try:
+        api_request("DELETE", f"/api/memory/{memory_id}", timeout=5)
+        return True
+    except ApiError:
+        return False
+
+
 # ── 侧边栏 ────────────────────────────────────────────────────────
 def render_sidebar() -> None:
     with st.sidebar:
@@ -1389,6 +1439,91 @@ def render_sidebar() -> None:
                 st.success(f"连接正常 · 默认模式：{h.get('execution_mode','planned')}")
             except ApiError as e:
                 st.error(str(e))
+
+        st.divider()
+
+        # ── 会话切换器 ──────────────────────────────────────────────
+        st.markdown("**会话**")
+        if not st.session_state.get("sessions_loaded"):
+            st.session_state.sessions = _load_sessions()
+            st.session_state.sessions_loaded = True
+
+        sessions = st.session_state.get("sessions") or []
+        session_options = ["（新建会话）"] + [
+            f"{s.get('title') or '未命名'} ({s['session_id'][:8]}…)"
+            for s in sessions
+        ]
+        session_labels = {opt: s for opt, s in zip(session_options, [None] + sessions)}
+
+        selected_label = st.selectbox(
+            "选择会话",
+            session_options,
+            key="session_selector",
+            label_visibility="collapsed",
+        )
+
+        if selected_label == "（新建会话）":
+            if st.button("新建会话", use_container_width=True):
+                new_session = _create_session()
+                if new_session:
+                    st.session_state.active_session_id = new_session["session_id"]
+                    st.session_state.sessions_loaded = False  # force reload
+                    st.success("会话已创建")
+                    st.rerun()
+                else:
+                    st.error("创建会话失败")
+        else:
+            selected = session_labels.get(selected_label)
+            if selected:
+                st.session_state.active_session_id = selected["session_id"]
+                st.caption(f"当前会话：{selected.get('title') or '未命名'} ({selected['session_id'][:8]}…)")
+            if st.button("刷新会话列表", use_container_width=True):
+                st.session_state.sessions_loaded = False
+                st.rerun()
+
+        st.divider()
+
+        # ── 记忆面板 ────────────────────────────────────────────────
+        st.markdown("**用户记忆**")
+        if st.button("加载记忆", use_container_width=True):
+            st.session_state.memory_list = _load_memories()
+
+        memory_list = st.session_state.get("memory_list")
+        if memory_list:
+            total = memory_list.get("total", 0)
+            active = memory_list.get("active_count", 0)
+            pending = memory_list.get("pending_count", 0)
+            st.caption(f"共 {total} 条记忆 · {active} 条活跃 · {pending} 条待确认")
+
+            if total == 0:
+                st.info("完成 3 次调研后，系统将开始为您总结偏好。", icon="🧠")
+
+            memories = memory_list.get("memories") or []
+            for mem in memories:
+                status_icon = {"active": "✅", "pending": "⏳", "superseded": "📦", "expired": "⏰"}.get(
+                    mem.get("status"), "❓"
+                )
+                with st.expander(
+                    f"{status_icon} [{mem.get('kind', '?')}] {mem.get('content', '')[:60]}…",
+                    expanded=False,
+                ):
+                    st.caption(f"类型：{mem.get('kind')} | 方式：{mem.get('extraction_method')}")
+                    st.caption(f"置信度：{mem.get('confidence', 0):.1f} | 状态：{mem.get('status')}")
+                    st.text(mem.get("content", ""))
+                    if mem.get("source_run_id"):
+                        st.caption(f"来源 Run：{mem['source_run_id'][:16]}…")
+                    if mem.get("status") == "pending":
+                        c1, c2 = st.columns(2)
+                        if c1.button("确认", key=f"confirm_{mem['memory_id']}"):
+                            if _confirm_memory(mem["memory_id"], True):
+                                st.session_state.memory_list = _load_memories()
+                                st.rerun()
+                        if c2.button("拒绝", key=f"reject_{mem['memory_id']}"):
+                            if _confirm_memory(mem["memory_id"], False):
+                                st.session_state.memory_list = _load_memories()
+                                st.rerun()
+        else:
+            st.caption("点击「加载记忆」查看")
 
         st.divider()
         st.markdown("**场景模板**")
@@ -1509,6 +1644,7 @@ def tab_task() -> None:
                 "execution_mode_override": st.session_state.execution_mode_display,
                 "scenario_template": st.session_state.get("selected_template", ""),
                 "scenario_template_key": _current_scenario_template_key(),
+                "session_id": st.session_state.get("active_session_id") or None,
             }
             try:
                 st.session_state.event_log = []

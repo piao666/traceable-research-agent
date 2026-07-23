@@ -52,6 +52,7 @@ def init_db() -> None:
 
     from app.trace import models  # noqa: F401
     from app.evidence import models as evidence_models  # noqa: F401
+    from app.memory import models as memory_models  # noqa: F401
     from scripts.migrate_database import migrate_database
 
     WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)

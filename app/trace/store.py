@@ -16,6 +16,8 @@ def create_agent_run(
     report_type: str,
     source_mode: str,
     allowed_tools: list[str] | None = None,
+    session_id: str | None = None,
+    run_config_snapshot: str | None = None,
 ) -> AgentRun:
     """Create a pending run record."""
 
@@ -26,6 +28,8 @@ def create_agent_run(
         source_mode=source_mode,
         status="pending",
         allowed_tools_json=json.dumps(allowed_tools) if allowed_tools else None,
+        session_id=session_id,
+        run_config_snapshot=run_config_snapshot,
     )
     db.add(run)
     db.commit()

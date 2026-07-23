@@ -35,6 +35,11 @@ P2_TABLES = {
     "evidence_reliability_scores",
     "claim_resolutions",
 }
+P3_TABLES = {
+    "conversation_sessions",
+    "chat_turns",
+    "user_memories",
+}
 
 
 def bootstrap_revision_for_tables(
@@ -60,7 +65,15 @@ def bootstrap_revision_for_tables(
         schema_revision = "0002_claim_provenance_schema"
         return _required_stamp(current_revision, schema_revision)
     if P2_TABLES.issubset(table_names):
-        return _required_stamp(current_revision, "0003_evidence_reasoning")
+        present_p3 = table_names & P3_TABLES
+        if not present_p3:
+            return _required_stamp(current_revision, "0003_evidence_reasoning")
+        if not P3_TABLES.issubset(table_names):
+            missing = ", ".join(sorted(P3_TABLES - present_p3))
+            raise RuntimeError(
+                f"Legacy database has a partial P3 memory schema; missing: {missing}"
+            )
+        return _required_stamp(current_revision, "0004_memory_schema")
     missing = ", ".join(sorted(P2_TABLES - present_p2))
     raise RuntimeError(f"Legacy database has a partial P2 reasoning schema; missing: {missing}")
 
@@ -70,6 +83,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0001_initial_trace_schema": 1,
         "0002_claim_provenance_schema": 2,
         "0003_evidence_reasoning": 3,
+        "0004_memory_schema": 4,
     }
     if current_revision is None:
         return schema_revision
