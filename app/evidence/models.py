@@ -106,6 +106,7 @@ class EvidencePassage(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     locator_json: Mapped[str] = mapped_column(Text, nullable=False)
     metadata_json: Mapped[str] = mapped_column(Text, nullable=False)
+    content_basis: Mapped[str] = mapped_column(String(32), nullable=False, default="snippet_only")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

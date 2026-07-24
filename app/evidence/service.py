@@ -340,6 +340,7 @@ def _materialize_item(
         text=passage_text,
         locator_json=_json_dump(passage_locator(item, trace_input)),
         metadata_json=_json_dump(item.metadata),
+        content_basis=_infer_content_basis(item),
     )
     assertion = EvidenceAssertion(
         assertion_id=assertion_id,
@@ -422,6 +423,48 @@ def _confidence(value: str) -> float:
 def _stable_id(prefix: str, *parts: str) -> str:
     payload = "\x1f".join(parts).encode("utf-8")
     return f"{prefix}_{hashlib.sha256(payload).hexdigest()[:48]}"
+
+
+def _infer_content_basis(item: EvidenceItem) -> str:
+    """Infer content_basis from EvidenceItem tool_name and metadata.
+
+    - web_fetcher: read from item.metadata or output's page-level content_basis
+    - tavily_search (no fetch): snippet_only
+    - file_reader / sql_query: full_text
+    - rag_search: snippet_only (chunks are pre-existing, not full original docs)
+    """
+    tool_name = item.tool_name
+
+    if tool_name == "web_fetcher":
+        # Check metadata for aggregated content_basis info
+        cb = item.metadata.get("content_basis")
+        if cb in ("full_text", "partial", "snippet_only"):
+            return cb
+        # Default for web_fetcher results
+        return "full_text"
+
+    if tool_name in ("file_reader", "sql_query"):
+        return "full_text"
+
+    if tool_name == "tavily_search":
+        # tavily_search without web_fetcher = snippet only
+        return "snippet_only"
+
+    if tool_name == "rag_search":
+        return "snippet_only"
+
+    if tool_name == "mcp_github_search":
+        return "snippet_only"
+
+    # Remote MCP support tools (scrape, extract, fetch) → full_text
+    if item.source_type.startswith("mcp_remote_support"):
+        return "full_text"
+
+    # Remote MCP discovery tools → partial or snippet_only
+    if item.source_type.startswith("mcp_remote_discovery"):
+        return "partial"
+
+    return "snippet_only"
 
 
 def _json_object(value: str | None) -> dict[str, Any]:

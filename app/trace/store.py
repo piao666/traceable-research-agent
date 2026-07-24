@@ -1,6 +1,7 @@
 """Small persistence helpers for run and trace records."""
 
 import json
+import threading
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -8,6 +9,9 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.trace.models import AgentRun, ToolTrace
+
+# Process-level write lock for concurrent SQLite writes
+_TRACE_WRITE_LOCK = threading.Lock()
 
 
 def create_agent_run(
@@ -174,7 +178,8 @@ def create_tool_trace(
         output_summary=output_summary,
         error_message=error_message,
     )
-    db.add(trace)
-    db.commit()
-    db.refresh(trace)
+    with _TRACE_WRITE_LOCK:
+        db.add(trace)
+        db.commit()
+        db.refresh(trace)
     return trace

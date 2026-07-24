@@ -7,6 +7,7 @@ from app.tools.rag_search import search_rag
 from app.tools.registry import register_tool
 from app.tools.sql_query import run_query
 from app.tools.tavily_search import tavily_search_handler
+from app.tools.web_fetcher import web_fetch
 
 
 def register_default_tools() -> None:
@@ -108,6 +109,30 @@ def register_default_tools() -> None:
             tags=["memory", "search", "read-only"],
         ),
         handler=None,  # handler implemented in Phase 4 (vector recall)
+    )
+    register_tool(
+        ToolSpec(
+            name="web_fetcher",
+            description=(
+                "Fetch full-text content from a list of URLs using httpx + BeautifulSoup. "
+                "Read-only, offline-capable. Each page is tagged with content_basis "
+                "(full_text/partial/snippet_only) and fetch errors are recorded per-URL."
+            ),
+            input_schema={
+                "urls": "list[string]",
+                "max_chars": "integer",
+                "timeout_seconds": "integer",
+            },
+            output_schema={
+                "pages": "array",
+                "fetched_count": "integer",
+                "failed_count": "integer",
+                "total_count": "integer",
+            },
+            risk_level=RiskLevel.LOW,
+            tags=["web", "fetch", "read-only"],
+        ),
+        handler=web_fetch,
     )
     register_tool(
         ToolSpec(

@@ -73,6 +73,14 @@ def bootstrap_revision_for_tables(
             raise RuntimeError(
                 f"Legacy database has a partial P3 memory schema; missing: {missing}"
             )
+        # Check for 0005/0006 column-level migrations
+        inspector = inspect(engine)
+        tool_trace_cols = {c["name"] for c in inspector.get_columns("tool_traces")}
+        evidence_passage_cols = {c["name"] for c in inspector.get_columns("evidence_passages")}
+        if "sub_query" in tool_trace_cols and "content_basis" in evidence_passage_cols:
+            return _required_stamp(current_revision, "0006_content_basis")
+        if "sub_query" in tool_trace_cols:
+            return _required_stamp(current_revision, "0005_subquery_trace")
         return _required_stamp(current_revision, "0004_memory_schema")
     missing = ", ".join(sorted(P2_TABLES - present_p2))
     raise RuntimeError(f"Legacy database has a partial P2 reasoning schema; missing: {missing}")
@@ -84,6 +92,8 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0002_claim_provenance_schema": 2,
         "0003_evidence_reasoning": 3,
         "0004_memory_schema": 4,
+        "0005_subquery_trace": 5,
+        "0006_content_basis": 6,
     }
     if current_revision is None:
         return schema_revision

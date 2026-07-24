@@ -28,6 +28,7 @@ EXECUTABLE_TOOLS = {
     "rag_search",
     "mcp_github_search",
     "tavily_search",
+    "web_fetcher",
 }
 
 
@@ -78,6 +79,64 @@ def _summary(run: AgentRun) -> dict[str, Any]:
         "llm_provider": react_state.get("llm_provider") or plan.get("llm_provider"),
         "llm_model": react_state.get("llm_model") or plan.get("llm_model"),
     }
+
+
+def _resolve_arguments_from(
+    step: dict[str, Any],
+    observations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve `arguments_from` references from previous step outputs.
+
+    Supported syntax:
+        arguments_from: {"step_no": 1, "field": "results"}
+        → extracts step_results[1].output["results"]
+
+    For tavily_search results (list of dict with "url" key), auto-extracts URLs.
+    """
+    args_from = step.get("arguments_from")
+    if not isinstance(args_from, dict):
+        return step.get("arguments") or {}
+
+    source_step_no = args_from.get("step_no")
+    field = args_from.get("field")
+
+    if source_step_no is None or not field:
+        return step.get("arguments") or {}
+
+    # Find the observation from the referenced step
+    source_obs = None
+    for obs in observations:
+        if obs.get("step_no") == source_step_no:
+            source_obs = obs
+            break
+
+    if source_obs is None:
+        return step.get("arguments") or {}
+
+    source_output = source_obs.get("output")
+    if not isinstance(source_output, dict):
+        return step.get("arguments") or {}
+
+    resolved_value = source_output.get(field)
+
+    # For tavily_search results → extract URLs
+    if field == "results" and isinstance(resolved_value, list):
+        urls: list[str] = []
+        for item in resolved_value:
+            if isinstance(item, dict) and item.get("url"):
+                urls.append(str(item["url"]))
+        if urls:
+            merged = dict(step.get("arguments") or {})
+            merged["urls"] = urls
+            return merged
+
+    # Generic field extraction
+    if resolved_value is not None:
+        merged = dict(step.get("arguments") or {})
+        merged[field] = resolved_value
+        return merged
+
+    return step.get("arguments") or {}
 
 
 def _failed_observation(step: dict[str, Any], result: ToolResult) -> dict[str, Any]:
@@ -166,6 +225,10 @@ def run_plan(
                 observations.append(_failed_observation(step, result))
                 run = store.update_agent_run_progress(db, run_id, step_no, total_tool_calls_delta=1)
                 continue
+
+            # Resolve arguments_from references from previous step outputs
+            if step.get("arguments_from"):
+                arguments = _resolve_arguments_from(step, observations)
 
             execution_arguments = (
                 file_reader_execution_arguments(arguments, plan)

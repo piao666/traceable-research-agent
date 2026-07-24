@@ -73,6 +73,52 @@ def _parse_sub_queries(raw: str) -> list[str]:
     return questions
 
 
+def decompose_task_by_rules(task: str, n: int = 4) -> list[str]:
+    """Rule-based decomposition using separators (no LLM required).
+
+    Splits on common Chinese/English separators to produce independent
+    sub-topics.  This is a fallback for when no LLM is available.
+    """
+    # Ordered list of separator patterns
+    separators = [
+        # Chinese
+        r"[、]",
+        r"和",
+        r"以及",
+        r"[；;]",
+        r"[。\n]+",
+        # English
+        r",\s*and\s+",
+        r";\s*and\s+",
+        r",\s+",
+        r";\s+",
+    ]
+
+    parts: list[str] = []
+    for sep in separators:
+        if re.search(sep, task):
+            raw = re.split(sep, task)
+            parts = [p.strip() for p in raw if len(p.strip()) >= 5]
+            if len(parts) >= 2:
+                break
+
+    if len(parts) < 2:
+        return [task]
+
+    # Deduplicate and limit
+    seen: set[str] = set()
+    result: list[str] = []
+    for part in parts:
+        normalized = part.lower().strip(" .。，,;；")
+        if normalized not in seen and len(normalized) >= 5:
+            seen.add(normalized)
+            result.append(part.strip())
+            if len(result) >= n:
+                break
+
+    return result if len(result) >= 2 else [task]
+
+
 def decompose_task(
     task: str,
     llm_client: LLMClient,
@@ -96,8 +142,8 @@ def decompose_task(
         return [task]
 
     if not llm_client.is_available():
-        logger.info("LLM client unavailable, skipping sub-query decomposition.")
-        return [task]
+        logger.info("LLM client unavailable, using rule-based decomposition fallback.")
+        return decompose_task_by_rules(task, n=n)
 
     messages = [
         LLMMessage(

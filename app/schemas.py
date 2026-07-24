@@ -143,6 +143,7 @@ class ToolTraceResponse(BaseModel):
     finished_at: datetime | None = None
     output: Any | None = None
     metadata: dict[str, Any] | None = None
+    sub_query: str | None = None
 
 
 class EvidenceItemResponse(BaseModel):

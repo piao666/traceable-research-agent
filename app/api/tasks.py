@@ -176,6 +176,7 @@ def _tool_trace_response(trace: ToolTrace) -> ToolTraceResponse:
         finished_at=trace.finished_at,
         output=output,
         metadata=_extract_trace_metadata(output),
+        sub_query=trace.sub_query,
     )
 
 

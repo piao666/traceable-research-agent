@@ -53,6 +53,7 @@ def record_tool_result(
     input_data: dict[str, Any],
     result: ToolResult,
     latency_ms: int | None = None,
+    sub_query: str | None = None,
 ) -> ToolTrace:
     """Persist one tool execution result as a trace row."""
 
@@ -80,6 +81,7 @@ def record_tool_result(
         error_message=redact_text(result.error_message) if result.error_message else None,
         created_at=now,
         finished_at=now,
+        sub_query=sub_query,
     )
     db.add(trace)
     db.commit()
@@ -98,6 +100,7 @@ def record_trace_event(
     output_data: dict[str, Any],
     error_message: str | None = None,
     latency_ms: int | None = None,
+    sub_query: str | None = None,
 ) -> ToolTrace:
     """Persist a non-tool executor event such as finish, fallback, or HITL wait."""
 
@@ -122,6 +125,7 @@ def record_trace_event(
         error_message=redact_text(error_message) if error_message else None,
         created_at=now,
         finished_at=now,
+        sub_query=sub_query,
     )
     db.add(trace)
     db.commit()

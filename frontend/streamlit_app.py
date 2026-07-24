@@ -1810,8 +1810,29 @@ def tab_trace() -> None:
 
     st.markdown("---")
     st.markdown("**工具调用时间线**")
+
+    # Group traces by sub_query if present
+    sub_queries: dict[str, list[dict]] = {}
+    ungrouped: list[dict] = []
     for trace in traces:
-        trace_step_card(trace)
+        sq = trace.get("sub_query")
+        if sq:
+            sub_queries.setdefault(str(sq), []).append(trace)
+        else:
+            ungrouped.append(trace)
+
+    if sub_queries:
+        for sq_label, sq_traces in sub_queries.items():
+            with st.expander(f"📋 子查询: {sq_label[:120]} ({len(sq_traces)} 步)", expanded=False):
+                for trace in sq_traces:
+                    trace_step_card(trace)
+        if ungrouped:
+            st.markdown("*其他步骤*")
+            for trace in ungrouped:
+                trace_step_card(trace)
+    else:
+        for trace in traces:
+            trace_step_card(trace)
 
     st.divider()
     # 执行元数据摘要

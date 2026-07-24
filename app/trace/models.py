@@ -78,5 +78,6 @@ class ToolTrace(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    sub_query: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     run: Mapped[AgentRun] = relationship(back_populates="traces")

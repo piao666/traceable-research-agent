@@ -14,3 +14,4 @@ sentence-transformers
 chromadb
 rank-bm25
 pytest
+beautifulsoup4

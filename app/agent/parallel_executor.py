@@ -6,6 +6,7 @@ import json
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import Lock
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
@@ -18,6 +19,7 @@ from app.agent.executor import (
     EXECUTABLE_TOOLS,
     _failed_observation,
     _is_step_confirmed,
+    _resolve_arguments_from,
     is_executable_tool,
     _step_requires_confirmation,
     _message_summary,
@@ -40,6 +42,7 @@ PARALLEL_SAFE_TOOLS = {
     "mcp_github_search",
     "tavily_search",
     "sql_query",
+    "web_fetcher",
 }
 BARRIER_TOOLS = {"report_writer"}
 DEPENDENCY_KEYS = {
@@ -156,9 +159,33 @@ def _execute_step(
     step: dict[str, Any],
     worker_id: int,
     plan: dict[str, Any] | None = None,
+    visited_urls: set[str] | None = None,
+    visited_urls_lock: Lock | None = None,
 ) -> _StepResult:
     tool_name = str(step.get("tool_name") or "")
     arguments = step.get("arguments") or {}
+
+    # Deduplicate URLs across parallel sub-queries
+    if tool_name == "web_fetcher" and visited_urls is not None and visited_urls_lock is not None:
+        urls = arguments.get("urls")
+        if isinstance(urls, list):
+            with visited_urls_lock:
+                filtered: list[str] = []
+                skipped: list[str] = []
+                for url in urls:
+                    if isinstance(url, str) and url not in visited_urls:
+                        visited_urls.add(url)
+                        filtered.append(url)
+                    elif isinstance(url, str):
+                        skipped.append(url)
+                if skipped:
+                    step = dict(step)
+                    step["metadata"] = dict(step.get("metadata") or {})
+                    step["metadata"]["skipped_urls"] = skipped
+                arguments = dict(arguments)
+                arguments["urls"] = filtered
+                step["arguments"] = arguments
+
     execution_arguments = (
         file_reader_execution_arguments(arguments, plan)
         if tool_name == "file_reader"
@@ -176,6 +203,8 @@ def _run_parallel_group(
     group: list[dict[str, Any]],
     settings_obj: Settings,
     plan: dict[str, Any] | None = None,
+    visited_urls: set[str] | None = None,
+    visited_urls_lock: Lock | None = None,
 ) -> list[_StepResult]:
     group_id = f"pg-{uuid4().hex[:12]}"
     group_size = len(group)
@@ -185,7 +214,9 @@ def _run_parallel_group(
     group_started_at = _utc_iso()
     try:
         for index, step in enumerate(group, 1):
-            futures[executor.submit(_execute_step, step, index, plan)] = (step, index, group_started_at)
+            futures[executor.submit(
+                _execute_step, step, index, plan, visited_urls, visited_urls_lock
+            )] = (step, index, group_started_at)
 
         done, pending = wait(set(futures), timeout=settings_obj.parallel_timeout_seconds)
         results: list[_StepResult] = []
@@ -259,8 +290,10 @@ def _run_parallel_group(
 def _run_single_tool_step(
     step: dict[str, Any],
     plan: dict[str, Any] | None = None,
+    visited_urls: set[str] | None = None,
+    visited_urls_lock: Lock | None = None,
 ) -> _StepResult:
-    return _execute_step(step, 1, plan)
+    return _execute_step(step, 1, plan, visited_urls, visited_urls_lock)
 
 
 def _observation(step: dict[str, Any], result: ToolResult) -> dict[str, Any]:
@@ -294,6 +327,10 @@ def run_plan_parallel(
     steps = plan.get("steps") or []
     observations: list[dict[str, Any]] = []
     resume_after_step = run.current_step
+
+    # Shared URL dedup across sub-queries
+    visited_urls: set[str] = set()
+    visited_urls_lock = Lock()
 
     try:
         run = store.update_agent_run_status(db, run_id, "running", None)
@@ -344,7 +381,11 @@ def run_plan_parallel(
                     run = store.update_agent_run_progress(db, run_id, step_no, total_tool_calls_delta=1)
                     continue
 
-                step_result = _run_single_tool_step(step, plan)
+                # Resolve arguments_from references
+                if step.get("arguments_from"):
+                    arguments = _resolve_arguments_from(step, observations)
+
+                step_result = _run_single_tool_step(step, plan, visited_urls, visited_urls_lock)
                 record_tool_result(
                     db,
                     run_id,
@@ -364,7 +405,9 @@ def run_plan_parallel(
                 )
                 continue
 
-            parallel_results = _run_parallel_group(executable_group, settings_obj, plan)
+            parallel_results = _run_parallel_group(
+                executable_group, settings_obj, plan, visited_urls, visited_urls_lock
+            )
             for step_result in parallel_results:
                 step = step_result.step
                 step_no = int(step.get("step_no") or 0)

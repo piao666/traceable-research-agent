@@ -637,6 +637,18 @@ def _step_template(
             "risk_level": "low",
             "requires_confirmation": False,
         },
+        "web_fetcher": {
+            "goal": "Fetch full-text content from URLs discovered in the previous step.",
+            "arguments": {
+                "urls": [],
+                "max_chars": 8000,
+                "timeout_seconds": 10,
+            },
+            "expected_output": "Full-text page content for each URL with content_basis tagging (full_text/partial/snippet_only).",
+            "completion_criteria": "Each URL is either successfully fetched or a structured fetch error is recorded per URL.",
+            "risk_level": "low",
+            "requires_confirmation": False,
+        },
     }
     if tool_name in templates:
         step = templates[tool_name].copy()
@@ -876,9 +888,22 @@ def deterministic_plan_task(
             priority,
         )
         if not inserted:
+            # Fallback: use built-in web_fetcher for the fetch phase
+            _append_step(steps, notes, "web_fetcher", task_text, allowed_set)
+            # Mark that web_fetcher depends on tavily_search results
+            _tavily_step_no = next(
+                (int(s.get("step_no") or 0) for s in steps if s.get("tool_name") == "tavily_search"),
+                None,
+            )
+            if _tavily_step_no is not None:
+                for s in steps:
+                    if s.get("tool_name") == "web_fetcher":
+                        s["arguments_from"] = {"step_no": _tavily_step_no, "field": "results"}
+                        s["arguments"] = {"urls": [], "max_chars": 8000, "timeout_seconds": 10}
+                        break
             _append_note_once(
                 notes,
-                "Deep web research MCP tools were not configured; used available built-in discovery tools only.",
+                "Deep web research MCP tools were not configured; using built-in web_fetcher (httpx+BeautifulSoup) for full-text retrieval.",
             )
         elif not url:
             _append_note_once(

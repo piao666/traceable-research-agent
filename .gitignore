@@ -59,6 +59,10 @@ dist/
 build/
 *.egg-info/
 
+# Local project docs (not committed to git)
+CLAUDE.md
+TASK.md
+
 # OS/editor
 .DS_Store
 Thumbs.db
