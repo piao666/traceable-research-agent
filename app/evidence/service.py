@@ -522,6 +522,7 @@ def _passage_dict(item: EvidencePassage) -> dict[str, Any]:
         "text": item.text,
         "locator": _json_load(item.locator_json),
         "metadata": _json_load(item.metadata_json),
+        "content_basis": item.content_basis,
     }
 
 

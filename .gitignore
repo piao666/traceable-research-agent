@@ -62,6 +62,7 @@ build/
 # Local project docs (not committed to git)
 CLAUDE.md
 TASK.md
+docs/project-status/
 
 # OS/editor
 .DS_Store

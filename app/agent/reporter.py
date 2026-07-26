@@ -14,10 +14,121 @@ except ImportError:
     LLMClient = None   # type: ignore[assignment,misc]
     LLMMessage = None  # type: ignore[assignment,misc]
 
+from dataclasses import dataclass, field
+
 from app.trace.models import AgentRun, ToolTrace
 from app.agent.context_compressor import compress_evidence, has_useful_evidence
 from app.agent.evidence import build_evidence_bundle, render_evidence_markdown
 from app.security.redaction import redact_text
+
+
+# ── Phase 3: Sub-query grouping ───────────────────────────────────────
+
+CONTENT_BASIS_LABELS: dict[str, str] = {
+    "full_text": "🌐 全文",
+    "partial": "📄 部分截断",
+    "snippet_only": "📎 仅摘要",
+}
+
+
+@dataclass
+class SubQueryGroup:
+    """A group of steps, traces, and claims belonging to one sub-query."""
+    sub_query: str
+    step_nos: list[int] = field(default_factory=list)
+    traces: list[ToolTrace] = field(default_factory=list)
+    claims: list[dict[str, Any]] = field(default_factory=list)
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    passages: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _build_sub_query_groups(
+    plan: dict[str, Any],
+    traces: list[ToolTrace],
+    provenance_bundle: dict[str, Any] | None,
+) -> list[SubQueryGroup]:
+    """Group traces by sub_query; fall back to single group if no sub_query labels."""
+    # Index passages and citations from provenance
+    passages_by_id: dict[str, dict[str, Any]] = {}
+    citations_by_claim: dict[str, list[dict[str, Any]]] = {}
+    claims_by_id: dict[str, dict[str, Any]] = {}
+    if provenance_bundle:
+        for p in provenance_bundle.get("passages") or []:
+            passages_by_id[str(p.get("passage_id"))] = p
+        for c in provenance_bundle.get("citations") or []:
+            claim_id = str(c.get("report_claim_id") or "")
+            citations_by_claim.setdefault(claim_id, []).append(c)
+        for rc in provenance_bundle.get("report_claims") or []:
+            claims_by_id[str(rc.get("report_claim_id"))] = rc
+
+    # Group traces by sub_query
+    groups: dict[str, list[ToolTrace]] = {}
+    for trace in traces:
+        key = (trace.sub_query or "").strip()
+        groups.setdefault(key, []).append(trace)
+
+    if not groups:
+        return []
+
+    result: list[SubQueryGroup] = []
+    for sq, sq_traces in groups.items():
+        step_nos = sorted({t.step_no for t in sq_traces})
+        trace_ids = {t.trace_id for t in sq_traces}
+
+        # Find passages matching this group's traces
+        group_passages = [
+            p for p in passages_by_id.values()
+            if str(p.get("trace_id")) in trace_ids
+        ]
+        passage_ids = {str(p.get("passage_id")) for p in group_passages}
+
+        # Find citations referencing these passages
+        group_citations: list[dict[str, Any]] = []
+        seen_citation_ids: set[str] = set()
+        for claim_citations in citations_by_claim.values():
+            for cit in claim_citations:
+                cid = str(cit.get("citation_id") or "")
+                if cid in seen_citation_ids:
+                    continue
+                if str(cit.get("passage_id")) in passage_ids:
+                    seen_citation_ids.add(cid)
+                    group_citations.append(cit)
+
+        # Find claims referenced by these citations
+        claim_ids = {str(c.get("report_claim_id")) for c in group_citations}
+        group_claims = [
+            claims_by_id[cid] for cid in claim_ids if cid in claims_by_id
+        ]
+
+        result.append(SubQueryGroup(
+            sub_query=sq,
+            step_nos=step_nos,
+            traces=sq_traces,
+            claims=group_claims,
+            citations=group_citations,
+            passages=group_passages,
+        ))
+
+    return result
+
+
+def _content_basis_label(passage: dict[str, Any]) -> str:
+    cb = str(passage.get("content_basis") or "snippet_only")
+    return CONTENT_BASIS_LABELS.get(cb, f"📎 {cb}")
+
+
+def _build_content_basis_map(
+    provenance_bundle: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Build a mapping of trace_id → content_basis label."""
+    if not provenance_bundle:
+        return {}
+    result: dict[str, str] = {}
+    for p in provenance_bundle.get("passages") or []:
+        tid = str(p.get("trace_id") or "")
+        if tid:
+            result[tid] = _content_basis_label(p)
+    return result
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1129,6 +1240,68 @@ def _runtime_limitations(plan: dict[str, Any]) -> list[str]:
     ]
 
 
+def _render_grouped_final_answer(
+    task: str,
+    observations: list[dict[str, Any]],
+    traces: list[ToolTrace],
+    groups: list[SubQueryGroup],
+) -> list[str]:
+    """Build a final answer organized by sub-query groups with citation labels."""
+    lines: list[str] = []
+    records = _evidence_records(observations, traces)
+    successful = [r for r in records if r["success"]]
+
+    for gi, group in enumerate(groups, 1):
+        sq_label = group.sub_query or f"主题 {gi}"
+        lines.extend([f"### 子问题 {gi}: {sq_label}", ""])
+
+        # Collect findings from this group's claims
+        for claim in group.claims:
+            claim_text = str(claim.get("claim_text") or "")
+            # Find citations for this claim
+            claim_citations = [
+                c for c in group.citations
+                if str(c.get("report_claim_id")) == str(claim.get("report_claim_id"))
+            ]
+            citation_labels = [
+                str(c.get("citation_label") or "")
+                for c in claim_citations
+                if c.get("citation_label")
+            ]
+            cit_str = "[" + "][".join(citation_labels) + "]" if citation_labels else ""
+
+            # Find content_basis for the passages backing this claim
+            cb_labels: set[str] = set()
+            for cit in claim_citations:
+                for p in group.passages:
+                    if str(p.get("passage_id")) == str(cit.get("passage_id")):
+                        cb_labels.add(_content_basis_label(p))
+
+            cb_suffix = ""
+            if cb_labels:
+                cb_suffix = f" （{' / '.join(sorted(cb_labels))}）"
+
+            lines.append(f"**发现：** {claim_text}{cit_str}{cb_suffix}")
+            lines.append("")
+
+        # Show supporting evidence snippets
+        if group.passages:
+            lines.append("**支撑证据：**")
+            lines.append("")
+            for p in group.passages[:5]:
+                text = str(p.get("text") or "")[:300]
+                cb = _content_basis_label(p)
+                trace_id = str(p.get("trace_id") or "")[:12]
+                lines.append(f"* {cb} `{trace_id}…` — {text}")
+            lines.append("")
+
+    # If no groups have claims, fall back to legacy answer
+    if not any(g.claims for g in groups):
+        return _render_final_answer(task, observations, traces)
+
+    return lines
+
+
 def generate_markdown_report(
     run: AgentRun,
     plan: dict[str, Any],
@@ -1142,11 +1315,18 @@ def generate_markdown_report(
     Phase A: if llm_client is provided and available, the 「3. 最终回答」section
     is generated by LLM synthesis of tool evidence instead of template rules.
     Falls back to template automatically if LLM is unavailable or call fails.
+
+    Phase 3: when sub-query groups exist, the answer section is organized by
+    sub-query with citation labels and content_basis annotations.
     """
 
     degradation_label, degradation_note = _degradation_state(plan, traces)
     execution_mode = plan.get("execution_mode") or "planned"
     requested_execution_mode = plan.get("requested_execution_mode") or execution_mode
+
+    # ── Phase 3: Build sub-query groups ─────────────────────────────────
+    sub_query_groups = _build_sub_query_groups(plan, traces, provenance_bundle)
+    content_basis_map = _build_content_basis_map(provenance_bundle)
 
     lines: list[str] = [
         "# Traceable Research Agent 调研报告",
@@ -1179,13 +1359,20 @@ def generate_markdown_report(
                 _evidence_records(observations, traces),
             )
 
-    _final_answer_lines: list[str] = (
-        [_llm_answer, "",
-         *_source_reference_lines(_evidence_records(observations, traces)),
-         "> **生成方式：** 本回答由 LLM 综合工具证据生成，各来源已标注。", ""]
-        if _llm_answer
-        else (_render_final_answer(run.task, observations, traces) or [])
-    )
+    # ── Phase 3: Grouped answer when sub-query groups exist ─────────────
+    if sub_query_groups and len(sub_query_groups) > 1 and not _llm_answer:
+        _final_answer_lines = _render_grouped_final_answer(
+            run.task, observations, traces, sub_query_groups,
+        )
+    elif _llm_answer:
+        _final_answer_lines = [
+            _llm_answer, "",
+            *_source_reference_lines(_evidence_records(observations, traces)),
+            "> **生成方式：** 本回答由 LLM 综合工具证据生成，各来源已标注。", "",
+        ]
+    else:
+        _final_answer_lines = _render_final_answer(run.task, observations, traces) or []
+
     _final_answer_lines.extend(_conflict_alert_lines(provenance_bundle))
 
     lines += [
@@ -1263,6 +1450,11 @@ def generate_markdown_report(
                 observation.get("output_summary")
                 or observation.get("observation_summary")
             )
+            # ── Phase 3: content_basis annotation ──────────────────────
+            trace_id = str(observation.get("trace_id") or "")
+            cb_label = content_basis_map.get(trace_id, "")
+            cb_line = [f"* 证据质量 (`content_basis`): {cb_label}", ""] if cb_label else []
+
             lines.extend(
                 [
                     f"### 步骤 {observation.get('step_no')}: {tool_name}",
@@ -1270,7 +1462,7 @@ def generate_markdown_report(
                     f"* 是否成功 (`success`): `{observation.get('success')}`",
                     f"* 输出摘要 (`output_summary`): {output_summary or '<none>'}",
                     f"* 错误信息 (`error_message`): {observation.get('error_message') or '<none>'}",
-                    "",
+                    *cb_line,
                     "关键证据片段：",
                     "",
                     "```text",

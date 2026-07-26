@@ -749,8 +749,27 @@ def plan_task(
     planner_mode: str | None = None,
     scenario_template: str | None = None,
     execution_mode_override: str | None = None,
+    skill_name: str | None = None,
 ) -> dict[str, Any]:
-    """Create a plan using deterministic rules or optional LLM planning."""
+    """Create a plan using deterministic rules, optional LLM planning, or a Skill template.
+
+    When skill_name is provided, the plan is generated from the Skill's step
+    template instead of keyword-matching. Falls back to deterministic if the
+    skill is not found.
+    """
+
+    # ── Phase 3: Skill-based planning ──────────────────────────────
+    if skill_name:
+        from app.skills.registry import get_skill as get_skill_def
+
+        skill = get_skill_def(skill_name)
+        if skill is not None:
+            plan = _skill_to_plan(skill, task, allowed_tools, source_mode)
+            plan["planner_source"] = "skill"
+            plan["llm_provider"] = None
+            plan["llm_model"] = None
+            return _apply_execution_mode(plan, execution_mode_override)
+        # Fall through to deterministic if skill not found
 
     mode = (planner_mode or settings.llm_planner_mode or "deterministic").lower()
     if mode not in {"deterministic", "llm", "auto"}:
@@ -1332,3 +1351,170 @@ def _synchronize_confirmation_notes(plan: dict[str, Any]) -> None:
     elif had_confirmation_note:
         notes.append("No confirmation-required step was selected for this plan.")
     plan["notes"] = notes
+
+
+# ── Phase 3: Skill-to-plan translation ──────────────────────────────
+
+_SKILL_PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}")
+
+
+def _resolve_skill_placeholder(
+    expr: str,
+    task: str,
+    compiled_steps: list[dict[str, Any]],
+    skill_params: dict[str, Any],
+) -> str:
+    """Resolve a single {{...}} placeholder expression.
+
+    Supported forms:
+      {{parameters.query}}    → skill_params["query"] or task
+      {{parameters.max_urls}} → skill_params["max_urls"] or default
+      {{steps[0].step_no}}    → compiled_steps[0]["step_no"] (as string)
+    """
+    if expr.startswith("parameters."):
+        param_name = expr[len("parameters."):]
+        value = skill_params.get(param_name)
+        if value is not None:
+            return str(value)
+        return task  # fallback for query-like params
+    if expr.startswith("steps["):
+        match = re.match(r"steps\[(\d+)\]\.(.*)", expr)
+        if match:
+            idx = int(match.group(1))
+            field = match.group(2)
+            if 0 <= idx < len(compiled_steps):
+                return str(compiled_steps[idx].get(field, ""))
+    return f"{{{{{expr}}}}}"  # unresolvable → leave as-is
+
+
+def _fill_skill_arguments(
+    arguments: dict[str, Any],
+    task: str,
+    compiled_steps: list[dict[str, Any]],
+    skill_params: dict[str, Any],
+) -> dict[str, Any]:
+    """Fill {{...}} placeholders in a skill step's arguments dict."""
+    result: dict[str, Any] = {}
+    for key, value in arguments.items():
+        if isinstance(value, str) and "{{" in value and "}}" in value:
+            # Replace all {{...}} in this string
+            result[key] = _SKILL_PLACEHOLDER_RE.sub(
+                lambda m: _resolve_skill_placeholder(m.group(1), task, compiled_steps, skill_params),
+                value,
+            )
+        else:
+            result[key] = value
+    return result
+
+
+def _fill_skill_arguments_from(
+    arguments_from: dict[str, Any] | None,
+    task: str,
+    compiled_steps: list[dict[str, Any]],
+    skill_params: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Fill {{...}} placeholders in arguments_from."""
+    if arguments_from is None:
+        return None
+    result: dict[str, Any] = {}
+    for key, value in arguments_from.items():
+        if isinstance(value, str) and "{{" in value and "}}" in value:
+            # Strip {{ }} wrapper before resolving
+            expr = value.strip()
+            if expr.startswith("{{") and expr.endswith("}}"):
+                expr = expr[2:-2].strip()
+            resolved = _resolve_skill_placeholder(expr, task, compiled_steps, skill_params)
+            # Try to convert step_no to int
+            if key == "step_no":
+                try:
+                    result[key] = int(resolved)
+                except (ValueError, TypeError):
+                    result[key] = resolved
+            else:
+                result[key] = resolved
+        else:
+            result[key] = value
+    return result
+
+
+def _skill_to_plan(
+    skill: Any,  # SkillDefinition
+    task: str,
+    allowed_tools: list[str] | None,
+    source_mode: str = "real",
+) -> dict[str, Any]:
+    """Convert a Skill definition into a plan dict that executors understand."""
+    allowed_set = set(allowed_tools) if allowed_tools is not None else None
+    notes: list[str] = [
+        f"Plan generated from skill '{skill.name}' v{skill.version}.",
+    ]
+    steps: list[dict[str, Any]] = []
+
+    # Build skill_params from task text
+    skill_params: dict[str, Any] = {"query": task}
+    if hasattr(skill, "parameters") and skill.parameters:
+        for pname, pdef in skill.parameters.items():
+            pdef_dict = pdef if isinstance(pdef, dict) else {}
+            skill_params.setdefault(pname, pdef_dict.get("default"))
+
+    # Compile step_no assignments first
+    compiled_steps: list[dict[str, Any]] = []
+    for i, skill_step in enumerate(skill.steps):
+        compiled_steps.append({
+            "step_no": i + 1,
+            "tool_name": skill_step.tool_name,
+        })
+
+    # Build actual plan steps
+    for i, skill_step in enumerate(skill.steps):
+        step_no = i + 1
+        tool_name = skill_step.tool_name
+
+        if allowed_set is not None and tool_name not in allowed_set:
+            notes.append(f"Skipped {tool_name}: not included in allowed_tools.")
+            continue
+
+        step = _step_template(tool_name, task)
+        step["step_no"] = step_no
+        step["tool_name"] = tool_name
+        if skill_step.goal:
+            step["goal"] = skill_step.goal
+
+        # Fill compile-time placeholders in arguments
+        step["arguments"] = _fill_skill_arguments(
+            skill_step.arguments, task, compiled_steps, skill_params,
+        )
+
+        # Fill arguments_from
+        resolved_from = _fill_skill_arguments_from(
+            skill_step.arguments_from, task, compiled_steps, skill_params,
+        )
+        if resolved_from is not None:
+            step["arguments_from"] = resolved_from
+
+        steps.append(step)
+
+    if not steps:
+        notes.append("No executable steps: all tools blocked by allowed_tools.")
+
+    default_allowed = DEFAULT_TOOL_ORDER.copy()
+    for spec in list_tools():
+        if (
+            spec.enabled
+            and "mcp_remote" in spec.tags
+            and tool_channel(spec) == "readonly"
+            and spec.name not in default_allowed
+        ):
+            default_allowed.append(spec.name)
+
+    return {
+        "version": "skill-v1",
+        "task": task,
+        "source_mode": source_mode,
+        "skill_name": skill.name,
+        "skill_version": skill.version,
+        "allowed_tools": allowed_tools if allowed_tools is not None else default_allowed,
+        "steps": steps,
+        "notes": notes,
+        "confirmation": None,
+    }

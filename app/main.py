@@ -4,10 +4,11 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.api import events, memory, reports, sessions, tasks, tools
+from app.api import events, memory, reports, sessions, skills, tasks, tools
 from app.config import settings
 from app.database import init_db
 from app.mcp import server as mcp_server
@@ -40,6 +41,8 @@ async def lifespan(app: FastAPI):
     )
     init_db()
     register_default_tools()
+    from app.skills.registry import init_skill_registry
+    init_skill_registry(Path("workspace/skills"))
     await _register_remote_mcp_tools_with_retry()
     yield
 
@@ -71,4 +74,5 @@ app.include_router(tools.router, prefix=settings.api_prefix)
 app.include_router(reports.router, prefix=settings.api_prefix)
 app.include_router(sessions.router, prefix=settings.api_prefix)
 app.include_router(memory.router, prefix=settings.api_prefix)
+app.include_router(skills.router, prefix=settings.api_prefix)
 app.include_router(mcp_server.router)

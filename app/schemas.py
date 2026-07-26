@@ -23,6 +23,7 @@ class TaskCreateRequest(BaseModel):
     scenario_template: str | None = None
     scenario_template_key: str | None = None
     session_id: str | None = None
+    skill_name: str | None = None
 
 
 class TaskCreateResponse(BaseModel):
@@ -330,3 +331,23 @@ class MemoryListResponse(BaseModel):
 
 class MemoryConfirmRequest(BaseModel):
     approved: bool
+
+
+# ── Skill schemas ─────────────────────────────────────────────────────
+
+class SkillListResponse(BaseModel):
+    skills: list[Any]
+
+
+class SkillDetailResponse(BaseModel):
+    name: str
+    version: str
+    description: str
+    required_tools: list[str]
+    parameters: dict[str, Any]
+    steps: list[dict[str, Any]]
+
+
+class SkillReloadResponse(BaseModel):
+    status: str
+    count: int

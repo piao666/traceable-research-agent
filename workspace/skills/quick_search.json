@@ -1,0 +1,28 @@
+{
+  "name": "quick_search",
+  "version": "1.0",
+  "description": "快速搜索：Tavily 搜索 → 直接生成报告（无全文抓取）",
+  "required_tools": ["tavily_search"],
+  "parameters": {
+    "query": {"type": "string", "required": true},
+    "max_results": {"type": "integer", "default": 5}
+  },
+  "steps": [
+    {
+      "tool_name": "tavily_search",
+      "goal": "快速搜索外部网页来源",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "max_results": "{{parameters.max_results}}",
+        "search_depth": "basic",
+        "include_answer": true,
+        "include_raw_content": false
+      }
+    },
+    {
+      "tool_name": "report_writer",
+      "goal": "基于搜索结果生成快速摘要报告",
+      "arguments": {}
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "name": "technical_docs_research",
+  "version": "1.0",
+  "description": "技术文档调研：GitHub 搜索 → 本地 RAG 检索 → 网页正文抓取 → 报告",
+  "required_tools": ["mcp_github_search", "rag_search", "web_fetcher"],
+  "parameters": {
+    "query": {"type": "string", "required": true},
+    "max_results": {"type": "integer", "default": 5}
+  },
+  "steps": [
+    {
+      "tool_name": "mcp_github_search",
+      "goal": "从 GitHub 搜索相关技术仓库和文档",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "limit": "{{parameters.max_results}}",
+        "search_type": "repositories"
+      }
+    },
+    {
+      "tool_name": "rag_search",
+      "goal": "从本地知识库检索相关技术文档",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "top_k": 5
+      }
+    },
+    {
+      "tool_name": "web_fetcher",
+      "goal": "抓取搜索结果中的相关网页正文",
+      "arguments": {
+        "urls": [],
+        "max_chars": 8000,
+        "timeout_seconds": 10
+      }
+    },
+    {
+      "tool_name": "report_writer",
+      "goal": "整合多源证据生成技术选型报告",
+      "arguments": {}
+    }
+  ]
+}

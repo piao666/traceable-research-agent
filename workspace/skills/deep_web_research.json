@@ -1,0 +1,39 @@
+{
+  "name": "deep_web_research",
+  "version": "1.0",
+  "description": "深度网页调研：搜索发现 URL → 正文抓取 → 证据压缩 → 报告",
+  "required_tools": ["tavily_search", "web_fetcher"],
+  "parameters": {
+    "query": {"type": "string", "required": true},
+    "max_urls": {"type": "integer", "default": 5}
+  },
+  "steps": [
+    {
+      "tool_name": "tavily_search",
+      "goal": "发现与查询相关的网页 URL 列表",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "max_results": "{{parameters.max_urls}}",
+        "include_raw_content": false
+      }
+    },
+    {
+      "tool_name": "web_fetcher",
+      "goal": "抓取上一步发现的所有 URL 正文",
+      "arguments": {
+        "urls": [],
+        "max_chars": 8000,
+        "timeout_seconds": 10
+      },
+      "arguments_from": {
+        "step_no": "{{steps[0].step_no}}",
+        "field": "results"
+      }
+    },
+    {
+      "tool_name": "report_writer",
+      "goal": "从抓取正文中提取证据并生成报告",
+      "arguments": {}
+    }
+  ]
+}

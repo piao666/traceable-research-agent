@@ -68,6 +68,10 @@ DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
     },
 }
 
+# Dynamically loaded from /api/skills — merged at display time
+_DYNAMIC_SKILLS: dict[str, dict[str, Any]] = {}
+_DYNAMIC_SKILLS_LOADED: bool = False
+
 EXECUTION_MODE_CN = {
     "planned": "固定计划",
     "react": "ReAct 动态决策",
@@ -131,9 +135,41 @@ def _template_allowed_tools(template: dict[str, Any]) -> list[str] | None:
     return list(tools) if isinstance(tools, list) else None
 
 
+def _load_dynamic_skills() -> dict[str, dict[str, Any]]:
+    """Fetch skill list from backend and merge with hardcoded templates."""
+    global _DYNAMIC_SKILLS, _DYNAMIC_SKILLS_LOADED
+    if _DYNAMIC_SKILLS_LOADED:
+        return _DYNAMIC_SKILLS
+    try:
+        skills_data = api_get("/api/skills", timeout=5)
+        for skill in skills_data.get("skills") or []:
+            name = str(skill.get("name") or "")
+            if name and name not in DEMO_TEMPLATES:
+                _DYNAMIC_SKILLS[name] = {
+                    "task": "",
+                    "description": str(skill.get("description") or ""),
+                    "allowed_tools": list(skill.get("required_tools") or []),
+                    "scenario_template_key": name,
+                    "skill_name": name,
+                    "is_skill": True,
+                }
+    except ApiError:
+        pass
+    _DYNAMIC_SKILLS_LOADED = True
+    return _DYNAMIC_SKILLS
+
+
+def _all_templates() -> dict[str, dict[str, Any]]:
+    """Merge hardcoded DEMO_TEMPLATES with dynamically loaded skills."""
+    merged = dict(DEMO_TEMPLATES)
+    merged.update(_load_dynamic_skills())
+    return merged
+
+
 def _current_template() -> dict[str, Any]:
-    name = st.session_state.get("selected_template", list(DEMO_TEMPLATES.keys())[0])
-    return DEMO_TEMPLATES.get(name) or list(DEMO_TEMPLATES.values())[0]
+    all_templates = _all_templates()
+    name = st.session_state.get("selected_template", list(all_templates.keys())[0])
+    return all_templates.get(name) or list(all_templates.values())[0]
 
 
 def _current_scenario_template_key() -> str:
@@ -831,7 +867,9 @@ def _sync_template_state() -> None:
     """
     template = _current_template()
     st.session_state.allowed_tools = _template_allowed_tools(template)
-    st.session_state.task_text = str(template.get("task") or "")
+    # Only overwrite task_text for hardcoded templates (not skills)
+    if not template.get("is_skill"):
+        st.session_state.task_text = str(template.get("task") or "")
     for key, empty_value in {
         "run_id": "",
         "last_task_response": None,
@@ -1529,14 +1567,17 @@ def render_sidebar() -> None:
         st.markdown("**场景模板**")
         st.selectbox(
             "选择演示场景",
-            list(DEMO_TEMPLATES.keys()),
+            list(_all_templates().keys()),
             key="selected_template",       # Streamlit 独占管理此 key，禁止在回调外赋值
             on_change=_sync_template_state,
             label_visibility="collapsed",
         )
-        template_description = str(_current_template().get("description") or "")
+        template = _current_template()
+        template_description = str(template.get("description") or "")
         if template_description:
             st.caption(template_description)
+        if template.get("is_skill"):
+            st.caption(f"📦 Skill 模板 · 工具: {', '.join(template.get('allowed_tools') or [])}")
         scenario_key = _current_scenario_template_key()
         if scenario_key in {"deep_web_research", "technical_docs_research"}:
             try:
@@ -1636,6 +1677,7 @@ def tab_task() -> None:
     col1, col2, col3 = st.columns([1.15, 1.15, 5])
     with col1:
         if st.button("创建任务", type="primary", use_container_width=True):
+            template = _current_template()
             payload = {
                 "task": task_text,
                 "allowed_tools": st.session_state.allowed_tools,
@@ -1645,6 +1687,7 @@ def tab_task() -> None:
                 "scenario_template": st.session_state.get("selected_template", ""),
                 "scenario_template_key": _current_scenario_template_key(),
                 "session_id": st.session_state.get("active_session_id") or None,
+                "skill_name": template.get("skill_name") or None,
             }
             try:
                 st.session_state.event_log = []
