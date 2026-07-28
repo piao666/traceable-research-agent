@@ -1523,7 +1523,8 @@ def render_sidebar() -> None:
 
         # ── 记忆面板 ────────────────────────────────────────────────
         st.markdown("**用户记忆**")
-        if st.button("加载记忆", use_container_width=True):
+        # Auto-load memories on first render
+        if st.session_state.get("memory_list") is None:
             st.session_state.memory_list = _load_memories()
 
         memory_list = st.session_state.get("memory_list")
@@ -1534,7 +1535,23 @@ def render_sidebar() -> None:
             st.caption(f"共 {total} 条记忆 · {active} 条活跃 · {pending} 条待确认")
 
             if total == 0:
-                st.info("完成 3 次调研后，系统将开始为您总结偏好。", icon="🧠")
+                # Dynamic cold-start progress — count completed runs via sessions
+                sessions_data = st.session_state.get("sessions") or []
+                completed_runs = 0
+                for s in sessions_data:
+                    completed_runs += int(s.get("turn_count") or 0)
+                completed_runs = max(completed_runs, 0)
+                threshold = 3
+                progress_pct = min(completed_runs / threshold, 1.0) if threshold > 0 else 1.0
+                st.progress(
+                    progress_pct,
+                    text=f"完成 {completed_runs}/{threshold} 次调研后，系统将开始为您总结偏好",
+                )
+            else:
+                # Refresh button
+                if st.button("🔄 刷新", key="mem_refresh", use_container_width=True):
+                    st.session_state.memory_list = _load_memories()
+                    st.rerun()
 
             memories = memory_list.get("memories") or []
             for mem in memories:
@@ -1550,18 +1567,34 @@ def render_sidebar() -> None:
                     st.text(mem.get("content", ""))
                     if mem.get("source_run_id"):
                         st.caption(f"来源 Run：{mem['source_run_id'][:16]}…")
+                    # Action buttons
+                    c_act = st.columns(3)
                     if mem.get("status") == "pending":
-                        c1, c2 = st.columns(2)
-                        if c1.button("确认", key=f"confirm_{mem['memory_id']}"):
+                        if c_act[0].button("✅ 确认", key=f"confirm_{mem['memory_id']}"):
                             if _confirm_memory(mem["memory_id"], True):
                                 st.session_state.memory_list = _load_memories()
                                 st.rerun()
-                        if c2.button("拒绝", key=f"reject_{mem['memory_id']}"):
+                        if c_act[1].button("❌ 拒绝", key=f"reject_{mem['memory_id']}"):
                             if _confirm_memory(mem["memory_id"], False):
                                 st.session_state.memory_list = _load_memories()
                                 st.rerun()
+                    # Delete button for any status
+                    if c_act[2].button("🗑️ 删除", key=f"del_{mem['memory_id']}"):
+                        if _delete_memory(mem["memory_id"]):
+                            st.session_state.memory_list = _load_memories()
+                            st.rerun()
+
+            # ── Clear all button ──────────────────────────────────
+            if total > 0:
+                if st.button("⚠️ 清空全部记忆", type="secondary", use_container_width=True):
+                    try:
+                        api_request("DELETE", "/api/memory", timeout=5)
+                        st.session_state.memory_list = _load_memories()
+                        st.rerun()
+                    except ApiError:
+                        st.error("清空失败")
         else:
-            st.caption("点击「加载记忆」查看")
+            st.caption("加载中…")
 
         st.divider()
         st.markdown("**场景模板**")

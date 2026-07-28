@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -235,32 +235,38 @@ def _export_run_evidence(
 
 @router.post("", response_model=TaskCreateResponse)
 async def create_task(
-    request: TaskCreateRequest,
+    task_request: TaskCreateRequest,
+    http_request: Request,
     db: Session = Depends(get_db),
 ) -> TaskCreateResponse:
     """Accept a task, create a pending run, and persist a deterministic plan."""
 
+    # Include tenant/user identity in config snapshot for post-completion hooks
+    ctx = getattr(http_request.state, "request_context", None)
+    safe_config = settings.get_safe_runtime_config_summary()
+    safe_config["tenant_id"] = ctx.tenant_id if ctx else settings.default_tenant_id
+    safe_config["user_id"] = ctx.user_id if ctx else settings.default_user_id
     run_config_snapshot = json.dumps(
-        settings.get_safe_runtime_config_summary(),
+        safe_config,
         ensure_ascii=False,
         sort_keys=True,
     )
     run = store.create_agent_run(
         db=db,
-        task=request.task,
-        report_type=request.report_type,
-        source_mode=request.source_mode,
-        allowed_tools=request.allowed_tools,
-        session_id=request.session_id,
+        task=task_request.task,
+        report_type=task_request.report_type,
+        source_mode=task_request.source_mode,
+        allowed_tools=task_request.allowed_tools,
+        session_id=task_request.session_id,
         run_config_snapshot=run_config_snapshot,
     )
     plan = plan_task(
-        task=request.task,
-        allowed_tools=request.allowed_tools,
-        source_mode=request.source_mode,
-        scenario_template=request.scenario_template_key or request.scenario_template,
-        execution_mode_override=request.execution_mode_override,
-        skill_name=request.skill_name,
+        task=task_request.task,
+        allowed_tools=task_request.allowed_tools,
+        source_mode=task_request.source_mode,
+        scenario_template=task_request.scenario_template_key or task_request.scenario_template,
+        execution_mode_override=task_request.execution_mode_override,
+        skill_name=task_request.skill_name,
     )
     plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
     plan.setdefault("execution_mode", settings.execution_mode)

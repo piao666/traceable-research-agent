@@ -18,8 +18,76 @@ from app.mcp.policy import MCPChannel, requires_interactive_confirmation, tool_c
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool, get_tool
 from app.trace import store
-from app.trace.logger import record_tool_result
+from app.trace.logger import record_tool_result, record_trace_event
 from app.trace.models import AgentRun
+
+
+def _after_run_completed(
+    db: Session,
+    run: AgentRun,
+    markdown: str,
+    step_no: int,
+) -> None:
+    """Post-completion hooks: ChatTurn creation + memory extraction.
+
+    Called after report generation succeeds, before status is set to completed.
+    """
+    import json as _json
+
+    # ── Extract tenant_id / user_id from config snapshot ────────────
+    tenant_id = "demo"
+    user_id = "local-user"
+    if run.run_config_snapshot:
+        try:
+            snap = _json.loads(run.run_config_snapshot)
+            if isinstance(snap, dict):
+                tenant_id = str(snap.get("tenant_id") or tenant_id)
+                user_id = str(snap.get("user_id") or user_id)
+        except Exception:
+            pass
+
+    # ── Create ChatTurn ─────────────────────────────────────────────
+    if run.session_id:
+        try:
+            from app.memory.store import create_chat_turn
+
+            summary = markdown[:500].replace("\n", " ").strip()
+            create_chat_turn(
+                db,
+                run.session_id,
+                "agent",
+                summary or run.task,
+                run_id=run.run_id,
+            )
+        except Exception:
+            pass  # ChatTurn failure must not block run completion
+
+    # ── Memory extraction ───────────────────────────────────────────
+    try:
+        from app.memory.extractor import (
+            commit_pending_memories,
+            extract_preferences_from_run,
+            should_extract_for_run,
+        )
+
+        if should_extract_for_run(db, tenant_id, user_id):
+            candidates = extract_preferences_from_run(db, run, tenant_id, user_id)
+            new_count = commit_pending_memories(
+                db, tenant_id, user_id, run, candidates
+            )
+            if new_count > 0:
+                record_trace_event(
+                    db=db,
+                    run_id=run.run_id,
+                    step_no=step_no,
+                    tool_name="memory_extraction",
+                    status="success",
+                    input_data={"tenant_id": tenant_id, "user_id": user_id},
+                    output_summary=f"Extracted {new_count} new pending memories",
+                    output_data={"new_pending": new_count},
+                )
+    except Exception:
+        pass  # Extraction failure must not block run completion
 
 
 EXECUTABLE_TOOLS = {
@@ -281,6 +349,7 @@ def run_plan(
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)
         run = store.update_agent_run_status(db, run_id, "completed", None)
+        _after_run_completed(db, run, markdown, step_no=0)
         return _summary(run)
     except Exception as exc:
         run = store.update_agent_run_status(db, run_id, "failed", str(exc))

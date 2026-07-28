@@ -732,13 +732,15 @@ def _append_step(
 
 
 
-def _apply_execution_mode(plan: dict, override: str | None) -> dict:
+def _apply_execution_mode(plan: dict, override: str | None, extra: dict | None = None) -> dict:
     """Write execution_mode into plan from override or global settings."""
     effective = (override or settings.execution_mode or "planned").strip().lower()
     if effective not in ("planned", "react"):
         effective = "planned"
     plan["execution_mode"] = effective
     plan["requested_execution_mode"] = effective
+    if extra:
+        plan.update(extra)
     return plan
 
 
@@ -758,6 +760,27 @@ def plan_task(
     skill is not found.
     """
 
+    # ── Phase 4: Memory injection ──────────────────────────────────
+    injected_memory_context = ""
+    try:
+        from app.database import SessionLocal
+        from app.memory.retriever import retrieve_for_injection
+
+        db = SessionLocal()
+        try:
+            _, injected_memory_context = retrieve_for_injection(
+                db,
+                tenant_id="demo",
+                user_id="local-user",
+                task=task,
+            )
+        finally:
+            db.close()
+    except Exception:
+        pass  # Memory injection failure must not block planning
+
+    _memory_extra = {"injected_memory_context": injected_memory_context} if injected_memory_context else {}
+
     # ── Phase 3: Skill-based planning ──────────────────────────────
     if skill_name:
         from app.skills.registry import get_skill as get_skill_def
@@ -768,7 +791,7 @@ def plan_task(
             plan["planner_source"] = "skill"
             plan["llm_provider"] = None
             plan["llm_model"] = None
-            return _apply_execution_mode(plan, execution_mode_override)
+            return _apply_execution_mode(plan, execution_mode_override, _memory_extra)
         # Fall through to deterministic if skill not found
 
     mode = (planner_mode or settings.llm_planner_mode or "deterministic").lower()
@@ -780,7 +803,7 @@ def plan_task(
         plan["planner_source"] = "deterministic"
         plan["llm_provider"] = None
         plan["llm_model"] = None
-        return _apply_execution_mode(plan, execution_mode_override)
+        return _apply_execution_mode(plan, execution_mode_override, _memory_extra)
 
     should_try_llm = mode == "llm" or (mode == "auto" and settings.llm_planner_enabled)
     if should_try_llm:
@@ -825,9 +848,8 @@ def plan_task(
                     )
                     normalize_plan_arguments(normalized, task, source_mode)
                     _apply_requested_result_count(normalized, task)
-                    return _apply_execution_mode(normalized, execution_mode_override)
+                    return _apply_execution_mode(normalized, execution_mode_override, _memory_extra)
                 fallback_reason = "LLM output failed schema validation; used deterministic fallback."
-            else:
                 fallback_reason = "LLM output was not valid JSON; used deterministic fallback."
         elif response.error_message:
             fallback_reason = f"{response.error_message}; used deterministic fallback."
@@ -839,7 +861,7 @@ def plan_task(
         plan["notes"] = list(plan.get("notes") or []) + [_safe_fallback_reason(fallback_reason)]
         _synchronize_confirmation_notes(plan)
         _apply_requested_result_count(plan, task)
-        return _apply_execution_mode(plan, execution_mode_override)
+        return _apply_execution_mode(plan, execution_mode_override, _memory_extra)
 
     plan = deterministic_plan_task(task, allowed_tools, source_mode, scenario_template)
     plan["planner_source"] = "deterministic"
@@ -847,7 +869,7 @@ def plan_task(
     plan["llm_model"] = None
     _synchronize_confirmation_notes(plan)
     _apply_requested_result_count(plan, task)
-    return _apply_execution_mode(plan, execution_mode_override)
+    return _apply_execution_mode(plan, execution_mode_override, _memory_extra)
 
 
 def deterministic_plan_task(

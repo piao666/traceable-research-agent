@@ -17,6 +17,7 @@ from app.agent.file_access_policy import file_reader_execution_arguments
 from app.agent.report_generation import resolve_report_llm_client
 from app.agent.executor import (
     EXECUTABLE_TOOLS,
+    _after_run_completed,
     _failed_observation,
     _is_step_confirmed,
     _resolve_arguments_from,
@@ -456,6 +457,7 @@ def run_plan_parallel(
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)
         run = store.update_agent_run_status(db, run_id, "completed", None)
+        _after_run_completed(db, run, markdown, step_no=0)
         return _summary(run)
     except Exception as exc:
         run = store.update_agent_run_status(db, run_id, "failed", str(exc))

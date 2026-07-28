@@ -10,6 +10,13 @@ from app.tools.tavily_search import tavily_search_handler
 from app.tools.web_fetcher import web_fetch
 
 
+def _memory_search_handler(arguments: dict) -> "ToolResult":
+    """Lazy-import wrapper so defaults.py does not eagerly depend on app.memory."""
+    from app.memory.retriever import memory_search_handler
+
+    return memory_search_handler(arguments)
+
+
 def register_default_tools() -> None:
     """Register default tools, wiring implemented Phase 2 handlers."""
 
@@ -108,7 +115,7 @@ def register_default_tools() -> None:
             risk_level=RiskLevel.LOW,
             tags=["memory", "search", "read-only"],
         ),
-        handler=None,  # handler implemented in Phase 4 (vector recall)
+        handler=_memory_search_handler,
     )
     register_tool(
         ToolSpec(
