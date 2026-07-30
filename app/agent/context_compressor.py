@@ -158,3 +158,73 @@ def has_useful_evidence(observations: list[dict[str, Any]]) -> bool:
         if output or obs.get("observation_summary"):
             return True
     return False
+
+
+# ── Phase 5: Deepening context compression ──────────────────────────
+
+def compress_deepening_context(
+    rounds: list[dict[str, Any]],
+    max_total_chars: int = 8000,
+) -> str:
+    """Compress multi-round deepening context for LLM synthesis.
+
+    Each round dict: {round_num, learnings, observations, follow_up_queries}
+
+    Strategy: newest rounds get full detail; oldest rounds get learnings-only.
+    If still over budget, truncate oldest learnings proportionally.
+    """
+    if not rounds:
+        return ""
+
+    parts: list[str] = []
+    # Newest first for truncation priority
+    reversed_rounds = list(reversed(rounds))
+
+    for r in reversed_rounds:
+        rn = r.get("round_num", 0)
+        learnings = r.get("learnings") or []
+        follow_ups = r.get("follow_up_queries") or []
+        obs_text = r.get("compressed_observations") or ""
+
+        chunk = f"--- Round {rn} ---\n"
+        if learnings:
+            chunk += "Learnings:\n" + "\n".join(f"  - {l}" for l in learnings) + "\n"
+        if follow_ups:
+            chunk += "Follow-ups:\n" + "\n".join(f"  - {q}" for q in follow_ups) + "\n"
+        if obs_text:
+            chunk += f"Observations:\n{obs_text}\n"
+        parts.append(chunk)
+
+    # Join and truncate if needed
+    full = "\n".join(parts)
+    if len(full) <= max_total_chars:
+        return full
+
+    # Truncate proportionally: keep newest rounds, drop oldest detail
+    kept: list[str] = []
+    budget = max_total_chars
+    for i, part in enumerate(parts):
+        if i == 0:
+            # Newest round: keep as much as possible
+            if len(part) <= budget:
+                kept.append(part)
+                budget -= len(part)
+            else:
+                kept.append(part[:budget] + "\n...")
+                break
+        else:
+            # Older rounds: keep only learnings summary
+            lines = part.split("\n")
+            header = lines[0] if lines else ""
+            learning_lines = [l for l in lines if l.strip().startswith("  -")]
+            summary = header + "\n" + "\n".join(learning_lines[:5]) + "\n"
+            if len(summary) <= budget:
+                kept.append(summary)
+                budget -= len(summary)
+            elif budget > 200:
+                kept.append(summary[:budget])
+                break
+            else:
+                break
+
+    return "\n".join(kept)

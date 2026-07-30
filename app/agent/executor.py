@@ -67,11 +67,26 @@ def _after_run_completed(
         from app.memory.extractor import (
             commit_pending_memories,
             extract_preferences_from_run,
+            extract_preferences_with_llm,
             should_extract_for_run,
         )
 
         if should_extract_for_run(db, tenant_id, user_id):
+            # Rule-based extraction (always runs)
             candidates = extract_preferences_from_run(db, run, tenant_id, user_id)
+
+            # LLM-based extraction (optional, Phase 5)
+            if _exec_settings.memory_llm_extraction_enabled:
+                try:
+                    from app.llm.providers import create_llm_client
+                    llm = create_llm_client(_exec_settings)
+                    llm_candidates = extract_preferences_with_llm(
+                        run, [], llm,
+                    )
+                    candidates.extend(llm_candidates)
+                except Exception:
+                    pass  # LLM extraction failure → continue with rule-only
+
             new_count = commit_pending_memories(
                 db, tenant_id, user_id, run, candidates
             )

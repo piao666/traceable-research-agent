@@ -1924,7 +1924,190 @@ def tab_trace() -> None:
             mc2.metric("LLM 模型",   status_obj.get("llm_model", "—"))
 
 
-FOLDED_REPORT_SECTION_PREFIXES = ("## 4.", "## 5.", "## 6.", "## 7.", "## 8.")
+def _evidence_card_html(
+    label: str,
+    passage: dict[str, Any],
+    relation: str = "supports",
+    source_uri: str = "",
+    source_title: str = "",
+) -> str:
+    """Build an HTML evidence card for a citation badge hover/popover."""
+    text = str(passage.get("text") or "")[:500]
+    cb = str(passage.get("content_basis") or "snippet_only")
+    cb_label = {"full_text": "🌐 全文", "partial": "📄 部分截断", "snippet_only": "📎 仅摘要"}.get(cb, cb)
+    rel_icon = {"supports": "✅ 支持", "refutes": "❌ 反驳", "contextualizes": "ℹ️ 背景"}.get(relation, relation)
+    source_display = source_title or source_uri[:80] or "—"
+    if source_uri and source_uri.startswith(("http://", "https://")):
+        source_display = f'<a href="{html.escape(source_uri)}" target="_blank">{html.escape(source_display)}</a>'
+
+    return textwrap.dedent(f"""
+    <div style="border:1px solid #CBD5E1;border-radius:8px;padding:12px;margin:8px 0;background:#F8FAFC;font-size:13px;">
+        <div style="font-weight:800;margin-bottom:6px;">[{html.escape(label)}] {rel_icon}</div>
+        <div style="color:#526278;margin-bottom:4px;">来源: {source_display}</div>
+        <div style="color:#526278;margin-bottom:6px;">证据质量: {cb_label}</div>
+        <div style="border-left:3px solid #078F80;padding-left:10px;color:#142033;max-height:120px;overflow-y:auto;">
+            {html.escape(text)}
+        </div>
+    </div>
+    """).strip()
+
+
+def _build_citation_map(
+    provenance: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    """Build a lookup: citation_label → {passage, relation, source_uri, source_title}."""
+    if not provenance:
+        return {}
+    passages = {p["passage_id"]: p for p in provenance.get("passages") or []}
+    docs = {d["document_id"]: d for d in provenance.get("source_documents") or []}
+    snapshots = {s["snapshot_id"]: s for s in provenance.get("source_snapshots") or []}
+
+    # Build edge lookup
+    edge_relations: dict[str, str] = {}
+    for edge in provenance.get("edges") or []:
+        edge_relations[edge.get("edge_id") or ""] = edge.get("relation", "supports")
+
+    citation_map: dict[str, dict[str, Any]] = {}
+    for citation in provenance.get("citations") or []:
+        label = citation.get("citation_label")
+        if not label:
+            continue
+        passage = passages.get(citation.get("passage_id")) or {}
+        edge_id = citation.get("edge_id") or ""
+        relation = edge_relations.get(edge_id, "supports")
+
+        # Find source info
+        snapshot = snapshots.get(passage.get("snapshot_id")) or {}
+        doc = docs.get(snapshot.get("document_id")) or {}
+
+        citation_map[label] = {
+            "passage": passage,
+            "relation": relation,
+            "source_uri": doc.get("canonical_uri") or "",
+            "source_title": doc.get("title") or "",
+        }
+
+    return citation_map
+
+
+def _render_conflict_dashboard(provenance: dict[str, Any] | None) -> None:
+    """Render the Phase 5 conflict dashboard: refutes/unresolved claims side by side."""
+    if not provenance:
+        return
+
+    resolutions = provenance.get("resolutions") or []
+    disputed = [
+        r for r in resolutions
+        if r.get("status") in ("unresolved", "requires_human")
+    ]
+    if not disputed:
+        return
+
+    claims = {c.get("claim_id"): c for c in provenance.get("claims") or []}
+    report_claims = {rc.get("claim_id"): rc for rc in provenance.get("report_claims") or []}
+    passages = {p["passage_id"]: p for p in provenance.get("passages") or []}
+
+    # Build edge grouping by claim
+    edges_by_claim: dict[str, list[dict[str, Any]]] = {}
+    for edge in provenance.get("edges") or []:
+        edges_by_claim.setdefault(edge.get("claim_id") or "", []).append(edge)
+
+    citations_by_edge: dict[str, list[dict[str, Any]]] = {}
+    for citation in provenance.get("citations") or []:
+        citations_by_edge.setdefault(citation.get("edge_id") or "", []).append(citation)
+
+    st.markdown("---")
+    st.markdown("### ⚠️ 冲突仪表板")
+    st.markdown(
+        '<p class="section-tip">以下结论存在未解决的证据冲突。'
+        '系统不选择单一答案，而是展示双方证据供您判断。</p>',
+        unsafe_allow_html=True,
+    )
+
+    for resolution in disputed:
+        claim_id = resolution.get("claim_id") or ""
+        claim = claims.get(claim_id) or {}
+        rc = report_claims.get(claim_id) or {}
+        claim_text = rc.get("claim_text") or claim.get("claim_text") or claim_id
+
+        status = resolution.get("status", "unresolved")
+        status_label = "🔴 未解决" if status == "unresolved" else "🟡 待人工判断"
+        confidence = resolution.get("confidence", 0)
+
+        with st.expander(f"{status_label} | {claim_text[:100]}… (置信度: {confidence:.2f})", expanded=True):
+            col_support, col_refute = st.columns(2)
+
+            # Supporting evidence
+            with col_support:
+                st.markdown("**✅ 支持证据**")
+                support_edges = [
+                    e for e in edges_by_claim.get(claim_id, [])
+                    if e.get("relation") == "supports"
+                ]
+                if support_edges:
+                    for edge in support_edges[:3]:
+                        edge_citations = citations_by_edge.get(edge.get("edge_id"), [])
+                        for cit in edge_citations[:2]:
+                            passage = passages.get(cit.get("passage_id")) or {}
+                            cb = passage.get("content_basis", "snippet_only")
+                            cb_label = {"full_text": "🌐", "partial": "📄", "snippet_only": "📎"}.get(cb, "📎")
+                            st.caption(f"{cb_label} [{cit.get('citation_label', '?')}] {str(passage.get('text', ''))[:250]}…")
+                else:
+                    st.caption("无支持证据")
+
+            # Refuting evidence
+            with col_refute:
+                st.markdown("**❌ 反驳证据**")
+                refute_edges = [
+                    e for e in edges_by_claim.get(claim_id, [])
+                    if e.get("relation") == "refutes"
+                ]
+                if refute_edges:
+                    for edge in refute_edges[:3]:
+                        edge_citations = citations_by_edge.get(edge.get("edge_id"), [])
+                        for cit in edge_citations[:2]:
+                            passage = passages.get(cit.get("passage_id")) or {}
+                            cb = passage.get("content_basis", "snippet_only")
+                            cb_label = {"full_text": "🌐", "partial": "📄", "snippet_only": "📎"}.get(cb, "📎")
+                            st.caption(f"{cb_label} [{cit.get('citation_label', '?')}] {str(passage.get('text', ''))[:250]}…")
+                else:
+                    st.caption("无反駁证据")
+
+            # Quality metrics
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("支持来源数", resolution.get("independent_support_count", 0))
+            mc2.metric("反驳来源数", resolution.get("independent_refute_count", 0))
+            mc3.metric("支持质量", f"{resolution.get('support_quality', 0):.2f}")
+            mc4.metric("反驳质量", f"{resolution.get('refute_quality', 0):.2f}")
+
+    st.markdown("---")
+
+
+def _render_citation_badges(markdown: str, citation_map: dict[str, dict[str, Any]]) -> str:
+    """Replace [CIT-XXX-XX] with styled HTML badges that have tooltips."""
+    if not citation_map:
+        return markdown
+
+    def badge_replacer(match: re.Match[str]) -> str:
+        label = match.group(1)
+        info = citation_map.get(label)
+        if not info:
+            return match.group(0)
+
+        relation = info.get("relation", "supports")
+        color = {"supports": "#15803D", "refutes": "#B91C1C", "contextualizes": "#6B7280"}.get(relation, "#6B7280")
+        passage_text = str(info.get("passage", {}).get("text", ""))[:120].replace('"', '&quot;').replace("'", "&#39;")
+
+        return (
+            f'<sup><span style="cursor:help;color:{color};font-weight:800;'
+            f'border-bottom:1px dotted {color};" '
+            f'title="{html.escape(passage_text)}">[{html.escape(label)}]</span></sup>'
+        )
+
+    return CITATION_RE.sub(badge_replacer, markdown)
+
+# ── Phase 5: Citation regex ─────────────────────────────────────────
+CITATION_RE = re.compile(r"\[(CIT-\d{3}-\d{2})\]")
 
 
 def _split_report_markdown(markdown: str) -> list[tuple[str, str]]:
@@ -1968,12 +2151,15 @@ def _collapse_key_evidence_blocks(markdown: str) -> str:
     return pattern.sub(replace, markdown)
 
 
-def render_report_markdown(markdown: str) -> None:
+def render_report_markdown(markdown: str, citation_map: dict[str, Any] | None = None) -> None:
+    cmap = citation_map or {}
     for heading, body in _split_report_markdown(markdown):
         if heading.startswith(HIDDEN_REPORT_SECTION_PREFIXES):
             continue
         should_fold = heading.startswith(FOLDED_REPORT_SECTION_PREFIXES)
         rendered = _collapse_key_evidence_blocks(body)
+        if cmap:
+            rendered = _render_citation_badges(rendered, cmap)
         if should_fold:
             with st.expander(_report_section_label(heading, body), expanded=False):
                 st.markdown(rendered, unsafe_allow_html=True)
@@ -2016,8 +2202,18 @@ def tab_report() -> None:
 
     render_evidence_summary()
 
+    # ── Phase 5: Provenance for conflict dashboard + citation badges ─
+    provenance: dict[str, Any] | None = None
+    try:
+        provenance = api_get(f"/api/tasks/{run_id}/evidence/v2", timeout=10)
+    except ApiError:
+        pass
+
+    _render_conflict_dashboard(provenance)
+
     st.divider()
-    render_report_markdown(md)
+    citation_map = _build_citation_map(provenance)
+    render_report_markdown(md, citation_map)
     run_id = st.session_state.get("run_id", "")
     dl1, dl2, dl3 = st.columns(3)
     dl1.download_button(

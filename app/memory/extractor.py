@@ -290,3 +290,113 @@ def count_completed_runs(db: Session, tenant_id: str, user_id: str) -> int:
         )
         or 0
     )
+
+
+# ── Phase 5: LLM-based memory distillation ──────────────────────────
+
+_LLM_EXTRACTION_SYSTEM = """You are a user profile analyst. Given a research task description and
+the tool observations collected, extract the user's preferences and interests.
+
+Output ONLY valid JSON:
+{
+  "preferences": [
+    {"kind": "preference|interest|fact", "content": "one-sentence description", "confidence": 0.7}
+  ]
+}
+
+Rules:
+- kind: "preference" for format/language/workflow choices, "interest" for research topics, "fact" for known facts
+- content: concise one-sentence description in the user's preferred language
+- confidence: 0.0-1.0 based on how clearly the signal appears
+- Only extract signals that are clearly evidenced — do not guess
+- Return empty preferences array if no clear signals found
+- Max 5 preferences total"""
+
+
+def extract_preferences_with_llm(
+    run: AgentRun,
+    observations: list[dict[str, Any]],
+    llm_client: Any,
+) -> list[dict[str, Any]]:
+    """Use LLM to distill user preferences from a completed run.
+
+    Args:
+        run: The completed AgentRun.
+        observations: The tool observations from the run.
+        llm_client: An available LLMClient instance.
+
+    Returns:
+        List of candidate preference dicts (kind, extraction_method="llm",
+        content, confidence, source_run_id).
+    """
+    if llm_client is None or not llm_client.is_available():
+        return []
+
+    # Build compact observation summary
+    obs_parts: list[str] = []
+    for obs in observations[-15:]:
+        tool = obs.get("tool_name") or obs.get("action") or "unknown"
+        summary = obs.get("output_summary") or obs.get("observation_summary") or ""
+        if summary:
+            obs_parts.append(f"[{tool}] {str(summary)[:300]}")
+    obs_text = "\n".join(obs_parts) if obs_parts else "(no observations)"
+
+    try:
+        from app.llm.base import LLMMessage
+
+        messages = [
+            LLMMessage(role="system", content=_LLM_EXTRACTION_SYSTEM),
+            LLMMessage(
+                role="user",
+                content=(
+                    f"Research task: {run.task}\n\n"
+                    f"Tool observations:\n{obs_text}\n\n"
+                    "Extract user preferences from this research session."
+                ),
+            ),
+        ]
+        response = llm_client.complete(messages, temperature=0.0, max_tokens=600)
+        if not response.success or not response.content:
+            return []
+
+        # Parse JSON from response
+        import json as _json
+        import re as _re
+
+        text = response.content.strip()
+        match = _re.search(r"\{.*\}", text, _re.DOTALL)
+        if not match:
+            return []
+        parsed = _json.loads(match.group(0))
+        if not isinstance(parsed, dict):
+            return []
+
+        prefs = parsed.get("preferences") or []
+        if not isinstance(prefs, list):
+            return []
+
+        candidates: list[dict[str, Any]] = []
+        for pref in prefs[:5]:
+            if not isinstance(pref, dict):
+                continue
+            kind = str(pref.get("kind") or "preference")
+            content = str(pref.get("content") or "").strip()
+            if not content:
+                continue
+            try:
+                confidence = float(pref.get("confidence") or 0.5)
+            except (TypeError, ValueError):
+                confidence = 0.5
+            confidence = max(0.1, min(confidence, 1.0))
+
+            candidates.append({
+                "kind": kind if kind in ("preference", "interest", "fact") else "preference",
+                "extraction_method": "llm",
+                "content": content,
+                "confidence": confidence,
+                "source_run_id": run.run_id,
+            })
+
+        return candidates
+    except Exception:
+        return []

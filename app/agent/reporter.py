@@ -917,6 +917,50 @@ def _render_provenance_markdown(bundle: dict[str, Any] | None) -> list[str]:
     return lines
 
 
+def _render_citation_index(bundle: dict[str, Any] | None) -> list[str]:
+    """Build a citation reference index for inline citation badges.
+
+    Each entry maps citation_label → passage text + source info + relation.
+    """
+    if not bundle:
+        return []
+    passages = {item["passage_id"]: item for item in bundle.get("passages") or []}
+    citations = bundle.get("citations") or []
+    if not citations:
+        return []
+
+    lines = [
+        "## 9. 引用索引",
+        "",
+        "| 引用编号 | 关系 | 证据质量 | 来源 | 原文片段 |",
+        "|----------|------|----------|------|----------|",
+    ]
+
+    for citation in citations:
+        label = citation.get("citation_label", "?")
+        passage = passages.get(citation.get("passage_id")) or {}
+        passage_text = str(passage.get("text") or "")[:120].replace("\n", " ").replace("|", "\\|")
+        cb = _content_basis_label(passage)
+        source_uri = str(passage.get("locator", {}).get("uri") or "")
+        source_display = source_uri[:60] if source_uri else "—"
+
+        # Find relation from edges
+        edge_id = citation.get("edge_id")
+        relation = "supports"
+        for edge in bundle.get("edges") or []:
+            if edge.get("edge_id") == edge_id:
+                relation = edge.get("relation", "supports")
+                break
+        relation_icon = {"supports": "✅", "refutes": "❌", "contextualizes": "ℹ️"}.get(relation, "—")
+
+        lines.append(
+            f"| [{label}] | {relation_icon} {relation} | {cb} | {source_display} | {passage_text} |"
+        )
+
+    lines.append("")
+    return lines
+
+
 def _conflict_alert_lines(bundle: dict[str, Any] | None) -> list[str]:
     if not bundle:
         return []
@@ -1523,6 +1567,7 @@ def generate_markdown_report(
     else:
         lines.extend(["未记录可执行工具的观察结果。", ""])
 
+    lines.extend(_render_citation_index(provenance_bundle))
     lines.extend(_render_provenance_markdown(provenance_bundle))
     lines.extend(_render_reasoning_markdown(provenance_bundle))
 

@@ -35,6 +35,9 @@ def run_task_by_mode(
     effective_mode = plan_mode or settings_obj.execution_mode
     if effective_mode == "react" and settings_obj.react_enabled:
         from app.agent.react_executor import run_react_task
+        if settings_obj.deep_research_enabled:
+            from app.agent.deepening import run_deepening
+            return run_deepening(db, run_id, settings_obj, llm_client=llm_client)
         return run_react_task(db, run_id, settings_obj, llm_client=llm_client)
     if effective_mode == "planned" and settings_obj.parallel_execution_enabled:
         from app.agent.parallel_executor import run_plan_parallel

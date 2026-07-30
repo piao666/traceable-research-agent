@@ -107,6 +107,10 @@ class Settings(BaseModel):
     rag_bm25_candidate_multiplier: int = 2
     rag_chunk_experiment_sizes: str = "256,512,1024"
     rag_chunk_experiment_output: str = "workspace/eval_outputs/rag_chunk_experiment_results.json"
+    deep_research_enabled: bool = False
+    deep_research_max_depth: int = 2
+    deep_research_breadth: int = 3
+    memory_llm_extraction_enabled: bool = False
 
     @field_validator("external_tools_default_mode", mode="before")
     @classmethod
@@ -224,6 +228,16 @@ class Settings(BaseModel):
     def validate_parallel_group_strategy(cls, value: object) -> str:
         normalized = str(value or "independent_tools").strip().lower()
         return normalized if normalized in {"independent_tools"} else "independent_tools"
+
+    @field_validator("deep_research_max_depth", mode="before")
+    @classmethod
+    def validate_deep_research_max_depth(cls, value: object) -> int:
+        return _bounded_value(value, 2, 1, 5)
+
+    @field_validator("deep_research_breadth", mode="before")
+    @classmethod
+    def validate_deep_research_breadth(cls, value: object) -> int:
+        return _bounded_value(value, 3, 1, 10)
 
     @field_validator("react_max_steps", mode="before")
     @classmethod
@@ -445,6 +459,10 @@ class Settings(BaseModel):
                 "workspace/eval_outputs/rag_chunk_experiment_results.json",
             ).strip()
             or "workspace/eval_outputs/rag_chunk_experiment_results.json",
+            deep_research_enabled=_env_bool("DEEP_RESEARCH_ENABLED", False),
+            deep_research_max_depth=_env_bounded_int("DEEP_RESEARCH_MAX_DEPTH", 2, 1, 5),
+            deep_research_breadth=_env_bounded_int("DEEP_RESEARCH_BREADTH", 3, 1, 10),
+            memory_llm_extraction_enabled=_env_bool("MEMORY_LLM_EXTRACTION_ENABLED", False),
         )
 
     def get_llm_api_key(self, provider: str) -> str | None:
@@ -544,6 +562,10 @@ class Settings(BaseModel):
             "source_policy_path": self.source_policy_path,
             "github_token_configured": bool(self.github_token),
             "tavily_configured": bool(self.tavily_api_key),
+            "deep_research_enabled": self.deep_research_enabled,
+            "deep_research_max_depth": self.deep_research_max_depth,
+            "deep_research_breadth": self.deep_research_breadth,
+            "memory_llm_extraction_enabled": self.memory_llm_extraction_enabled,
         }
 
     def get_safe_auth_config_summary(self) -> dict:
