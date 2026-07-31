@@ -752,34 +752,70 @@ def plan_task(
     scenario_template: str | None = None,
     execution_mode_override: str | None = None,
     skill_name: str | None = None,
+    tenant_id: str = "demo",
+    user_id: str = "local-user",
 ) -> dict[str, Any]:
     """Create a plan using deterministic rules, optional LLM planning, or a Skill template.
 
     When skill_name is provided, the plan is generated from the Skill's step
     template instead of keyword-matching. Falls back to deterministic if the
     skill is not found.
+
+    tenant_id and user_id are used for memory retrieval and should come from
+    the API request context when available.
     """
 
     # ── Phase 4: Memory injection ──────────────────────────────────
     injected_memory_context = ""
+    _memory_recall_data: dict[str, Any] = {}
     try:
         from app.database import SessionLocal
+        from app.memory.policy import (
+            build_cold_start_trace_event,
+            build_memory_recall_trace_event,
+            build_memory_injection_trimmed_trace_event,
+        )
         from app.memory.retriever import retrieve_for_injection
 
         db = SessionLocal()
         try:
-            _, injected_memory_context = retrieve_for_injection(
+            selected, injected_memory_context = retrieve_for_injection(
                 db,
-                tenant_id="demo",
-                user_id="local-user",
+                tenant_id=tenant_id,
+                user_id=user_id,
                 task=task,
             )
+            # Build the appropriate trace event payload
+            if not selected:
+                _memory_recall_data = build_cold_start_trace_event()
+            else:
+                total_active = len(selected)
+                injected_chars = len(injected_memory_context)
+                memory_ids = [m.memory_id for m in selected]
+                max_budget = 800
+                if total_active > len(selected):
+                    _memory_recall_data = build_memory_injection_trimmed_trace_event(
+                        total=total_active,
+                        selected=len(selected),
+                        injected_chars=injected_chars,
+                        max_chars=max_budget,
+                    )
+                else:
+                    _memory_recall_data = build_memory_recall_trace_event(
+                        recalled=len(selected),
+                        injected_chars=injected_chars,
+                        memory_ids=memory_ids,
+                    )
         finally:
             db.close()
     except Exception:
         pass  # Memory injection failure must not block planning
 
-    _memory_extra = {"injected_memory_context": injected_memory_context} if injected_memory_context else {}
+    _memory_extra: dict[str, Any] = {}
+    if injected_memory_context:
+        _memory_extra["injected_memory_context"] = injected_memory_context
+    if _memory_recall_data:
+        _memory_extra["memory_recall_trace"] = _memory_recall_data
 
     # ── Phase 3: Skill-based planning ──────────────────────────────
     if skill_name:
@@ -1385,19 +1421,21 @@ def _resolve_skill_placeholder(
     task: str,
     compiled_steps: list[dict[str, Any]],
     skill_params: dict[str, Any],
-) -> str:
+) -> Any:
     """Resolve a single {{...}} placeholder expression.
 
     Supported forms:
       {{parameters.query}}    → skill_params["query"] or task
       {{parameters.max_urls}} → skill_params["max_urls"] or default
       {{steps[0].step_no}}    → compiled_steps[0]["step_no"] (as string)
+
+    Returns the raw value (int, bool, str, etc.) — not stringified.
     """
     if expr.startswith("parameters."):
         param_name = expr[len("parameters."):]
         value = skill_params.get(param_name)
         if value is not None:
-            return str(value)
+            return value
         return task  # fallback for query-like params
     if expr.startswith("steps["):
         match = re.match(r"steps\[(\d+)\]\.(.*)", expr)
@@ -1405,7 +1443,7 @@ def _resolve_skill_placeholder(
             idx = int(match.group(1))
             field = match.group(2)
             if 0 <= idx < len(compiled_steps):
-                return str(compiled_steps[idx].get(field, ""))
+                return compiled_steps[idx].get(field, "")
     return f"{{{{{expr}}}}}"  # unresolvable → leave as-is
 
 
@@ -1415,15 +1453,30 @@ def _fill_skill_arguments(
     compiled_steps: list[dict[str, Any]],
     skill_params: dict[str, Any],
 ) -> dict[str, Any]:
-    """Fill {{...}} placeholders in a skill step's arguments dict."""
+    """Fill {{...}} placeholders in a skill step's arguments dict.
+
+    When a string value is a single {{...}} placeholder, the raw value
+    (int, bool, etc.) is preserved. Multi-placeholder strings remain strings.
+    """
     result: dict[str, Any] = {}
     for key, value in arguments.items():
         if isinstance(value, str) and "{{" in value and "}}" in value:
-            # Replace all {{...}} in this string
-            result[key] = _SKILL_PLACEHOLDER_RE.sub(
-                lambda m: _resolve_skill_placeholder(m.group(1), task, compiled_steps, skill_params),
-                value,
-            )
+            # Check if the entire value is a single placeholder
+            stripped = value.strip()
+            match = _SKILL_PLACEHOLDER_RE.fullmatch(stripped)
+            if match:
+                # Single placeholder → preserve raw type
+                result[key] = _resolve_skill_placeholder(
+                    match.group(1), task, compiled_steps, skill_params,
+                )
+            else:
+                # Multi-placeholder → string substitution
+                result[key] = _SKILL_PLACEHOLDER_RE.sub(
+                    lambda m: str(_resolve_skill_placeholder(
+                        m.group(1), task, compiled_steps, skill_params,
+                    )),
+                    value,
+                )
         else:
             result[key] = value
     return result
@@ -1476,7 +1529,13 @@ def _skill_to_plan(
     skill_params: dict[str, Any] = {"query": task}
     if hasattr(skill, "parameters") and skill.parameters:
         for pname, pdef in skill.parameters.items():
-            pdef_dict = pdef if isinstance(pdef, dict) else {}
+            # pdef is a Pydantic SkillParameter, not a dict
+            if hasattr(pdef, "model_dump"):
+                pdef_dict = pdef.model_dump()
+            elif isinstance(pdef, dict):
+                pdef_dict = pdef
+            else:
+                pdef_dict = {}
             skill_params.setdefault(pname, pdef_dict.get("default"))
 
     # Compile step_no assignments first

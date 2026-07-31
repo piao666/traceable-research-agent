@@ -267,10 +267,35 @@ async def create_task(
         scenario_template=task_request.scenario_template_key or task_request.scenario_template,
         execution_mode_override=task_request.execution_mode_override,
         skill_name=task_request.skill_name,
+        tenant_id=safe_config["tenant_id"],
+        user_id=safe_config["user_id"],
     )
     plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
     plan.setdefault("execution_mode", settings.execution_mode)
     run = store.update_agent_run_plan(db, run.run_id, plan)
+
+    # ── Phase 5: record memory_recall trace event ─────────────────
+    memory_recall_trace = plan.pop("memory_recall_trace", None)
+    if isinstance(memory_recall_trace, dict) and memory_recall_trace.get("event_type") == "memory_recall":
+        from app.trace.logger import record_trace_event
+        record_trace_event(
+            db=db,
+            run_id=run.run_id,
+            step_no=0,
+            tool_name="memory_recall",
+            status="success",
+            input_data={},
+            output_summary=(
+                f"Memory recall: {memory_recall_trace.get('recalled', 0)} recalled"
+                + (f", reason={memory_recall_trace.get('reason')}" if memory_recall_trace.get("reason") else "")
+            ),
+            output_data={
+                "recalled": memory_recall_trace.get("recalled", 0),
+                "injected_chars": memory_recall_trace.get("injected_chars", 0),
+                "memory_ids": memory_recall_trace.get("memory_ids", []),
+                "reason": memory_recall_trace.get("reason"),
+            },
+        )
     return TaskCreateResponse(
         run_id=run.run_id,
         status=run.status,

@@ -504,11 +504,11 @@ class SkillPlannerIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(
             _resolve_skill_placeholder("parameters.max_urls", "fallback", compiled, params),
-            "5",
+            5,  # int preserved after Phase 5 Bug 1 fix
         )
         self.assertEqual(
             _resolve_skill_placeholder("steps[0].step_no", "fallback", compiled, params),
-            "1",
+            1,  # int preserved after Phase 5 Bug 1 fix
         )
 
     def test_fill_skill_arguments(self):
@@ -524,7 +524,7 @@ class SkillPlannerIntegrationTests(unittest.TestCase):
 
         result = _fill_skill_arguments(arguments, "fallback", compiled, params)
         self.assertEqual(result["query"], "my query")
-        self.assertEqual(result["max_results"], "5")
+        self.assertEqual(result["max_results"], 5)  # int preserved after Phase 5 Bug 1 fix
         self.assertEqual(result["limit"], 10)
 
     def test_fill_skill_arguments_from(self):

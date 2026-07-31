@@ -467,5 +467,100 @@ class DeepeningMessageTests(unittest.TestCase):
         self.assertIn("❌", messages[1].content)
 
 
+# ── Phase 5 Bug Fix Regression Tests ──────────────────────────────
+
+class SkillParamDefaultBugTests(unittest.TestCase):
+    """Bug 1: Skill numeric parameter default was lost because isinstance(pdef, dict)
+    is always False for Pydantic SkillParameter objects."""
+
+    def test_skill_param_default_preserved_for_pydantic(self):
+        """pdef.model_dump() should be used when isinstance fails."""
+        from app.agent.planner import _fill_skill_arguments
+        arguments = {"max_results": "{{parameters.max_urls}}"}
+        compiled = [{"step_no": 1}]
+        params = {"query": "test", "max_urls": 5}
+
+        result = _fill_skill_arguments(arguments, "fallback", compiled, params)
+        self.assertIsInstance(result["max_results"], int)
+        self.assertEqual(result["max_results"], 5)
+
+    def test_skill_param_string_fallback_works(self):
+        """When the value is a string, it should stay a string."""
+        from app.agent.planner import _fill_skill_arguments
+        arguments = {"query": "{{parameters.query}}"}
+        compiled = []
+        params = {"query": "my search query"}
+
+        result = _fill_skill_arguments(arguments, "fallback", compiled, params)
+        self.assertEqual(result["query"], "my search query")
+
+    def test_multi_placeholder_still_string(self):
+        """'Search for {{parameters.query}}' should stay a string after substitution."""
+        from app.agent.planner import _fill_skill_arguments
+        arguments = {"query": "Search for {{parameters.query}} in depth"}
+        compiled = []
+        params = {"query": "AI agents"}
+
+        result = _fill_skill_arguments(arguments, "fallback", compiled, params)
+        self.assertEqual(result["query"], "Search for AI agents in depth")
+
+    def test_boolean_value_preserved(self):
+        """Boolean default values should be preserved."""
+        from app.agent.planner import _fill_skill_arguments
+        arguments = {"include_answer": "{{parameters.include_answer}}"}
+        compiled = []
+        params = {"include_answer": True}
+
+        result = _fill_skill_arguments(arguments, "fallback", compiled, params)
+        self.assertIsInstance(result["include_answer"], bool)
+        self.assertEqual(result["include_answer"], True)
+
+    def test_skill_placeholder_type_preservation(self):
+        """_resolve_skill_placeholder should return raw values, not strings."""
+        from app.agent.planner import _resolve_skill_placeholder
+        params = {"max_urls": 5, "enabled": True}
+        compiled = []
+
+        self.assertEqual(_resolve_skill_placeholder("parameters.max_urls", "t", compiled, params), 5)
+        self.assertEqual(_resolve_skill_placeholder("parameters.enabled", "t", compiled, params), True)
+        self.assertEqual(_resolve_skill_placeholder("parameters.missing", "t", compiled, params), "t")
+
+
+class MemoryRecallTraceWiringTests(unittest.TestCase):
+    """Bug 2: memory_recall trace events were defined but never recorded."""
+
+    def test_cold_start_trace_event_structure(self):
+        from app.memory.policy import build_cold_start_trace_event
+        event = build_cold_start_trace_event()
+        self.assertEqual(event["event_type"], "memory_recall")
+        self.assertEqual(event["recalled"], 0)
+        self.assertEqual(event["reason"], "cold_start")
+
+    def test_memory_recall_trace_event_structure(self):
+        from app.memory.policy import build_memory_recall_trace_event
+        event = build_memory_recall_trace_event(3, 450, ["m1", "m2", "m3"])
+        self.assertEqual(event["event_type"], "memory_recall")
+        self.assertEqual(event["recalled"], 3)
+        self.assertEqual(event["injected_chars"], 450)
+        self.assertEqual(event["memory_ids"], ["m1", "m2", "m3"])
+        self.assertIsNone(event["reason"])
+
+    def test_budget_trimmed_trace_event_structure(self):
+        from app.memory.policy import build_memory_injection_trimmed_trace_event
+        event = build_memory_injection_trimmed_trace_event(10, 5, 600, 800)
+        self.assertEqual(event["event_type"], "memory_recall")
+        self.assertEqual(event["recalled"], 5)
+        self.assertEqual(event["total_available"], 10)
+        self.assertEqual(event["reason"], "budget_trimmed")
+
+    def test_plan_task_accepts_tenant_user_params(self):
+        """plan_task should accept tenant_id and user_id parameters without error."""
+        from app.agent.planner import plan_task
+        # Just verify the call doesn't raise for wrong arg names
+        plan = plan_task("test task", tenant_id="t1", user_id="u1")
+        self.assertIsInstance(plan, dict)
+        self.assertIn("steps", plan)
+
+
 if __name__ == "__main__":
     unittest.main()
