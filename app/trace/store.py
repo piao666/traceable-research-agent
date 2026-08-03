@@ -145,6 +145,26 @@ def replace_agent_run_plan(db: Session, run_id: str, plan: dict) -> AgentRun:
     return run
 
 
+def update_agent_run_cost(
+    db: Session,
+    run_id: str,
+    token_in: int = 0,
+    token_out: int = 0,
+    estimated_cost: float = 0.0,
+) -> AgentRun:
+    """Update aggregated token and cost counters on a run."""
+
+    run = db.get(AgentRun, run_id)
+    if run is None:
+        raise ValueError("Task run not found")
+    run.total_tool_calls = max(run.total_tool_calls, 1)
+    run.estimated_cost = round(run.estimated_cost + estimated_cost, 6)
+    run.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
 def list_tool_traces(db: Session, run_id: str) -> list[ToolTrace]:
     """Return traces for a run in step order."""
 

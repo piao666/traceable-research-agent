@@ -111,6 +111,7 @@ class Settings(BaseModel):
     deep_research_max_depth: int = 2
     deep_research_breadth: int = 3
     memory_llm_extraction_enabled: bool = False
+    semantic_scholar_api_key: str | None = None
 
     @field_validator("external_tools_default_mode", mode="before")
     @classmethod
@@ -463,6 +464,7 @@ class Settings(BaseModel):
             deep_research_max_depth=_env_bounded_int("DEEP_RESEARCH_MAX_DEPTH", 2, 1, 5),
             deep_research_breadth=_env_bounded_int("DEEP_RESEARCH_BREADTH", 3, 1, 10),
             memory_llm_extraction_enabled=_env_bool("MEMORY_LLM_EXTRACTION_ENABLED", False),
+            semantic_scholar_api_key=_env_optional("SEMANTIC_SCHOLAR_API_KEY"),
         )
 
     def get_llm_api_key(self, provider: str) -> str | None:
@@ -566,6 +568,7 @@ class Settings(BaseModel):
             "deep_research_max_depth": self.deep_research_max_depth,
             "deep_research_breadth": self.deep_research_breadth,
             "memory_llm_extraction_enabled": self.memory_llm_extraction_enabled,
+            "semantic_scholar_configured": bool(self.semantic_scholar_api_key),
         }
 
     def get_safe_auth_config_summary(self) -> dict:

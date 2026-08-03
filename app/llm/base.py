@@ -15,6 +15,14 @@ class LLMMessage(BaseModel):
     content: str
 
 
+class LLMUsage(BaseModel):
+    """Token usage statistics from an LLM provider response."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
 class LLMResponse(BaseModel):
     """Provider response shape that never exposes API keys."""
 
@@ -24,6 +32,7 @@ class LLMResponse(BaseModel):
     model: str | None = None
     error_message: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    usage: LLMUsage | None = None
 
 
 class LLMClient(ABC):

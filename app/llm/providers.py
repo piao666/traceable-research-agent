@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from app.config import Settings
-from app.llm.base import LLMClient, LLMMessage, LLMResponse
+from app.llm.base import LLMClient, LLMMessage, LLMResponse, LLMUsage
 
 
 class UnavailableLLMClient(LLMClient):
@@ -106,6 +106,12 @@ class OpenAICompatibleLLMClient(LLMClient):
                 with urlopen(request, timeout=self.timeout_seconds) as response:
                     response_payload = json.loads(response.read().decode("utf-8"))
                 content = response_payload["choices"][0]["message"]["content"]
+                usage_raw = response_payload.get("usage") or {}
+                usage = LLMUsage(
+                    prompt_tokens=usage_raw.get("prompt_tokens", 0),
+                    completion_tokens=usage_raw.get("completion_tokens", 0),
+                    total_tokens=usage_raw.get("total_tokens", 0),
+                ) if usage_raw else None
                 return LLMResponse(
                     success=True,
                     content=str(content),
@@ -116,6 +122,7 @@ class OpenAICompatibleLLMClient(LLMClient):
                         "available": True,
                         "finish_reason": response_payload["choices"][0].get("finish_reason"),
                     },
+                    usage=usage,
                 )
             except HTTPError as exc:
                 last_error = f"HTTP error from {self.provider}: {exc.code}"

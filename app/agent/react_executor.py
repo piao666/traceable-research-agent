@@ -330,10 +330,26 @@ def _complete_report(
         traces,
         llm_client=_llm,
         provenance_bundle=provenance_bundle,
+        report_type=run.report_type,
     )
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
     run = store.update_agent_run_status(db, run_id, "completed", None)
+
+    # ── Phase 6: Summarize LLM token/cost ─────────────────────────────
+    token_in = int(state.get("_llm_token_in") or 0)
+    token_out = int(state.get("_llm_token_out") or 0)
+    if token_in or token_out:
+        try:
+            from app.llm.cost import estimate_cost_from_tokens
+
+            provider = state.get("llm_provider", "unknown")
+            model = state.get("llm_model")
+            cost = estimate_cost_from_tokens(provider, model, token_in, token_out)
+            store.update_agent_run_cost(db, run_id, token_in=token_in, token_out=token_out, estimated_cost=cost)
+        except Exception:
+            pass
+
     message = "ReAct run completed with limitation." if limitation else "ReAct run completed."
     return _summary(run, plan, message)
 
@@ -452,6 +468,14 @@ def run_react_task(
                 str(plan.get("scenario_template") or "standard"),
             )
             response = client.complete(messages, temperature=0.0, max_tokens=800)
+
+            # ── Phase 6: Accumulate LLM token usage ────────────────────
+            if response.success and response.usage:
+                state.setdefault("_llm_token_in", 0)
+                state["_llm_token_in"] += response.usage.prompt_tokens
+                state.setdefault("_llm_token_out", 0)
+                state["_llm_token_out"] += response.usage.completion_tokens
+
             raw = extract_json_object(response.content or "") if response.success else None
             try:
                 if raw is None:

@@ -44,6 +44,8 @@ PARALLEL_SAFE_TOOLS = {
     "tavily_search",
     "sql_query",
     "web_fetcher",
+    "arxiv_search",
+    "semantic_scholar_search",
 }
 BARRIER_TOOLS = {"report_writer"}
 DEPENDENCY_KEYS = {
@@ -453,6 +455,7 @@ def run_plan_parallel(
             traces,
             llm_client=llm_client,
             provenance_bundle=provenance_bundle,
+            report_type=run.report_type,
         )
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)

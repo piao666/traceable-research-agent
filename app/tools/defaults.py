@@ -1,10 +1,12 @@
 """Default Tool Registry metadata and Phase 2 handlers."""
 
 from app.tools.base import RiskLevel, ToolSpec
+from app.tools.arxiv_search import arxiv_search_handler
 from app.tools.file_reader import read_file
 from app.tools.mcp_github import github_search_handler
 from app.tools.rag_search import search_rag
 from app.tools.registry import register_tool
+from app.tools.semantic_scholar import semantic_scholar_handler
 from app.tools.sql_query import run_query
 from app.tools.tavily_search import tavily_search_handler
 from app.tools.web_fetcher import web_fetch
@@ -150,4 +152,33 @@ def register_default_tools() -> None:
             risk_level=RiskLevel.LOW,
             tags=["report", "markdown"],
         )
+    )
+    register_tool(
+        ToolSpec(
+            name="arxiv_search",
+            description=(
+                "Search academic papers on arXiv. Free, no API key required. "
+                "Read-only, returns paper metadata (title, authors, abstract, categories, PDF link)."
+            ),
+            input_schema={"query": "string", "max_results": "integer", "sort_by": "string", "sort_order": "string"},
+            output_schema={"papers": "array", "total_results": "integer", "returned": "integer"},
+            risk_level=RiskLevel.LOW,
+            tags=["academic", "arxiv", "read-only"],
+        ),
+        handler=arxiv_search_handler,
+    )
+    register_tool(
+        ToolSpec(
+            name="semantic_scholar_search",
+            description=(
+                "Search academic papers via Semantic Scholar Academic Graph API. "
+                "Free, optional API key for higher rate limits. "
+                "Read-only, returns paper metadata with citation counts."
+            ),
+            input_schema={"query": "string", "limit": "integer", "fields": "string"},
+            output_schema={"papers": "array", "total": "integer", "returned": "integer"},
+            risk_level=RiskLevel.LOW,
+            tags=["academic", "semantic-scholar", "read-only"],
+        ),
+        handler=semantic_scholar_handler,
     )

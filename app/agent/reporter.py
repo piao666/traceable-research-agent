@@ -439,6 +439,20 @@ def _selected_evidence(tool_name: str, output: Any) -> str:
         )
     if "." in tool_name:
         return _remote_selected_evidence(tool_name, output)
+    if tool_name in ("arxiv_search", "semantic_scholar_search"):
+        papers = output.get("papers") or []
+        return _json_preview(
+            [
+                {
+                    "title": p.get("title"),
+                    "authors": p.get("authors", [])[:3],
+                    "year": p.get("year"),
+                    "abstract": str(p.get("abstract") or "")[:200],
+                }
+                for p in papers[:5]
+            ],
+            max_chars=1400,
+        )
     return _json_preview(output)
 
 
@@ -1353,6 +1367,7 @@ def generate_markdown_report(
     traces: list[ToolTrace],
     llm_client: "LLMClient | None" = None,
     provenance_bundle: dict[str, Any] | None = None,
+    report_type: str = "summary",
 ) -> str:
     """Build a Markdown report from persisted run evidence.
 
@@ -1362,6 +1377,11 @@ def generate_markdown_report(
 
     Phase 3: when sub-query groups exist, the answer section is organized by
     sub-query with citation labels and content_basis annotations.
+
+    Phase 6: report_type controls output detail:
+      - "summary" (default): existing full report
+      - "detailed_report": full report + auto-generated TOC after §2
+      - "outline_report": header + TOC + section headings only (fast preview)
     """
 
     degradation_label, degradation_note = _degradation_state(plan, traces)
@@ -1589,7 +1609,141 @@ def generate_markdown_report(
                 ]
             )
 
+    # ── Phase 6: Limitations section (claim verification pass) ────────────
+    if provenance_bundle:
+        limitations_lines = _render_limitations_section(provenance_bundle)
+        if limitations_lines:
+            lines.extend(limitations_lines)
+
+    # ── Phase 6: Report type handling ─────────────────────────────────────
+    if report_type == "outline_report":
+        return _to_outline(lines)
+    if report_type == "detailed_report":
+        toc = _build_toc(lines)
+        # Insert TOC after §2 Running Summary (find the ## 3. marker)
+        toc_insert_pos = _find_section_start(lines, "## 3.")
+        if toc_insert_pos >= 0:
+            lines[toc_insert_pos:toc_insert_pos] = toc
+        else:
+            lines = _insert_after_section(lines, "## 2.", toc)
+
     return "\n".join(lines)
+
+
+def _build_toc(lines: list[str]) -> list[str]:
+    """Build a table of contents from ## and ### headings."""
+    toc: list[str] = ["## 目录", ""]
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            title = stripped[4:]
+            toc.append(f"    * {title}")
+        elif stripped.startswith("## "):
+            title = stripped[3:]
+            toc.append(f"* {title}")
+    toc.append("")
+    return toc
+
+
+def _find_section_start(lines: list[str], marker: str) -> int:
+    """Find the index of the first line starting with marker."""
+    for i, line in enumerate(lines):
+        if line.strip().startswith(marker):
+            return i
+    return -1
+
+
+def _insert_after_section(lines: list[str], marker: str, insert_lines: list[str]) -> list[str]:
+    """Insert lines after the last line of a section starting with marker."""
+    pos = _find_section_start(lines, marker)
+    if pos < 0:
+        return lines
+    # Find the end of that section (next ## heading or end of list)
+    end = pos + 1
+    while end < len(lines) and not lines[end].strip().startswith("## "):
+        end += 1
+    result = lines[:end] + [""] + insert_lines + lines[end:]
+    return result
+
+
+def _to_outline(lines: list[str]) -> str:
+    """Reduce full report lines to outline only: header + TOC + section headings."""
+    outline: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("# ") or stripped.startswith("## ") or stripped.startswith("### "):
+            outline.append(line)
+            outline.append("")
+    # Build TOC and insert after header
+    toc = _build_toc(lines)
+    toc_insert_pos = _find_section_start(outline, "## 2.")
+    if toc_insert_pos >= 0:
+        outline[toc_insert_pos:toc_insert_pos] = toc
+    else:
+        outline = outline[:2] + [""] + toc + [""] + outline[2:]
+    if outline and outline[-1] != "":
+        outline.append("")
+    outline.append("> **大纲模式：** 本报告仅包含章节标题，如需完整内容请使用 `detailed_report` 或 `summary` 模式。")
+    outline.append("")
+    return "\n".join(outline)
+
+
+def _render_limitations_section(bundle: dict[str, Any]) -> list[str]:
+    """Generate a limitations section for unresolved/disputed claims.
+
+    Phase 6: claims with status unresolved/requires_human are downgraded
+    and listed here with supporting/refuting evidence counts.
+    """
+    claims = {item.get("claim_id"): item for item in bundle.get("claims") or []}
+    resolutions = [
+        item for item in bundle.get("resolutions") or []
+        if item.get("status") in {"unresolved", "requires_human"}
+    ]
+    if not resolutions:
+        return []
+
+    lines = [
+        "## 10. 限制与待核实结论",
+        "",
+        "> ⚠️ 以下结论存在未解决的证据冲突或需要人工判断，"
+        "已从确定性结论中降级，不得作为事实使用。",
+        "",
+    ]
+
+    for i, resolution in enumerate(resolutions, 1):
+        claim_id = str(resolution.get("claim_id"))
+        claim = claims.get(claim_id) or {}
+        claim_text = claim.get("claim_text") or claim_id
+        status = str(resolution.get("status"))
+        confidence = resolution.get("confidence", 0)
+        support_count = resolution.get("independent_support_count", 0)
+        refute_count = resolution.get("independent_refute_count", 0)
+
+        status_label = "未解决" if status == "unresolved" else "需人工判断"
+        lines.extend([
+            f"### {i}. {claim_text}",
+            "",
+            f"* 冲突状态: `{status}` ({status_label})",
+            f"* 置信度: `{confidence}`",
+            f"* 独立支持来源: `{support_count}`",
+            f"* 独立反驳来源: `{refute_count}`",
+        ])
+
+        rationale = resolution.get("rationale") or {}
+        if isinstance(rationale, dict):
+            quality_gate = rationale.get("quality_gate") or {}
+            if isinstance(quality_gate, dict) and not quality_gate.get("passed"):
+                lines.append(
+                    f"* 质量门禁: 未通过 "
+                    f"(独立来源={quality_gate.get('independent_source_count')}, "
+                    f"最低要求={quality_gate.get('minimum_independent_sources')})"
+                )
+            summary = rationale.get("summary")
+            if summary and isinstance(summary, str):
+                lines.append(f"* 分析摘要: {summary[:300]}")
+        lines.append("")
+
+    return lines
 
 
 def save_report(run_id: str, markdown: str) -> str:

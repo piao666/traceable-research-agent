@@ -112,6 +112,8 @@ EXECUTABLE_TOOLS = {
     "mcp_github_search",
     "tavily_search",
     "web_fetcher",
+    "arxiv_search",
+    "semantic_scholar_search",
 }
 
 
@@ -360,10 +362,29 @@ def run_plan(
             traces,
             llm_client=_llm,
             provenance_bundle=provenance_bundle,
+            report_type=run.report_type,
         )
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)
         run = store.update_agent_run_status(db, run_id, "completed", None)
+
+        # ── Phase 6: Summarize LLM token/cost from traces ─────────────
+        try:
+            from app.llm.cost import estimate_cost_from_tokens
+            from app.llm.providers import create_llm_client
+
+            llm_for_cost = resolve_report_llm_client(settings_obj, report_llm_client)
+            if llm_for_cost is not None and llm_for_cost.is_available():
+                llm_desc = llm_for_cost.describe()
+                provider = llm_desc.get("provider", "unknown")
+                model = llm_desc.get("model")
+                total_ti = sum(t.token_in or 0 for t in traces)
+                total_to = sum(t.token_out or 0 for t in traces)
+                cost = estimate_cost_from_tokens(provider, model, total_ti, total_to)
+                store.update_agent_run_cost(db, run_id, token_in=total_ti, token_out=total_to, estimated_cost=cost)
+        except Exception:
+            pass  # Cost tracking failure must not block run completion
+
         _after_run_completed(db, run, markdown, step_no=0)
         return _summary(run)
     except Exception as exc:

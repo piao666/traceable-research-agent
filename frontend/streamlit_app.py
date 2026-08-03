@@ -1923,6 +1923,23 @@ def tab_trace() -> None:
             mc1.metric("LLM 提供商", status_obj.get("llm_provider"))
             mc2.metric("LLM 模型",   status_obj.get("llm_model", "—"))
 
+        # ── Phase 6: Cost display ──────────────────────────────────────
+        est_cost = status_obj.get("estimated_cost", 0) or 0
+        if est_cost > 0:
+            st.divider()
+            cc1, cc2 = st.columns(2)
+            cc1.metric("预估 LLM 成本", f"¥{est_cost:.6f}")
+            cc2.metric("工具调用次数", status_obj.get("total_tool_calls", 0))
+
+            # Token breakdown from traces
+            if traces:
+                ti = sum(t.token_in or 0 for t in traces)
+                to = sum(t.token_out or 0 for t in traces)
+                if ti or to:
+                    tc1, tc2 = st.columns(2)
+                    tc1.metric("Prompt Tokens", f"{ti:,}")
+                    tc2.metric("Completion Tokens", f"{to:,}")
+
 
 def _evidence_card_html(
     label: str,

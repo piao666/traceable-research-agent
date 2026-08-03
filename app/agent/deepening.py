@@ -318,6 +318,7 @@ def run_deepening(
         [t for t in all_traces if t.run_id == run_id],
         llm_client=_llm,
         provenance_bundle=provenance_bundle,
+        report_type=run.report_type,
     )
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)

@@ -54,6 +54,9 @@ def record_tool_result(
     result: ToolResult,
     latency_ms: int | None = None,
     sub_query: str | None = None,
+    token_in: int = 0,
+    token_out: int = 0,
+    estimated_cost: float = 0.0,
 ) -> ToolTrace:
     """Persist one tool execution result as a trace row."""
 
@@ -82,6 +85,9 @@ def record_tool_result(
         created_at=now,
         finished_at=now,
         sub_query=sub_query,
+        token_in=token_in,
+        token_out=token_out,
+        estimated_cost=estimated_cost,
     )
     db.add(trace)
     db.commit()
@@ -101,6 +107,9 @@ def record_trace_event(
     error_message: str | None = None,
     latency_ms: int | None = None,
     sub_query: str | None = None,
+    token_in: int = 0,
+    token_out: int = 0,
+    estimated_cost: float = 0.0,
 ) -> ToolTrace:
     """Persist a non-tool executor event such as finish, fallback, or HITL wait."""
 
@@ -126,6 +135,9 @@ def record_trace_event(
         created_at=now,
         finished_at=now,
         sub_query=sub_query,
+        token_in=token_in,
+        token_out=token_out,
+        estimated_cost=estimated_cost,
     )
     db.add(trace)
     db.commit()
