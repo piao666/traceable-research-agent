@@ -748,7 +748,7 @@ Skill 是 JSON 文件，放在 `workspace/skills/` 目录下，用户可自行�
 
 ### 实施记录
 
-- 状态：已完成，待提交并推送
+- 状态：已完成，已提交并推送
 - 分支：`feature/improvements`
 - 起始提交：`e7021c1`
 - 起始工作区：干净
@@ -769,4 +769,4 @@ Skill 是 JSON 文件，放在 `workspace/skills/` 目录下，用户可自行�
   - `docker compose config --quiet`：通过；仅 Docker 用户配置文件权限警告。
   - `git diff --check`：通过；仅 Windows CRLF 转换提示。
 - 已知限制：当前环境无权访问 `npipe:////./pipe/docker_engine`，因此不能实际执行镜像构建和容器启动；Compose 配置已完成静态校验。
-- Checkpoint commit：待创建并推送到 `origin/feature/improvements`。
+- Checkpoint commit：`74d999b`，已推送到 `origin/feature/improvements`。
