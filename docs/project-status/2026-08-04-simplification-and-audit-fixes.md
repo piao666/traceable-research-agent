@@ -89,4 +89,4 @@
 
 - `74d999b`：单实例自托管改造、删除 RAG 和审计修复主体。
 - `3929fce`：回填 `TASK.md` checkpoint 状态。
-- 本说明文档：待提交并推送到 `origin/feature/improvements`。
+- `03ba27f`：新增本说明文档并更新 `TASK.md` 台账，已推送到 `origin/feature/improvements`。

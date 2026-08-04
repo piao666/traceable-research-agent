@@ -777,4 +777,4 @@ Skill 是 JSON 文件，放在 `workspace/skills/` 目录下，用户可自行�
 - 文件：`docs/project-status/2026-08-04-simplification-and-audit-fixes.md`
 - 内容：记录单实例自托管、删除 RAG、数据库迁移、审计修复、验证结果和 Docker Engine 权限限制。
 - 验证：检查文档内容与 `TASK.md`、提交 `74d999b` 和实际测试结果一致。
-- 文档提交：待提交并推送到 `origin/feature/improvements`。
+- 文档提交：`03ba27f`，已推送到 `origin/feature/improvements`。
