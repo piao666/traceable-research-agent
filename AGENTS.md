@@ -3,8 +3,18 @@
 ## Source Of Truth
 
 This file and repository-root `TASK.md` are the only active project constraint
-and progress-record files. Keep both tracked in Git. Do not recreate or use
-`task.txt`.
+and progress-record files. `AGENTS.md` is tracked; `TASK.md` is local-only and
+must never be staged, committed, or pushed. Do not recreate or use `task.txt`.
+
+## Local-Only Files
+
+- `CLAUDE.md`, `TASK.md`, and the entire `docs/` directory are local-only.
+- Agents may read and update these files when required, but must never stage,
+  commit, or push them.
+- Phase reports and project-status notes belong under `docs/project-status/`
+  and remain local.
+- Public user documentation that must be versioned belongs in root-level
+  tracked files such as `README.md`, not under `docs/`.
 
 ## Project Identity
 
@@ -41,10 +51,11 @@ not a GPT Researcher fork. GPT Researcher is a read-only design reference.
    human confirmation.
 6. Persist every tool call in `tool_traces`; failures must be visible in run
    status and traces rather than hidden in logs.
-7. Record meaningful work in repository-root `TASK.md` before and after
-   implementation.
-8. At checkpoints, run available tests and smoke checks, update docs and
-   `TASK.md`, inspect staged content, then commit and push.
+7. Record meaningful work in local repository-root `TASK.md` before and after
+   implementation, but never stage or commit it.
+8. At checkpoints, run available tests and smoke checks, update local-only
+   status records as needed, inspect staged content, then commit and push only
+   tracked project files.
 
 ## Required API Surface
 
@@ -101,14 +112,15 @@ observations, and evidence, rather than concatenate raw tool output.
 
 Before a checkpoint commit:
 
-1. Update `TASK.md` with files changed, implementation details, commands,
-   results, limitations, and next actions.
+1. Update local-only `TASK.md` with files changed, implementation details,
+   commands, results, limitations, and next actions; do not stage it.
 2. Run `python -m compileall`, the full test suite, relevant smoke checks, a
    live API check, Streamlit startup check, and `docker compose config` when
    available.
-3. Update README and environment examples when behavior changes.
-4. Verify no secrets, `.env`, cache, database, or bulky generated file is
-   staged.
+3. Update root-level README and environment examples when behavior changes;
+   never stage files under `docs/`.
+4. Verify no secrets, `.env`, `TASK.md`, `CLAUDE.md`, `docs/`, cache, database,
+   or bulky generated file is staged.
 5. Commit with a generic descriptive message and push the current branch.
 
 ## Coding Style
