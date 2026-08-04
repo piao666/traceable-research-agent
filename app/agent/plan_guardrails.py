@@ -75,8 +75,6 @@ def normalize_plan_arguments(
             _normalize_sql_query(arguments, task, notes)
         elif tool_name == "mcp_github_search":
             _normalize_github_search(arguments, task, source_mode, notes)
-        elif tool_name == "rag_search":
-            _normalize_rag_search(arguments, task, notes)
         elif tool_name == "tavily_search":
             _normalize_tavily_search(arguments, task, notes)
         elif tool_name == "report_writer":
@@ -299,15 +297,6 @@ def _normalize_github_search(
     order = str(arguments.get("order") or "desc").strip().lower()
     arguments["order"] = order if order in {"asc", "desc"} else "desc"
     arguments["limit"] = _bounded_int(arguments.get("limit"), 5, 1, GITHUB_MAX_LIMIT)
-
-
-def _normalize_rag_search(arguments: dict[str, Any], task: str, notes: list[str]) -> None:
-    if not str(arguments.get("query") or "").strip():
-        arguments["query"] = task
-        notes.append("Planner guardrail filled missing rag_search.query from task.")
-    arguments["top_k"] = _bounded_int(arguments.get("top_k"), 3, 1, 10)
-    retrieval_mode = str(arguments.get("retrieval_mode") or settings.rag_retrieval_mode).strip().lower()
-    arguments["retrieval_mode"] = retrieval_mode if retrieval_mode in {"dense", "bm25", "hybrid"} else settings.rag_retrieval_mode
 
 
 def _normalize_tavily_search(arguments: dict[str, Any], task: str, notes: list[str]) -> None:

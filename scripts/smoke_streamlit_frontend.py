@@ -49,19 +49,6 @@ def main() -> None:
     missing_paths = [path for path in required_paths if path not in source]
     assert_true(not missing_paths, f"missing API paths: {missing_paths}")
 
-    metadata_fields = [
-        "embedding_backend",
-        "vector_backend",
-        "fallback_used",
-        "retrieval_mode",
-        "dense_hit_count",
-        "bm25_hit_count",
-        "rrf_k",
-        "dimension",
-        "collection_name",
-    ]
-    missing_metadata = [field for field in metadata_fields if field not in source]
-    assert_true(not missing_metadata, f"missing RAG metadata display fields: {missing_metadata}")
     assert_true(
         "执行元信息" in source or "Trace details:" in source,
         "trace details display missing",
@@ -78,7 +65,8 @@ def main() -> None:
     ]
     leaked_sidebar_text = [text for text in removed_sidebar_text if text in source]
     assert_true(not leaked_sidebar_text, f"removed sidebar/title text still present: {leaked_sidebar_text}")
-    assert_true("api_base_url" in source and "tenant_id" in source and "user_id" in source, "default API context state missing")
+    assert_true("api_base_url" in source and "api_key" in source, "default API connection state missing")
+    assert_true("tenant_id" not in source and "user_id" not in source, "multi-tenant context leaked into frontend")
     for react_field in ["思考摘要", "选择动作", "观察结果"]:
         assert_true(react_field in source, f"missing ReAct trace display: {react_field}")
     assert_true(
@@ -139,7 +127,7 @@ def main() -> None:
         "heading.startswith(HIDDEN_REPORT_SECTION_PREFIXES)" in source,
         "Streamlit report preview should hide the tool observation section",
     )
-    assert_true("render_report_markdown(md)" in source, "report markdown should use folded renderer")
+    assert_true("render_report_markdown(md, citation_map)" in source, "report markdown should use folded renderer")
     assert_true("<details><summary>关键证据片段</summary>" in source, "key evidence fragment folding missing")
     assert_true("计划步骤数" not in source and "实际执行步骤" not in source, "report summary still shows removed metrics")
     assert_true(
@@ -166,7 +154,7 @@ def main() -> None:
                 "files": "ok",
                 "requirements": "ok",
                 "api_paths": "ok",
-                "rag_metadata_display": "ok",
+                "single_instance_ui": "ok",
                 "secret_scan": "ok",
             },
             indent=2,

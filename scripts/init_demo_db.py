@@ -47,7 +47,7 @@ def init_demo_db(db_path: Path = DB_PATH) -> Path:
                 ("Trace Persistence Rules", "demo_research_note.md", "trace", "2026-06-16"),
                 ("File Reader Safety", "demo_research_note.md", "safety", "2026-06-16"),
                 ("Read Only SQL Policy", "demo_research_note.md", "safety", "2026-06-16"),
-                ("Local RAG Foundation", "demo_research_note.md", "rag", "2026-06-16"),
+                ("Local Evidence Foundation", "demo_research_note.md", "research", "2026-06-16"),
                 ("Phase Two Smoke Plan", "demo_research_note.md", "testing", "2026-06-16"),
             ],
         )

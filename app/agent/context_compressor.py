@@ -13,7 +13,6 @@ from typing import Any
 
 # Max chars per tool type in the compressed context
 _TOOL_CHAR_LIMITS: dict[str, int] = {
-    "rag_search":        1500,
     "tavily_search":     1500,
     "mcp_github_search": 1200,
     "file_reader":        800,
@@ -33,16 +32,6 @@ def _extract_text_from_output(tool_name: str, output: Any) -> str:
 
     if not isinstance(output, dict):
         return str(output)[:400]
-
-    if tool_name == "rag_search":
-        hits = output.get("hits") or []
-        parts = []
-        for hit in hits[:4]:
-            source = hit.get("source", "")
-            text   = hit.get("text", "")[:300]
-            score  = hit.get("score", 0)
-            parts.append(f"[{source} score={score:.3f}] {text}")
-        return "\n".join(parts)
 
     if tool_name == "tavily_search":
         results = output.get("results") or []

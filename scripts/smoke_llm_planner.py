@@ -51,13 +51,13 @@ def main() -> None:
     )
     deterministic = plan_task(
         task,
-        ["file_reader", "sql_query", "rag_search", "mcp_github_search", "tavily_search", "report_writer"],
+        ["file_reader", "sql_query", "mcp_github_search", "tavily_search", "report_writer"],
         "mock",
         planner_mode="deterministic",
     )
     auto = plan_task(
         task,
-        ["file_reader", "sql_query", "rag_search", "mcp_github_search", "tavily_search", "report_writer"],
+        ["file_reader", "sql_query", "mcp_github_search", "tavily_search", "report_writer"],
         "mock",
         planner_mode="auto",
     )

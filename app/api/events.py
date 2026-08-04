@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.database import SessionLocal, get_db
-from app.security import require_api_key, require_request_context
+from app.security import require_api_key
 from app.trace import store
 from app.trace.events import (
     TraceEventCursor,
@@ -21,7 +21,7 @@ from app.trace.events import (
 router = APIRouter(
     prefix="/tasks",
     tags=["task-events"],
-    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+    dependencies=[Depends(require_api_key)],
 )
 
 

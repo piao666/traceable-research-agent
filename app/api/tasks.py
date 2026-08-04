@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -41,14 +41,14 @@ from app.schemas import (
     TaskStatusResponse,
     ToolTraceResponse,
 )
-from app.security import require_api_key, require_request_context
+from app.security import require_api_key
 from app.trace import store
 from app.trace.models import AgentRun, ToolTrace
 
 router = APIRouter(
     prefix="/tasks",
     tags=["tasks"],
-    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+    dependencies=[Depends(require_api_key)],
 )
 
 
@@ -196,15 +196,7 @@ def _extract_trace_metadata(output) -> dict | None:
     if isinstance(metadata, dict):
         return metadata
     keys = {
-        "embedding_backend",
-        "vector_backend",
-        "requested_embedding_backend",
-        "requested_vector_backend",
         "fallback_used",
-        "dimension",
-        "model_path",
-        "persist_dir",
-        "collection_name",
     }
     selected = {key: output[key] for key in keys if key in output}
     return selected or None
@@ -236,16 +228,11 @@ def _export_run_evidence(
 @router.post("", response_model=TaskCreateResponse)
 async def create_task(
     task_request: TaskCreateRequest,
-    http_request: Request,
     db: Session = Depends(get_db),
 ) -> TaskCreateResponse:
     """Accept a task, create a pending run, and persist a deterministic plan."""
 
-    # Include tenant/user identity in config snapshot for post-completion hooks
-    ctx = getattr(http_request.state, "request_context", None)
     safe_config = settings.get_safe_runtime_config_summary()
-    safe_config["tenant_id"] = ctx.tenant_id if ctx else settings.default_tenant_id
-    safe_config["user_id"] = ctx.user_id if ctx else settings.default_user_id
     run_config_snapshot = json.dumps(
         safe_config,
         ensure_ascii=False,
@@ -267,8 +254,6 @@ async def create_task(
         scenario_template=task_request.scenario_template_key or task_request.scenario_template,
         execution_mode_override=task_request.execution_mode_override,
         skill_name=task_request.skill_name,
-        tenant_id=safe_config["tenant_id"],
-        user_id=safe_config["user_id"],
     )
     plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
     plan.setdefault("execution_mode", settings.execution_mode)

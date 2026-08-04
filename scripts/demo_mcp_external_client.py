@@ -33,7 +33,6 @@ from app.tools.defaults import register_default_tools
 
 EXPECTED_TOOLS = {
     "file_reader",
-    "rag_search",
     "sql_query_readonly",
     "github_search",
     "tavily_search",

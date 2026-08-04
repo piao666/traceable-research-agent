@@ -281,7 +281,7 @@ class SkillLoaderTests(unittest.TestCase):
         })
         skill = load_skill_from_file(path)
         # All these tools exist in the default registry
-        available = {"tavily_search", "web_fetcher", "report_writer", "rag_search"}
+        available = {"tavily_search", "web_fetcher", "report_writer"}
         errors = validate_skill(skill, available)
         self.assertEqual(errors, [])
 

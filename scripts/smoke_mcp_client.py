@@ -265,11 +265,11 @@ def main() -> None:
                 "Use remote MCP evidence, then finish with a transparent limitation if it fails.",
                 "summary",
                 "mock",
-                ["fake.unstable", "rag_search", "report_writer"],
+                ["fake.unstable", "file_reader", "report_writer"],
             )
             react_plan = plan_task(
                 react.task,
-                ["fake.unstable", "rag_search", "report_writer"],
+                ["fake.unstable", "file_reader", "report_writer"],
                 "mock",
                 planner_mode="deterministic",
                 execution_mode_override="react",

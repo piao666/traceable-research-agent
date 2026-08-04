@@ -27,10 +27,6 @@ class Settings(BaseModel):
     allow_auth_disabled_in_dev: bool = True
     async_run_enabled: bool = True
     async_run_poll_interval_seconds: int = 1
-    tenant_header_name: str = "X-Tenant-ID"
-    user_header_name: str = "X-User-ID"
-    default_tenant_id: str = "demo"
-    default_user_id: str = "local-user"
     external_tools_default_mode: str = "real"
     offline_mode: bool = False
     allow_mock_fallback: bool = False
@@ -91,22 +87,6 @@ class Settings(BaseModel):
     evidence_passage_max_chars: int = 4000
     evidence_reasoning_enabled: bool = True
     source_policy_path: str = "config/source_policy.v1.json"
-    rag_embedding_backend: str = "deterministic"
-    rag_vector_backend: str = "json"
-    rag_model_path: str | None = r"E:\Models\bge-small-zh-v1.5"
-    rag_chroma_dir: str = "workspace/chroma"
-    rag_collection_name: str = "traceable_research_docs"
-    rag_device: str = "cpu"
-    rag_normalize_embeddings: bool = True
-    rag_real_backend_enabled: bool = False
-    rag_retrieval_mode: str = "hybrid"
-    rag_bm25_enabled: bool = True
-    rag_hybrid_enabled: bool = True
-    rag_rrf_k: int = 60
-    rag_dense_candidate_multiplier: int = 2
-    rag_bm25_candidate_multiplier: int = 2
-    rag_chunk_experiment_sizes: str = "256,512,1024"
-    rag_chunk_experiment_output: str = "workspace/eval_outputs/rag_chunk_experiment_results.json"
     deep_research_enabled: bool = False
     deep_research_max_depth: int = 2
     deep_research_breadth: int = 3
@@ -124,22 +104,6 @@ class Settings(BaseModel):
     def validate_github_tool_default_mode(cls, value: object) -> str:
         normalized = str(value or "public_api").strip().lower()
         return normalized if normalized in {"public_api", "mock"} else "public_api"
-
-    @field_validator("rag_retrieval_mode", mode="before")
-    @classmethod
-    def validate_rag_retrieval_mode(cls, value: object) -> str:
-        normalized = str(value or "hybrid").strip().lower()
-        return normalized if normalized in {"dense", "bm25", "hybrid"} else "hybrid"
-
-    @field_validator("rag_rrf_k", mode="before")
-    @classmethod
-    def validate_rag_rrf_k(cls, value: object) -> int:
-        return _bounded_value(value, 60, 1, 1000)
-
-    @field_validator("rag_dense_candidate_multiplier", "rag_bm25_candidate_multiplier", mode="before")
-    @classmethod
-    def validate_rag_candidate_multiplier(cls, value: object) -> int:
-        return _bounded_value(value, 2, 1, 10)
 
     @field_validator("execution_mode", mode="before")
     @classmethod
@@ -275,16 +239,6 @@ class Settings(BaseModel):
             async_run_poll_interval_seconds=_env_int(
                 "ASYNC_RUN_POLL_INTERVAL_SECONDS", 1
             ),
-            tenant_header_name=os.getenv(
-                "TENANT_HEADER_NAME", "X-Tenant-ID"
-            ).strip()
-            or "X-Tenant-ID",
-            user_header_name=os.getenv("USER_HEADER_NAME", "X-User-ID").strip()
-            or "X-User-ID",
-            default_tenant_id=os.getenv("DEFAULT_TENANT_ID", "demo").strip()
-            or "demo",
-            default_user_id=os.getenv("DEFAULT_USER_ID", "local-user").strip()
-            or "local-user",
             external_tools_default_mode=_env_choice(
                 "EXTERNAL_TOOLS_DEFAULT_MODE", "real", {"real", "mock"}
             ),
@@ -422,44 +376,6 @@ class Settings(BaseModel):
                 "SOURCE_POLICY_PATH", "config/source_policy.v1.json"
             ).strip()
             or "config/source_policy.v1.json",
-            rag_embedding_backend=os.getenv(
-                "RAG_EMBEDDING_BACKEND", "deterministic"
-            ).strip()
-            or "deterministic",
-            rag_vector_backend=os.getenv("RAG_VECTOR_BACKEND", "json").strip()
-            or "json",
-            rag_model_path=_env_optional("RAG_MODEL_PATH")
-            or r"E:\Models\bge-small-zh-v1.5",
-            rag_chroma_dir=os.getenv("RAG_CHROMA_DIR", "workspace/chroma").strip()
-            or "workspace/chroma",
-            rag_collection_name=os.getenv(
-                "RAG_COLLECTION_NAME", "traceable_research_docs"
-            ).strip()
-            or "traceable_research_docs",
-            rag_device=os.getenv("RAG_DEVICE", "cpu").strip() or "cpu",
-            rag_normalize_embeddings=_env_bool("RAG_NORMALIZE_EMBEDDINGS", True),
-            rag_real_backend_enabled=_env_bool("RAG_REAL_BACKEND_ENABLED", False),
-            rag_retrieval_mode=_env_choice(
-                "RAG_RETRIEVAL_MODE", "hybrid", {"dense", "bm25", "hybrid"}
-            ),
-            rag_bm25_enabled=_env_bool("RAG_BM25_ENABLED", True),
-            rag_hybrid_enabled=_env_bool("RAG_HYBRID_ENABLED", True),
-            rag_rrf_k=_env_bounded_int("RAG_RRF_K", 60, 1, 1000),
-            rag_dense_candidate_multiplier=_env_bounded_int(
-                "RAG_DENSE_CANDIDATE_MULTIPLIER", 2, 1, 10
-            ),
-            rag_bm25_candidate_multiplier=_env_bounded_int(
-                "RAG_BM25_CANDIDATE_MULTIPLIER", 2, 1, 10
-            ),
-            rag_chunk_experiment_sizes=os.getenv(
-                "RAG_CHUNK_EXPERIMENT_SIZES", "256,512,1024"
-            ).strip()
-            or "256,512,1024",
-            rag_chunk_experiment_output=os.getenv(
-                "RAG_CHUNK_EXPERIMENT_OUTPUT",
-                "workspace/eval_outputs/rag_chunk_experiment_results.json",
-            ).strip()
-            or "workspace/eval_outputs/rag_chunk_experiment_results.json",
             deep_research_enabled=_env_bool("DEEP_RESEARCH_ENABLED", False),
             deep_research_max_depth=_env_bounded_int("DEEP_RESEARCH_MAX_DEPTH", 2, 1, 5),
             deep_research_breadth=_env_bounded_int("DEEP_RESEARCH_BREADTH", 3, 1, 10),
@@ -572,7 +488,7 @@ class Settings(BaseModel):
         }
 
     def get_safe_auth_config_summary(self) -> dict:
-        """Return authentication and request-context settings without secrets."""
+        """Return authentication settings without secrets."""
 
         return {
             "auth_enabled": self.auth_enabled,
@@ -581,10 +497,6 @@ class Settings(BaseModel):
             "allow_auth_disabled_in_dev": self.allow_auth_disabled_in_dev,
             "async_run_enabled": self.async_run_enabled,
             "async_run_poll_interval_seconds": self.async_run_poll_interval_seconds,
-            "tenant_header_name": self.tenant_header_name,
-            "user_header_name": self.user_header_name,
-            "default_tenant_id": self.default_tenant_id,
-            "default_user_id": self.default_user_id,
         }
 
     def get_safe_github_mcp_config_summary(self) -> dict:
@@ -626,31 +538,6 @@ class Settings(BaseModel):
             "parallel_group_strategy": self.parallel_group_strategy,
             "parallel_timeout_seconds": self.parallel_timeout_seconds,
         }
-
-    def get_safe_rag_config_summary(self) -> dict:
-        """Return RAG configuration metadata without reading model contents."""
-
-        model_path = Path(self.rag_model_path) if self.rag_model_path else None
-        return {
-            "embedding_backend": self.rag_embedding_backend,
-            "vector_backend": self.rag_vector_backend,
-            "model_path_configured": model_path is not None,
-            "model_path_exists": bool(model_path and model_path.exists()),
-            "chroma_dir": self.rag_chroma_dir,
-            "collection_name": self.rag_collection_name,
-            "device": self.rag_device,
-            "normalize_embeddings": self.rag_normalize_embeddings,
-            "real_backend_enabled": self.rag_real_backend_enabled,
-            "retrieval_mode": self.rag_retrieval_mode,
-            "bm25_enabled": self.rag_bm25_enabled,
-            "hybrid_enabled": self.rag_hybrid_enabled,
-            "rrf_k": self.rag_rrf_k,
-            "dense_candidate_multiplier": self.rag_dense_candidate_multiplier,
-            "bm25_candidate_multiplier": self.rag_bm25_candidate_multiplier,
-            "chunk_experiment_sizes": self.rag_chunk_experiment_sizes,
-            "chunk_experiment_output": self.rag_chunk_experiment_output,
-        }
-
 
 def _env_optional(name: str) -> str | None:
     value = os.getenv(name)

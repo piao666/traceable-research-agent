@@ -114,7 +114,7 @@ def classify_source(
         return "governed_sql"
     if "github" in normalized_type:
         return "official_code"
-    if normalized_type in {"rag", "file", "internal"}:
+    if normalized_type in {"file", "internal"}:
         return "internal_document"
     if metadata.get("official") is True:
         return "official"

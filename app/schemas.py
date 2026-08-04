@@ -277,8 +277,6 @@ class SessionCreateRequest(BaseModel):
 
 class SessionResponse(BaseModel):
     session_id: str
-    tenant_id: str
-    user_id: str
     title: str | None = None
     turn_count: int = 0
     created_at: datetime
@@ -296,8 +294,6 @@ class ChatTurnResponse(BaseModel):
 
 class SessionDetailResponse(BaseModel):
     session_id: str
-    tenant_id: str
-    user_id: str
     title: str | None = None
     turns: list[ChatTurnResponse]
     created_at: datetime
@@ -308,8 +304,6 @@ class SessionDetailResponse(BaseModel):
 
 class UserMemoryResponse(BaseModel):
     memory_id: str
-    tenant_id: str
-    user_id: str
     kind: str
     extraction_method: str
     content: str

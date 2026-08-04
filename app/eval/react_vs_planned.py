@@ -125,16 +125,6 @@ def trace_quality_score(mode: str, traces: list[Any], plan: dict[str, Any], reco
     return min(score, 5.0)
 
 
-def _no_hit_handler(arguments: dict[str, Any]) -> ToolResult:
-    query = str(arguments.get("query") or "")
-    return ToolResult(
-        success=True,
-        output={"query": query, "top_k": arguments.get("top_k", 3), "hits": []},
-        output_summary="RAG search completed with no hits.",
-        metadata={"retrieval_mode": "dense", "no_hits": True, "result_count": 0},
-    )
-
-
 def _unreachable_opener(*args: Any, **kwargs: Any) -> Any:
     del args, kwargs
     raise URLError("day34 deterministic network failure")
@@ -158,10 +148,6 @@ def _github_fallback_handler(arguments: dict[str, Any]) -> ToolResult:
 
 def _configure_scenario_tools(scenario: str) -> None:
     register_default_tools()
-    if scenario == "rag_no_hit_recovery":
-        spec = get_tool("rag_search")
-        if spec is not None:
-            register_tool(spec, _no_hit_handler)
     if scenario == "github_fallback_recovery":
         spec = get_tool("mcp_github_search")
         if spec is not None:
@@ -375,8 +361,8 @@ def build_markdown(payload: dict[str, Any]) -> str:
             f"* total cases: `{payload['total_cases']}`",
             f"* modes: `planned`, `react`",
             f"* decision source: `{payload['decision_source']}`",
-            "* tools: `file_reader`, `sql_query`, `rag_search`, `mcp_github_search`, `report_writer`",
-            "* data: repository demo documents, demo SQLite data, deterministic RAG, and offline GitHub mock/fallback",
+            "* tools: `file_reader`, `sql_query`, `mcp_github_search`, `report_writer`",
+            "* data: repository demo documents, demo SQLite data, and offline GitHub mock/fallback",
             "* runtime: local Python process with the existing executors and Tool Registry",
             "",
             "## Metrics",

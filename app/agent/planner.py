@@ -18,7 +18,6 @@ from app.tools.registry import get_tool, list_tools
 DEFAULT_TOOL_ORDER = [
     "file_reader",
     "sql_query",
-    "rag_search",
     "mcp_github_search",
     "tavily_search",
     "report_writer",
@@ -27,7 +26,6 @@ DEFAULT_TOOL_ORDER = [
 FULL_PLANNER_REQUIRED_TOOLS = [
     "file_reader",
     "sql_query",
-    "rag_search",
     "mcp_github_search",
     "tavily_search",
     "report_writer",
@@ -55,18 +53,6 @@ SQL_KEYWORDS = {
     "\u6570\u636e\u5e93",
     "\u67e5\u8be2",
     "\u8868",
-}
-RAG_KEYWORDS = {
-    "rag",
-    "retrieve",
-    "retrieval",
-    "search",
-    "chunks",
-    "evidence",
-    "trace",
-    "registry",
-    "\u68c0\u7d22",
-    "\u8bc1\u636e",
 }
 GITHUB_KEYWORDS = {
     "github",
@@ -593,14 +579,6 @@ def _step_template(
             "risk_level": "medium",
             "requires_confirmation": False,
         },
-        "rag_search": {
-            "goal": "Retrieve relevant chunks from the local RAG index.",
-            "arguments": {"query": task, "top_k": 3},
-            "expected_output": "Top-k chunks with source, chunk id, score, and text.",
-            "completion_criteria": "The local index returns relevant chunks or a stable empty result.",
-            "risk_level": "low",
-            "requires_confirmation": False,
-        },
         "mcp_github_search": {
             "goal": "Collect real read-only GitHub evidence through the Public API adapter.",
             "arguments": {
@@ -752,8 +730,6 @@ def plan_task(
     scenario_template: str | None = None,
     execution_mode_override: str | None = None,
     skill_name: str | None = None,
-    tenant_id: str = "demo",
-    user_id: str = "local-user",
 ) -> dict[str, Any]:
     """Create a plan using deterministic rules, optional LLM planning, or a Skill template.
 
@@ -761,8 +737,6 @@ def plan_task(
     template instead of keyword-matching. Falls back to deterministic if the
     skill is not found.
 
-    tenant_id and user_id are used for memory retrieval and should come from
-    the API request context when available.
     """
 
     # ── Phase 4: Memory injection ──────────────────────────────────
@@ -781,8 +755,6 @@ def plan_task(
         try:
             selected, injected_memory_context = retrieve_for_injection(
                 db,
-                tenant_id=tenant_id,
-                user_id=user_id,
                 task=task,
             )
             # Build the appropriate trace event payload
@@ -1029,8 +1001,6 @@ def deterministic_plan_task(
                 if allowed_set is None or remote_tool_name in allowed_set:
                     _append_step(steps, notes, remote_tool_name, task_text, allowed_set)
                     break
-        if _matches(task_lower, RAG_KEYWORDS):
-            _append_step(steps, notes, "rag_search", task_text, allowed_set)
         if _matches(task_lower, GITHUB_KEYWORDS):
             _append_step(steps, notes, "mcp_github_search", task_text, allowed_set)
         if _matches(task_lower, REPORT_KEYWORDS):
@@ -1055,7 +1025,7 @@ def deterministic_plan_task(
         )
 
     if not steps and not notes:
-        _append_step(steps, notes, "rag_search", task_text, allowed_set)
+        _append_step(steps, notes, "tavily_search", task_text, allowed_set)
         _append_step(
             steps,
             notes,

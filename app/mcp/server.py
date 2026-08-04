@@ -23,7 +23,7 @@ from app.mcp.schemas import (
     MCPToolMetadata,
     MCPTraceOptions,
 )
-from app.security import require_api_key, require_request_context
+from app.security import require_api_key
 from app.tools.base import RiskLevel, ToolResult, ToolSpec
 from app.tools.registry import execute_tool, get_tool, list_tools
 from app.trace import store
@@ -58,7 +58,7 @@ REPORT_READER_SPEC = ToolSpec(
 router = APIRouter(
     prefix="/mcp",
     tags=["mcp"],
-    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+    dependencies=[Depends(require_api_key)],
 )
 
 

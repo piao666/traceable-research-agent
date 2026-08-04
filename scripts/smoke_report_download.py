@@ -35,11 +35,11 @@ def _make_completed_run() -> str:
             task=task,
             report_type="summary",
             source_mode="mock",
-            allowed_tools=["file_reader", "sql_query", "rag_search", "report_writer"],
+            allowed_tools=["file_reader", "sql_query", "report_writer"],
         )
         plan = plan_task(
             task,
-            ["file_reader", "sql_query", "rag_search", "report_writer"],
+            ["file_reader", "sql_query", "report_writer"],
             "mock",
             planner_mode="deterministic",
         )

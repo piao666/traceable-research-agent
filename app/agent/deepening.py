@@ -142,24 +142,27 @@ def _run_single_round(
     """
     all_observations: list[dict[str, Any]] = []
     sub_run_ids: list[str] = []
+    parent_run = store.get_agent_run(db, parent_run_id)
 
     for sq in sub_queries:
         # Create a sub-run for this follow-up query
-        sub_run_id = store.create_agent_run(
-            db,
+        sub_run = store.create_agent_run(
+            db=db,
             task=sq,
-            plan_json=json.dumps({
+            report_type=parent_run.report_type if parent_run else "summary",
+            source_mode=parent_run.source_mode if parent_run else "real",
+            allowed_tools=None,
+            session_id=None,
+        )
+        sub_plan = {
                 "version": "deepening-v1",
                 "task": sq,
                 "execution_mode": "react",
                 "parent_run_id": parent_run_id,
                 "notes": [f"Deepening follow-up from run {parent_run_id}"],
-            }),
-            allowed_tools_json=None,
-            session_id=None,
-        )
-        if sub_run_id is None:
-            continue
+            }
+        store.update_agent_run_plan(db, sub_run.run_id, sub_plan)
+        sub_run_id = sub_run.run_id
         sub_run_ids.append(sub_run_id)
 
         try:

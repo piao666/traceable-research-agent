@@ -553,14 +553,5 @@ class MemoryRecallTraceWiringTests(unittest.TestCase):
         self.assertEqual(event["total_available"], 10)
         self.assertEqual(event["reason"], "budget_trimmed")
 
-    def test_plan_task_accepts_tenant_user_params(self):
-        """plan_task should accept tenant_id and user_id parameters without error."""
-        from app.agent.planner import plan_task
-        # Just verify the call doesn't raise for wrong arg names
-        plan = plan_task("test task", tenant_id="t1", user_id="u1")
-        self.assertIsInstance(plan, dict)
-        self.assertIn("steps", plan)
-
-
 if __name__ == "__main__":
     unittest.main()

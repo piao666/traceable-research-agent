@@ -10,7 +10,6 @@ from typing import Any
 KNOWN_TOOLS = {
     "file_reader",
     "sql_query",
-    "rag_search",
     "mcp_github_search",
     "tavily_search",
     "report_writer",

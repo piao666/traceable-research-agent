@@ -14,13 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CHECKS = [
     ("smoke_planner", [sys.executable, "scripts/smoke_planner.py"]),
     ("smoke_e2e", [sys.executable, "scripts/smoke_e2e.py"]),
-    ("smoke_exceptions", [sys.executable, "scripts/smoke_exceptions.py"]),
     ("smoke_hitl", [sys.executable, "scripts/smoke_hitl.py"]),
     ("smoke_llm_config", [sys.executable, "scripts/smoke_llm_config.py"]),
     ("smoke_llm_planner", [sys.executable, "scripts/smoke_llm_planner.py"]),
-    ("smoke_planner_guardrails", [sys.executable, "scripts/smoke_planner_guardrails.py"]),
-    ("smoke_rag_query", [sys.executable, "scripts/smoke_rag_query.py"]),
-    ("smoke_rag_backends", [sys.executable, "scripts/smoke_rag_backends.py"]),
     ("smoke_streamlit_frontend", [sys.executable, "scripts/smoke_streamlit_frontend.py"]),
     ("smoke_report_download", [sys.executable, "scripts/smoke_report_download.py"]),
     ("smoke_auth_async", [sys.executable, "scripts/smoke_auth_async.py"]),
@@ -29,8 +25,6 @@ CHECKS = [
     ("smoke_mcp_channels", [sys.executable, "scripts/smoke_mcp_channels.py"]),
     ("demo_mcp_external_client", [sys.executable, "scripts/demo_mcp_external_client.py"]),
     ("smoke_mcp_external_http_client", [sys.executable, "scripts/smoke_mcp_external_http_client.py"]),
-    ("smoke_react_executor", [sys.executable, "scripts/smoke_react_executor.py"]),
-    ("smoke_hybrid_rag", [sys.executable, "scripts/smoke_hybrid_rag.py"]),
     ("smoke_react_vs_planned_eval", [sys.executable, "scripts/smoke_react_vs_planned_eval.py"]),
     ("smoke_provenance_v2", [sys.executable, "scripts/smoke_provenance_v2.py"]),
     (

@@ -7,13 +7,13 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.schemas import SkillListResponse, SkillDetailResponse, SkillReloadResponse
-from app.security import require_api_key, require_request_context
+from app.security import require_api_key
 from app.skills.registry import get_skill, list_skills, reload_skills
 
 router = APIRouter(
     prefix="/skills",
     tags=["skills"],
-    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+    dependencies=[Depends(require_api_key)],
 )
 
 SKILLS_DIR = Path("workspace/skills")

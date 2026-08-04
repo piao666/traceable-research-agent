@@ -1,8 +1,8 @@
 {
   "name": "technical_docs_research",
   "version": "1.0",
-  "description": "技术文档调研：GitHub 搜索 → 本地 RAG 检索 → 网页正文抓取 → 报告",
-  "required_tools": ["mcp_github_search", "rag_search", "web_fetcher"],
+  "description": "技术文档调研：GitHub 搜索 → Web 搜索 → 网页正文抓取 → 报告",
+  "required_tools": ["mcp_github_search", "tavily_search", "web_fetcher"],
   "parameters": {
     "query": {"type": "string", "required": true},
     "max_results": {"type": "integer", "default": 5}
@@ -18,11 +18,13 @@
       }
     },
     {
-      "tool_name": "rag_search",
-      "goal": "从本地知识库检索相关技术文档",
+      "tool_name": "tavily_search",
+      "goal": "从公开 Web 搜索相关技术文档",
       "arguments": {
         "query": "{{parameters.query}}",
-        "top_k": 5
+        "max_results": "{{parameters.max_results}}",
+        "search_depth": "advanced",
+        "include_answer": true
       }
     },
     {

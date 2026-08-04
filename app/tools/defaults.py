@@ -4,7 +4,6 @@ from app.tools.base import RiskLevel, ToolSpec
 from app.tools.arxiv_search import arxiv_search_handler
 from app.tools.file_reader import read_file
 from app.tools.mcp_github import github_search_handler
-from app.tools.rag_search import search_rag
 from app.tools.registry import register_tool
 from app.tools.semantic_scholar import semantic_scholar_handler
 from app.tools.sql_query import run_query
@@ -49,17 +48,6 @@ def register_default_tools() -> None:
             tags=["database", "sql", "read-only"],
         ),
         handler=run_query,
-    )
-    register_tool(
-        ToolSpec(
-            name="rag_search",
-            description="Search local evidence using dense, BM25, or read-only RRF hybrid retrieval.",
-            input_schema={"query": "string", "top_k": "integer", "retrieval_mode": "dense|bm25|hybrid"},
-            output_schema={"query": "string", "top_k": "integer", "hits": "array"},
-            risk_level=RiskLevel.LOW,
-            tags=["rag", "search", "read-only"],
-        ),
-        handler=search_rag,
     )
     register_tool(
         ToolSpec(
@@ -108,9 +96,8 @@ def register_default_tools() -> None:
         ToolSpec(
             name="memory_search",
             description=(
-                "Search the user's cross-session memory for relevant preferences, "
-                "facts, and research history. Read-only, returns active memories "
-                "for the current tenant/user context."
+                "Search local cross-session memory for relevant preferences, "
+                "facts, and research history. Read-only and single-instance."
             ),
             input_schema={"query": "string", "top_k": "integer"},
             output_schema={"memories": "array", "recalled": "integer"},

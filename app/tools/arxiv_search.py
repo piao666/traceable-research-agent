@@ -7,10 +7,11 @@ Uses the arXiv API (http://export.arxiv.org/api/query).
 from __future__ import annotations
 
 import time
+import threading
 import xml.etree.ElementTree as ET
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.config import settings
@@ -21,6 +22,19 @@ NAMESPACES = {
     "atom": "http://www.w3.org/2005/Atom",
     "arxiv": "http://arxiv.org/schemas/atom",
 }
+_RATE_LIMIT_LOCK = threading.Lock()
+_LAST_REQUEST_AT = 0.0
+_MIN_REQUEST_INTERVAL_SECONDS = 3.0
+
+
+def _respect_rate_limit() -> None:
+    global _LAST_REQUEST_AT
+    with _RATE_LIMIT_LOCK:
+        now = time.monotonic()
+        delay = _MIN_REQUEST_INTERVAL_SECONDS - (now - _LAST_REQUEST_AT)
+        if delay > 0:
+            time.sleep(delay)
+        _LAST_REQUEST_AT = time.monotonic()
 
 
 def _bounded_max(value: Any, default: int, minimum: int = 1, maximum: int = 30) -> int:
@@ -70,8 +84,12 @@ def _parse_paper(entry: ET.Element) -> dict[str, Any]:
         "updated": updated,
         "abstract_url": abstract_url,
         "pdf_url": pdf_url,
-        "primary_category": _arxiv_text("primary_category"),
-        "categories": [c.attrib.get("term", "") for c in entry.findall("arxiv:category", NAMESPACES)],
+        "primary_category": (
+            entry.find("arxiv:primary_category", NAMESPACES).attrib.get("term", "")
+            if entry.find("arxiv:primary_category", NAMESPACES) is not None
+            else ""
+        ),
+        "categories": [c.attrib.get("term", "") for c in entry.findall("atom:category", NAMESPACES)],
         "comment": _arxiv_text("comment"),
     }
 
@@ -89,7 +107,7 @@ def arxiv_search_handler(arguments: dict[str, Any]) -> ToolResult:
     max_results = _bounded_max(arguments.get("max_results"), 5, 1, 30)
 
     params = {
-        "search_query": f"all:{quote(query)}",
+        "search_query": f"all:{query}",
         "start": 0,
         "max_results": max_results,
         "sortBy": arguments.get("sort_by", "relevance"),
@@ -98,6 +116,7 @@ def arxiv_search_handler(arguments: dict[str, Any]) -> ToolResult:
     url = f"{ARXIV_API_URL}?{urlencode(params)}"
 
     try:
+        _respect_rate_limit()
         request = Request(url, headers={"Accept": "application/atom+xml"})
         with urlopen(request, timeout=15) as response:
             raw = response.read().decode("utf-8")

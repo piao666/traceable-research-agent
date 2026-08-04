@@ -77,13 +77,12 @@ def _detect_format_preference(task_text: str) -> str | None:
 
 # Keywords that indicate a research domain interest.
 _DOMAIN_KEYWORDS: list[str] = [
-    "Agent", "RAG", "LLM", "LangChain", "CrewAI", "AutoGen",
-    "embedding", "chunking", "rerank", "vector", "retrieval",
+    "Agent", "LLM", "LangChain", "CrewAI", "AutoGen",
     "prompt", "fine-tuning", "transformer", "GPT", "Claude",
     "DeepSeek", "Qwen", "evaluation", "benchmark", "safety",
     "alignment", "multi-agent", "tool-calling", "function calling",
     "planning", "reasoning", "chain-of-thought", "ReAct",
-    "knowledge graph", "graph RAG", "hybrid search",
+    "knowledge graph",
 ]
 
 # Match domain keywords anywhere in text (no word-boundary requirement
@@ -113,8 +112,6 @@ def _detect_domain_keywords(task_text: str) -> list[str]:
 def extract_preferences_from_run(
     db: Session,
     run: AgentRun,
-    tenant_id: str,
-    user_id: str,
 ) -> list[dict[str, Any]]:
     """Extract preference signals from a single completed run.
 
@@ -173,8 +170,6 @@ def _signal_key(memory: UserMemory) -> str:
 
 def commit_pending_memories(
     db: Session,
-    tenant_id: str,
-    user_id: str,
     run: AgentRun,
     candidates: list[dict[str, Any]],
 ) -> int:
@@ -190,7 +185,7 @@ def commit_pending_memories(
         return 0
 
     # Load existing active + pending memories for dedup
-    existing = list_user_memories(db, tenant_id, user_id)
+    existing = list_user_memories(db)
     existing_active = [m for m in existing if m.status == "active"]
     existing_pending = [m for m in existing if m.status == "pending"]
 
@@ -207,7 +202,7 @@ def commit_pending_memories(
             continue
 
         # Count how many completed runs contain this signal's keyword
-        # Extract the core keyword from content like "User researches RAG" → "RAG"
+        # Extract the core keyword from content like "User researches LLM".
         content = candidate["content"]
         keyword = _extract_keyword_from_content(content)
         if not keyword:
@@ -225,8 +220,6 @@ def commit_pending_memories(
             confidence = min(0.5 + 0.2 * (run_count - 1), 0.9)
             create_user_memory(
                 db=db,
-                tenant_id=tenant_id,
-                user_id=user_id,
                 kind=candidate["kind"],
                 extraction_method=candidate["extraction_method"],
                 content=content,
@@ -242,7 +235,7 @@ def commit_pending_memories(
 def _extract_keyword_from_content(content: str) -> str | None:
     """Extract the core keyword from a content string.
 
-    'User researches RAG' → 'RAG'
+    'User researches LLM' → 'LLM'
     'User prefers Chinese research reports' → 'Chinese'
     'User prefers WORD report format' → 'WORD'
     """
@@ -270,8 +263,8 @@ def _extract_keyword_from_content(content: str) -> str | None:
     return None
 
 
-def should_extract_for_run(db: Session, tenant_id: str, user_id: str) -> bool:
-    """Return True if this user has completed ≥2 runs (triggers extraction)."""
+def should_extract_for_run(db: Session) -> bool:
+    """Return True if the deployment has completed at least two runs."""
     completed_count = db.scalar(
         select(func.count(AgentRun.run_id)).where(
             AgentRun.status == "completed",
@@ -280,8 +273,8 @@ def should_extract_for_run(db: Session, tenant_id: str, user_id: str) -> bool:
     return (completed_count or 0) >= MIN_SAMPLE_THRESHOLD
 
 
-def count_completed_runs(db: Session, tenant_id: str, user_id: str) -> int:
-    """Return the number of completed runs for display in UI cold-start progress."""
+def count_completed_runs(db: Session) -> int:
+    """Return the number of completed runs for cold-start progress."""
     return (
         db.scalar(
             select(func.count(AgentRun.run_id)).where(

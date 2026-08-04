@@ -1,6 +1,7 @@
 """In-memory Tool Registry foundation."""
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any
 
 from app.tools.base import ToolResult, ToolSpec
@@ -109,8 +110,22 @@ def execute_tool(
             ),
         )
 
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"tool-{name}")
+    future = executor.submit(handler, arguments or {})
     try:
-        return _finalize_result(name, spec, handler(arguments or {}))
+        result = future.result(timeout=max(1, spec.timeout_seconds))
+        return _finalize_result(name, spec, result)
+    except FutureTimeoutError:
+        future.cancel()
+        return _finalize_result(
+            name,
+            spec,
+            ToolResult(
+                success=False,
+                error_message=f"Tool '{name}' timed out after {spec.timeout_seconds} seconds.",
+                metadata={"error_type": "timeout", "timeout_seconds": spec.timeout_seconds},
+            ),
+        )
     except Exception as exc:  # pragma: no cover - handler path is future work
         return _finalize_result(
             name,
@@ -121,3 +136,5 @@ def execute_tool(
                 metadata={"error_type": "handler_error"},
             ),
         )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)

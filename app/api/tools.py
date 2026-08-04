@@ -12,7 +12,7 @@ from app.schemas import (
     ToolInfo,
     ToolListResponse,
 )
-from app.security import require_api_key, require_request_context
+from app.security import require_api_key
 from app.mcp.policy import MCPChannel, requires_interactive_confirmation, tool_channel
 from app.tools import registry
 from app.tools.base import ToolResult, ToolSpec
@@ -22,7 +22,7 @@ from app.trace.logger import record_tool_result
 router = APIRouter(
     prefix="/tools",
     tags=["tools"],
-    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+    dependencies=[Depends(require_api_key)],
 )
 
 

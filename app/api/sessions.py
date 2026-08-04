@@ -1,6 +1,6 @@
 """Session and chat-turn endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -11,21 +11,18 @@ from app.schemas import (
     SessionDetailResponse,
     SessionResponse,
 )
-from app.security import require_api_key, require_request_context
-from app.security.context import RequestContext
+from app.security import require_api_key
 
 router = APIRouter(
     prefix="/sessions",
     tags=["sessions"],
-    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+    dependencies=[Depends(require_api_key)],
 )
 
 
 def _session_response(session_obj, turn_count: int = 0) -> SessionResponse:
     return SessionResponse(
         session_id=session_obj.session_id,
-        tenant_id=session_obj.tenant_id,
-        user_id=session_obj.user_id,
         title=session_obj.title,
         turn_count=turn_count,
         created_at=session_obj.created_at,
@@ -47,16 +44,12 @@ def _turn_response(turn) -> ChatTurnResponse:
 @router.post("", response_model=SessionResponse)
 async def create_session_endpoint(
     request_body: SessionCreateRequest,
-    request: Request,
     db: Session = Depends(get_db),
 ) -> SessionResponse:
-    """Create a new conversation session for the current user."""
+    """Create a new local conversation session."""
 
-    ctx: RequestContext = request.state.request_context
     session_obj = memory_store.create_session(
         db=db,
-        tenant_id=ctx.tenant_id,
-        user_id=ctx.user_id,
         title=request_body.title,
     )
     return _session_response(session_obj, turn_count=0)
@@ -64,13 +57,11 @@ async def create_session_endpoint(
 
 @router.get("", response_model=list[SessionResponse])
 async def list_sessions_endpoint(
-    request: Request,
     db: Session = Depends(get_db),
 ) -> list[SessionResponse]:
-    """List all sessions for the current user."""
+    """List all local sessions."""
 
-    ctx: RequestContext = request.state.request_context
-    sessions = memory_store.list_sessions(db, ctx.tenant_id, ctx.user_id)
+    sessions = memory_store.list_sessions(db)
     return [
         _session_response(
             s,
@@ -93,8 +84,6 @@ async def get_session_endpoint(
     turns = memory_store.list_chat_turns(db, session_id)
     return SessionDetailResponse(
         session_id=session_obj.session_id,
-        tenant_id=session_obj.tenant_id,
-        user_id=session_obj.user_id,
         title=session_obj.title,
         turns=[_turn_response(t) for t in turns],
         created_at=session_obj.created_at,

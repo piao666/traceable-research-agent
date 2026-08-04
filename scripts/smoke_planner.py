@@ -49,15 +49,15 @@ def main() -> None:
     ]:
         register_fake_remote_tool(server, remote_name, schema)
 
-    task = "Read local docs, query database metrics, retrieve trace evidence, and generate a markdown report"
+    task = "Read local docs, query database metrics, and generate a markdown report"
     plan = plan_task(
         task=task,
-        allowed_tools=["file_reader", "sql_query", "rag_search", "report_writer"],
+        allowed_tools=["file_reader", "sql_query", "report_writer"],
         source_mode="mock",
         planner_mode="deterministic",
     )
     tool_names = [step["tool_name"] for step in plan["steps"]]
-    expected = ["file_reader", "sql_query", "rag_search", "report_writer"]
+    expected = ["file_reader", "sql_query", "report_writer"]
     if tool_names != expected:
         raise SystemExit(f"Unexpected tool sequence: {tool_names}")
 
@@ -159,7 +159,6 @@ def main() -> None:
         allowed_tools=[
             "file_reader",
             "sql_query",
-            "rag_search",
             "mcp_github_search",
             "tavily_search",
             "report_writer",
@@ -172,7 +171,6 @@ def main() -> None:
     expected_full = [
         "file_reader",
         "sql_query",
-        "rag_search",
         "mcp_github_search",
         "tavily_search",
         "report_writer",

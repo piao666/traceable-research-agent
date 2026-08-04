@@ -39,7 +39,6 @@ from app.trace.logger import record_tool_result
 
 PARALLEL_SAFE_TOOLS = {
     "file_reader",
-    "rag_search",
     "mcp_github_search",
     "tavily_search",
     "sql_query",

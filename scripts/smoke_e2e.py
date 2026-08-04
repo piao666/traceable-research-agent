@@ -19,26 +19,26 @@ def main() -> None:
     with SessionLocal() as db:
         run = store.create_agent_run(
             db=db,
-            task="Read local docs, query database metrics, retrieve trace evidence, and generate a markdown report",
+            task="Read local docs, query database metrics, and generate a markdown report",
             report_type="summary",
             source_mode="mock",
-            allowed_tools=["file_reader", "sql_query", "rag_search", "report_writer"],
+            allowed_tools=["file_reader", "sql_query", "report_writer"],
         )
         plan = plan_task(
             run.task,
-            ["file_reader", "sql_query", "rag_search", "report_writer"],
+            ["file_reader", "sql_query", "report_writer"],
             "mock",
             planner_mode="deterministic",
         )
         run = store.update_agent_run_plan(db, run.run_id, plan)
-        if run.status != "pending" or run.total_steps != 4:
+        if run.status != "pending" or run.total_steps != 3:
             raise SystemExit(f"Unexpected create/plan state: {run.status}, steps={run.total_steps}")
         if store.list_tool_traces(db, run.run_id):
             raise SystemExit("Trace should be empty before manual run.")
 
         summary = run_plan(db, run.run_id)
         traces = store.list_tool_traces(db, run.run_id)
-        if summary["status"] != "completed" or len(traces) < 3:
+        if summary["status"] != "completed" or len(traces) < 2:
             raise SystemExit(f"Unexpected run result: {summary}, traces={len(traces)}")
         report_path = ROOT / str(store.get_agent_run(db, run.run_id).report_path)
         if not report_path.exists():

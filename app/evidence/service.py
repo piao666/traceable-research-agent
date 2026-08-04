@@ -431,7 +431,6 @@ def _infer_content_basis(item: EvidenceItem) -> str:
     - web_fetcher: read from item.metadata or output's page-level content_basis
     - tavily_search (no fetch): snippet_only
     - file_reader / sql_query: full_text
-    - rag_search: snippet_only (chunks are pre-existing, not full original docs)
     """
     tool_name = item.tool_name
 
@@ -448,9 +447,6 @@ def _infer_content_basis(item: EvidenceItem) -> str:
 
     if tool_name == "tavily_search":
         # tavily_search without web_fetcher = snippet only
-        return "snippet_only"
-
-    if tool_name == "rag_search":
         return "snippet_only"
 
     if tool_name == "mcp_github_search":

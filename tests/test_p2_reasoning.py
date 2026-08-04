@@ -195,7 +195,7 @@ class FactNormalizationTests(unittest.TestCase):
         self.assertEqual(decision.scope_difference, "time")
 
     def test_unrelated_negative_text_does_not_create_false_refutation(self) -> None:
-        claim = normalize_fact("Retrieve relevant chunks from the local RAG index")
+        claim = normalize_fact("Retrieve relevant records from the local source")
         assertion = normalize_fact("The runtime does not bundle a large embedding model")
         decision = classify_relation(claim, assertion, prior_relation="supports")
         self.assertEqual(decision.relation, "supports")

@@ -301,8 +301,6 @@ def _items_from_record(
         return _file_items(run_id, record, existing_count)
     if tool_name == "sql_query":
         return _sql_items(run_id, record, existing_count)
-    if tool_name == "rag_search":
-        return _rag_items(run_id, record, existing_count)
     if tool_name == "mcp_github_search":
         return _github_items(run_id, record, existing_count)
     if tool_name == "tavily_search":
@@ -376,45 +374,6 @@ def _sql_items(run_id: str, record: dict[str, Any], existing_count: int) -> list
             source_type="sql",
         )
     ]
-
-
-def _rag_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
-    output = record["output"]
-    hits = [hit for hit in (output.get("hits") or []) if isinstance(hit, dict)]
-    items: list[EvidenceItem] = []
-    for offset, hit in enumerate(hits[:8], 1):
-        source_ref = str(hit.get("source") or hit.get("chunk_id") or "rag")
-        title = str(hit.get("title") or hit.get("chunk_id") or source_ref)
-        text = str(hit.get("text") or hit.get("content") or "").strip()
-        if not text:
-            continue
-        item = _make_item(
-            run_id,
-            record,
-            existing_count + len(items) + 1,
-            title=f"RAG hit: {title}",
-            snippet=text[:700],
-            source_ref=source_ref,
-            source_type="rag",
-        )
-        item.metadata.update({k: hit.get(k) for k in ("chunk_id", "score") if k in hit})
-        if isinstance(hit.get("metadata"), dict):
-            item.metadata["hit_metadata"] = hit["metadata"]
-        items.append(item)
-    if not items:
-        items.append(
-            _make_item(
-                run_id,
-                record,
-                existing_count + 1,
-                title="RAG returned no usable hits",
-                snippet=str(record.get("summary") or "RAG search returned no evidence."),
-                source_ref="rag",
-                source_type="rag",
-                unsupported_reason="empty_rag_result",
-            )
-        )
-    return items
 
 
 def _github_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
@@ -733,8 +692,6 @@ def _source_type(record: dict[str, Any]) -> str:
         return "file"
     if tool_name == "sql_query":
         return "sql"
-    if tool_name == "rag_search":
-        return "rag"
     if tool_name == "mcp_github_search":
         return "github"
     if tool_name == "tavily_search":

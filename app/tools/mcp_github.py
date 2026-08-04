@@ -70,7 +70,7 @@ def _mock_results(query: str, repo: str | None, limit: int) -> list[dict[str, st
         (
             "Evaluation case coverage",
             "issue",
-            "Eval cases cover file, SQL, RAG, GitHub mock, HITL, and exception paths.",
+            "Eval cases cover file, SQL, GitHub mock, HITL, and exception paths.",
         ),
         (
             "MCP compatibility notes",

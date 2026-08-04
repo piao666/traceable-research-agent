@@ -86,7 +86,7 @@ def is_tool_read_only(spec: ToolSpec) -> bool:
         return False
     if "read-only" in tags:
         return True
-    return spec.name in {"file_reader", "sql_query", "rag_search", "mcp_github_search", "tavily_search"}
+    return spec.name in {"file_reader", "sql_query", "mcp_github_search", "tavily_search"}
 
 
 def tool_channel(spec: ToolSpec | None) -> str:

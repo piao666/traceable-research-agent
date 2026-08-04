@@ -64,7 +64,6 @@ def main() -> None:
     names = {tool["name"] for tool in tools}
     expected = {
         "file_reader",
-        "rag_search",
         "sql_query_readonly",
         "github_search",
         "tavily_search",

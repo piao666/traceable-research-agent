@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     from app.llm.base import LLMClient
@@ -369,36 +369,6 @@ def _selected_evidence(tool_name: str, output: Any) -> str:
         columns = output.get("columns") or []
         rows = output.get("rows") or []
         return _json_preview({"columns": columns, "rows": rows[:5]}, max_chars=900)
-    if tool_name == "rag_search":
-        hits = output.get("hits") or []
-        rag_metadata = output.get("metadata") if isinstance(output.get("metadata"), dict) else {}
-        selected = [
-            {
-                "source": hit.get("source"),
-                "chunk_id": hit.get("chunk_id"),
-                "score": hit.get("score"),
-                "text": str(hit.get("text") or "")[:240],
-                "rrf_score": (hit.get("metadata") or {}).get("rrf_score"),
-            }
-            for hit in hits[:5]
-        ]
-        return _json_preview(
-            {
-                "retrieval": {
-                    key: rag_metadata.get(key)
-                    for key in (
-                        "retrieval_mode",
-                        "dense_hit_count",
-                        "bm25_hit_count",
-                        "rrf_k",
-                        "fallback_used",
-                    )
-                    if key in rag_metadata
-                },
-                "hits": selected,
-            },
-            max_chars=1400,
-        )
     if tool_name == "mcp_github_search":
         results = output.get("results") or []
         selected = [
@@ -465,23 +435,6 @@ def _observation_metadata(observation: dict[str, Any]) -> dict[str, Any]:
     if isinstance(direct, dict):
         metadata.update(direct)
     return metadata
-
-
-def _rag_metadata_lines(metadata: dict[str, Any]) -> list[str]:
-    labels = {
-        "retrieval_mode": "检索模式",
-        "dense_hit_count": "稠密检索候选数",
-        "bm25_hit_count": "BM25 候选数",
-        "rrf_k": "RRF 融合参数",
-        "fallback_used": "是否降级",
-        "embedding_backend": "Embedding 后端",
-        "vector_backend": "向量后端",
-    }
-    return [
-        f"* {label} (`{key}`): `{metadata[key]}`"
-        for key, label in labels.items()
-        if key in metadata
-    ]
 
 
 def _failure_category(error_message: str | None, metadata: dict[str, Any]) -> str:
@@ -704,12 +657,10 @@ def _tavily_final_answer(record: dict[str, Any], task: str) -> list[str] | None:
 def _learning_route_final_answer(records: list[dict[str, Any]]) -> list[str]:
     snippets: list[str] = []
     for record in records:
-        if not record["success"] or record["tool_name"] not in {"rag_search", "file_reader", "tavily_search"}:
+        if not record["success"] or record["tool_name"] not in {"file_reader", "tavily_search"}:
             continue
         output = record["output"]
-        if record["tool_name"] == "rag_search":
-            snippets.extend(str(hit.get("text") or "").strip() for hit in output.get("hits") or [] if isinstance(hit, dict))
-        elif record["tool_name"] == "file_reader":
+        if record["tool_name"] == "file_reader":
             snippets.append(str(output.get("content") or "").strip())
         else:
             if output.get("answer"):
@@ -735,7 +686,7 @@ def _learning_route_final_answer(records: list[dict[str, Any]]) -> list[str]:
     stage_rules = [
         ("基础准备", ("python", "machine learning", "deep learning", "机器学习", "深度学习", "pytorch")),
         ("核心原理", ("transformer", "attention", "tokenizer", "预训练", "微调")),
-        ("大模型应用", ("prompt", "rag", "agent", "function calling", "工具调用")),
+        ("大模型应用", ("prompt", "agent", "function calling", "工具调用")),
         ("工程实践", ("fastapi", "向量数据库", "部署", "日志", "监控", "评测")),
         ("项目实战", ("项目", "实战", "问答", "报告生成")),
     ]
@@ -790,6 +741,7 @@ def _llm_synthesize_answer(
     observations: list[dict[str, Any]],
     llm_client: "LLMClient",
     provenance_bundle: dict[str, Any] | None = None,
+    usage_callback: Callable[[Any], None] | None = None,
 ) -> str | None:
     """Call LLM to synthesize tool evidence into a coherent answer.
     Returns synthesized text, or None if LLM call fails / no useful evidence.
@@ -823,6 +775,8 @@ def _llm_synthesize_answer(
     ]
     try:
         response = llm_client.complete(messages)
+        if usage_callback is not None and response.usage is not None:
+            usage_callback(response)
         if response.success and response.content:
             content = response.content.strip()
             if provenance_bundle and not _valid_synthesis_citations(content, provenance_bundle):
@@ -1142,7 +1096,7 @@ def _render_final_answer(
                 raw_summary.strip(),
                 "",
                 "> **说明：** 本回答由 ReAct 模式 LLM 直接基于知识生成，未调用外部工具。"
-                "如需工具验证，请使用包含 rag_search 或 mcp_github_search 的场景模板重新提问。",
+                "如需工具验证，请使用包含 Web、GitHub 或本地文件工具的场景模板重新提问。",
                 "",
             ]
 
@@ -1200,7 +1154,7 @@ def _render_final_answer(
                     "⚠️ 当前已启用的工具无法回答通识性问题。",
                     "",
                     f"「{task}」是一个知识性问题，建议：",
-                    "1. 切换到包含 `rag_search`（本地知识库检索）的场景模板；",
+                    "1. 切换到包含 `tavily_search` 的联网调研场景；",
                     "2. 或者切换到包含 `file_reader` 的场景，直接读取相关文档；",
                     "3. 或者直接向 LLM 提问，不走 Agent 工具流程。",
                     "",
@@ -1368,6 +1322,7 @@ def generate_markdown_report(
     llm_client: "LLMClient | None" = None,
     provenance_bundle: dict[str, Any] | None = None,
     report_type: str = "summary",
+    usage_callback: Callable[[Any], None] | None = None,
 ) -> str:
     """Build a Markdown report from persisted run evidence.
 
@@ -1416,6 +1371,7 @@ def generate_markdown_report(
             observations,
             llm_client,
             provenance_bundle,
+            usage_callback,
         )
         if _llm_answer:
             _llm_answer = _repair_tool_only_sources(
@@ -1539,10 +1495,6 @@ def generate_markdown_report(
                 ]
             )
             metadata = _observation_metadata(observation)
-            if tool_name == "rag_search" and metadata:
-                rag_lines = _rag_metadata_lines(metadata)
-                if rag_lines:
-                    lines.extend(["RAG metadata 中文说明：", "", *rag_lines, ""])
             data_source = metadata.get("data_source")
             if tool_name == "mcp_github_search":
                 source_notes = {

@@ -1,6 +1,6 @@
 """User memory endpoints with trace-audited delete operations."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -11,23 +11,18 @@ from app.schemas import (
     MemoryListResponse,
     UserMemoryResponse,
 )
-from app.security import require_api_key, require_request_context
-from app.security.context import RequestContext
-from app.trace.logger import record_trace_event
-from app.trace.store import get_agent_run
+from app.security import require_api_key
 
 router = APIRouter(
     prefix="/memory",
     tags=["memory"],
-    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+    dependencies=[Depends(require_api_key)],
 )
 
 
 def _memory_response(memory: UserMemory) -> UserMemoryResponse:
     return UserMemoryResponse(
         memory_id=memory.memory_id,
-        tenant_id=memory.tenant_id,
-        user_id=memory.user_id,
         kind=memory.kind,
         extraction_method=memory.extraction_method,
         content=memory.content,
@@ -43,19 +38,13 @@ def _memory_response(memory: UserMemory) -> UserMemoryResponse:
 
 @router.get("", response_model=MemoryListResponse)
 async def list_memories(
-    request: Request,
     db: Session = Depends(get_db),
     status: str | None = Query(default=None, pattern="^(pending|active|superseded|expired)$"),
 ) -> MemoryListResponse:
-    """List memories for the current user, optionally filtered by status."""
+    """List local memories, optionally filtered by status."""
 
-    ctx: RequestContext = request.state.request_context
-    memories = memory_store.list_user_memories(
-        db, ctx.tenant_id, ctx.user_id, status=status,
-    )
-    all_memories = memory_store.list_user_memories(
-        db, ctx.tenant_id, ctx.user_id,
-    )
+    memories = memory_store.list_user_memories(db, status=status)
+    all_memories = memory_store.list_user_memories(db)
     return MemoryListResponse(
         memories=[_memory_response(m) for m in memories],
         total=len(all_memories),
@@ -68,16 +57,12 @@ async def list_memories(
 async def confirm_memory(
     memory_id: str,
     body: MemoryConfirmRequest,
-    request: Request,
     db: Session = Depends(get_db),
 ) -> UserMemoryResponse:
     """Confirm (activate) or reject (delete) a pending memory."""
 
-    ctx: RequestContext = request.state.request_context
     memory = memory_store.get_user_memory(db, memory_id)
     if memory is None:
-        raise HTTPException(status_code=404, detail="Memory not found")
-    if memory.tenant_id != ctx.tenant_id or memory.user_id != ctx.user_id:
         raise HTTPException(status_code=404, detail="Memory not found")
     if memory.status != "pending":
         raise HTTPException(
@@ -91,8 +76,6 @@ async def confirm_memory(
         memory_store.delete_user_memory(db, memory_id)
         return UserMemoryResponse(
             memory_id=memory_id,
-            tenant_id=ctx.tenant_id,
-            user_id=ctx.user_id,
             kind=memory.kind,
             extraction_method=memory.extraction_method,
             content="[deleted]",
@@ -110,33 +93,26 @@ async def confirm_memory(
 @router.delete("/{memory_id}")
 async def delete_memory(
     memory_id: str,
-    request: Request,
     db: Session = Depends(get_db),
 ) -> dict:
     """Delete a single memory and write a trace event for audit."""
 
-    ctx: RequestContext = request.state.request_context
     memory = memory_store.get_user_memory(db, memory_id)
     if memory is None:
         raise HTTPException(status_code=404, detail="Memory not found")
-    if memory.tenant_id != ctx.tenant_id or memory.user_id != ctx.user_id:
-        raise HTTPException(status_code=404, detail="Memory not found")
-
     memory_store.delete_user_memory(db, memory_id)
     return {"memory_id": memory_id, "deleted": True, "message": "Memory deleted."}
 
 
 @router.delete("")
 async def clear_all_memories(
-    request: Request,
     db: Session = Depends(get_db),
 ) -> dict:
-    """Delete all memories for the current user. Writes a trace event for audit."""
+    """Delete all local memories."""
 
-    ctx: RequestContext = request.state.request_context
-    count = memory_store.delete_all_user_memories(db, ctx.tenant_id, ctx.user_id)
+    count = memory_store.delete_all_user_memories(db)
     return {
         "deleted": True,
         "count": count,
-        "message": f"All {count} memories cleared for user {ctx.user_id}.",
+        "message": f"All {count} memories cleared.",
     }

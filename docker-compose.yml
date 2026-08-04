@@ -8,11 +8,10 @@ services:
     volumes:
       - ./workspace:/app/workspace
     env_file:
-      - path: .env.docker
+      - path: .env
         required: false
     environment:
       DOCKER_INIT_DEMO_DATA: ${DOCKER_INIT_DEMO_DATA:-true}
-      DOCKER_REBUILD_RAG_INDEX: ${DOCKER_REBUILD_RAG_INDEX:-false}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 10s
@@ -30,7 +29,7 @@ services:
     volumes:
       - ./workspace:/app/workspace
     env_file:
-      - path: .env.docker
+      - path: .env
         required: false
     environment:
       STREAMLIT_API_BASE_URL: ${STREAMLIT_API_BASE_URL:-http://api:8000}

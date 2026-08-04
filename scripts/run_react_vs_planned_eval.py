@@ -12,7 +12,6 @@ if str(ROOT) not in sys.path:
 
 from app.database import init_db
 from app.eval.react_vs_planned import run_evaluation
-from app.rag.build_index import build_local_index
 from app.tools.defaults import register_default_tools
 from scripts.init_demo_db import init_demo_db
 
@@ -21,7 +20,6 @@ def main() -> None:
     init_db()
     register_default_tools()
     init_demo_db()
-    build_local_index()
     payload = run_evaluation()
     print(
         json.dumps(

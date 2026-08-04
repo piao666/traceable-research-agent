@@ -13,7 +13,6 @@ if str(ROOT) not in sys.path:
 from app.database import init_db
 from app.eval.fake_react_llm import FakeReActLLMClient, validate_fake_decisions
 from app.eval.react_vs_planned import load_cases, run_evaluation
-from app.rag.build_index import build_local_index
 from app.tools.defaults import register_default_tools
 from scripts.init_demo_db import init_demo_db
 
@@ -33,7 +32,6 @@ def main() -> None:
     init_db()
     register_default_tools()
     init_demo_db()
-    build_local_index()
     subset = cases[:5]
     output = ROOT / "workspace" / "eval_outputs" / "react_vs_planned_smoke.json"
     report = ROOT / "workspace" / "eval_outputs" / "react_vs_planned_smoke.md"

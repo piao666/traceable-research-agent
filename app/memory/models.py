@@ -1,8 +1,8 @@
-"""SQLAlchemy ORM models for session and user memory."""
+"""SQLAlchemy ORM models for single-instance sessions and memory."""
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -13,13 +13,11 @@ def _utc_now() -> datetime:
 
 
 class ConversationSession(Base):
-    """A single conversation window, scoped to (tenant_id, user_id)."""
+    """A conversation window in the local deployment."""
 
     __tablename__ = "conversation_sessions"
 
     session_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(80), nullable=False)
-    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now
@@ -33,6 +31,10 @@ class ChatTurn(Base):
     """One user/agent message within a conversation session."""
 
     __tablename__ = "chat_turns"
+    __table_args__ = (
+        Index("ix_chat_turns_session_id", "session_id"),
+        Index("ix_chat_turns_run_id", "run_id"),
+    )
 
     turn_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     session_id: Mapped[str] = mapped_column(
@@ -49,13 +51,15 @@ class ChatTurn(Base):
 
 
 class UserMemory(Base):
-    """Cross-session user memory, distilled from conversation runs."""
+    """Cross-session local memory distilled from conversation runs."""
 
     __tablename__ = "user_memories"
+    __table_args__ = (
+        Index("ix_user_memories_status", "status"),
+        Index("ix_user_memories_source_run", "source_run_id"),
+    )
 
     memory_id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(80), nullable=False)
-    user_id: Mapped[str] = mapped_column(String(80), nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     extraction_method: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)

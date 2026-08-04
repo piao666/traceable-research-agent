@@ -36,7 +36,7 @@ def main() -> None:
                 "task": "Read local docs, query database metrics, retrieve trace evidence, and generate a markdown report",
                 "report_type": "summary",
                 "source_mode": "mock",
-                "allowed_tools": ["file_reader", "sql_query", "rag_search", "report_writer"],
+                "allowed_tools": ["file_reader", "sql_query", "report_writer"],
                 "execution_mode_override": "planned",
             },
         )

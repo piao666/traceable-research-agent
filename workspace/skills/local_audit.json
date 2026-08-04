@@ -1,8 +1,8 @@
 {
   "name": "local_audit",
   "version": "1.0",
-  "description": "本地资料复盘：文件读取 → 数据库查询 → RAG 检索 → 报告",
-  "required_tools": ["file_reader", "sql_query", "rag_search"],
+  "description": "本地资料复盘：文件读取 → 数据库查询 → 报告",
+  "required_tools": ["file_reader", "sql_query"],
   "parameters": {
     "query": {"type": "string", "required": true},
     "file_path": {"type": "string", "default": "demo_research_note.md"}
@@ -22,14 +22,6 @@
       "arguments": {
         "query": "SELECT id, title, category FROM documents",
         "limit": 10
-      }
-    },
-    {
-      "tool_name": "rag_search",
-      "goal": "从本地 RAG 索引中检索相关证据",
-      "arguments": {
-        "query": "{{parameters.query}}",
-        "top_k": 5
       }
     },
     {

@@ -20,8 +20,6 @@ def canonical_source_uri(item: EvidenceItem) -> str:
         return canonicalize_url(source_ref)
     if item.source_type == "sql":
         return f"sql://{item.run_id}/{item.trace_id or item.evidence_id}"
-    if item.source_type == "rag":
-        return f"rag://{_safe_component(source_ref or item.evidence_id)}"
     if item.source_type == "file":
         return f"file://{source_ref.replace(chr(92), '/')}"
     if "github" in item.source_type:
@@ -77,18 +75,6 @@ def passage_locator(item: EvidenceItem, trace_input: dict[str, Any]) -> dict[str
         "trace_id": item.trace_id,
         "step_no": item.step_no,
     }
-    if item.source_type == "rag":
-        hit_metadata = metadata.get("hit_metadata") if isinstance(metadata.get("hit_metadata"), dict) else {}
-        base.update(
-            {
-                "kind": "rag",
-                "document": source_ref or None,
-                "chunk_id": metadata.get("chunk_id"),
-                "start": hit_metadata.get("start"),
-                "end": hit_metadata.get("end"),
-            }
-        )
-        return base
     if item.source_type == "sql":
         query = str(trace_input.get("query") or "")
         base.update(

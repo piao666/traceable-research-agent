@@ -15,13 +15,13 @@ from app.agent.report_exporter import (
 )
 from app.database import get_db
 from app.schemas import ReportResponse
-from app.security import require_api_key, require_request_context
+from app.security import require_api_key
 from app.trace import store
 
 router = APIRouter(
     prefix="/reports",
     tags=["reports"],
-    dependencies=[Depends(require_api_key), Depends(require_request_context)],
+    dependencies=[Depends(require_api_key)],
 )
 
 ROOT = Path(__file__).resolve().parents[2]

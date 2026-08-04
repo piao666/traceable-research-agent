@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.config import settings
@@ -51,7 +51,7 @@ def _parse_paper(item: dict[str, Any]) -> dict[str, Any]:
         "publicationTypes": item.get("publicationTypes") or [],
         "fieldsOfStudy": item.get("fieldsOfStudy") or [],
         "openAccessUrl": open_access.get("url"),
-        "url": f"https://api.semanticscholar.org/{item.get('paperId', '')}",
+        "url": f"https://www.semanticscholar.org/paper/{item.get('paperId', '')}",
     }
 
 

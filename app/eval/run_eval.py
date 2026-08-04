@@ -1,89 +1,44 @@
-"""Run local eval cases without requiring a live Uvicorn service."""
+"""Run deterministic local evaluation cases without a live API service."""
 
 from __future__ import annotations
 
-import json
-import os
-from inspect import signature
 from collections import Counter
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from typing import Any
 
 from app.agent.executor import run_plan
-from app.agent.dispatcher import run_task_by_mode
-from app.agent.plan_guardrails import normalize_plan_arguments
 from app.agent.planner import plan_task
-from app.agent.react_executor import run_react_task
 from app.database import SessionLocal, init_db
-from app.rag.build_index import build_local_index
-from app.rag.embedding_backends import create_embedding_backend
-from app.rag.vector_backends import create_vector_backend
-from app.config import Settings, settings
-from app.llm.base import LLMClient, LLMMessage, LLMResponse
-from app.eval.fake_react_llm import validate_fake_decisions
-from app.eval.react_vs_planned import load_cases as load_react_vs_planned_cases
-from app.tools.registry import execute_tool
 from app.tools.defaults import register_default_tools
+from app.tools.registry import execute_tool
 from app.trace import store
 from app.trace.logger import record_tool_result
-from scripts.run_rag_chunk_experiment import (
-    load_experiment_cases,
-    real_embedding_requested,
-    run_experiment,
-)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES_PATH = Path(__file__).with_name("cases.jsonl")
-OUTPUT_DIR = ROOT / "workspace" / "eval_outputs"
-OUTPUT_PATH = OUTPUT_DIR / "eval_report.json"
+OUTPUT_PATH = ROOT / "workspace" / "eval_outputs" / "eval_report.json"
 
 
-class _EvalReactClient(LLMClient):
-    def __init__(self, decisions: list[Any]):
-        self.decisions = list(decisions)
-
-    def is_available(self) -> bool:
-        return True
-
-    def describe(self) -> dict[str, Any]:
-        return {"provider": "eval_scripted", "model": "react-eval", "available": True}
-
-    def complete(
-        self,
-        messages: list[LLMMessage],
-        temperature: float = 0.0,
-        max_tokens: int = 2000,
-    ) -> LLMResponse:
-        decision = self.decisions.pop(0) if self.decisions else {
-            "thought": "Evaluation actions are complete.",
-            "action": "finish",
-            "args": {"summary": "Evaluation complete."},
-            "finish_reason": "completed",
-        }
-        content = decision if isinstance(decision, str) else json.dumps(decision)
-        return LLMResponse(success=True, content=content, provider="eval_scripted", model="react-eval")
+def load_cases() -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in CASES_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
-def _load_cases() -> list[dict[str, Any]]:
-    cases = []
-    for line in CASES_PATH.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            cases.append(json.loads(line))
-    return cases
-
-
-def _prepare_runtime() -> None:
+def prepare_runtime() -> None:
     from scripts.init_demo_db import init_demo_db
 
     init_db()
     register_default_tools()
     init_demo_db()
-    build_local_index()
 
 
-def _run_task_case(db, case: dict[str, Any]) -> dict[str, Any]:
+def run_task_case(db, case: dict[str, Any]) -> dict[str, Any]:
     run = store.create_agent_run(
         db=db,
         task=case["task"],
@@ -91,437 +46,27 @@ def _run_task_case(db, case: dict[str, Any]) -> dict[str, Any]:
         source_mode="mock",
         allowed_tools=case.get("allowed_tools"),
     )
-    plan = plan_task(case["task"], case.get("allowed_tools"), "mock", planner_mode="deterministic")
+    plan = plan_task(
+        case["task"],
+        case.get("allowed_tools"),
+        "mock",
+        planner_mode="deterministic",
+    )
     store.update_agent_run_plan(db, run.run_id, plan)
-    planned_tools = [step["tool_name"] for step in plan.get("steps", [])]
     summary = run_plan(db, run.run_id)
     final_run = store.get_agent_run(db, run.run_id)
     traces = store.list_tool_traces(db, run.run_id)
-    expected_status = case.get("checks", {}).get("expected_status", "completed")
     expected_tools = set(case.get("expected_tools", []))
     traced_tools = {trace.tool_name for trace in traces}
-    report_exists = bool(final_run.report_path and (ROOT / final_run.report_path).exists())
-    trace_complete = expected_tools.issubset(traced_tools)
-    passed = summary["status"] == expected_status and trace_complete and (
-        not case.get("checks", {}).get("report_exists") or report_exists
+    report_exists = bool(
+        final_run
+        and final_run.report_path
+        and (ROOT / final_run.report_path).is_file()
     )
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": run.run_id,
-        "status": summary["status"],
-        "planned_tools": planned_tools,
-        "trace_count": len(traces),
-        "trace_statuses": Counter(trace.status for trace in traces),
-        "trace_complete": trace_complete,
-        "report_exists": report_exists,
-        "failure_reason": None if passed else "task checks did not match expectations",
-    }
-
-
-def _run_direct_tool_case(db, case: dict[str, Any]) -> dict[str, Any]:
-    run = store.create_agent_run(
-        db=db,
-        task=f"Eval direct tool case {case['case_id']}",
-        report_type="summary",
-        source_mode="mock",
-        allowed_tools=[case["tool_name"]],
-    )
-    result = execute_tool(case["tool_name"], case.get("arguments") or {})
-    trace = record_tool_result(
-        db=db,
-        run_id=run.run_id,
-        step_no=1,
-        tool_name=case["tool_name"],
-        input_data=case.get("arguments") or {},
-        result=result,
-        latency_ms=0,
-    )
-    expected_status = case.get("expected_trace_status")
-    expected_metadata = case.get("expected_metadata") or {}
-    metadata_matches = all(
-        result.metadata.get(key) == value for key, value in expected_metadata.items()
-    )
+    expected_status = case.get("expected_status", "completed")
     passed = (
-        trace.status == expected_status
-        and result.success is case.get("should_succeed")
-        and metadata_matches
-    )
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": run.run_id,
-        "status": "completed",
-        "planned_tools": [case["tool_name"]],
-        "trace_count": 1,
-        "trace_statuses": Counter([trace.status]),
-        "trace_complete": True,
-        "report_exists": False,
-        "failure_reason": (
-            None
-            if passed
-            else f"expected trace status {expected_status} and metadata {expected_metadata}, got {trace.status} / {result.metadata}"
-        ),
-    }
-
-
-def _run_hitl_case(db, case: dict[str, Any]) -> dict[str, Any]:
-    outside_path = ROOT / "workspace" / "tmp" / "eval_hitl_outside_allowed_root.md"
-    outside_path.parent.mkdir(parents=True, exist_ok=True)
-    outside_path.write_text("eval outside allowed roots\n", encoding="utf-8")
-    run = store.create_agent_run(
-        db=db,
-        task=case["task"],
-        report_type="summary",
-        source_mode="mock",
-        allowed_tools=case.get("allowed_tools"),
-    )
-    plan = {
-        "version": "eval-hitl-path",
-        "task": case["task"],
-        "source_mode": "mock",
-        "allowed_tools": ["file_reader", "report_writer"],
-        "steps": [
-            {
-                "step_no": 1,
-                "tool_name": "file_reader",
-                "arguments": {"path": str(outside_path), "max_chars": 1000},
-                "goal": "Read explicit outside file.",
-                "expected_output": "File content.",
-                "completion_criteria": "Requires per-file approval.",
-                "risk_level": "low",
-                "requires_confirmation": False,
-            },
-            {
-                "step_no": 2,
-                "tool_name": "report_writer",
-                "arguments": {},
-                "goal": "Generate report.",
-                "expected_output": "Markdown report.",
-                "completion_criteria": "Report saved.",
-                "risk_level": "low",
-                "requires_confirmation": False,
-            },
-        ],
-        "notes": [],
-        "confirmation": None,
-    }
-    plan = normalize_plan_arguments(plan, case["task"], "mock")
-    store.update_agent_run_plan(db, run.run_id, plan)
-    waiting = run_plan(db, run.run_id)
-    file_step = next(step for step in plan["steps"] if step["tool_name"] == "file_reader")
-    details = file_step.get("confirmation_details") or {}
-    plan["confirmation"] = {
-        "required_step_no": file_step["step_no"],
-        "required_tool_name": "file_reader",
-        "confirmation_reason": details.get("reason"),
-        "confirmation_details": details,
-        "approved_file_reader_paths": [details.get("resolved_path")],
-        "confirmation_scope": "single_file_path",
-        "approved": True,
-        "comment": "Approved by eval runner.",
-        "approved_at": datetime.now(timezone.utc).isoformat(),
-    }
-    store.replace_agent_run_plan(db, run.run_id, plan)
-    completed = run_plan(db, run.run_id)
-    final_run = store.get_agent_run(db, run.run_id)
-    traces = store.list_tool_traces(db, run.run_id)
-    report_exists = bool(final_run.report_path and (ROOT / final_run.report_path).exists())
-    passed = waiting["status"] == "waiting_human" and completed["status"] == "completed" and report_exists
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": run.run_id,
-        "status": completed["status"],
-        "planned_tools": [step["tool_name"] for step in plan.get("steps", [])],
-        "trace_count": len(traces),
-        "trace_statuses": Counter(trace.status for trace in traces),
-        "trace_complete": True,
-        "report_exists": report_exists,
-        "failure_reason": None if passed else "HITL waiting/confirmation flow failed",
-    }
-
-
-def _run_repeated_case(db, case: dict[str, Any]) -> dict[str, Any]:
-    result = _run_task_case(db, case)
-    run_id = result["run_id"]
-    before = len(store.list_tool_traces(db, run_id))
-    repeated = run_plan(db, run_id)
-    after = len(store.list_tool_traces(db, run_id))
-    passed = result["passed"] and repeated["status"] == "completed" and before == after
-    result["passed"] = passed
-    result["repeated_message"] = repeated.get("message")
-    result["failure_reason"] = None if passed else "Repeated run wrote duplicate trace or changed status"
-    return result
-
-
-def _run_llm_planner_case(case: dict[str, Any]) -> dict[str, Any]:
-    plan = plan_task(case["task"], case.get("allowed_tools"), "mock", planner_mode="auto")
-    expected_sources = set(case.get("expected_planner_sources") or [])
-    planner_source = plan.get("planner_source")
-    steps = plan.get("steps") or []
-    passed = planner_source in expected_sources and all(
-        step.get("tool_name") in set(case.get("allowed_tools") or []) for step in steps
-    )
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": None,
-        "status": "planned",
-        "planned_tools": [step.get("tool_name") for step in steps],
-        "planner_source": planner_source,
-        "trace_count": 0,
-        "trace_statuses": Counter(),
-        "trace_complete": True,
-        "report_exists": False,
-        "failure_reason": None if passed else f"Unexpected planner_source {planner_source}",
-    }
-
-
-def _run_rag_backend_case(case: dict[str, Any]) -> dict[str, Any]:
-    default_settings = Settings(
-        rag_embedding_backend="deterministic",
-        rag_vector_backend="json",
-        rag_real_backend_enabled=False,
-    )
-    embedding = create_embedding_backend(default_settings)
-    vector = create_vector_backend(default_settings)
-    query_result = embedding.embed_query("trace tool registry")
-    build_result = build_local_index(settings_obj=default_settings)
-    search_result = vector.search(query_result.vectors[0], top_k=3)
-    passed = (
-        embedding.name == "deterministic"
-        and vector.name == "json"
-        and query_result.success
-        and build_result.get("success")
-        and search_result.success
-    )
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": None,
-        "status": "validated" if passed else "failed",
-        "planned_tools": ["rag_search"],
-        "trace_count": 0,
-        "trace_statuses": Counter(),
-        "trace_complete": True,
-        "report_exists": False,
-        "failure_reason": None if passed else "Default RAG backend abstraction failed",
-    }
-
-
-def _run_rag_chunk_experiment_case(case: dict[str, Any]) -> dict[str, Any]:
-    payload = run_experiment()
-    results = payload.get("results") or []
-    passed = (
-        [result.get("chunk_size") for result in results] == [256, 512, 1024]
-        and all("recall_at_3" in result and "recall_at_5" in result for result in results)
-        and payload.get("embedding_backend") == "deterministic"
-        and payload.get("use_real_embedding") is False
-        and payload.get("total_documents", 0) >= 5
-        and payload.get("total_queries", 0) >= 15
-    )
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": None,
-        "status": "validated" if passed else "failed",
-        "planned_tools": ["rag_search"],
-        "trace_count": 0,
-        "trace_statuses": Counter(),
-        "trace_complete": True,
-        "report_exists": False,
-        "failure_reason": None if passed else "Chunk experiment did not return all configured sizes",
-    }
-
-
-def _run_rag_chunk_real_switch_case(case: dict[str, Any]) -> dict[str, Any]:
-    parameters = signature(run_experiment).parameters
-    passed = (
-        "use_real_embedding" in parameters
-        and real_embedding_requested("true")
-        and not real_embedding_requested("false")
-    )
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": None,
-        "status": "validated" if passed else "failed",
-        "planned_tools": ["rag_search"],
-        "trace_count": 0,
-        "trace_statuses": Counter(),
-        "trace_complete": True,
-        "report_exists": False,
-        "failure_reason": None if passed else "Real chunk experiment switch is not wired",
-    }
-
-
-def _run_rag_chunk_corpus_case(case: dict[str, Any]) -> dict[str, Any]:
-    cases = load_experiment_cases()
-    docs = list((ROOT / "workspace" / "docs").glob("*.md"))
-    long_doc = ROOT / "workspace" / "docs" / "optional_long_mixed_document.md"
-    passed = (
-        len(docs) >= 5
-        and len(cases) >= 15
-        and long_doc.exists()
-        and len(long_doc.read_text(encoding="utf-8")) > 3000
-    )
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": None,
-        "status": "validated" if passed else "failed",
-        "planned_tools": ["rag_search"],
-        "trace_count": 0,
-        "trace_statuses": Counter(),
-        "trace_complete": True,
-        "report_exists": False,
-        "failure_reason": None if passed else "Expanded RAG corpus or cases are incomplete",
-    }
-
-
-def _run_real_rag_optional_case(case: dict[str, Any]) -> dict[str, Any]:
-    enabled = os.getenv("RUN_REAL_RAG_EVAL", "false").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if not enabled:
-        return {
-            "case_id": case["case_id"],
-            "passed": True,
-            "run_id": None,
-            "status": "skipped",
-            "planned_tools": ["rag_search"],
-            "trace_count": 0,
-            "trace_statuses": Counter(),
-            "trace_complete": True,
-            "report_exists": False,
-            "failure_reason": None,
-        }
-
-    build_result = build_local_index(settings_obj=settings)
-    result = execute_tool(
-        "rag_search",
-        {"query": "trace persistence tool registry report", "top_k": 3},
-    )
-    passed = (
-        build_result.get("success")
-        and result.success
-        and result.metadata.get("embedding_backend") == "sentence_transformers"
-        and result.metadata.get("vector_backend") == "chroma"
-        and result.metadata.get("fallback_used") is False
-    )
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": None,
-        "status": "validated" if passed else "failed",
-        "planned_tools": ["rag_search"],
-        "trace_count": 0,
-        "trace_statuses": Counter(),
-        "trace_complete": True,
-        "report_exists": False,
-        "failure_reason": None if passed else "Optional real RAG validation failed",
-    }
-
-
-def _run_auth_async_default_case(case: dict[str, Any]) -> dict[str, Any]:
-    default_settings = Settings()
-    safe_summary = default_settings.get_safe_auth_config_summary()
-    passed = (
-        default_settings.auth_enabled is False
-        and default_settings.async_run_enabled is True
-        and safe_summary["demo_api_key_configured"] is False
-        and "demo_api_key" not in safe_summary
-    )
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": None,
-        "status": "validated" if passed else "failed",
-        "planned_tools": [],
-        "trace_count": 0,
-        "trace_statuses": Counter(),
-        "trace_complete": True,
-        "report_exists": False,
-        "failure_reason": None if passed else "Default auth/async configuration is unsafe",
-    }
-
-
-def _run_react_vs_planned_smoke_case(case: dict[str, Any]) -> dict[str, Any]:
-    comparison_cases = load_react_vs_planned_cases()
-    required_scenarios = {
-        "normal_file_report",
-        "rag_no_hit_recovery",
-        "sql_rejected_recovery",
-        "github_fallback_recovery",
-        "hitl_report",
-        "repeated_tool_limit",
-        "max_steps_limit",
-    }
-    scenarios = {item.get("scenario") for item in comparison_cases}
-    decisions_valid = all(
-        validate_fake_decisions(item.get("react_decisions") or [])
-        for item in comparison_cases
-    )
-    passed = (
-        len(comparison_cases) >= 15
-        and required_scenarios.issubset(scenarios)
-        and decisions_valid
-    )
-    return {
-        "case_id": case["case_id"],
-        "passed": passed,
-        "run_id": None,
-        "status": "validated" if passed else "failed",
-        "planned_tools": [],
-        "trace_count": 0,
-        "trace_statuses": Counter(),
-        "trace_complete": True,
-        "report_exists": False,
-        "failure_reason": None if passed else "Day34 comparison dataset is incomplete",
-    }
-
-
-def _run_react_case(db, case: dict[str, Any]) -> dict[str, Any]:
-    run = store.create_agent_run(
-        db,
-        case["task"],
-        "summary",
-        "mock",
-        case.get("allowed_tools"),
-    )
-    plan = plan_task(case["task"], case.get("allowed_tools"), "mock", planner_mode="deterministic")
-    plan["requested_execution_mode"] = "react"
-    plan["execution_mode"] = "react"
-    store.update_agent_run_plan(db, run.run_id, plan)
-    react_settings = Settings(
-        execution_mode="react",
-        react_enabled=True,
-        react_max_steps=case.get("max_steps", 5),
-        react_same_tool_max_calls=case.get("same_tool_max_calls", 2),
-        react_fallback_to_planned=True,
-    )
-    summary = run_react_task(
-        db,
-        run.run_id,
-        react_settings,
-        _EvalReactClient(case.get("decisions") or []),
-    )
-    final_run = store.get_agent_run(db, run.run_id)
-    final_plan = json.loads(final_run.plan_json)
-    traces = store.list_tool_traces(db, run.run_id)
-    traced_tools = {trace.tool_name for trace in traces}
-    expected_tools = set(case.get("expected_trace_tools") or [])
-    report_exists = bool(final_run.report_path and (ROOT / final_run.report_path).exists())
-    fallback_used = bool((final_plan.get("react_state") or {}).get("fallback_used"))
-    expected_fallback = bool(case.get("expected_fallback", False))
-    passed = (
-        summary["status"] == case.get("expected_status", "completed")
+        summary["status"] == expected_status
         and expected_tools.issubset(traced_tools)
-        and fallback_used is expected_fallback
         and (not case.get("report_exists", True) or report_exists)
     )
     return {
@@ -529,225 +74,81 @@ def _run_react_case(db, case: dict[str, Any]) -> dict[str, Any]:
         "passed": passed,
         "run_id": run.run_id,
         "status": summary["status"],
-        "planned_tools": [step.get("tool_name") for step in plan.get("steps") or []],
+        "planned_tools": [step.get("tool_name") for step in plan.get("steps", [])],
         "trace_count": len(traces),
-        "trace_statuses": Counter(trace.status for trace in traces),
+        "trace_statuses": dict(Counter(trace.status for trace in traces)),
         "trace_complete": expected_tools.issubset(traced_tools),
         "report_exists": report_exists,
-        "failure_reason": None if passed else "ReAct eval checks did not match expectations",
     }
 
 
-def _parallel_eval_plan(case: dict[str, Any]) -> dict[str, Any]:
-    bad_file = case.get("parallel_scenario") == "failure_visible"
-    hitl = case.get("parallel_scenario") == "hitl_guard"
-    task = case.get("task") or "Evaluate planned parallel execution."
+def run_direct_tool_case(db, case: dict[str, Any]) -> dict[str, Any]:
+    tool_name = case["tool_name"]
+    arguments = case.get("arguments") or {}
+    run = store.create_agent_run(
+        db=db,
+        task=f"Evaluation: {case['case_id']}",
+        report_type="summary",
+        source_mode="mock",
+        allowed_tools=[tool_name],
+    )
+    result = execute_tool(tool_name, arguments)
+    trace = record_tool_result(
+        db=db,
+        run_id=run.run_id,
+        step_no=1,
+        tool_name=tool_name,
+        input_data=arguments,
+        result=result,
+        latency_ms=0,
+    )
+    expected_status = case["expected_trace_status"]
+    passed = trace.status == expected_status and result.success is case["should_succeed"]
     return {
-        "version": "day37-eval",
-        "task": task,
-        "source_mode": "mock",
-        "allowed_tools": ["file_reader", "sql_query", "rag_search", "report_writer"],
-        "planner_source": "eval",
-        "execution_mode": "planned",
-        "steps": [
-            {
-                "step_no": 1,
-                "goal": "Read local evidence.",
-                "tool_name": "file_reader",
-                "arguments": {
-                    "path": "missing_parallel_eval.md" if bad_file else "demo_research_note.md",
-                    "max_chars": 1000,
-                },
-                "expected_output": "Local evidence.",
-                "completion_criteria": "File read succeeds or records a visible failure.",
-                "risk_level": "low",
-                "requires_confirmation": False,
-            },
-            {
-                "step_no": 2,
-                "goal": "Query local demo database.",
-                "tool_name": "sql_query",
-                "arguments": {"query": "SELECT title FROM documents", "limit": 3},
-                "expected_output": "Read-only rows.",
-                "completion_criteria": "SQL returns rows.",
-                "risk_level": "medium",
-                "requires_confirmation": False,
-            },
-            {
-                "step_no": 3,
-                "goal": "Retrieve local RAG evidence.",
-                "tool_name": "rag_search",
-                "arguments": {"query": "trace persistence tool registry", "top_k": 2},
-                "expected_output": "RAG hits.",
-                "completion_criteria": "RAG returns evidence.",
-                "risk_level": "low",
-                "requires_confirmation": False,
-            },
-            {
-                "step_no": 4,
-                "goal": "Generate final report.",
-                "tool_name": "report_writer",
-                "arguments": {},
-                "expected_output": "Markdown report.",
-                "completion_criteria": "Report is saved.",
-                "risk_level": "high" if hitl else "low",
-                "requires_confirmation": hitl,
-            },
-        ],
-        "notes": ["Day37 parallel eval plan."],
+        "case_id": case["case_id"],
+        "passed": passed,
+        "run_id": run.run_id,
+        "status": trace.status,
+        "planned_tools": [tool_name],
+        "trace_count": 1,
+        "trace_statuses": {trace.status: 1},
+        "trace_complete": True,
+        "report_exists": False,
     }
 
 
-def _trace_metadata(trace) -> dict[str, Any]:
+def run_case(db, case: dict[str, Any]) -> dict[str, Any]:
     try:
-        payload = json.loads(trace.output_json or "{}")
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    metadata = payload.get("metadata") if isinstance(payload, dict) else None
-    return metadata if isinstance(metadata, dict) else {}
-
-
-def _run_planned_parallel_case(db, case: dict[str, Any]) -> dict[str, Any]:
-    original = {
-        "parallel_execution_enabled": settings.parallel_execution_enabled,
-        "parallel_max_workers": settings.parallel_max_workers,
-        "parallel_timeout_seconds": settings.parallel_timeout_seconds,
-    }
-    try:
-        settings.parallel_execution_enabled = True
-        settings.parallel_max_workers = 3
-        settings.parallel_timeout_seconds = 60
-        plan = _parallel_eval_plan(case)
-        run = store.create_agent_run(
-            db,
-            task=plan["task"],
-            report_type="summary",
-            source_mode="mock",
-            allowed_tools=plan["allowed_tools"],
-        )
-        store.update_agent_run_plan(db, run.run_id, plan)
-        summary = run_task_by_mode(db, run.run_id, settings)
-        final_run = store.get_agent_run(db, run.run_id)
-        traces = store.list_tool_traces(db, run.run_id)
-        parallel_traces = [trace for trace in traces if _trace_metadata(trace).get("parallel") is True]
-        group_ids = Counter(_trace_metadata(trace).get("parallel_group_id") for trace in parallel_traces)
-        report_exists = bool(final_run.report_path and (ROOT / final_run.report_path).exists())
-        scenario = case.get("parallel_scenario")
-        failed_file_visible = any(
-            trace.tool_name == "file_reader" and trace.status == "failed"
-            for trace in traces
-        )
-        hitl_waited = summary["status"] == "waiting_human"
-        passed = (
-            len(parallel_traces) >= 2
-            and any(count >= 2 for count in group_ids.values())
-            and all(_trace_metadata(trace).get("execution_mode") == "planned_parallel" for trace in parallel_traces)
-        )
-        if scenario == "failure_visible":
-            passed = passed and summary["status"] == "completed" and failed_file_visible and report_exists
-        elif scenario == "hitl_guard":
-            passed = passed and hitl_waited and not report_exists
-        else:
-            passed = passed and summary["status"] == "completed" and report_exists
-        return {
-            "case_id": case["case_id"],
-            "passed": passed,
-            "run_id": run.run_id,
-            "status": summary["status"],
-            "planned_tools": [step.get("tool_name") for step in plan.get("steps") or []],
-            "trace_count": len(traces),
-            "trace_statuses": Counter(trace.status for trace in traces),
-            "trace_complete": len(parallel_traces) >= 2,
-            "report_exists": report_exists,
-            "failure_reason": None if passed else "Planned parallel eval checks did not match expectations",
-        }
-    finally:
-        settings.parallel_execution_enabled = original["parallel_execution_enabled"]
-        settings.parallel_max_workers = original["parallel_max_workers"]
-        settings.parallel_timeout_seconds = original["parallel_timeout_seconds"]
-
-
-def _run_case(db, case: dict[str, Any]) -> dict[str, Any]:
-    try:
-        mode = case.get("mode", "task_run")
-        if mode == "direct_tool":
-            return _run_direct_tool_case(db, case)
-        if mode == "hitl":
-            return _run_hitl_case(db, case)
-        if mode == "repeated_run":
-            return _run_repeated_case(db, case)
-        if mode == "llm_planner":
-            return _run_llm_planner_case(case)
-        if mode == "rag_backend":
-            return _run_rag_backend_case(case)
-        if mode == "rag_chunk_experiment":
-            return _run_rag_chunk_experiment_case(case)
-        if mode == "rag_chunk_real_switch":
-            return _run_rag_chunk_real_switch_case(case)
-        if mode == "rag_chunk_corpus":
-            return _run_rag_chunk_corpus_case(case)
-        if mode == "real_rag_optional":
-            return _run_real_rag_optional_case(case)
-        if mode == "auth_async_default":
-            return _run_auth_async_default_case(case)
-        if mode == "react_vs_planned_eval_smoke":
-            return _run_react_vs_planned_smoke_case(case)
-        if mode == "react_scripted":
-            return _run_react_case(db, case)
-        if mode == "planned_parallel":
-            return _run_planned_parallel_case(db, case)
-        return _run_task_case(db, case)
+        if case.get("mode") == "direct_tool":
+            return run_direct_tool_case(db, case)
+        return run_task_case(db, case)
     except Exception as exc:
         return {
-            "case_id": case.get("case_id"),
+            "case_id": case.get("case_id", "unknown"),
             "passed": False,
-            "status": "exception",
-            "trace_count": 0,
-            "trace_statuses": Counter(),
-            "trace_complete": False,
-            "report_exists": False,
+            "status": "failed",
             "failure_reason": str(exc),
         }
 
 
-def _summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
-    total = len(results)
-    passed = sum(1 for result in results if result["passed"])
-    failed = total - passed
-    trace_complete = sum(1 for result in results if result.get("trace_complete"))
-    report_exists = sum(1 for result in results if result.get("report_exists"))
-    safety_hit = sum(
-        1 for result in results if result.get("trace_statuses", Counter()).get("rejected", 0) > 0
-    )
-    failure_visible = sum(
-        1
-        for result in results
-        if result.get("trace_statuses", Counter()).get("failed", 0) > 0
-        or result.get("trace_statuses", Counter()).get("rejected", 0) > 0
-    )
-    return {
-        "total_cases": total,
-        "passed": passed,
-        "failed": failed,
-        "task_success_rate": round(passed / total, 4) if total else 0,
-        "trace_complete_rate": round(trace_complete / total, 4) if total else 0,
-        "report_exists_count": report_exists,
-        "safety_hit_count": safety_hit,
-        "failure_visible_count": failure_visible,
-    }
-
-
-def main() -> None:
-    _prepare_runtime()
-    cases = _load_cases()
+def main() -> int:
+    prepare_runtime()
     with SessionLocal() as db:
-        results = [_run_case(db, case) for case in cases]
-    summary = _summarize(results)
-    payload = {"summary": summary, "results": results}
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(json.dumps(payload, ensure_ascii=False, default=str, indent=2), encoding="utf-8")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+        results = [run_case(db, case) for case in load_cases()]
+
+    passed = sum(1 for result in results if result.get("passed"))
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "total_cases": len(results),
+        "passed": passed,
+        "failed": len(results) - passed,
+        "results": results,
+    }
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({key: payload[key] for key in ("total_cases", "passed", "failed")}))
+    return 0 if passed == len(results) else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

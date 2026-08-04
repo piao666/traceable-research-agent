@@ -28,7 +28,6 @@ def build_planner_messages(
     tool_defaults = {
         "file_reader": {"path": "demo_research_note.md", "max_chars": 4000},
         "sql_query": {"query": "SELECT id, title, category FROM documents", "limit": 5},
-        "rag_search": {"query": task, "top_k": 3, "retrieval_mode": "hybrid"},
         "mcp_github_search": {
             "query": task,
             "repo": "piao666/traceable-research-agent",
@@ -72,7 +71,7 @@ def build_planner_messages(
         "A path outside configured FILE_READER_ALLOWED_ROOTS will require per-file human "
         "confirmation before execution. Valid workspace/docs examples include "
         "demo_research_note.md, streamlit_demo_notes.md, sql_safety_notes.md, "
-        "github_mcp_readonly_notes.md, rag_retrieval_notes.md, react_execution_notes.md, "
+        "github_mcp_readonly_notes.md, react_execution_notes.md, "
         "traceable_agent_architecture.md, and evaluation_notes.md. "
         "For sql_query, the demo SQLite schema is documents(id,title,source,category,created_at) "
         "and metrics(id,name,value,unit); generate only one SELECT or WITH statement over those "

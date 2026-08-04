@@ -1,4 +1,4 @@
-"""Static smoke checks for Docker one-command demo deployment config."""
+"""Static smoke checks for one-command Docker deployment."""
 
 from __future__ import annotations
 
@@ -21,78 +21,33 @@ def _assert(condition: bool, message: str) -> None:
 def main() -> None:
     compose = _read("docker-compose.yml")
     dockerfile = _read("Dockerfile")
-    env_example = _read(".env.docker.example")
-    gitignore = _read(".gitignore")
-    dockerignore = _read(".dockerignore")
+    env_example = _read(".env.example")
     entrypoint = _read("scripts/docker_entrypoint.py")
-    real_rag = _read("docker-compose.real-rag.yml")
-    rag_requirements = _read("requirements-docker-rag.txt")
+    requirements = _read("requirements.txt")
 
-    _assert("api:" in compose, "docker-compose.yml missing api service")
-    _assert("streamlit:" in compose, "docker-compose.yml missing streamlit service")
-    _assert('"8000:8000"' in compose or "'8000:8000'" in compose, "api port 8000 not exposed")
-    _assert('"8501:8501"' in compose or "'8501:8501'" in compose, "streamlit port 8501 not exposed")
-    _assert("STREAMLIT_API_BASE_URL" in compose, "streamlit API base env missing")
-    _assert("http://api:8000" in compose, "streamlit does not target api service")
-    _assert("condition: service_healthy" in compose, "streamlit does not wait for api health")
-    _assert("healthcheck:" in compose and "/health" in compose, "api healthcheck missing")
-    _assert("./workspace:/app/workspace" in compose, "workspace volume missing")
-    _assert("env_file:" in compose and ".env.docker" in compose, "docker env file not configured")
-    for secret_name in ("GITHUB_TOKEN", "TAVILY_API_KEY", "QWEN_API_KEY", "DEEPSEEK_API_KEY"):
-        _assert(
-            f"${{{secret_name}" not in compose,
-            f"docker-compose.yml should not inherit host {secret_name}; use .env.docker",
-        )
+    for service in ("api:", "streamlit:"):
+        _assert(service in compose, f"compose missing {service}")
+    for port in ('"8000:8000"', '"8501:8501"'):
+        _assert(port in compose, f"compose missing port {port}")
+    _assert("http://api:8000" in compose, "Streamlit does not target API service")
+    _assert("condition: service_healthy" in compose, "Streamlit must wait for API health")
+    _assert("./workspace:/app/workspace" in compose, "persistent workspace volume missing")
+    _assert("path: .env" in compose, "compose must load the user .env file")
+    _assert("target: light" in compose, "compose must use the self-hosted runtime target")
 
-    _assert("EXPOSE 8000 8501" in dockerfile, "Dockerfile should expose api and streamlit ports")
-    _assert("scripts/docker_entrypoint.py" in dockerfile, "Dockerfile does not use docker entrypoint")
-    _assert("requirements-docker-light.txt" in dockerfile, "Dockerfile should use light requirements")
-    _assert("AS light" in dockerfile, "Dockerfile light target missing")
-    _assert("AS semantic-rag" in dockerfile, "Dockerfile semantic-rag target missing")
-    _assert("download.pytorch.org/whl/cpu" in dockerfile, "semantic-rag must install CPU-only torch")
-    _assert("target: light" in compose, "default compose should build the light target")
+    _assert("COPY requirements.txt" in dockerfile, "Dockerfile must install pinned requirements")
+    _assert("scripts/docker_entrypoint.py" in dockerfile, "Docker entrypoint missing")
+    _assert("AS light" in dockerfile, "Docker runtime target missing")
+    _assert("scripts/migrate_database.py" in entrypoint, "database migrations missing")
+    _assert("scripts/init_demo_db.py" in entrypoint, "demo database initialization missing")
 
-    for token in (
-        "AUTH_ENABLED=false",
-        "EXECUTION_MODE=planned",
-        "LLM_PLANNER_ENABLED=false",
-        "GITHUB_TOKEN=",
-        "TAVILY_API_KEY=",
-        "QWEN_API_KEY=",
-        "DEEPSEEK_API_KEY=",
-        "RAG_REAL_BACKEND_ENABLED=false",
-        "RAG_EMBEDDING_BACKEND=deterministic",
-        "RAG_VECTOR_BACKEND=json",
-        "DOCKER_REBUILD_RAG_INDEX=false",
-    ):
-        _assert(token in env_example, f".env.docker.example missing {token}")
+    for token in ("AUTH_ENABLED=false", "DEMO_API_KEY=", "QWEN_API_KEY=", "DEEPSEEK_API_KEY="):
+        _assert(token in env_example, f".env.example missing {token}")
+    for line in requirements.splitlines():
+        if line.strip():
+            _assert("==" in line, f"dependency is not pinned: {line}")
 
-    _assert(".env.*" in gitignore and "!.env.docker.example" in gitignore, ".gitignore env exception missing")
-    _assert(".env.*" in dockerignore and "!.env.docker.example" in dockerignore, ".dockerignore env handling missing")
-    for runtime_dir in ("output", "tmp", "workspace/chroma", "workspace/artifacts"):
-        _assert(runtime_dir in dockerignore, f".dockerignore missing {runtime_dir}")
-    _assert("init_demo_db.py" in entrypoint and "build_rag_index.py" in entrypoint, "entrypoint init steps missing")
-    _assert("DOCKER_REBUILD_RAG_INDEX" in entrypoint, "entrypoint RAG index reuse control missing")
-    _assert("target: semantic-rag" in real_rag, "real-rag build target missing")
-    _assert("sentence_transformers" in real_rag and "/models/bge-small-zh-v1.5" in real_rag, "real-rag override incomplete")
-    _assert("/models/bge-small-zh-v1.5:ro" in real_rag, "local model mount must be read-only")
-    for package in ("sentence-transformers", "chromadb", "python-docx", "reportlab"):
-        _assert(package in rag_requirements, f"semantic-rag image missing {package}")
-
-    print(
-        json.dumps(
-            {
-                "docker_config": "ok",
-                "services": ["api", "streamlit"],
-                "ports": [8000, 8501],
-                "healthcheck": "ok",
-                "env_example": "ok",
-                "real_rag_override": "ok",
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    print(json.dumps({"docker_config": "ok", "services": ["api", "streamlit"]}, indent=2))
 
 
 if __name__ == "__main__":

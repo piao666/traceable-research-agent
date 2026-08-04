@@ -27,12 +27,11 @@ if _env_path.exists():
 DEFAULT_API_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_API_TIMEOUT_SECONDS = int(os.environ.get("STREAMLIT_API_TIMEOUT_SECONDS", "30"))
 CREATE_TASK_TIMEOUT_SECONDS = int(os.environ.get("STREAMLIT_CREATE_TASK_TIMEOUT_SECONDS", "120"))
-ALL_TOOLS = ["file_reader", "sql_query", "rag_search", "mcp_github_search", "tavily_search", "report_writer"]
+ALL_TOOLS = ["file_reader", "sql_query", "mcp_github_search", "tavily_search", "report_writer"]
 
 TOOL_ICON = {
     "file_reader":      "📄",
     "sql_query":        "🗄️",
-    "rag_search":       "🔍",
     "mcp_github_search":"🐙",
     "tavily_search":    "🌐",
     "report_writer":    "📝",
@@ -40,7 +39,6 @@ TOOL_ICON = {
 TOOL_CN = {
     "file_reader":      "本地文件读取",
     "sql_query":        "数据库查询",
-    "rag_search":       "RAG 向量检索",
     "mcp_github_search":"GitHub 只读调研",
     "tavily_search":    "Tavily 外部搜索",
     "report_writer":    "Markdown 报告生成",
@@ -49,9 +47,9 @@ RISK_COLOR = {"low": "#15803D", "medium": "#B45309", "high": "#B91C1C"}
 
 DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
     "本地资料分析": {
-        "task": "结合本地产品资料、示例 SQL 指标和 RAG 证据，复盘一个 AI 调研功能的效果、风险和下一步优化建议，生成可审计中文报告。",
-        "description": "适合演示内部资料复盘：本地文件、只读 SQL、RAG 检索和报告生成。",
-        "allowed_tools": ["file_reader", "sql_query", "rag_search", "report_writer"],
+        "task": "结合本地产品资料和示例 SQL 指标，复盘一个 AI 调研功能的效果、风险和下一步优化建议，生成可审计中文报告。",
+        "description": "适合演示内部资料复盘：本地文件、只读 SQL 和报告生成。",
+        "allowed_tools": ["file_reader", "sql_query", "report_writer"],
         "scenario_template_key": "standard",
     },
     "联网深度调研": {
@@ -122,13 +120,6 @@ STREAM_STATUS_CN = {
 }
 
 HIDDEN_REPORT_SECTION_PREFIXES = ("## 6. 证据与工具观察结果",)
-
-RAG_METADATA_FIELDS = [
-    "retrieval_mode", "embedding_backend", "vector_backend",
-    "fallback_used", "dense_hit_count", "bm25_hit_count", "rrf_k",
-    "dimension", "collection_name",
-]
-
 
 def _template_allowed_tools(template: dict[str, Any]) -> list[str] | None:
     tools = template.get("allowed_tools")
@@ -613,8 +604,6 @@ def init_state() -> None:
         "api_base_url": os.environ.get("STREAMLIT_API_BASE_URL", DEFAULT_API_BASE_URL),
         # AUTH_ENABLED=false 时 API Key 为空即可；若后端开启鉴权，从 DEMO_API_KEY 自动填充
         "api_key":      os.environ.get("DEMO_API_KEY", ""),
-        "tenant_id":    os.environ.get("DEFAULT_TENANT_ID", "demo"),
-        "user_id":      os.environ.get("DEFAULT_USER_ID", "local-user"),
         "use_async_run": True,   # async by default to avoid 30s sync timeout
         "realtime_auto_refresh": False,
         "realtime_poll_seconds": 2,
@@ -654,10 +643,6 @@ def request_headers() -> dict[str, str]:
     h: dict[str, str] = {}
     if (k := st.session_state.get("api_key", "").strip()):
         h["X-API-Key"] = k
-    if (t := st.session_state.get("tenant_id", "").strip()):
-        h["X-Tenant-ID"] = t
-    if (u := st.session_state.get("user_id", "").strip()):
-        h["X-User-ID"] = u
     return h
 
 
@@ -682,7 +667,7 @@ def api_request(
         if path == "/api/tasks":
             raise ApiError(
                 "⚠️ 创建任务超时：后端可能仍在调用 LLM Planner 生成执行计划。"
-                "标准调研模板包含 file/sql/rag/report 多工具规划，耗时会更长；"
+                "标准调研模板包含多个只读工具规划，耗时会更长；"
                 "请稍后查看后端日志，或重试创建任务。"
             )
         raise ApiError("⚠️ 请求超时，但后端可能仍在执行。请点击“刷新全部”查看最新状态。")
@@ -1193,7 +1178,6 @@ def _friendly_summary(text: Any) -> str:
         "row(s) with columns": "行，字段",
         "Read ": "已读取 ",
         " chars": " 个字符",
-        "rag_search returned": "RAG 检索返回",
         "hits using": "条结果，模式",
         "tavily_search returned": "Tavily 搜索返回",
         "Tavily API results.": "条结果。",
@@ -1298,31 +1282,6 @@ def trace_step_card(trace: dict) -> None:
                 st.write(f"**选择动作：**  {out.get('action', tool)}")
                 obs = out.get("observation_summary") or trace.get("output_summary", "")
                 st.write(f"**观察结果：** {_friendly_summary(obs)}")
-
-    # RAG 检索元数据
-    meta_src = (out if isinstance(out, dict) else {}) or {}
-    meta = {k: meta_src.get(k) for k in RAG_METADATA_FIELDS if meta_src.get(k) is not None}
-    if not meta:
-        raw_meta = trace.get("metadata") or {}
-        if isinstance(raw_meta, str):
-            try: raw_meta = json.loads(raw_meta)
-            except Exception: raw_meta = {}
-        meta = {k: raw_meta.get(k) for k in RAG_METADATA_FIELDS if raw_meta.get(k) is not None}
-
-    if meta:
-        with st.expander(f"🔍 RAG 检索详情（步骤 {trace.get('step_no')}）"):
-            cols = st.columns(3)
-            cols[0].metric("检索模式", meta.get("retrieval_mode", "—"))
-            cols[1].metric("稠密命中", meta.get("dense_hit_count", "—"))
-            cols[2].metric("BM25 命中", meta.get("bm25_hit_count", "—"))
-            cols2 = st.columns(3)
-            cols2[0].metric("Embedding 后端", meta.get("embedding_backend", "—"))
-            cols2[1].metric("是否降级", "是" if meta.get("fallback_used") else "否")
-            cols2[2].metric("RRF-k", meta.get("rrf_k", "—"))
-            cols3 = st.columns(2)
-            cols3[0].metric("向量维度", meta.get("dimension", "—"))
-            cols3[1].metric("集合名", meta.get("collection_name", "—"))
-
 
 def render_evidence_summary() -> None:
     evidence = st.session_state.get("last_evidence") or {}
@@ -1635,7 +1594,7 @@ def render_sidebar() -> None:
                     if scenario_key == "deep_web_research":
                         st.caption("Exa 负责发现候选来源；Firecrawl 负责搜索和有 URL 时的网页正文读取。")
                     else:
-                        st.caption("技术文档场景会优先使用 GitHub/RAG/搜索；Context7 adapter 已预留，未注册时不会强行调用。")
+                        st.caption("技术文档场景会优先使用 GitHub/Web 搜索；Context7 adapter 已预留，未注册时不会强行调用。")
                 else:
                     enabled = bool(mcp_health.get("remote_registry_enabled"))
                     if enabled:
@@ -2198,6 +2157,7 @@ def tab_report() -> None:
         return
 
     md = report.get("markdown") or ""
+    run_id = st.session_state.get("run_id", "")
 
     # 报告存在：展示状态摘要
     status_obj = st.session_state.get("last_status") or {}
@@ -2231,7 +2191,6 @@ def tab_report() -> None:
     st.divider()
     citation_map = _build_citation_map(provenance)
     render_report_markdown(md, citation_map)
-    run_id = st.session_state.get("run_id", "")
     dl1, dl2, dl3 = st.columns(3)
     dl1.download_button(
         "⬇️ Markdown",

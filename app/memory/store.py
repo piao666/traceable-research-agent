@@ -16,16 +16,12 @@ from app.memory.models import ChatTurn, ConversationSession, UserMemory
 
 def create_session(
     db: Session,
-    tenant_id: str,
-    user_id: str,
     title: str | None = None,
 ) -> ConversationSession:
     """Create a new conversation session."""
 
     session = ConversationSession(
         session_id=uuid4().hex,
-        tenant_id=tenant_id,
-        user_id=user_id,
         title=title,
     )
     db.add(session)
@@ -42,19 +38,10 @@ def get_session(db: Session, session_id: str) -> ConversationSession | None:
 
 def list_sessions(
     db: Session,
-    tenant_id: str,
-    user_id: str,
 ) -> list[ConversationSession]:
-    """Return all sessions for a (tenant, user) pair, newest first."""
+    """Return all local sessions, newest first."""
 
-    stmt = (
-        select(ConversationSession)
-        .where(
-            ConversationSession.tenant_id == tenant_id,
-            ConversationSession.user_id == user_id,
-        )
-        .order_by(ConversationSession.created_at.desc())
-    )
+    stmt = select(ConversationSession).order_by(ConversationSession.created_at.desc())
     return list(db.scalars(stmt).all())
 
 
@@ -117,8 +104,6 @@ def list_chat_turns(
 
 def create_user_memory(
     db: Session,
-    tenant_id: str,
-    user_id: str,
     kind: str,
     extraction_method: str,
     content: str,
@@ -131,8 +116,6 @@ def create_user_memory(
 
     memory = UserMemory(
         memory_id=uuid4().hex,
-        tenant_id=tenant_id,
-        user_id=user_id,
         kind=kind,
         extraction_method=extraction_method,
         content=content,
@@ -156,16 +139,11 @@ def get_user_memory(db: Session, memory_id: str) -> UserMemory | None:
 
 def list_user_memories(
     db: Session,
-    tenant_id: str,
-    user_id: str,
     status: str | None = None,
 ) -> list[UserMemory]:
-    """Return memories for a (tenant, user) pair, optionally filtered by status."""
+    """Return local memories, optionally filtered by status."""
 
-    stmt = select(UserMemory).where(
-        UserMemory.tenant_id == tenant_id,
-        UserMemory.user_id == user_id,
-    )
+    stmt = select(UserMemory)
     if status is not None:
         stmt = stmt.where(UserMemory.status == status)
     stmt = stmt.order_by(UserMemory.created_at.desc())
@@ -207,15 +185,10 @@ def delete_user_memory(db: Session, memory_id: str) -> None:
 
 def delete_all_user_memories(
     db: Session,
-    tenant_id: str,
-    user_id: str,
 ) -> int:
-    """Delete all memories for a (tenant, user) pair. Returns count."""
+    """Delete all local memories. Returns count."""
 
-    stmt = delete(UserMemory).where(
-        UserMemory.tenant_id == tenant_id,
-        UserMemory.user_id == user_id,
-    )
+    stmt = delete(UserMemory)
     result = db.execute(stmt)
     db.commit()
     return result.rowcount

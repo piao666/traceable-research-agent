@@ -105,7 +105,7 @@ def main() -> None:
             report_type=args.report_type,
             source_mode="mock",
             allowed_tools=[
-                "file_reader", "sql_query", "rag_search",
+                "file_reader", "sql_query",
                 "tavily_search", "web_fetcher", "report_writer",
                 "arxiv_search", "semantic_scholar_search",
             ],

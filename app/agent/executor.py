@@ -32,20 +32,6 @@ def _after_run_completed(
 
     Called after report generation succeeds, before status is set to completed.
     """
-    import json as _json
-
-    # ── Extract tenant_id / user_id from config snapshot ────────────
-    tenant_id = "demo"
-    user_id = "local-user"
-    if run.run_config_snapshot:
-        try:
-            snap = _json.loads(run.run_config_snapshot)
-            if isinstance(snap, dict):
-                tenant_id = str(snap.get("tenant_id") or tenant_id)
-                user_id = str(snap.get("user_id") or user_id)
-        except Exception:
-            pass
-
     # ── Create ChatTurn ─────────────────────────────────────────────
     if run.session_id:
         try:
@@ -71,9 +57,9 @@ def _after_run_completed(
             should_extract_for_run,
         )
 
-        if should_extract_for_run(db, tenant_id, user_id):
+        if should_extract_for_run(db):
             # Rule-based extraction (always runs)
-            candidates = extract_preferences_from_run(db, run, tenant_id, user_id)
+            candidates = extract_preferences_from_run(db, run)
 
             # LLM-based extraction (optional, Phase 5)
             if _exec_settings.memory_llm_extraction_enabled:
@@ -87,9 +73,7 @@ def _after_run_completed(
                 except Exception:
                     pass  # LLM extraction failure → continue with rule-only
 
-            new_count = commit_pending_memories(
-                db, tenant_id, user_id, run, candidates
-            )
+            new_count = commit_pending_memories(db, run, candidates)
             if new_count > 0:
                 record_trace_event(
                     db=db,
@@ -97,7 +81,7 @@ def _after_run_completed(
                     step_no=step_no,
                     tool_name="memory_extraction",
                     status="success",
-                    input_data={"tenant_id": tenant_id, "user_id": user_id},
+                    input_data={},
                     output_summary=f"Extracted {new_count} new pending memories",
                     output_data={"new_pending": new_count},
                 )
@@ -108,7 +92,6 @@ def _after_run_completed(
 EXECUTABLE_TOOLS = {
     "file_reader",
     "sql_query",
-    "rag_search",
     "mcp_github_search",
     "tavily_search",
     "web_fetcher",
@@ -355,6 +338,7 @@ def run_plan(
             settings_obj,
         )
         _llm = resolve_report_llm_client(settings_obj, report_llm_client)
+        report_llm_responses: list[Any] = []
         markdown = generate_markdown_report(
             run,
             plan,
@@ -363,7 +347,28 @@ def run_plan(
             llm_client=_llm,
             provenance_bundle=provenance_bundle,
             report_type=run.report_type,
+            usage_callback=report_llm_responses.append,
         )
+        if report_llm_responses:
+            from app.llm.cost import estimate_cost
+
+            response = report_llm_responses[-1]
+            usage = response.usage
+            report_cost = estimate_cost(response.provider, response.model, usage)
+            record_trace_event(
+                db=db,
+                run_id=run_id,
+                step_no=max((trace.step_no for trace in traces), default=0) + 1,
+                tool_name="report_synthesis",
+                status="success",
+                input_data={"provider": response.provider, "model": response.model},
+                output_summary="LLM report synthesis completed.",
+                output_data={"provider": response.provider, "model": response.model},
+                token_in=usage.prompt_tokens,
+                token_out=usage.completion_tokens,
+                estimated_cost=report_cost,
+            )
+            traces = store.list_tool_traces(db, run_id)
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)
         run = store.update_agent_run_status(db, run_id, "completed", None)
@@ -371,8 +376,6 @@ def run_plan(
         # ── Phase 6: Summarize LLM token/cost from traces ─────────────
         try:
             from app.llm.cost import estimate_cost_from_tokens
-            from app.llm.providers import create_llm_client
-
             llm_for_cost = resolve_report_llm_client(settings_obj, report_llm_client)
             if llm_for_cost is not None and llm_for_cost.is_available():
                 llm_desc = llm_for_cost.describe()
@@ -381,7 +384,13 @@ def run_plan(
                 total_ti = sum(t.token_in or 0 for t in traces)
                 total_to = sum(t.token_out or 0 for t in traces)
                 cost = estimate_cost_from_tokens(provider, model, total_ti, total_to)
-                store.update_agent_run_cost(db, run_id, token_in=total_ti, token_out=total_to, estimated_cost=cost)
+                run = store.update_agent_run_cost(
+                    db,
+                    run_id,
+                    token_in=total_ti,
+                    token_out=total_to,
+                    estimated_cost=cost,
+                )
         except Exception:
             pass  # Cost tracking failure must not block run completion
 

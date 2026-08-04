@@ -200,8 +200,6 @@ def _is_confirmed(plan: dict[str, Any], step_no: int, action: str) -> bool:
 def _observation_summary(action: str, result: ToolResult) -> str:
     if not result.success:
         return _safe_error(result.error_message or result.output_summary or "Tool failed.")
-    if action == "rag_search" and isinstance(result.output, dict) and not result.output.get("hits"):
-        return "RAG search completed with no hits."
     if action == "mcp_github_search" and result.metadata.get("fallback_used"):
         reason = result.metadata.get("fallback_reason") or "public API unavailable"
         return f"GitHub search used read-only mock fallback: {reason}."[:500]

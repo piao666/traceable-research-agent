@@ -2,7 +2,6 @@
 .env
 .env.*
 !.env.example
-!.env.docker.example
 *.pem
 *.key
 *.token
@@ -34,10 +33,6 @@ workspace/*.db
 workspace/*.db-shm
 workspace/*.db-wal
 workspace/tmp/
-workspace/index/
-workspace/chroma/
-workspace/faiss/
-workspace/rag_index/
 workspace/uploads/
 workspace/eval_outputs/
 eval_outputs/
@@ -61,7 +56,6 @@ build/
 
 # Local project docs (not committed to git)
 CLAUDE.md
-TASK.md
 docs/project-status/
 
 # OS/editor

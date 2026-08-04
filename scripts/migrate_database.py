@@ -77,7 +77,11 @@ def bootstrap_revision_for_tables(
         inspector = inspect(engine)
         tool_trace_cols = {c["name"] for c in inspector.get_columns("tool_traces")}
         evidence_passage_cols = {c["name"] for c in inspector.get_columns("evidence_passages")}
+        session_cols = {c["name"] for c in inspector.get_columns("conversation_sessions")}
+        memory_cols = {c["name"] for c in inspector.get_columns("user_memories")}
         if "sub_query" in tool_trace_cols and "content_basis" in evidence_passage_cols:
+            if not {"tenant_id", "user_id"} & (session_cols | memory_cols):
+                return _required_stamp(current_revision, "0007_single_instance_memory")
             return _required_stamp(current_revision, "0006_content_basis")
         if "sub_query" in tool_trace_cols:
             return _required_stamp(current_revision, "0005_subquery_trace")
@@ -94,6 +98,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0004_memory_schema": 4,
         "0005_subquery_trace": 5,
         "0006_content_basis": 6,
+        "0007_single_instance_memory": 7,
     }
     if current_revision is None:
         return schema_revision

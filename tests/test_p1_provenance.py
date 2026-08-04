@@ -67,20 +67,6 @@ class SourceNormalizerTests(unittest.TestCase):
             metadata=metadata or {},
         )
 
-    def test_rag_locator_preserves_document_chunk_and_offsets(self) -> None:
-        locator = passage_locator(
-            self._item(
-                "rag",
-                "handbook.pdf",
-                {"chunk_id": "chunk-7", "hit_metadata": {"start": 120, "end": 245}},
-            ),
-            {},
-        )
-        self.assertEqual(locator["kind"], "rag")
-        self.assertEqual(locator["document"], "handbook.pdf")
-        self.assertEqual(locator["chunk_id"], "chunk-7")
-        self.assertEqual((locator["start"], locator["end"]), (120, 245))
-
     def test_sql_locator_preserves_query_identity_and_row_shape(self) -> None:
         locator = passage_locator(
             self._item(
