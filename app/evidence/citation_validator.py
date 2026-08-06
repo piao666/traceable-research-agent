@@ -12,11 +12,15 @@ counts and accuracy metrics.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.llm.base import LLMClient, LLMMessage
+
 CITATION_PATTERN = re.compile(r"CIT-\d{3}-\d{2}")
+SENTENCE_BOUNDARIES = ".!?。！？\n"
 
 
 @dataclass
@@ -26,6 +30,7 @@ class CitationValidationDetail:
     sentence: str  # the sentence containing this citation
     passage_text: str  # the referenced passage text
     keyword_overlap: float  # Jaccard similarity score
+    judgment_source: str = "rule"
 
 
 @dataclass
@@ -35,6 +40,11 @@ class CitationValidationReport:
     weakly_supported: int = 0
     unsupported: int = 0
     details: list[CitationValidationDetail] = field(default_factory=list)
+    llm_used: bool = False
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    token_in: int = 0
+    token_out: int = 0
 
     @property
     def accuracy(self) -> float:
@@ -56,6 +66,11 @@ class CitationValidationReport:
             "unsupported": self.unsupported,
             "accuracy": self.accuracy,
             "weak_rate": self.weak_rate,
+            "llm_used": self.llm_used,
+            "llm_provider": self.llm_provider,
+            "llm_model": self.llm_model,
+            "token_in": self.token_in,
+            "token_out": self.token_out,
             "details": [
                 {
                     "citation_label": d.citation_label,
@@ -63,6 +78,7 @@ class CitationValidationReport:
                     "sentence": d.sentence[:300],
                     "passage_text": d.passage_text[:300],
                     "keyword_overlap": d.keyword_overlap,
+                    "judgment_source": d.judgment_source,
                 }
                 for d in self.details
             ],
@@ -71,10 +87,19 @@ class CitationValidationReport:
 
 def _tokenize(text: str) -> set[str]:
     """Extract lowercase alphanumeric tokens for overlap scoring."""
-    # Split on non-alphanumeric characters
-    tokens = re.findall(r"[a-zA-Z0-9一-鿿]+", text.lower())
-    # Filter out very short tokens
-    return {t for t in tokens if len(t) >= 2}
+    lowered = text.lower()
+    tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", lowered)
+        if len(token) >= 2
+    }
+    for sequence in re.findall(r"[一-鿿]+", lowered):
+        if len(sequence) == 1:
+            continue
+        tokens.update(sequence[index : index + 2] for index in range(len(sequence) - 1))
+        if len(sequence) <= 8:
+            tokens.add(sequence)
+    return tokens
 
 
 def _jaccard_overlap(a: set[str], b: set[str]) -> float:
@@ -92,27 +117,110 @@ def _entity_co_occurrence(sentence: str, passage: str) -> int:
     """Count how many capitalized/numeric entities co-occur in both texts."""
     sent_entities = set(re.findall(r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*|\d+\.?\d*", sentence))
     pass_entities = set(re.findall(r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*|\d+\.?\d*", passage))
-    return len(sent_entities & pass_entities)
+    shared_cjk = _tokenize("".join(re.findall(r"[一-鿿]+", sentence))) & _tokenize(
+        "".join(re.findall(r"[一-鿿]+", passage))
+    )
+    return len(sent_entities & pass_entities) + len(shared_cjk)
+
+
+def _parse_llm_verdicts(content: str | None) -> dict[str, str]:
+    if not content:
+        return {}
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end < start:
+        return {}
+    try:
+        payload = json.loads(text[start : end + 1])
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    verdicts: dict[str, str] = {}
+    for item in payload.get("verdicts") or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("citation_label") or "")
+        verdict = str(item.get("verdict") or "")
+        if label and verdict in {"supported", "weakly_supported", "unsupported"}:
+            verdicts[label] = verdict
+    return verdicts
+
+
+def _apply_llm_secondary_judgment(
+    report: CitationValidationReport,
+    llm_client: LLMClient | None,
+) -> CitationValidationReport:
+    if llm_client is None or not llm_client.is_available() or not report.details:
+        return report
+    cases = [
+        {
+            "citation_label": detail.citation_label,
+            "claim_sentence": detail.sentence,
+            "passage": detail.passage_text,
+            "rule_verdict": detail.verdict,
+        }
+        for detail in report.details
+    ]
+    messages = [
+        LLMMessage(
+            role="system",
+            content=(
+                "Judge whether each cited passage supports its claim sentence. "
+                "Return JSON only as {\"verdicts\":[{\"citation_label\":\"CIT-001-01\","
+                "\"verdict\":\"supported|weakly_supported|unsupported\"}]}."
+            ),
+        ),
+        LLMMessage(role="user", content=json.dumps(cases, ensure_ascii=False)),
+    ]
+    try:
+        response = llm_client.complete(messages, temperature=0.0, max_tokens=1200)
+    except Exception:
+        return report
+    if not response.success:
+        return report
+    verdicts = _parse_llm_verdicts(response.content)
+    if not verdicts:
+        return report
+    for detail in report.details:
+        verdict = verdicts.get(detail.citation_label)
+        if verdict:
+            detail.verdict = verdict
+            detail.judgment_source = "llm"
+    report.supported = sum(detail.verdict == "supported" for detail in report.details)
+    report.weakly_supported = sum(
+        detail.verdict == "weakly_supported" for detail in report.details
+    )
+    report.unsupported = sum(detail.verdict == "unsupported" for detail in report.details)
+    report.llm_used = True
+    report.llm_provider = response.provider
+    report.llm_model = response.model
+    if response.usage is not None:
+        report.token_in = response.usage.prompt_tokens
+        report.token_out = response.usage.completion_tokens
+    return report
 
 
 def _find_citation_sentence(text: str, match_start: int) -> str:
     """Extract the sentence containing a citation match."""
     # Search backward for sentence boundary
     start = match_start
-    while start > 0 and text[start - 1] not in ".!?\n":
+    while start > 0 and text[start - 1] not in SENTENCE_BOUNDARIES:
         start -= 1
     # Skip the boundary character
-    if start > 0 and text[start - 1] in ".!?\n":
+    if start > 0 and text[start - 1] in SENTENCE_BOUNDARIES:
         start = max(0, start)
     else:
         start = max(0, start)
 
     # Search forward for sentence boundary
     end = match_start
-    while end < len(text) and text[end] not in ".!?\n":
+    while end < len(text) and text[end] not in SENTENCE_BOUNDARIES:
         end += 1
     # Include the boundary character
-    if end < len(text) and text[end] in ".!?":
+    if end < len(text) and text[end] in ".!?。！？":
         end += 1
 
     return text[start:end].strip()
@@ -125,6 +233,8 @@ def validate_citations(
     min_supported_overlap: float = 0.30,
     min_weak_overlap: float = 0.10,
     min_entity_co_occurrence: int = 1,
+    llm_client: LLMClient | None = None,
+    use_llm: bool = False,
 ) -> CitationValidationReport:
     """Validate all CIT references in a report against their passage text.
 
@@ -161,7 +271,14 @@ def validate_citations(
             label_to_passage[label] = passage_text
 
     # Find all CIT references in the report
-    matches = list(CITATION_PATTERN.finditer(report_text))
+    matches = []
+    seen_labels: set[str] = set()
+    for match in CITATION_PATTERN.finditer(report_text):
+        label = match.group(0)
+        if label in seen_labels:
+            continue
+        seen_labels.add(label)
+        matches.append(match)
     if not matches:
         return CitationValidationReport()
 
@@ -210,13 +327,16 @@ def validate_citations(
             keyword_overlap=round(overlap, 4),
         ))
 
-    return CitationValidationReport(
+    report = CitationValidationReport(
         total=len(matches),
         supported=supported_count,
         weakly_supported=weak_count,
         unsupported=unsupported_count,
         details=details,
     )
+    if use_llm:
+        report = _apply_llm_secondary_judgment(report, llm_client)
+    return report
 
 
 def render_citation_validation_section(report: CitationValidationReport) -> list[str]:
@@ -236,6 +356,11 @@ def render_citation_validation_section(report: CitationValidationReport) -> list
         "> `supported`：重叠率 ≥ 30% 且至少 1 个共现实体；`weakly_supported`：重叠率 ≥ 10%；`unsupported`：不满足以上条件。",
         "",
     ]
+    if report.llm_used:
+        lines.insert(
+            9,
+            f"> 已启用 LLM 二次判定：`{report.llm_provider}` / `{report.llm_model or 'default'}`。",
+        )
 
     weak_or_bad = [d for d in report.details if d.verdict != "supported"]
     if weak_or_bad:

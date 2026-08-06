@@ -33,6 +33,11 @@ class AgentRun(Base):
     total_tool_calls: Mapped[int] = mapped_column(Integer, default=0)
     total_latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    citation_total: Mapped[int] = mapped_column(Integer, default=0)
+    citation_supported: Mapped[int] = mapped_column(Integer, default=0)
+    citation_weakly_supported: Mapped[int] = mapped_column(Integer, default=0)
+    citation_unsupported: Mapped[int] = mapped_column(Integer, default=0)
+    citation_accuracy: Mapped[float] = mapped_column(Float, default=1.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

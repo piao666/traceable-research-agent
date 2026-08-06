@@ -25,6 +25,7 @@ from app.agent.executor import (
     _step_requires_confirmation,
     _message_summary,
     _parse_plan,
+    _persist_citation_validation,
     _summary,
 )
 from app.agent.reporter import generate_markdown_report, save_report
@@ -447,6 +448,7 @@ def run_plan_parallel(
             settings_obj,
         )
         llm_client = resolve_report_llm_client(settings_obj)
+        citation_validation_reports: list[Any] = []
         markdown = generate_markdown_report(
             run,
             plan,
@@ -455,9 +457,16 @@ def run_plan_parallel(
             llm_client=llm_client,
             provenance_bundle=provenance_bundle,
             report_type=run.report_type,
+            citation_validation_callback=citation_validation_reports.append,
         )
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)
+        run = _persist_citation_validation(
+            db,
+            run_id,
+            citation_validation_reports,
+            traces,
+        )
         run = store.update_agent_run_status(db, run_id, "completed", None)
         _after_run_completed(db, run, markdown, step_no=0)
         return _summary(run)

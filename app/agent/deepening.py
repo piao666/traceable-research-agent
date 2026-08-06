@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agent.react_executor import run_react_task
+from app.agent.executor import _persist_citation_validation
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings as _settings
 from app.evidence.service import materialize_execution_provenance
@@ -312,6 +313,7 @@ def run_deepening(
 
     from app.agent.report_generation import resolve_report_llm_client
     _llm = resolve_report_llm_client(settings_obj, client)
+    citation_validation_reports: list[Any] = []
     markdown = generate_markdown_report(
         run, plan,
         [
@@ -322,9 +324,16 @@ def run_deepening(
         llm_client=_llm,
         provenance_bundle=provenance_bundle,
         report_type=run.report_type,
+        citation_validation_callback=citation_validation_reports.append,
     )
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
+    _persist_citation_validation(
+        db,
+        run_id,
+        citation_validation_reports,
+        all_traces,
+    )
 
     # Add deepening summary to report markdown
     if all_learnings:

@@ -165,6 +165,31 @@ def update_agent_run_cost(
     return run
 
 
+def update_agent_run_citation_validation(
+    db: Session,
+    run_id: str,
+    *,
+    total: int,
+    supported: int,
+    weakly_supported: int,
+    unsupported: int,
+    accuracy: float,
+) -> AgentRun:
+    """Persist the final citation-validation metrics for a run."""
+    run = db.get(AgentRun, run_id)
+    if run is None:
+        raise ValueError("Task run not found")
+    run.citation_total = max(0, int(total))
+    run.citation_supported = max(0, int(supported))
+    run.citation_weakly_supported = max(0, int(weakly_supported))
+    run.citation_unsupported = max(0, int(unsupported))
+    run.citation_accuracy = min(max(float(accuracy), 0.0), 1.0)
+    run.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
 def list_tool_traces(db: Session, run_id: str) -> list[ToolTrace]:
     """Return traces for a run in step order."""
 

@@ -75,12 +75,22 @@ def bootstrap_revision_for_tables(
             )
         # Check for 0005/0006 column-level migrations
         inspector = inspect(engine)
+        agent_run_cols = {c["name"] for c in inspector.get_columns("agent_runs")}
         tool_trace_cols = {c["name"] for c in inspector.get_columns("tool_traces")}
         evidence_passage_cols = {c["name"] for c in inspector.get_columns("evidence_passages")}
         session_cols = {c["name"] for c in inspector.get_columns("conversation_sessions")}
         memory_cols = {c["name"] for c in inspector.get_columns("user_memories")}
         if "sub_query" in tool_trace_cols and "content_basis" in evidence_passage_cols:
             if not {"tenant_id", "user_id"} & (session_cols | memory_cols):
+                citation_columns = {
+                    "citation_total",
+                    "citation_supported",
+                    "citation_weakly_supported",
+                    "citation_unsupported",
+                    "citation_accuracy",
+                }
+                if citation_columns.issubset(agent_run_cols):
+                    return _required_stamp(current_revision, "0008_citation_validation_metrics")
                 return _required_stamp(current_revision, "0007_single_instance_memory")
             return _required_stamp(current_revision, "0006_content_basis")
         if "sub_query" in tool_trace_cols:
@@ -99,6 +109,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0005_subquery_trace": 5,
         "0006_content_basis": 6,
         "0007_single_instance_memory": 7,
+        "0008_citation_validation_metrics": 8,
     }
     if current_revision is None:
         return schema_revision

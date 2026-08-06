@@ -22,6 +22,64 @@ from app.trace.logger import record_tool_result, record_trace_event
 from app.trace.models import AgentRun
 
 
+def _persist_citation_validation(
+    db: Session,
+    run_id: str,
+    validation_reports: list[Any],
+    traces: list[Any],
+) -> AgentRun:
+    """Persist and trace the exact validation result rendered in the report."""
+    if not validation_reports:
+        run = store.get_agent_run(db, run_id)
+        if run is None:
+            raise ValueError("Task run not found")
+        return run
+    validation = validation_reports[-1]
+    run = store.update_agent_run_citation_validation(
+        db,
+        run_id,
+        total=validation.total,
+        supported=validation.supported,
+        weakly_supported=validation.weakly_supported,
+        unsupported=validation.unsupported,
+        accuracy=validation.accuracy,
+    )
+    if validation.total <= 0:
+        return run
+
+    estimated_cost = 0.0
+    if validation.llm_used:
+        try:
+            from app.llm.cost import estimate_cost_from_tokens
+
+            estimated_cost = estimate_cost_from_tokens(
+                validation.llm_provider or "unknown",
+                validation.llm_model,
+                validation.token_in,
+                validation.token_out,
+            )
+        except Exception:
+            estimated_cost = 0.0
+    record_trace_event(
+        db=db,
+        run_id=run_id,
+        step_no=max((trace.step_no for trace in traces), default=0) + 1,
+        tool_name="citation_validator",
+        status="success",
+        input_data={"total_citations": validation.total},
+        output_summary=(
+            f"Citation validation: {validation.supported}/{validation.total} supported "
+            f"({validation.accuracy * 100:.1f}%), "
+            f"{validation.weakly_supported} weak, {validation.unsupported} unsupported"
+        ),
+        output_data=validation.to_dict(),
+        token_in=validation.token_in,
+        token_out=validation.token_out,
+        estimated_cost=estimated_cost,
+    )
+    return run
+
+
 def _after_run_completed(
     db: Session,
     run: AgentRun,
@@ -339,6 +397,7 @@ def run_plan(
         )
         _llm = resolve_report_llm_client(settings_obj, report_llm_client)
         report_llm_responses: list[Any] = []
+        citation_validation_reports: list[Any] = []
         markdown = generate_markdown_report(
             run,
             plan,
@@ -348,6 +407,7 @@ def run_plan(
             provenance_bundle=provenance_bundle,
             report_type=run.report_type,
             usage_callback=report_llm_responses.append,
+            citation_validation_callback=citation_validation_reports.append,
         )
         if report_llm_responses:
             from app.llm.cost import estimate_cost
@@ -371,27 +431,13 @@ def run_plan(
             traces = store.list_tool_traces(db, run_id)
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)
-
-        # ── Phase 7.5: Record citation validation trace ─────────────────
-        if provenance_bundle and settings_obj.citation_validation_enabled:
-            try:
-                from app.evidence.citation_validator import validate_citations
-                validation = validate_citations(markdown, provenance_bundle)
-                record_trace_event(
-                    db=db, run_id=run_id,
-                    step_no=max((trace.step_no for trace in traces), default=0) + 1,
-                    tool_name="citation_validator",
-                    status="success",
-                    input_data={"total_citations": validation.total},
-                    output_summary=(
-                        f"Citation validation: {validation.supported}/{validation.total} supported "
-                        f"({validation.accuracy * 100:.1f}%), "
-                        f"{validation.weakly_supported} weak, {validation.unsupported} unsupported"
-                    ),
-                    output_data=validation.to_dict(),
-                )
-            except Exception:
-                pass  # Validation failure must not block report completion
+        run = _persist_citation_validation(
+            db,
+            run_id,
+            citation_validation_reports,
+            traces,
+        )
+        traces = store.list_tool_traces(db, run_id)
 
         run = store.update_agent_run_status(db, run_id, "completed", None)
 

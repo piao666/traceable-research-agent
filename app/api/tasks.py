@@ -22,6 +22,7 @@ from app.agent.file_access_policy import (
     confirmation_details_for_path,
 )
 from app.agent.planner import plan_task, plan_task_for_review
+from app.agent.plan_guardrails import normalize_plan_arguments
 from app.agent.state import WAITING_HUMAN_PLAN
 from app.config import settings
 from app.database import SessionLocal, get_db
@@ -56,6 +57,117 @@ router = APIRouter(
 )
 
 
+def _record_memory_recall_trace(
+    db: Session,
+    run_id: str,
+    memory_recall_trace: dict[str, Any] | None,
+) -> None:
+    if not isinstance(memory_recall_trace, dict):
+        return
+    if memory_recall_trace.get("event_type") != "memory_recall":
+        return
+    from app.trace.logger import record_trace_event
+
+    record_trace_event(
+        db=db,
+        run_id=run_id,
+        step_no=0,
+        tool_name="memory_recall",
+        status="success",
+        input_data={},
+        output_summary=(
+            f"Memory recall: {memory_recall_trace.get('recalled', 0)} recalled"
+            + (
+                f", reason={memory_recall_trace.get('reason')}"
+                if memory_recall_trace.get("reason")
+                else ""
+            )
+        ),
+        output_data={
+            "recalled": memory_recall_trace.get("recalled", 0),
+            "injected_chars": memory_recall_trace.get("injected_chars", 0),
+            "memory_ids": memory_recall_trace.get("memory_ids", []),
+            "reason": memory_recall_trace.get("reason"),
+        },
+    )
+
+
+def _merge_approved_steps(
+    original_steps: list[Any],
+    modified_steps: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Apply argument edits while preserving planner-owned step metadata."""
+    originals = {
+        int(step.get("step_no") or 0): step
+        for step in original_steps
+        if isinstance(step, dict) and int(step.get("step_no") or 0) > 0
+    }
+    if modified_steps is None:
+        return [dict(step) for step in original_steps if isinstance(step, dict)]
+    if not modified_steps:
+        raise HTTPException(status_code=422, detail="An approved plan must contain at least one step")
+
+    selected: list[tuple[int, dict[str, Any]]] = []
+    seen_step_nos: set[int] = set()
+    for requested in modified_steps:
+        if not isinstance(requested, dict):
+            raise HTTPException(status_code=422, detail="Every modified step must be an object")
+        try:
+            original_step_no = int(requested.get("step_no") or 0)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="Every modified step needs a valid step_no") from exc
+        if original_step_no in seen_step_nos:
+            raise HTTPException(status_code=422, detail=f"Duplicate step_no: {original_step_no}")
+        original = originals.get(original_step_no)
+        if original is None:
+            raise HTTPException(status_code=422, detail=f"Unknown step_no: {original_step_no}")
+        requested_tool = str(requested.get("tool_name") or original.get("tool_name") or "")
+        original_tool = str(original.get("tool_name") or "")
+        if requested_tool != original_tool:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Plan approval cannot change tool_name for step {original_step_no}",
+            )
+        arguments = requested.get("arguments", original.get("arguments") or {})
+        if not isinstance(arguments, dict):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Step {original_step_no} arguments must be an object",
+            )
+        merged = dict(original)
+        merged["arguments"] = arguments
+        selected.append((original_step_no, merged))
+        seen_step_nos.add(original_step_no)
+
+    selected.sort(key=lambda item: item[0])
+    step_no_map = {old_step_no: index for index, (old_step_no, _) in enumerate(selected, 1)}
+    result: list[dict[str, Any]] = []
+    for new_step_no, (old_step_no, step) in enumerate(selected, 1):
+        dependency = step.get("arguments_from")
+        if isinstance(dependency, dict) and dependency.get("step_no") is not None:
+            try:
+                dependency_step_no = int(dependency["step_no"])
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Step {old_step_no} has an invalid arguments_from dependency",
+                ) from exc
+            if dependency_step_no not in step_no_map:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Step {old_step_no} depends on disabled step {dependency_step_no}; "
+                        "enable the dependency or disable the dependent step"
+                    ),
+                )
+            remapped_dependency = dict(dependency)
+            remapped_dependency["step_no"] = step_no_map[dependency_step_no]
+            step["arguments_from"] = remapped_dependency
+        step["step_no"] = new_step_no
+        result.append(step)
+    return result
+
+
 def _task_status_response(run: AgentRun) -> TaskStatusResponse:
     plan_meta = _plan_metadata(run)
     return TaskStatusResponse(
@@ -71,6 +183,11 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
         total_tool_calls=run.total_tool_calls,
         total_latency_ms=run.total_latency_ms,
         estimated_cost=run.estimated_cost,
+        citation_total=run.citation_total,
+        citation_supported=run.citation_supported,
+        citation_weakly_supported=run.citation_weakly_supported,
+        citation_unsupported=run.citation_unsupported,
+        citation_accuracy=run.citation_accuracy,
         created_at=run.created_at,
         updated_at=run.updated_at,
         execution_mode=plan_meta["execution_mode"],
@@ -264,7 +381,9 @@ async def create_task(
         )
         plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
         plan.setdefault("execution_mode", settings.execution_mode)
+        memory_recall_trace = plan.pop("memory_recall_trace", None)
         run = store.update_agent_run_plan(db, run.run_id, plan)
+        _record_memory_recall_trace(db, run.run_id, memory_recall_trace)
         run = store.update_agent_run_status(db, run.run_id, WAITING_HUMAN_PLAN, None)
         return TaskCreateResponse(
             run_id=run.run_id,
@@ -286,30 +405,11 @@ async def create_task(
     )
     plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
     plan.setdefault("execution_mode", settings.execution_mode)
+    memory_recall_trace = plan.pop("memory_recall_trace", None)
     run = store.update_agent_run_plan(db, run.run_id, plan)
 
     # ── Phase 5: record memory_recall trace event ─────────────────
-    memory_recall_trace = plan.pop("memory_recall_trace", None)
-    if isinstance(memory_recall_trace, dict) and memory_recall_trace.get("event_type") == "memory_recall":
-        from app.trace.logger import record_trace_event
-        record_trace_event(
-            db=db,
-            run_id=run.run_id,
-            step_no=0,
-            tool_name="memory_recall",
-            status="success",
-            input_data={},
-            output_summary=(
-                f"Memory recall: {memory_recall_trace.get('recalled', 0)} recalled"
-                + (f", reason={memory_recall_trace.get('reason')}" if memory_recall_trace.get("reason") else "")
-            ),
-            output_data={
-                "recalled": memory_recall_trace.get("recalled", 0),
-                "injected_chars": memory_recall_trace.get("injected_chars", 0),
-                "memory_ids": memory_recall_trace.get("memory_ids", []),
-                "reason": memory_recall_trace.get("reason"),
-            },
-        )
+    _record_memory_recall_trace(db, run.run_id, memory_recall_trace)
     return TaskCreateResponse(
         run_id=run.run_id,
         status=run.status,
@@ -410,6 +510,11 @@ async def run_task_async(
         return _async_run_response(
             run,
             "Run is waiting for human confirmation. Call POST /api/tasks/{run_id}/confirm.",
+        )
+    if run.status == "waiting_human_plan":
+        return _async_run_response(
+            run,
+            "Plan is awaiting approval. Call POST /api/tasks/{run_id}/approve-plan.",
         )
     if run.status == "failed":
         raise HTTPException(status_code=409, detail="Failed runs cannot be rerun in Day29")
@@ -587,6 +692,7 @@ async def get_plan_review(
             risk_level=str(step.get("risk_level") or "low"),
             requires_confirmation=bool(step.get("requires_confirmation")),
             estimated_tokens=int(step.get("estimated_tokens") or 500),
+            raw_step=dict(step),
         ))
 
     return PlanReviewResponse(
@@ -646,19 +752,13 @@ async def approve_plan(
             _run_summary(run, f"Plan rejected: {request.comment or 'No comment'}")
         )
 
-    # ── Approved: apply modified steps if provided ──────────────────
-    if request.modified_steps:
-        # Validate and apply modified steps
-        validated_steps: list[dict[str, Any]] = []
-        for i, step in enumerate(request.modified_steps, 1):
-            if not isinstance(step, dict):
-                continue
-            validated = dict(step)
-            validated["step_no"] = i
-            validated.setdefault("risk_level", "low")
-            validated.setdefault("requires_confirmation", False)
-            validated_steps.append(validated)
-        plan["steps"] = validated_steps
+    # ── Approved: apply modified arguments and re-run guardrails ─────
+    if request.modified_steps is not None:
+        plan["steps"] = _merge_approved_steps(
+            list(plan.get("steps") or []),
+            request.modified_steps,
+        )
+        plan = normalize_plan_arguments(plan, run.task, run.source_mode)
         plan["notes"] = list(plan.get("notes") or []) + [
             f"Plan modified during approval: {request.comment}" if request.comment
             else "Plan approved with modifications.",
@@ -677,7 +777,7 @@ async def approve_plan(
         input_data={
             "approved": True,
             "comment": request.comment,
-            "modified": bool(request.modified_steps),
+            "modified": request.modified_steps is not None,
         },
         output_summary=f"Plan approved: {request.comment or 'No comment'}",
         output_data={

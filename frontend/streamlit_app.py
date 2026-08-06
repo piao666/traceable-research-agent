@@ -1889,14 +1889,11 @@ def _render_plan_review_panel() -> None:
                 parsed_args = dict(arguments)
 
             if enabled:
-                modified_steps.append({
-                    "step_no": step_no,
-                    "tool_name": tool_name,
-                    "goal": goal,
-                    "arguments": parsed_args,
-                    "risk_level": risk,
-                    "requires_confirmation": requires_confirm,
-                })
+                preserved_step = dict(step.get("raw_step") or step)
+                preserved_step["step_no"] = step_no
+                preserved_step["tool_name"] = tool_name
+                preserved_step["arguments"] = parsed_args
+                modified_steps.append(preserved_step)
 
     # ── Action buttons ───────────────────────────────────────────────
     st.markdown("---")

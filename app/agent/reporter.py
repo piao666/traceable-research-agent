@@ -1323,6 +1323,7 @@ def generate_markdown_report(
     provenance_bundle: dict[str, Any] | None = None,
     report_type: str = "summary",
     usage_callback: Callable[[Any], None] | None = None,
+    citation_validation_callback: Callable[[Any], None] | None = None,
 ) -> str:
     """Build a Markdown report from persisted run evidence.
 
@@ -1567,32 +1568,42 @@ def generate_markdown_report(
         if limitations_lines:
             lines.extend(limitations_lines)
 
+    # Outline reports intentionally contain headings only and therefore have
+    # no inline citations to validate.
+    if report_type == "outline_report":
+        return _to_outline(lines)
+
     # ── Phase 7.5: Citation validation ────────────────────────────────────
-    _citation_validation_report = None
     if provenance_bundle:
         try:
             from app.config import settings as _reporter_settings
             if _reporter_settings.citation_validation_enabled:
                 from app.evidence.citation_validator import (
-                    CitationValidationReport,
                     render_citation_validation_section,
                     validate_citations,
                 )
+                validation_llm_client = llm_client
+                if _reporter_settings.citation_validation_llm_enabled:
+                    if validation_llm_client is None or not validation_llm_client.is_available():
+                        from app.llm.providers import create_llm_client
+
+                        validation_llm_client = create_llm_client(_reporter_settings)
                 report_text = "\n".join(lines)
-                _citation_validation_report = validate_citations(
-                    report_text, provenance_bundle,
+                citation_validation_report = validate_citations(
+                    report_text,
+                    provenance_bundle,
+                    llm_client=validation_llm_client,
+                    use_llm=_reporter_settings.citation_validation_llm_enabled,
                 )
+                if citation_validation_callback is not None:
+                    citation_validation_callback(citation_validation_report)
                 validation_lines = render_citation_validation_section(
-                    _citation_validation_report,
+                    citation_validation_report,
                 )
                 if validation_lines:
                     lines.extend(validation_lines)
         except Exception:
             pass  # Citation validation failure must not block report generation
-
-    # ── Phase 6: Report type handling ─────────────────────────────────────
-    if report_type == "outline_report":
-        return _to_outline(lines)
 
     # ── Phase 7: Skill version footer ──────────────────────────────────────
     skill_name = plan.get("skill_name")

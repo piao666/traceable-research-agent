@@ -50,6 +50,11 @@ class TaskStatusResponse(BaseModel):
     total_tool_calls: int
     total_latency_ms: int
     estimated_cost: float
+    citation_total: int = 0
+    citation_supported: int = 0
+    citation_weakly_supported: int = 0
+    citation_unsupported: int = 0
+    citation_accuracy: float = 1.0
     created_at: datetime
     updated_at: datetime
     execution_mode: str = "planned"
@@ -141,6 +146,7 @@ class PlanReviewStep(BaseModel):
     risk_level: str
     requires_confirmation: bool
     estimated_tokens: int = 500
+    raw_step: dict[str, Any] = Field(default_factory=dict)
 
 
 class PlanReviewResponse(BaseModel):
