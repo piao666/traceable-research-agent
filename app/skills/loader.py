@@ -41,6 +41,13 @@ def load_skill_from_file(path: Path) -> SkillDefinition | None:
             "default": param_data.get("default"),
         }
 
+    changelog = raw.get("changelog")
+    if isinstance(changelog, list):
+        changelog = [
+            entry for entry in changelog
+            if isinstance(entry, dict) and "version" in entry
+        ] or None
+
     return SkillDefinition(
         name=str(raw.get("name") or ""),
         version=str(raw.get("version") or "1.0"),
@@ -48,6 +55,7 @@ def load_skill_from_file(path: Path) -> SkillDefinition | None:
         required_tools=[str(t) for t in (raw.get("required_tools") or [])],
         parameters=parameters,
         steps=steps,
+        changelog=changelog,
     )
 
 

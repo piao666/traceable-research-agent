@@ -27,6 +27,7 @@ class SkillDefinition(BaseModel):
     required_tools: list[str] = Field(default_factory=list)
     parameters: dict[str, SkillParameter] = Field(default_factory=dict)
     steps: list[SkillStep] = Field(default_factory=list)
+    changelog: list[dict[str, Any]] | None = None
 
 
 class SkillMeta(BaseModel):

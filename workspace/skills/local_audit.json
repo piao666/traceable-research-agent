@@ -3,6 +3,9 @@
   "version": "1.0",
   "description": "本地资料复盘：文件读取 → 数据库查询 → 报告",
   "required_tools": ["file_reader", "sql_query"],
+  "changelog": [
+    {"version": "1.0", "date": "2026-07-26", "changes": "初始版本：file_reader → sql_query → report_writer 本地资料复盘"}
+  ],
   "parameters": {
     "query": {"type": "string", "required": true},
     "file_path": {"type": "string", "default": "demo_research_note.md"}

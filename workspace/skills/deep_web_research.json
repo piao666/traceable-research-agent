@@ -3,6 +3,9 @@
   "version": "1.0",
   "description": "深度网页调研：搜索发现 URL → 正文抓取 → 证据压缩 → 报告",
   "required_tools": ["tavily_search", "web_fetcher"],
+  "changelog": [
+    {"version": "1.0", "date": "2026-07-26", "changes": "初始版本：tavily_search → web_fetcher → report_writer 三步深度调研管道"}
+  ],
   "parameters": {
     "query": {"type": "string", "required": true},
     "max_urls": {"type": "integer", "default": 5}

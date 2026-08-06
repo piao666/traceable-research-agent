@@ -1570,9 +1570,16 @@ def generate_markdown_report(
     # ── Phase 6: Report type handling ─────────────────────────────────────
     if report_type == "outline_report":
         return _to_outline(lines)
+
+    # ── Phase 7: Skill version footer ──────────────────────────────────────
+    skill_name = plan.get("skill_name")
+    skill_version = plan.get("skill_version")
+    if skill_name:
+        footer = f"\n---\n\n*本报告由 Skill `{skill_name}` v{skill_version} 生成。*\n"
+        lines.append(footer)
+
     if report_type == "detailed_report":
         toc = _build_toc(lines)
-        # Insert TOC after §2 Running Summary (find the ## 3. marker)
         toc_insert_pos = _find_section_start(lines, "## 3.")
         if toc_insert_pos >= 0:
             lines[toc_insert_pos:toc_insert_pos] = toc

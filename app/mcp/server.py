@@ -29,6 +29,7 @@ from app.tools.registry import execute_tool, get_tool, list_tools
 from app.trace import store
 from app.trace.logger import record_tool_result
 from app.trace.models import ToolTrace
+from app.skills.registry import get_skill as get_skill_def, list_skills as list_skill_defs
 
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -53,6 +54,25 @@ REPORT_READER_SPEC = ToolSpec(
     output_schema={"run_id": "string", "markdown": "string", "exists": "boolean"},
     risk_level=RiskLevel.LOW,
     tags=["report", "read-only"],
+)
+
+SKILL_RUNNER_SPEC = ToolSpec(
+    name="skill_runner",
+    description="Execute a registered Skill workflow (search, fetch, report) and return the full result.",
+    input_schema={
+        "skill_name": "string",
+        "query": "string",
+        "parameters": "object|null",
+    },
+    output_schema={
+        "skill_name": "string",
+        "skill_version": "string",
+        "steps_executed": "integer",
+        "results": "array",
+        "report": "string|null",
+    },
+    risk_level=RiskLevel.LOW,
+    tags=["skill", "workflow", "read-only"],
 )
 
 router = APIRouter(
@@ -108,6 +128,36 @@ def _exposed_tool_specs() -> list[MCPToolMetadata]:
             exposed.append(_metadata_from_spec(spec, alias=alias))
     exposed.append(_metadata_from_spec(TRACE_READER_SPEC))
     exposed.append(_metadata_from_spec(REPORT_READER_SPEC))
+
+    # ── skill_runner with dynamic input_schema ────────────────────────
+    skills = list_skill_defs()
+    if skills:
+        skill_schema: dict[str, Any] = {
+            "skill_name": {
+                "type": "string",
+                "description": "Name of the Skill to execute",
+                "enum": [s.name for s in skills if s.status == "valid"],
+            },
+            "query": {
+                "type": "string",
+                "description": "Research question or task description",
+            },
+            "parameters": {
+                "type": "object",
+                "description": "Additional Skill parameters",
+                "default": {},
+            },
+        }
+        runner_spec = ToolSpec(
+            name=SKILL_RUNNER_SPEC.name,
+            description=SKILL_RUNNER_SPEC.description,
+            input_schema=skill_schema,
+            output_schema=SKILL_RUNNER_SPEC.output_schema,
+            risk_level=SKILL_RUNNER_SPEC.risk_level,
+            tags=SKILL_RUNNER_SPEC.tags,
+        )
+        exposed.append(_metadata_from_spec(runner_spec))
+
     return sorted(exposed, key=lambda item: item.name)
 
 
@@ -231,11 +281,100 @@ def _read_report(db: Session, arguments: dict[str, Any]) -> ToolResult:
     )
 
 
+def _run_skill_workflow(arguments: dict[str, Any]) -> ToolResult:
+    """Execute a Skill workflow: load skill, run each step, return aggregated results."""
+    skill_name = str(arguments.get("skill_name") or "").strip()
+    query = str(arguments.get("query") or "").strip()
+    extra_params = arguments.get("parameters") or {}
+
+    if not skill_name:
+        return ToolResult(success=False, error_message="Missing required argument: skill_name.")
+    if not query:
+        return ToolResult(success=False, error_message="Missing required argument: query.")
+
+    skill = get_skill_def(skill_name)
+    if skill is None:
+        return ToolResult(
+            success=False,
+            error_message=f"Skill '{skill_name}' not found in registry.",
+        )
+
+    from app.database import SessionLocal
+    from app.agent.planner import plan_task
+    from app.agent.executor import run_plan
+    from app.trace import store as trace_store
+
+    try:
+        step_results: list[dict[str, Any]] = []
+        with SessionLocal() as db:
+            run = trace_store.create_agent_run(
+                db=db,
+                task=query,
+                report_type="summary",
+                source_mode="real",
+                allowed_tools=skill.required_tools + ["report_writer"],
+            )
+            plan = plan_task(
+                query,
+                skill.required_tools + ["report_writer"],
+                "real",
+                planner_mode="deterministic",
+                skill_name=skill_name,
+            )
+            trace_store.update_agent_run_plan(db, run.run_id, plan)
+            summary = run_plan(db, run.run_id)
+            final_run = trace_store.get_agent_run(db, run.run_id)
+            traces = trace_store.list_tool_traces(db, run.run_id)
+
+            report: str | None = None
+            if final_run and final_run.report_path:
+                rp = ROOT / final_run.report_path
+                if rp.is_file():
+                    report = rp.read_text(encoding="utf-8")
+
+            for t in traces:
+                step_results.append({
+                    "step_no": t.step_no,
+                    "tool_name": t.tool_name,
+                    "status": t.status,
+                    "output_summary": t.output_summary,
+                })
+
+        return ToolResult(
+            success=summary.get("status") == "completed",
+            output={
+                "skill_name": skill.name,
+                "skill_version": skill.version,
+                "run_id": run.run_id,
+                "status": summary.get("status"),
+                "steps_executed": len(step_results),
+                "results": step_results,
+                "report": report,
+            },
+            output_summary=f"Skill '{skill.name}' completed: {len(step_results)} steps, "
+                          f"status={summary.get('status')}.",
+            metadata={
+                "tool_name": "skill_runner",
+                "skill_name": skill.name,
+                "skill_version": skill.version,
+                "read_only": True,
+                "side_effect_free": False,
+            },
+        )
+    except Exception as exc:
+        return ToolResult(
+            success=False,
+            error_message=f"Skill execution failed: {exc}",
+            metadata={"tool_name": "skill_runner", "error_type": "execution_error"},
+        )
+
+
 def _execute_mcp_tool(db: Session, request: MCPToolCallRequest) -> MCPToolCallResponse:
     local_name = _resolve_local_tool_name(request.name)
-    spec = get_tool(local_name)
+    is_skill_runner = request.name == "skill_runner"
+    spec = get_tool(local_name) if not is_skill_runner else None
     custom_reader = local_name in {"trace_reader", "report_reader"}
-    if not custom_reader:
+    if not custom_reader and not is_skill_runner:
         if spec is None:
             raise HTTPException(status_code=404, detail="MCP tool not found")
         if not is_tool_exposable(spec, alias=request.name):
@@ -251,6 +390,8 @@ def _execute_mcp_tool(db: Session, request: MCPToolCallRequest) -> MCPToolCallRe
         result = _read_traces(db, request.arguments)
     elif local_name == "report_reader":
         result = _read_report(db, request.arguments)
+    elif is_skill_runner:
+        result = _run_skill_workflow(request.arguments)
     else:
         result = execute_tool(local_name, request.arguments)
     latency_ms = int((perf_counter() - started) * 1000)

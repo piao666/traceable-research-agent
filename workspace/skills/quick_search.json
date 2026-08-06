@@ -3,6 +3,9 @@
   "version": "1.0",
   "description": "快速搜索：Tavily 搜索 → 直接生成报告（无全文抓取）",
   "required_tools": ["tavily_search"],
+  "changelog": [
+    {"version": "1.0", "date": "2026-07-26", "changes": "初始版本：tavily_search → report_writer 快速摘要"}
+  ],
   "parameters": {
     "query": {"type": "string", "required": true},
     "max_results": {"type": "integer", "default": 5}
