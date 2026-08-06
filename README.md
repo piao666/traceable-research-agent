@@ -1,190 +1,237 @@
 # Traceable Research Agent
 
-Traceable Research Agent is an open-source, self-hosted research platform. It
-plans multi-step tasks, executes read-only tools, persists every tool call, and
-generates Markdown reports whose evidence and failures can be inspected.
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](#quick-start)
+[![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](#quick-start)
 
-The deployment is intentionally single-instance. It has no tenant or user
-isolation layer. API keys and runtime settings are supplied through `.env`.
-The platform also does not prescribe a document-retrieval implementation;
-deployments can connect their own sources as read-only tools or MCP servers.
+**Traceable Research Agent** is a self-hosted research application for teams
+that need to inspect how an answer was produced. It plans a multi-step task,
+runs only registered read-only tools, stores every call and failure as a trace,
+and produces an evidence-backed Markdown report.
 
-## Capabilities
+[中文说明](README_zh.md) | [Quick start](#quick-start) | [API](#api) | [Architecture](#architecture)
 
-- Deterministic planned execution and optional ReAct execution
-- SQLite + SQLAlchemy run, trace, evidence, session, and memory persistence
-- Read-only local file, SQL, GitHub, Tavily, arXiv, and Semantic Scholar tools
-- Optional read-only MCP tool discovery and execution
-- Human confirmation for guarded operations
-- Evidence provenance, conflict visibility, citations, and Markdown reports
-- FastAPI backend and Streamlit operator interface
-- Word and PDF report export
-- Offline deterministic mode plus configurable Qwen or DeepSeek integration
+## Why Traceable Research Agent
 
-## Example Research Run
+- **Inspectable execution**: persist the task plan, run state, progress, tool
+  inputs and outputs, errors, latency, and cost estimates in SQLite.
+- **Read-only by default**: local files, SQL, web, source-control, academic,
+  and MCP tools are registered explicitly and checked before they execute.
+- **Human control**: a plan can pause for review, and guarded operations pause
+  for confirmation instead of running silently.
+- **Evidence-first reports**: citations, provenance, source basis, conflicts,
+  and citation-validation metrics are available alongside the report.
+- **Works without remote services**: deterministic planning and local tools
+  support an offline-friendly audit flow; remote search and LLM synthesis are
+  optional enhancements.
+- **One-command deployment**: FastAPI and Streamlit start together with Docker
+  Compose and retain runtime data under the mounted `workspace/` directory.
 
-The tracked [real-research demo script](scripts/demo_real_research.py) runs the
-full search → fetch → compress → report pipeline with inline citations,
-content-basis labels, evidence provenance, and a trace audit trail. Generated
-reports are written to the local-only `docs/examples/` directory so execution
-artifacts and potentially private research output are never published by
-default. Reproduce the run locally:
+## Demo
+
+The shortest demonstration uses only local data. It creates a three-step plan,
+reads an allowlisted document, runs a read-only SQL query, and produces a
+traceable report.
 
 ```powershell
+$body = @{
+  task = "Audit the local research note and document metadata"
+  report_type = "summary"
+  source_mode = "mock"
+  skill_name = "local_audit"
+  require_plan_approval = $true
+} | ConvertTo-Json
+
+$created = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/tasks `
+  -ContentType application/json -Body $body
+
+Invoke-RestMethod -Method Get `
+  -Uri "http://localhost:8000/api/tasks/$($created.run_id)/review"
+
+$approval = @{ approved = $true; comment = "approved after review" } | ConvertTo-Json
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8000/api/tasks/$($created.run_id)/approve-plan" `
+  -ContentType application/json -Body $approval
+
+Invoke-RestMethod -Method Get `
+  -Uri "http://localhost:8000/api/tasks/$($created.run_id)/trace"
+```
+
+The resulting run moves from `waiting_human_plan` to `completed`. Its trace
+contains `memory_recall`, `plan_approval`, the executed local tools, and
+`citation_validator`. Retrieve the report at
+`GET /api/reports/{run_id}`.
+
+For a real web-research demonstration, configure `TAVILY_API_KEY` and run:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\demo_real_research.py --preset 1 --report-type detailed_report
+```
+
+This script performs search, fetch, evidence compression, and report creation.
+Generated output remains local under `docs/examples/` and is intentionally not
+published by default.
+
+## Quick Start
+
+Prerequisite: Docker Desktop or Docker Engine with Compose v2.
+
+```powershell
+git clone https://github.com/piao666/traceable-research-agent.git
+Set-Location traceable-research-agent
 Copy-Item .env.example .env
-# Edit .env and set TAVILY_API_KEY
-.\.venv\Scripts\python.exe scripts\demo_real_research.py --preset 1
+docker compose up --build -d
 ```
 
-## Quick Start With Docker
+Docker applies schema migrations and initializes the local demo database when
+the API container starts. Wait until the API is healthy, then open:
 
-Prerequisites: Docker Engine with Compose v2.
+- Streamlit: <http://localhost:8501>
+- FastAPI documentation: <http://localhost:8000/docs>
+- Health check: <http://localhost:8000/health>
+
+To inspect the service lifecycle:
 
 ```powershell
-Copy-Item .env.example .env
-docker compose up --build
+docker compose ps
+docker compose logs --tail 100 api
+docker compose logs --tail 100 streamlit
 ```
 
-Open:
-
-- Streamlit: `http://localhost:8501`
-- FastAPI docs: `http://localhost:8000/docs`
-- Health check: `http://localhost:8000/health`
-
-The default configuration runs without remote API keys. To enable remote
-research or LLM synthesis, set the corresponding values in `.env`, for example:
-
-```dotenv
-AUTH_ENABLED=true
-DEMO_API_KEY=replace-with-a-local-api-key
-QWEN_API_KEY=
-DEEPSEEK_API_KEY=
-TAVILY_API_KEY=
-GITHUB_TOKEN=
-SEMANTIC_SCHOLAR_API_KEY=
-```
-
-Never commit `.env`. Docker mounts `workspace/` so the database, traces,
-evidence artifacts, and reports survive container replacement.
-
-## Local Development
-
-Python 3.11 or 3.12 is recommended.
+Runtime data, reports, evidence artifacts, and the SQLite database live under
+`workspace/`, which Compose mounts into both services. Stop the application
+without removing that data:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
-.\.venv\Scripts\python.exe scripts\migrate_database.py
-.\.venv\Scripts\python.exe scripts\init_demo_db.py
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+docker compose down
 ```
 
-In a second terminal:
+## Configuration
 
-```powershell
-.\.venv\Scripts\python.exe -m streamlit run frontend\streamlit_app.py
-```
+Copy `.env.example` to `.env`; it documents every available setting. `.env` is
+local-only and must never be committed.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `AUTH_ENABLED` | `false` | Enable local API-key authentication. |
+| `DEMO_API_KEY` | empty | API key required when authentication is enabled. |
+| `EXECUTION_MODE` | `planned` | Choose stable planned execution or `react`. |
+| `OFFLINE_MODE` | `false` | Disable remote tool use for offline operation. |
+| `REPORT_GENERATION_MODE` | `deterministic` | Use offline-safe reporting or configured LLM reporting. |
+| `TAVILY_API_KEY` | empty | Enable real web search. |
+| `QWEN_API_KEY` / `DEEPSEEK_API_KEY` | empty | Enable an optional configured LLM provider. |
+| `FILE_READER_ALLOWED_ROOTS` | `workspace/docs` | Allowlisted roots for local file reads. |
+| `CITATION_VALIDATION_LLM_ENABLED` | `false` | Enable optional second-pass LLM citation validation. |
+
+Remote keys are optional. The local demo and deterministic report path do not
+need them. When `AUTH_ENABLED=true`, send the configured key in the
+`X-API-Key` header (or as a Bearer credential).
 
 ## API
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /health` | Service and execution-mode readiness |
-| `POST /api/tasks` | Create a planned task |
-| `POST /api/tasks/{run_id}/run` | Execute a task |
-| `GET /api/tasks/{run_id}` | Read status, progress, cost, and citation-validation metrics |
-| `GET /api/tasks/{run_id}/review` | Read a plan waiting for human approval |
-| `POST /api/tasks/{run_id}/approve-plan` | Approve, edit, or reject a reviewable plan |
-| `GET /api/tasks/{run_id}/trace` | Read persisted tool traces |
-| `GET /api/tasks/{run_id}/evidence/v2` | Read provenance and citations |
-| `GET /api/reports/{run_id}` | Read the Markdown report |
-| `GET /api/tools` | List registered tool metadata |
-| `POST /api/tasks/{run_id}/confirm` | Confirm or reject a guarded step |
-| `GET /api/sessions` | List local conversation sessions |
-| `GET /api/memory` | List local cross-session memories |
+| `GET /health` | Service and database readiness. |
+| `POST /api/tasks` | Create a planned research task. |
+| `GET /api/tasks/{run_id}` | Read status, progress, cost, and citation metrics. |
+| `POST /api/tasks/{run_id}/run` | Execute a created task. |
+| `GET /api/tasks/{run_id}/review` | Read a plan waiting for approval. |
+| `POST /api/tasks/{run_id}/approve-plan` | Approve, edit, or reject that plan. |
+| `POST /api/tasks/{run_id}/confirm` | Resume or reject a guarded operation. |
+| `GET /api/tasks/{run_id}/trace` | Read persisted tool traces. |
+| `GET /api/tasks/{run_id}/evidence/v2` | Read provenance and citations. |
+| `GET /api/reports/{run_id}` | Fetch the Markdown report. |
+| `GET /api/tools` | List registered tool metadata. |
+| `GET /api/skills` | List installed task skills. |
 
-When `AUTH_ENABLED=true`, send the configured key as `X-API-Key`.
-
-Example:
-
-```powershell
-$body = @{
-  task = "Read local docs, query document metadata, and create a report"
-  report_type = "summary"
-  source_mode = "mock"
-  allowed_tools = @("file_reader", "sql_query", "report_writer")
-} | ConvertTo-Json
-
-$created = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/tasks `
-  -ContentType application/json -Body $body
-Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/tasks/$($created.run_id)/run"
-```
+The OpenAPI interface at `/docs` is the complete, versioned request and
+response reference.
 
 ## Architecture
 
-```text
-FastAPI / Streamlit
-        |
-Planner -> Executor / ReAct -> Tool Registry
-        |                         |
-        |                         +-> file / SQL / web / GitHub / academic / MCP
-        |
-        +-> tool_traces -> evidence provenance -> reporter -> Markdown / Word / PDF
-                         |
-                         +-> SQLite agent_runs, sessions, and local memory
+```mermaid
+flowchart TD
+    UI["Streamlit operator interface"] --> API["FastAPI API"]
+    API --> Planner["Planner and plan review"]
+    Planner --> Executor["Planned or ReAct executor"]
+    Executor --> Registry["Validated tool registry"]
+    Registry --> Tools["Read-only file, SQL, web, source-control, academic, MCP tools"]
+    Executor --> Trace["Tool traces and run state"]
+    Tools --> Trace
+    Trace --> Evidence["Evidence, provenance, citations, conflicts"]
+    Evidence --> Reporter["Markdown, Word, and PDF reports"]
+    Reporter --> Storage["SQLite and workspace artifacts"]
 ```
 
-Important directories:
-
 ```text
-app/api/       HTTP endpoints
-app/agent/     planning, execution, evidence, and reporting
+app/api/       FastAPI endpoints and response contracts
+app/agent/     planning, execution, report generation, and guardrails
 app/tools/     registered read-only tool implementations
-app/trace/     run and tool-trace persistence
-app/evidence/  provenance and conflict reasoning
+app/trace/     run and tool-call persistence
+app/evidence/  provenance, citation, and conflict reasoning
 app/memory/    single-instance sessions and optional memory
-app/mcp/       read-only MCP server/client integration
+app/skills/    reusable task definitions and validation
+app/mcp/       optional read-only MCP integration
 frontend/      Streamlit interface
 migrations/    Alembic schema history
-scripts/       migrations, demo initialization, smoke checks, and evaluation
+scripts/       migration, demo, smoke, and evaluation commands
+workspace/     local databases, reports, artifacts, and skills
 ```
 
 ## Safety Model
 
-- `file_reader` resolves paths and permits reads only below configured roots.
-- `sql_query` accepts only one read-only `SELECT` or `WITH` statement and
-  enforces a result limit.
-- External and MCP tools are read-only, bounded by timeouts, and redact secrets.
-- `ToolSpec.timeout_seconds` is enforced by the registry.
-- Rejected and failed calls are persisted as traces.
-- High-risk operations pause in `waiting_human` before execution.
+- The executor can invoke only tools registered in the unified registry.
+- `file_reader` resolves paths, blocks traversal and escaping symlinks, limits
+  content length, and reads only configured roots.
+- `sql_query` accepts one read-only `SELECT` or `WITH` statement and enforces a
+  row limit.
+- External and MCP integrations are read-only, time-bounded, and redact
+  secrets from persisted trace data.
+- Failed and rejected tool calls remain visible in run status and traces.
+- Plan approval and high-risk tool confirmation are explicit state transitions,
+  never hidden background actions.
 
-## Verification
+## Quality Checks
+
+The most recent local Docker closure verified the built images, container
+startup, API health, Streamlit availability, Alembic head migration, an
+approval-based task, and the full test suite: **205 tests and 15 subtests
+passed**.
+
+Run the same core checks locally:
 
 ```powershell
-.\.venv\Scripts\python.exe -m compileall -q app scripts frontend migrations
+.\.venv\Scripts\python.exe -m compileall -q app scripts frontend migrations tests
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe scripts\smoke_final_project.py
-.\.venv\Scripts\python.exe -m app.eval.run_eval
-docker compose config
+.\.venv\Scripts\python.exe scripts\run_eval_regression.py
+.\.venv\Scripts\python.exe scripts\skill_smoke.py --all
+docker compose config --quiet
 ```
 
-The evaluation corpus contains at least ten deterministic file, SQL, GitHub,
-memory, safety-rejection, and report cases. Outputs are written under the
-ignored `workspace/eval_outputs/` directory.
+## Roadmap
 
-## Limitations
+- [x] Traceable planned and optional ReAct execution
+- [x] Evidence provenance, citation validation, and human plan approval
+- [x] Docker deployment with persistent local runtime data
+- [ ] Add a repository license before public redistribution
+- [ ] Expand operational observability for long-running self-hosted instances
 
-- Background tasks run in the API process; production distributed job queues
-  are outside the current scope.
-- Local memory is shared by the single deployment and should only be enabled
-  where that trust boundary is appropriate.
-- Remote source quality and rate limits depend on configured providers.
-- MCP compatibility depends on each server's transport and schema behavior.
-- Retrieval over deployment-specific private data must be integrated by the
-  deployer as an appropriate read-only tool; no generic built-in solution is
-  imposed.
+## Contributing
 
-See [AGENTS.md](AGENTS.md) for active engineering constraints and [TASK.md](TASK.md)
-for the tracked execution ledger.
+Issues and focused pull requests are welcome. Keep changes within the project
+boundary, preserve read-only tool guarantees, add focused tests for behavior
+changes, and do not commit `.env`, local databases, generated reports, or
+other local runtime data. See [AGENTS.md](AGENTS.md) for engineering rules.
+
+## License
+
+This repository currently has no root-level `LICENSE` file. Until a license is
+added, no permission to use, copy, modify, or redistribute the code is granted
+by this README. Add an explicit license before treating the project as a public
+open-source distribution.
+
+## References
+
+This is an independent implementation. External agent-system materials are
+used only as read-only design references; no external project source is copied
+into this repository.
