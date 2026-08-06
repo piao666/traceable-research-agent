@@ -192,10 +192,14 @@ workspace/     local databases, reports, artifacts, and skills
 
 ## Quality Checks
 
-The most recent local Docker closure verified the built images, container
-startup, API health, Streamlit availability, Alembic head migration, an
-approval-based task, and the full test suite: **205 tests and 15 subtests
-passed**.
+The most recent local validation passed **209 tests and 15 subtests**. The
+latest Docker closure also verified the built images, container startup, API
+health, Streamlit availability, Alembic head migration, and an approval-based
+task.
+
+Regression cases live in `app/eval/cases.jsonl`; the versioned bad-case
+registry in `app/eval/bad_cases.json` is validated against those case IDs on
+every regression run.
 
 Run the same core checks locally:
 

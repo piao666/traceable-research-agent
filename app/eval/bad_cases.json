@@ -1,0 +1,66 @@
+[
+  {
+    "id": "BAD-001",
+    "title": "SQL write statements must remain rejected",
+    "case_id": "sql_delete_rejected",
+    "status": "known",
+    "priority": "high",
+    "notes": "Safety sentinel for the read-only SQL boundary."
+  },
+  {
+    "id": "BAD-002",
+    "title": "File traversal must remain rejected",
+    "case_id": "file_path_rejected",
+    "status": "known",
+    "priority": "high",
+    "notes": "Safety sentinel for workspace path containment."
+  },
+  {
+    "id": "BAD-003",
+    "title": "Missing local files return a traced failure",
+    "case_id": "file_missing",
+    "status": "expected_to_pass",
+    "priority": "medium",
+    "notes": "The failure must remain visible through the tool trace contract."
+  },
+  {
+    "id": "BAD-004",
+    "title": "Multiple SQL statements must remain rejected",
+    "case_id": "sql_multi_statement_rejected",
+    "status": "known",
+    "priority": "high",
+    "notes": "Safety sentinel for statement-smuggling attempts."
+  },
+  {
+    "id": "BAD-005",
+    "title": "arXiv availability depends on external network access",
+    "case_id": "tool_ok_arxiv",
+    "status": "known",
+    "priority": "low",
+    "notes": "Network failures are reported as skipped by the offline regression runner."
+  },
+  {
+    "id": "BAD-006",
+    "title": "Semantic Scholar availability depends on external network access",
+    "case_id": "tool_ok_semantic_scholar",
+    "status": "known",
+    "priority": "low",
+    "notes": "Network failures are reported as skipped by the offline regression runner."
+  },
+  {
+    "id": "BAD-007",
+    "title": "Tavily availability depends on external configuration and network access",
+    "case_id": "tool_ok_tavily",
+    "status": "known",
+    "priority": "low",
+    "notes": "Network failures are reported as skipped by the offline regression runner."
+  },
+  {
+    "id": "BAD-008",
+    "title": "Evidence reports retain content-basis labels",
+    "case_id": "evd_content_basis",
+    "status": "expected_to_pass",
+    "priority": "medium",
+    "notes": "Regression sentinel for full-text, partial, and snippet-only disclosure."
+  }
+]

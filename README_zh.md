@@ -182,9 +182,12 @@ workspace/     本地数据库、报告、产物与 Skill
 
 ## 质量验证
 
-最近一次本地 Docker 完整闭环已验证镜像构建、容器启动、API 健康、Streamlit
-可访问性、Alembic head 迁移、审批任务和完整测试：**205 个测试与 15 个
-subtests 通过**。
+最近一次本地验证共有 **209 个测试与 15 个 subtests 通过**。最近一次 Docker
+完整闭环还验证了镜像构建、容器启动、API 健康、Streamlit 可访问性、Alembic
+head 迁移和审批任务。
+
+回归用例位于 `app/eval/cases.jsonl`；受版本控制的 bad-case 清单位于
+`app/eval/bad_cases.json`，每次回归运行都会核验其中的 case ID。
 
 本地运行核心检查：
 
