@@ -82,13 +82,14 @@ PLANNER_SOURCE_CN = {
 }
 
 STATUS_CN = {
-    "pending":       ("⏳", "待执行", "#6B7280"),
-    "running":       ("🔄", "执行中", "#2563EB"),
-    "waiting_human": ("✋", "等待确认", "#B45309"),
-    "completed":     ("✅", "已完成", "#15803D"),
-    "failed":        ("❌", "执行失败", "#B91C1C"),
-    "success":       ("✅", "成功", "#15803D"),
-    "rejected":      ("🚫", "已拒绝", "#B91C1C"),
+    "pending":            ("⏳", "待执行", "#6B7280"),
+    "running":            ("🔄", "执行中", "#2563EB"),
+    "waiting_human":      ("✋", "等待确认", "#B45309"),
+    "waiting_human_plan": ("📋", "计划审批", "#7C3AED"),
+    "completed":          ("✅", "已完成", "#15803D"),
+    "failed":             ("❌", "执行失败", "#B91C1C"),
+    "success":            ("✅", "成功", "#15803D"),
+    "rejected":           ("🚫", "已拒绝", "#B91C1C"),
 }
 
 STREAM_EVENT_CN = {
@@ -99,6 +100,7 @@ STREAM_EVENT_CN = {
     "trace_created": "步骤开始",
     "trace_finished": "步骤完成",
     "waiting_human": "等待人工确认",
+    "plan_review": "计划待审批",
     "report_ready": "报告已生成",
     "done": "执行结束",
     "heartbeat": "心跳",
@@ -113,6 +115,7 @@ STREAM_STATUS_CN = {
     "completed": "已完成",
     "failed": "失败",
     "waiting_human": "等待确认",
+    "waiting_human_plan": "计划审批",
     "rejected": "已拒绝",
     "fallback_polling": "切换轮询",
     "stream_timeout": "事件流超时",
@@ -1666,6 +1669,14 @@ def tab_task() -> None:
     )
     task_text = st.session_state.task_text  # 从 session state 读取，避免 value= 与 key= 冲突
 
+    # ── Phase 7.4: Plan approval checkbox ───────────────────────────
+    require_plan_approval = st.checkbox(
+        "📋 需要计划审批（暂停等待审批后再执行）",
+        value=st.session_state.get("require_plan_approval", False),
+        key="require_plan_approval_chk",
+    )
+    st.session_state.require_plan_approval = require_plan_approval
+
     col1, col2, col3 = st.columns([1.15, 1.15, 5])
     with col1:
         if st.button("创建任务", type="primary", use_container_width=True):
@@ -1680,6 +1691,7 @@ def tab_task() -> None:
                 "scenario_template_key": _current_scenario_template_key(),
                 "session_id": st.session_state.get("active_session_id") or None,
                 "skill_name": template.get("skill_name") or None,
+                "require_plan_approval": st.session_state.get("require_plan_approval", False),
             }
             try:
                 st.session_state.event_log = []
@@ -1742,6 +1754,8 @@ def tab_task() -> None:
         # st.markdown(status_chip(cur), unsafe_allow_html=True)
         if cur == "waiting_human":
             _render_hitl()
+        elif cur == "waiting_human_plan":
+            _render_plan_review_panel()
 
     render_status_strip()
 
@@ -1793,6 +1807,136 @@ def _render_hitl() -> None:
             st.rerun()
         except ApiError as exc:
             st.error(str(exc))
+
+
+# ── Phase 7.4: Plan review panel ──────────────────────────────────────
+def _render_plan_review_panel() -> None:
+    """Render the plan approval panel when status is waiting_human_plan."""
+    import json as _json
+
+    st.info("📋 **计划审批模式** — Planner 已生成执行计划，请审批后再执行。")
+
+    run_id = st.session_state.get("run_id")
+
+    # Fetch review data
+    review_data: dict[str, Any] = {}
+    try:
+        review_data = api_get(f"/api/tasks/{run_id}/review", timeout=5)
+    except ApiError:
+        review_data = {}
+
+    steps = review_data.get("steps") or []
+    estimated_tokens = review_data.get("estimated_total_tokens", 0)
+    estimated_cost = review_data.get("estimated_cost", 0.0)
+    risk_summary = review_data.get("risk_summary", {})
+    notes = review_data.get("notes", [])
+
+    # ── Summary metrics ──────────────────────────────────────────────
+    cols = st.columns(4)
+    cols[0].metric("步骤数", len(steps))
+    cols[1].metric("预估 Token", f"{estimated_tokens:,}")
+    cols[2].metric("预估成本", f"¥{estimated_cost:.6f}")
+    risk_high = risk_summary.get("high", 0)
+    risk_medium = risk_summary.get("medium", 0)
+    cols[3].metric("风险分布", f"高{risk_high}/中{risk_medium}/低{risk_summary.get('low', 0)}")
+
+    if notes:
+        with st.expander("📝 规划备注", expanded=False):
+            for note in notes:
+                st.markdown(f"* {note}")
+
+    # ── Step review table ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📋 执行步骤")
+
+    modified_steps: list[dict[str, Any]] = []
+    all_enabled: list[bool] = []
+
+    for i, step in enumerate(steps):
+        step_no = step.get("step_no", i + 1)
+        tool_name = step.get("tool_name", "?")
+        goal = step.get("goal", "")
+        risk = step.get("risk_level", "low")
+        requires_confirm = step.get("requires_confirmation", False)
+        est_tokens = step.get("estimated_tokens", 500)
+        arguments = step.get("arguments", {})
+
+        with st.expander(
+            f"步骤 {step_no}: **{tool_name}** — {goal[:80]} "
+            f"({'🔴高风险' if risk == 'high' else '🟡中风险' if risk == 'medium' else '🟢低风险'})",
+            expanded=(i == 0),
+        ):
+            col1, col2 = st.columns([1, 4])
+            with col1:
+                enabled = st.checkbox("启用", value=True, key=f"plan_step_enable_{i}")
+                all_enabled.append(enabled)
+            with col2:
+                st.caption(f"**目标**: {goal}")
+                st.caption(f"**预估 Token**: {est_tokens} | **风险**: {risk} | **需确认**: {requires_confirm}")
+
+            args_str = _json.dumps(arguments, ensure_ascii=False, indent=2)
+            edited_args = st.text_area(
+                "参数 (JSON)",
+                value=args_str,
+                height=min(120, max(60, len(args_str.split("\n")) * 20)),
+                key=f"plan_step_args_{i}",
+                disabled=not enabled,
+            )
+            try:
+                parsed_args = _json.loads(edited_args)
+            except _json.JSONDecodeError:
+                st.warning("⚠️ JSON 格式无效，将使用原始参数")
+                parsed_args = dict(arguments)
+
+            if enabled:
+                modified_steps.append({
+                    "step_no": step_no,
+                    "tool_name": tool_name,
+                    "goal": goal,
+                    "arguments": parsed_args,
+                    "risk_level": risk,
+                    "requires_confirmation": requires_confirm,
+                })
+
+    # ── Action buttons ───────────────────────────────────────────────
+    st.markdown("---")
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        if st.button("✅ 批准执行", type="primary", use_container_width=True):
+            if not any(all_enabled):
+                st.error("至少需要启用一个步骤才能执行。")
+            else:
+                _submit_plan_approval(True, modified_steps)
+    with col2:
+        if st.button("❌ 取消", use_container_width=True):
+            _submit_plan_approval(False)
+    with col3:
+        st.text_input("备注", key="plan_approval_comment", placeholder="可选备注说明")
+
+
+def _submit_plan_approval(approved: bool, modified_steps: list[dict[str, Any]] | None = None) -> None:
+    """Call the approve-plan endpoint and refresh state."""
+    run_id = st.session_state.get("run_id")
+    comment = st.session_state.get("plan_approval_comment", "")
+    try:
+        resp = api_post(
+            f"/api/tasks/{run_id}/approve-plan",
+            {
+                "approved": approved,
+                "comment": comment,
+                "modified_steps": modified_steps if approved else None,
+            },
+            timeout=60,
+        )
+        if approved:
+            st.success("✅ 计划已批准，执行完成。")
+        else:
+            st.warning("❌ 计划已取消。")
+        st.session_state.last_run_response = resp
+        refresh_all(show_errors=False)
+        st.rerun()
+    except ApiError as exc:
+        st.error(str(exc))
 
 
 # ── Tab 2：执行追踪 ───────────────────────────────────────────────

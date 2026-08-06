@@ -14,6 +14,7 @@ from app.trace.models import AgentRun, ToolTrace
 
 
 TERMINAL_STREAM_STATUSES = {"completed", "failed", "waiting_human"}
+REVIEWABLE_STATUSES = {"waiting_human_plan"}
 
 
 @dataclass
@@ -61,6 +62,8 @@ def build_incremental_events(
         events.append(_run_status_event(run))
         if run.status == "waiting_human":
             events.append(_waiting_human_event(run))
+        elif run.status == "waiting_human_plan":
+            events.append(_plan_review_event(run))
         cursor.last_status = run.status
 
     for trace in store.list_tool_traces(db, run_id):
@@ -76,7 +79,7 @@ def build_incremental_events(
         events.append(_report_ready_event(run))
         cursor.report_ready_sent = True
 
-    should_close = run.status in TERMINAL_STREAM_STATUSES
+    should_close = run.status in TERMINAL_STREAM_STATUSES or run.status in REVIEWABLE_STATUSES
     if should_close and not cursor.done_sent:
         events.append(_done_event(run))
         cursor.done_sent = True
@@ -145,6 +148,52 @@ def _waiting_human_event(run: AgentRun) -> dict[str, Any]:
         current_step=run.current_step,
         total_steps=run.total_steps,
         report_path=run.report_path,
+    )
+
+
+def _plan_review_event(run: AgentRun) -> dict[str, Any]:
+    """Emit a plan_review SSE event with plan metadata for the approval panel."""
+    plan: dict[str, Any] = {}
+    if run.plan_json:
+        try:
+            import json as _json
+            parsed = _json.loads(run.plan_json)
+            if isinstance(parsed, dict):
+                plan = parsed
+        except Exception:
+            pass
+
+    steps = plan.get("steps") or []
+    review_steps = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        review_steps.append({
+            "step_no": step.get("step_no"),
+            "tool_name": step.get("tool_name"),
+            "goal": step.get("goal"),
+            "arguments": step.get("arguments"),
+            "risk_level": step.get("risk_level"),
+            "requires_confirmation": step.get("requires_confirmation"),
+            "estimated_tokens": step.get("estimated_tokens", 500),
+        })
+
+    return _base_event(
+        run.run_id,
+        "plan_review",
+        status=run.status,
+        output_summary="Plan is ready for human review.",
+        created_at=run.updated_at,
+        current_step=0,
+        total_steps=len(review_steps),
+        metadata={
+            "execution_mode": plan.get("execution_mode"),
+            "estimated_total_tokens": plan.get("estimated_total_tokens", 0),
+            "estimated_cost": plan.get("estimated_cost", 0.0),
+            "risk_summary": plan.get("risk_summary", {}),
+            "allowed_tools": plan.get("allowed_tools", []),
+            "steps": review_steps,
+        },
     )
 
 

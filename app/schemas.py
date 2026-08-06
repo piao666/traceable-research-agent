@@ -24,6 +24,7 @@ class TaskCreateRequest(BaseModel):
     scenario_template_key: str | None = None
     session_id: str | None = None
     skill_name: str | None = None
+    require_plan_approval: bool = False  # Phase 7.4: pause for plan review before execution
 
 
 class TaskCreateResponse(BaseModel):
@@ -128,6 +129,37 @@ class TaskConfirmResponse(BaseModel):
     resumed: bool
     message: str
     run_result: TaskRunResponse | None = None
+
+
+# ── Phase 7.4: Plan approval schemas ──────────────────────────────────
+
+class PlanReviewStep(BaseModel):
+    step_no: int
+    tool_name: str
+    goal: str
+    arguments: dict[str, Any]
+    risk_level: str
+    requires_confirmation: bool
+    estimated_tokens: int = 500
+
+
+class PlanReviewResponse(BaseModel):
+    run_id: str
+    task: str
+    status: str
+    execution_mode: str
+    steps: list[PlanReviewStep]
+    allowed_tools: list[str]
+    estimated_total_tokens: int = 0
+    estimated_cost: float = 0.0
+    risk_summary: dict[str, int] = Field(default_factory=lambda: {"low": 0, "medium": 0, "high": 0})
+    notes: list[str] = Field(default_factory=list)
+
+
+class PlanApproveRequest(BaseModel):
+    approved: bool
+    comment: str | None = None
+    modified_steps: list[dict[str, Any]] | None = None
 
 
 class ToolTraceResponse(BaseModel):

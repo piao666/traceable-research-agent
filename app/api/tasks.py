@@ -21,7 +21,8 @@ from app.agent.file_access_policy import (
     CONFIRMATION_REASON_OUTSIDE_ALLOWED_ROOTS,
     confirmation_details_for_path,
 )
-from app.agent.planner import plan_task
+from app.agent.planner import plan_task, plan_task_for_review
+from app.agent.state import WAITING_HUMAN_PLAN
 from app.config import settings
 from app.database import SessionLocal, get_db
 from app.evidence.service import get_provenance_bundle, materialize_execution_provenance
@@ -31,6 +32,9 @@ from app.schemas import (
     EvidenceBundleResponse,
     EvidenceExportContentResponse,
     EvidenceExportResponse,
+    PlanApproveRequest,
+    PlanReviewResponse,
+    PlanReviewStep,
     ProvenanceBundleResponse,
     TaskCreateRequest,
     TaskCreateResponse,
@@ -247,6 +251,31 @@ async def create_task(
         session_id=task_request.session_id,
         run_config_snapshot=run_config_snapshot,
     )
+
+    # ── Phase 7.4: Plan approval mode ────────────────────────────────
+    if task_request.require_plan_approval:
+        plan = plan_task_for_review(
+            task=task_request.task,
+            allowed_tools=task_request.allowed_tools,
+            source_mode=task_request.source_mode,
+            scenario_template=task_request.scenario_template_key or task_request.scenario_template,
+            execution_mode_override=task_request.execution_mode_override,
+            skill_name=task_request.skill_name,
+        )
+        plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
+        plan.setdefault("execution_mode", settings.execution_mode)
+        run = store.update_agent_run_plan(db, run.run_id, plan)
+        run = store.update_agent_run_status(db, run.run_id, WAITING_HUMAN_PLAN, None)
+        return TaskCreateResponse(
+            run_id=run.run_id,
+            status=run.status,
+            status_url=f"/api/tasks/{run.run_id}",
+            trace_url=f"/api/tasks/{run.run_id}/trace",
+            report_url=f"/api/reports/{run.run_id}",
+            plan_url=f"/api/tasks/{run.run_id}/plan",
+            run_url=f"/api/tasks/{run.run_id}/run",
+        )
+
     plan = plan_task(
         task=task_request.task,
         allowed_tools=task_request.allowed_tools,
@@ -345,6 +374,10 @@ async def run_task(
     if run.status == "waiting_human":
         return _task_run_response(
             _run_summary(run, "Run is waiting for human confirmation. Call POST /api/tasks/{run_id}/confirm.")
+        )
+    if run.status == "waiting_human_plan":
+        return _task_run_response(
+            _run_summary(run, "Plan is awaiting approval. Call POST /api/tasks/{run_id}/approve-plan.")
         )
     if run.status == "failed":
         raise HTTPException(status_code=409, detail="Failed runs cannot be rerun in Day13-15")
@@ -514,6 +547,150 @@ async def confirm_task(
         message="Human confirmation recorded and run resumed.",
         run_result=run_result,
     )
+
+
+# ── Phase 7.4: Plan approval endpoints ──────────────────────────────
+
+
+@router.get("/{run_id}/review", response_model=PlanReviewResponse)
+async def get_plan_review(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> PlanReviewResponse:
+    """Return the plan in a review-friendly format for the approval panel."""
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    if run.status != "waiting_human_plan":
+        raise HTTPException(
+            status_code=400,
+            detail="Plan review is only available when status is waiting_human_plan",
+        )
+    if not run.plan_json:
+        raise HTTPException(status_code=400, detail="Task run does not have a plan")
+
+    try:
+        plan = json.loads(run.plan_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Task run plan is invalid") from exc
+
+    steps = plan.get("steps") or []
+    review_steps: list[PlanReviewStep] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        review_steps.append(PlanReviewStep(
+            step_no=int(step.get("step_no") or 0),
+            tool_name=str(step.get("tool_name") or ""),
+            goal=str(step.get("goal") or ""),
+            arguments=step.get("arguments") or {},
+            risk_level=str(step.get("risk_level") or "low"),
+            requires_confirmation=bool(step.get("requires_confirmation")),
+            estimated_tokens=int(step.get("estimated_tokens") or 500),
+        ))
+
+    return PlanReviewResponse(
+        run_id=run.run_id,
+        task=run.task,
+        status=run.status,
+        execution_mode=plan.get("execution_mode") or "planned",
+        steps=review_steps,
+        allowed_tools=plan.get("allowed_tools") or [],
+        estimated_total_tokens=int(plan.get("estimated_total_tokens") or 0),
+        estimated_cost=float(plan.get("estimated_cost") or 0.0),
+        risk_summary=plan.get("risk_summary") or {"low": 0, "medium": 0, "high": 0},
+        notes=plan.get("notes") or [],
+    )
+
+
+@router.post("/{run_id}/approve-plan", response_model=TaskRunResponse)
+async def approve_plan(
+    run_id: str,
+    request: PlanApproveRequest,
+    db: Session = Depends(get_db),
+) -> TaskRunResponse:
+    """Approve or reject a plan that is waiting for human review."""
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    if run.status != "waiting_human_plan":
+        raise HTTPException(
+            status_code=400,
+            detail="Plan approval is only available when status is waiting_human_plan",
+        )
+    if not run.plan_json:
+        raise HTTPException(status_code=400, detail="Task run does not have a plan")
+
+    try:
+        plan = json.loads(run.plan_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="Task run plan is invalid") from exc
+
+    if not request.approved:
+        # ── Rejected: mark as failed ────────────────────────────────
+        run = store.update_agent_run_status(
+            db, run_id, "failed",
+            f"Plan rejected by human: {request.comment or 'No comment'}",
+        )
+        # Record trace event for audit
+        from app.trace.logger import record_trace_event
+        record_trace_event(
+            db=db, run_id=run_id, step_no=0,
+            tool_name="plan_approval",
+            status="rejected",
+            input_data={"approved": False, "comment": request.comment},
+            output_summary=f"Plan rejected: {request.comment or 'No comment'}",
+            output_data={"approved": False, "comment": request.comment},
+        )
+        return _task_run_response(
+            _run_summary(run, f"Plan rejected: {request.comment or 'No comment'}")
+        )
+
+    # ── Approved: apply modified steps if provided ──────────────────
+    if request.modified_steps:
+        # Validate and apply modified steps
+        validated_steps: list[dict[str, Any]] = []
+        for i, step in enumerate(request.modified_steps, 1):
+            if not isinstance(step, dict):
+                continue
+            validated = dict(step)
+            validated["step_no"] = i
+            validated.setdefault("risk_level", "low")
+            validated.setdefault("requires_confirmation", False)
+            validated_steps.append(validated)
+        plan["steps"] = validated_steps
+        plan["notes"] = list(plan.get("notes") or []) + [
+            f"Plan modified during approval: {request.comment}" if request.comment
+            else "Plan approved with modifications.",
+        ]
+        store.replace_agent_run_plan(db, run_id, plan)
+    else:
+        plan["notes"] = list(plan.get("notes") or []) + ["Plan approved without modifications."]
+        store.replace_agent_run_plan(db, run_id, plan)
+
+    # Record trace event
+    from app.trace.logger import record_trace_event
+    record_trace_event(
+        db=db, run_id=run_id, step_no=0,
+        tool_name="plan_approval",
+        status="approved",
+        input_data={
+            "approved": True,
+            "comment": request.comment,
+            "modified": bool(request.modified_steps),
+        },
+        output_summary=f"Plan approved: {request.comment or 'No comment'}",
+        output_data={
+            "approved": True,
+            "comment": request.comment,
+            "step_count": len(plan.get("steps") or []),
+        },
+    )
+
+    # Move to pending and execute
+    store.update_agent_run_status(db, run_id, "pending", None)
+    summary = run_task_by_mode(db, run_id)
+    return _task_run_response(summary)
 
 
 @router.get("/{run_id}/trace", response_model=list[ToolTraceResponse])

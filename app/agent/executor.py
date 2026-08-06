@@ -371,6 +371,28 @@ def run_plan(
             traces = store.list_tool_traces(db, run_id)
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)
+
+        # ── Phase 7.5: Record citation validation trace ─────────────────
+        if provenance_bundle and settings_obj.citation_validation_enabled:
+            try:
+                from app.evidence.citation_validator import validate_citations
+                validation = validate_citations(markdown, provenance_bundle)
+                record_trace_event(
+                    db=db, run_id=run_id,
+                    step_no=max((trace.step_no for trace in traces), default=0) + 1,
+                    tool_name="citation_validator",
+                    status="success",
+                    input_data={"total_citations": validation.total},
+                    output_summary=(
+                        f"Citation validation: {validation.supported}/{validation.total} supported "
+                        f"({validation.accuracy * 100:.1f}%), "
+                        f"{validation.weakly_supported} weak, {validation.unsupported} unsupported"
+                    ),
+                    output_data=validation.to_dict(),
+                )
+            except Exception:
+                pass  # Validation failure must not block report completion
+
         run = store.update_agent_run_status(db, run_id, "completed", None)
 
         # ── Phase 6: Summarize LLM token/cost from traces ─────────────

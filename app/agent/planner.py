@@ -1569,3 +1569,82 @@ def _skill_to_plan(
         "notes": notes,
         "confirmation": None,
     }
+
+
+# ── Phase 7.4: Plan review support ───────────────────────────────────
+
+# Estimated tokens per tool type for plan approval cost preview
+_TOOL_TOKEN_ESTIMATES: dict[str, int] = {
+    "file_reader": 500,
+    "sql_query": 500,
+    "memory_search": 300,
+    "web_fetcher": 2000,
+    "tavily_search": 1000,
+    "mcp_github_search": 1500,
+    "arxiv_search": 1500,
+    "semantic_scholar_search": 1500,
+    "report_writer": 3000,
+}
+
+
+def _estimate_step_tokens(tool_name: str) -> int:
+    """Return a conservative token estimate for a single tool step."""
+    return _TOOL_TOKEN_ESTIMATES.get(tool_name, 1000)
+
+
+def plan_task_for_review(
+    task: str,
+    allowed_tools: list[str] | None = None,
+    source_mode: str = "real",
+    planner_mode: str | None = None,
+    scenario_template: str | None = None,
+    execution_mode_override: str | None = None,
+    skill_name: str | None = None,
+) -> dict[str, Any]:
+    """Generate a plan and attach cost/risk estimates for human review.
+
+    Calls plan_task() internally, then annotates the result with
+    estimated_tokens, estimated_cost, and risk_summary for the
+    Streamlit plan approval panel.
+    """
+    plan = plan_task(
+        task=task,
+        allowed_tools=allowed_tools,
+        source_mode=source_mode,
+        planner_mode=planner_mode,
+        scenario_template=scenario_template,
+        execution_mode_override=execution_mode_override,
+        skill_name=skill_name,
+    )
+
+    steps = plan.get("steps") or []
+    total_tokens = 0
+    risk_summary: dict[str, int] = {"low": 0, "medium": 0, "high": 0}
+
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        tool_name = str(step.get("tool_name") or "")
+        est = _estimate_step_tokens(tool_name)
+        total_tokens += est
+        step["estimated_tokens"] = est
+
+        risk = str(step.get("risk_level") or "low").lower()
+        risk_summary[risk] = risk_summary.get(risk, 0) + 1
+
+    # Estimate cost using DeepSeek pricing as a baseline
+    estimated_cost = 0.0
+    try:
+        from app.llm.cost import estimate_cost_from_tokens
+        estimated_cost = estimate_cost_from_tokens(
+            "deepseek", "deepseek-chat", total_tokens, total_tokens,
+        )
+    except Exception:
+        pass
+
+    plan["estimated_total_tokens"] = total_tokens
+    plan["estimated_cost"] = round(estimated_cost, 6)
+    plan["risk_summary"] = risk_summary
+    plan["_review_generated"] = True
+
+    return plan

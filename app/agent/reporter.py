@@ -1567,6 +1567,29 @@ def generate_markdown_report(
         if limitations_lines:
             lines.extend(limitations_lines)
 
+    # ── Phase 7.5: Citation validation ────────────────────────────────────
+    _citation_validation_report = None
+    if provenance_bundle:
+        try:
+            from app.config import settings as _reporter_settings
+            if _reporter_settings.citation_validation_enabled:
+                from app.evidence.citation_validator import (
+                    CitationValidationReport,
+                    render_citation_validation_section,
+                    validate_citations,
+                )
+                report_text = "\n".join(lines)
+                _citation_validation_report = validate_citations(
+                    report_text, provenance_bundle,
+                )
+                validation_lines = render_citation_validation_section(
+                    _citation_validation_report,
+                )
+                if validation_lines:
+                    lines.extend(validation_lines)
+        except Exception:
+            pass  # Citation validation failure must not block report generation
+
     # ── Phase 6: Report type handling ─────────────────────────────────────
     if report_type == "outline_report":
         return _to_outline(lines)

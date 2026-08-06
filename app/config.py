@@ -92,6 +92,8 @@ class Settings(BaseModel):
     deep_research_breadth: int = 3
     memory_llm_extraction_enabled: bool = False
     semantic_scholar_api_key: str | None = None
+    citation_validation_enabled: bool = True   # Phase 7.5
+    citation_validation_llm_enabled: bool = False  # Phase 7.5
 
     @field_validator("external_tools_default_mode", mode="before")
     @classmethod
@@ -381,6 +383,8 @@ class Settings(BaseModel):
             deep_research_breadth=_env_bounded_int("DEEP_RESEARCH_BREADTH", 3, 1, 10),
             memory_llm_extraction_enabled=_env_bool("MEMORY_LLM_EXTRACTION_ENABLED", False),
             semantic_scholar_api_key=_env_optional("SEMANTIC_SCHOLAR_API_KEY"),
+            citation_validation_enabled=_env_bool("CITATION_VALIDATION_ENABLED", True),
+            citation_validation_llm_enabled=_env_bool("CITATION_VALIDATION_LLM_ENABLED", False),
         )
 
     def get_llm_api_key(self, provider: str) -> str | None:
@@ -485,6 +489,8 @@ class Settings(BaseModel):
             "deep_research_breadth": self.deep_research_breadth,
             "memory_llm_extraction_enabled": self.memory_llm_extraction_enabled,
             "semantic_scholar_configured": bool(self.semantic_scholar_api_key),
+            "citation_validation_enabled": self.citation_validation_enabled,
+            "citation_validation_llm_enabled": self.citation_validation_llm_enabled,
         }
 
     def get_safe_auth_config_summary(self) -> dict:
