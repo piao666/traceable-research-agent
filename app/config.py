@@ -107,6 +107,12 @@ class Settings(BaseModel):
     web_fetcher_cache_dir: str = "workspace/cache/fetch"
     web_fetcher_trafilatura_enabled: bool = True
     web_fetcher_playwright_enabled: bool = False
+    # ── Phase 8.3: PDF reader ──────────────────────────────────────
+    pdf_reader_enabled: bool = True
+    pdf_reader_max_pages: int = 50
+    pdf_reader_max_response_bytes: int = 52_428_800  # 50 MB
+    pdf_reader_ocr_enabled: bool = False
+    pdf_reader_timeout_seconds: int = 30
 
     @field_validator("external_tools_default_mode", mode="before")
     @classmethod
@@ -411,6 +417,12 @@ class Settings(BaseModel):
             web_fetcher_cache_dir=_env_str("WEB_FETCHER_CACHE_DIR", "workspace/cache/fetch"),
             web_fetcher_trafilatura_enabled=_env_bool("WEB_FETCHER_TRAFILATURA_ENABLED", True),
             web_fetcher_playwright_enabled=_env_bool("WEB_FETCHER_PLAYWRIGHT_ENABLED", False),
+            # Phase 8.3
+            pdf_reader_enabled=_env_bool("PDF_READER_ENABLED", True),
+            pdf_reader_max_pages=_env_bounded_int("PDF_READER_MAX_PAGES", 50, 1, 200),
+            pdf_reader_max_response_bytes=_env_bounded_int("PDF_READER_MAX_RESPONSE_BYTES", 52_428_800, 1024, 200_000_000),
+            pdf_reader_ocr_enabled=_env_bool("PDF_READER_OCR_ENABLED", False),
+            pdf_reader_timeout_seconds=_env_bounded_int("PDF_READER_TIMEOUT_SECONDS", 30, 5, 120),
         )
 
     def get_llm_api_key(self, provider: str) -> str | None:
@@ -528,6 +540,10 @@ class Settings(BaseModel):
             "web_fetcher_cache_enabled": self.web_fetcher_cache_enabled,
             "web_fetcher_trafilatura_enabled": self.web_fetcher_trafilatura_enabled,
             "web_fetcher_playwright_enabled": self.web_fetcher_playwright_enabled,
+            # Phase 8.3
+            "pdf_reader_enabled": self.pdf_reader_enabled,
+            "pdf_reader_max_pages": self.pdf_reader_max_pages,
+            "pdf_reader_ocr_enabled": self.pdf_reader_ocr_enabled,
         }
 
     def get_safe_auth_config_summary(self) -> dict:

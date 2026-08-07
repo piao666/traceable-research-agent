@@ -9,6 +9,7 @@ python-dotenv==1.2.2
 reportlab==5.0.0
 requests==2.34.2
 sqlalchemy==2.0.51
+PyMuPDF==1.25.5
 sqlglot==30.13.0
 streamlit==1.60.0
 uvicorn[standard]==0.51.0

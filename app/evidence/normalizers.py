@@ -69,12 +69,25 @@ def source_organization(item: EvidenceItem, canonical_uri: str) -> str | None:
 def passage_locator(item: EvidenceItem, trace_input: dict[str, Any]) -> dict[str, Any]:
     metadata = item.metadata or {}
     source_ref = str(item.source_ref or "")
+    tool_name = str(item.tool_name or "").lower()
     base: dict[str, Any] = {
         "source_type": item.source_type,
         "evidence_id": item.evidence_id,
         "trace_id": item.trace_id,
         "step_no": item.step_no,
     }
+    # ── Phase 8.3: PDF page locator ───────────────────────────────────
+    if tool_name == "pdf_reader" or item.source_type == "pdf":
+        page_number = metadata.get("page_number")
+        base.update({
+            "kind": "pdf",
+            "pdf_path": source_ref or metadata.get("pdf_path"),
+            "page_number": page_number,
+            "document_title": metadata.get("document_title") or metadata.get("title"),
+            "extraction_method": metadata.get("extraction_method", "native"),
+            "char_offset": metadata.get("char_offset"),
+        })
+        return base
     if item.source_type == "sql":
         query = str(trace_input.get("query") or "")
         base.update(

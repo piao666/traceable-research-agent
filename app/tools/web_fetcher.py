@@ -360,7 +360,7 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
                         # Check magic bytes for confirmation
                         content_bytes = response.content[:max_response_bytes]
                         if _check_pdf_magic(content_bytes):
-                            fetch_error = "pdf_routed: PDF detected, use pdf_reader tool instead"
+                            fetch_error = "pdf_routed: PDF detected — use the pdf_reader tool (Phase 8.3) for page-level extraction"
                             pages.append({
                                 "url": valid_url,
                                 "title": valid_url,

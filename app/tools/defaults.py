@@ -9,6 +9,7 @@ from app.tools.semantic_scholar import semantic_scholar_handler
 from app.tools.sql_query import run_query
 from app.tools.tavily_search import tavily_search_handler
 from app.tools.web_fetcher import web_fetch
+from app.tools.pdf_reader import pdf_read
 
 
 def _memory_search_handler(arguments: dict) -> "ToolResult":
@@ -131,6 +132,32 @@ def register_default_tools() -> None:
             tags=["web", "fetch", "read-only"],
         ),
         handler=web_fetch,
+    )
+    register_tool(
+        ToolSpec(
+            name="pdf_reader",
+            description=(
+                "Read and extract text from PDF files (public URL or local path). "
+                "Extracts page-by-page text with page-level locators for citation. "
+                "Includes integrity pre-check (download, page count, traversal completeness). "
+                "OCR is an optional independent profile (disabled by default). "
+                "Read-only, offline-capable for local files."
+            ),
+            input_schema={
+                "paths": "list[string]",
+                "max_chars": "integer",
+                "max_pages": "integer",
+            },
+            output_schema={
+                "documents": "array",
+                "total_pages": "integer",
+                "extracted_documents": "integer",
+                "failed_documents": "integer",
+            },
+            risk_level=RiskLevel.LOW,
+            tags=["pdf", "read-only", "offline-capable"],
+        ),
+        handler=pdf_read,
     )
     register_tool(
         ToolSpec(
