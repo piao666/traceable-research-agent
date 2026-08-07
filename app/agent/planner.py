@@ -730,6 +730,7 @@ def plan_task(
     scenario_template: str | None = None,
     execution_mode_override: str | None = None,
     skill_name: str | None = None,
+    retrieval_profile: str | None = None,
 ) -> dict[str, Any]:
     """Create a plan using deterministic rules, optional LLM planning, or a Skill template.
 
@@ -788,6 +789,24 @@ def plan_task(
         _memory_extra["injected_memory_context"] = injected_memory_context
     if _memory_recall_data:
         _memory_extra["memory_recall_trace"] = _memory_recall_data
+
+    # ── Phase 8.1: retrieval profile constraint ──────────────────
+    _profile_extra: dict[str, Any] = {}
+    if retrieval_profile:
+        try:
+            from app.evidence.policy import load_source_policy
+            policy = load_source_policy(settings.source_policy_path)
+            profile = policy.retrieval_profiles.get(retrieval_profile)
+            if profile is not None:
+                _profile_extra = {
+                    "retrieval_profile": retrieval_profile,
+                    "profile_constraints": profile.to_dict(),
+                    "policy_version": policy.version,
+                }
+        except Exception:
+            pass
+    if _profile_extra:
+        _memory_extra.update(_profile_extra)
 
     # ── Phase 3: Skill-based planning ──────────────────────────────
     if skill_name:
@@ -1600,6 +1619,7 @@ def plan_task_for_review(
     scenario_template: str | None = None,
     execution_mode_override: str | None = None,
     skill_name: str | None = None,
+    retrieval_profile: str | None = None,
 ) -> dict[str, Any]:
     """Generate a plan and attach cost/risk estimates for human review.
 
@@ -1615,6 +1635,7 @@ def plan_task_for_review(
         scenario_template=scenario_template,
         execution_mode_override=execution_mode_override,
         skill_name=skill_name,
+        retrieval_profile=retrieval_profile,
     )
 
     steps = plan.get("steps") or []

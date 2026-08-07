@@ -86,7 +86,7 @@ class Settings(BaseModel):
     evidence_artifact_root: str = "workspace/artifacts"
     evidence_passage_max_chars: int = 4000
     evidence_reasoning_enabled: bool = True
-    source_policy_path: str = "config/source_policy.v1.json"
+    source_policy_path: str = "config/source_policy.v2.json"
     deep_research_enabled: bool = False
     deep_research_max_depth: int = 2
     deep_research_breadth: int = 3
@@ -94,6 +94,19 @@ class Settings(BaseModel):
     semantic_scholar_api_key: str | None = None
     citation_validation_enabled: bool = True   # Phase 7.5
     citation_validation_llm_enabled: bool = False  # Phase 7.5
+    # ── Phase 8.1: source tier governance ────────────────────────
+    default_retrieval_profile: str = "generic"
+    oversample_factor: int = 2
+    max_discovery_candidates: int = 15
+    max_fetch_candidates: int = 10
+    max_refetch_rounds: int = 2
+    # ── Phase 8.2: local fetch hardening ─────────────────────────
+    web_fetcher_max_response_bytes: int = 10_485_760  # 10 MB
+    web_fetcher_cache_enabled: bool = True
+    web_fetcher_cache_ttl_seconds: int = 3600
+    web_fetcher_cache_dir: str = "workspace/cache/fetch"
+    web_fetcher_trafilatura_enabled: bool = True
+    web_fetcher_playwright_enabled: bool = False
 
     @field_validator("external_tools_default_mode", mode="before")
     @classmethod
@@ -385,6 +398,19 @@ class Settings(BaseModel):
             semantic_scholar_api_key=_env_optional("SEMANTIC_SCHOLAR_API_KEY"),
             citation_validation_enabled=_env_bool("CITATION_VALIDATION_ENABLED", True),
             citation_validation_llm_enabled=_env_bool("CITATION_VALIDATION_LLM_ENABLED", False),
+            # Phase 8.1
+            default_retrieval_profile=_env_str("DEFAULT_RETRIEVAL_PROFILE", "generic"),
+            oversample_factor=_env_bounded_int("OVERSAMPLE_FACTOR", 2, 1, 3),
+            max_discovery_candidates=_env_bounded_int("MAX_DISCOVERY_CANDIDATES", 15, 3, 50),
+            max_fetch_candidates=_env_bounded_int("MAX_FETCH_CANDIDATES", 10, 2, 30),
+            max_refetch_rounds=_env_bounded_int("MAX_REFETCH_ROUNDS", 2, 1, 5),
+            # Phase 8.2
+            web_fetcher_max_response_bytes=_env_bounded_int("WEB_FETCHER_MAX_RESPONSE_BYTES", 10_485_760, 1024, 100_000_000),
+            web_fetcher_cache_enabled=_env_bool("WEB_FETCHER_CACHE_ENABLED", True),
+            web_fetcher_cache_ttl_seconds=_env_bounded_int("WEB_FETCHER_CACHE_TTL_SECONDS", 3600, 60, 86400),
+            web_fetcher_cache_dir=_env_str("WEB_FETCHER_CACHE_DIR", "workspace/cache/fetch"),
+            web_fetcher_trafilatura_enabled=_env_bool("WEB_FETCHER_TRAFILATURA_ENABLED", True),
+            web_fetcher_playwright_enabled=_env_bool("WEB_FETCHER_PLAYWRIGHT_ENABLED", False),
         )
 
     def get_llm_api_key(self, provider: str) -> str | None:
@@ -491,6 +517,17 @@ class Settings(BaseModel):
             "semantic_scholar_configured": bool(self.semantic_scholar_api_key),
             "citation_validation_enabled": self.citation_validation_enabled,
             "citation_validation_llm_enabled": self.citation_validation_llm_enabled,
+            # Phase 8.1
+            "default_retrieval_profile": self.default_retrieval_profile,
+            "oversample_factor": self.oversample_factor,
+            "max_discovery_candidates": self.max_discovery_candidates,
+            "max_fetch_candidates": self.max_fetch_candidates,
+            "max_refetch_rounds": self.max_refetch_rounds,
+            # Phase 8.2
+            "web_fetcher_max_response_bytes": self.web_fetcher_max_response_bytes,
+            "web_fetcher_cache_enabled": self.web_fetcher_cache_enabled,
+            "web_fetcher_trafilatura_enabled": self.web_fetcher_trafilatura_enabled,
+            "web_fetcher_playwright_enabled": self.web_fetcher_playwright_enabled,
         }
 
     def get_safe_auth_config_summary(self) -> dict:
@@ -551,6 +588,14 @@ def _env_optional(name: str) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def _env_str(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    value = value.strip()
+    return value or default
 
 
 def _env_bool(name: str, default: bool) -> bool:

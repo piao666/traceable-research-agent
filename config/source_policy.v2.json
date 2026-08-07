@@ -1,0 +1,141 @@
+{
+  "version": "source-policy-v2",
+  "weights": {
+    "authority": 0.25,
+    "traceability": 0.20,
+    "freshness": 0.15,
+    "relevance": 0.20,
+    "independence": 0.10,
+    "extraction_completeness": 0.10
+  },
+  "source_classes": {
+    "regulatory": {"authority": 0.98},
+    "governed_sql": {"authority": 0.95},
+    "official": {"authority": 0.90},
+    "official_code": {"authority": 0.84},
+    "internal_document": {"authority": 0.78},
+    "news": {"authority": 0.68},
+    "blog": {"authority": 0.45, "score_cap": 0.70},
+    "fallback": {"authority": 0.28, "score_cap": 0.50},
+    "mock": {"authority": 0.20, "score_cap": 0.35},
+    "unknown": {"authority": 0.35, "score_cap": 0.55}
+  },
+  "domain_classes": {
+    "sec.gov": "regulatory",
+    "gov.cn": "regulatory",
+    "stats.gov.cn": "regulatory",
+    "docs.python.org": "official"
+  },
+  "blocked_domains": [],
+  "claim_types": {
+    "financial": {
+      "keywords": ["revenue", "profit", "earnings", "financial", "quarter", "营收", "收入", "利润", "财务", "季度"],
+      "preferred_source_classes": ["regulatory", "governed_sql", "official"],
+      "max_age_days": 550,
+      "minimum_reliability": 0.70,
+      "minimum_independent_sources": 2,
+      "allowed_domains": []
+    },
+    "product": {
+      "keywords": ["feature", "api", "release", "version", "product", "功能", "版本", "产品", "发布"],
+      "preferred_source_classes": ["official", "official_code"],
+      "max_age_days": 730,
+      "minimum_reliability": 0.65,
+      "minimum_independent_sources": 2,
+      "allowed_domains": []
+    },
+    "public_opinion": {
+      "keywords": ["opinion", "review", "sentiment", "评价", "观点", "口碑", "舆情"],
+      "preferred_source_classes": ["news", "blog"],
+      "max_age_days": 365,
+      "minimum_reliability": 0.55,
+      "minimum_independent_sources": 3,
+      "allowed_domains": []
+    },
+    "generic": {
+      "keywords": [],
+      "preferred_source_classes": ["regulatory", "official", "internal_document", "news"],
+      "max_age_days": 730,
+      "minimum_reliability": 0.60,
+      "minimum_independent_sources": 2,
+      "allowed_domains": []
+    }
+  },
+  "resolution": {
+    "authority_margin": 0.15,
+    "high_quality_threshold": 0.75,
+    "unresolved_confidence_cap": 0.60,
+    "human_confidence_cap": 0.45
+  },
+  "tier_hints": {
+    "domain_tiers": {
+      "gov.cn": "T0",
+      "sec.gov": "T0",
+      "stats.gov.cn": "T0",
+      "arxiv.org": "T0",
+      "doi.org": "T0",
+      "openalex.org": "T0",
+      "semanticscholar.org": "T0",
+      "crossref.org": "T0",
+      "pubmed.ncbi.nlm.nih.gov": "T0",
+      "europa.eu": "T0",
+      "who.int": "T0",
+      "ieee.org": "T0",
+      "acm.org": "T0",
+      "springer.com": "T0",
+      "nature.com": "T0",
+      "science.org": "T0",
+      "edu.cn": "T1",
+      "ac.cn": "T1",
+      "github.com": "T1",
+      "gitlab.com": "T1",
+      "stackoverflow.com": "T1",
+      "medium.com": "T2",
+      "reddit.com": "T2",
+      "zhihu.com": "T2",
+      "csdn.net": "T2",
+      "jianshu.com": "T2"
+    },
+    "org_verified_official_repos": {
+      "github.com/pytorch/pytorch": "T0",
+      "github.com/tensorflow/tensorflow": "T0",
+      "github.com/python/cpython": "T0",
+      "github.com/microsoft/vscode": "T0",
+      "github.com/facebook/react": "T0",
+      "github.com/apache": "T0"
+    }
+  },
+  "retrieval_profiles": {
+    "technical_facts": {
+      "min_t0_sources": 2,
+      "min_independent_sources": 3,
+      "max_t2_ratio": 0.20,
+      "max_per_domain": 2,
+      "shortfall_policy": "report_only",
+      "freshness_days": 365
+    },
+    "academic_literature": {
+      "min_t0_sources": 4,
+      "min_independent_sources": 5,
+      "max_t2_ratio": 0.10,
+      "prefer_domains": ["arxiv.org", "doi.org", "openalex.org", "semanticscholar.org"],
+      "shortfall_policy": "targeted_refetch",
+      "freshness_days": 730
+    },
+    "public_opinion": {
+      "min_t0_sources": 1,
+      "min_independent_sources": 5,
+      "min_t2_sources": 3,
+      "max_per_domain": 2,
+      "shortfall_policy": "report_only",
+      "freshness_days": 180
+    },
+    "generic": {
+      "min_t0_sources": 1,
+      "min_independent_sources": 2,
+      "max_t2_ratio": 0.50,
+      "shortfall_policy": "report_only",
+      "freshness_days": 730
+    }
+  }
+}

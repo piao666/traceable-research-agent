@@ -110,9 +110,11 @@ def register_default_tools() -> None:
         ToolSpec(
             name="web_fetcher",
             description=(
-                "Fetch full-text content from a list of URLs using httpx + BeautifulSoup. "
-                "Read-only, offline-capable. Each page is tagged with content_basis "
-                "(full_text/partial/snippet_only) and fetch errors are recorded per-URL."
+                "Fetch full-text content from a list of URLs using multi-level extraction. "
+                "Phase 8.2: trafilatura → BeautifulSoup → raw regex fallback chain. "
+                "PDF URLs are routed to pdf_reader. Read-only, offline-capable. "
+                "Each page is tagged with content_basis (full_text/partial/snippet_only), "
+                "extraction_method, and extraction_confidence."
             ),
             input_schema={
                 "urls": "list[string]",

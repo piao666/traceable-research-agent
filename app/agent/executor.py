@@ -290,6 +290,77 @@ def _message_summary(run: AgentRun, message: str) -> dict[str, Any]:
     return summary
 
 
+def _check_profile_quota(
+    db: Session,
+    run_id: str,
+    plan: dict[str, Any],
+    provenance_bundle: dict[str, Any] | None,
+    traces: list[Any],
+) -> None:
+    """Phase 8.1: Check retrieval profile constraints and emit shortfall trace."""
+    profile_constraints = (plan.get("profile_constraints") or {})
+    if not profile_constraints:
+        return
+
+    if not provenance_bundle:
+        return
+
+    documents = provenance_bundle.get("source_documents") or []
+    if not documents:
+        return
+
+    try:
+        from app.evidence.policy import T0, T1, T2, load_source_policy, SourceCandidate
+
+        policy = load_source_policy(settings.source_policy_path)
+        profile_name = plan.get("retrieval_profile", "generic")
+
+        # Count tiers from documents
+        tier_counts = {T0: 0, T1: 0, T2: 0}
+        for doc in documents:
+            metadata = doc.get("metadata") or {}
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except Exception:
+                    metadata = {}
+            tier = metadata.get("source_tier", T2)
+            if tier in tier_counts:
+                tier_counts[tier] += 1
+
+        min_t0 = profile_constraints.get("min_t0_sources", 1)
+        shortfall = max(0, min_t0 - tier_counts[T0])
+        shortfall_policy = profile_constraints.get("shortfall_policy", "report_only")
+
+        quota_info = {
+            "profile": profile_name,
+            "t0_required": min_t0,
+            "t0_achieved": tier_counts[T0],
+            "t1_count": tier_counts[T1],
+            "t2_count": tier_counts[T2],
+            "shortfall": shortfall,
+            "shortfall_policy": shortfall_policy,
+            "independent_sources": len(documents),
+        }
+
+        if shortfall > 0:
+            record_trace_event(
+                db=db,
+                run_id=run_id,
+                step_no=max((trace.step_no for trace in traces), default=0) + 1,
+                tool_name="source_quota_check",
+                status="success",
+                input_data={"profile_constraints": profile_constraints},
+                output_summary=(
+                    f"Source quota shortfall: T0={tier_counts[T0]}/{min_t0} "
+                    f"(policy={shortfall_policy})"
+                ),
+                output_data=quota_info,
+            )
+    except Exception:
+        pass  # Quota check must not block run completion
+
+
 def run_plan(
     db: Session,
     run_id: str,
@@ -463,6 +534,10 @@ def run_plan(
             pass  # Cost tracking failure must not block run completion
 
         _after_run_completed(db, run, markdown, step_no=0)
+
+        # ── Phase 8.1: profile quota shortfall trace ───────────────
+        _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
+
         return _summary(run)
     except Exception as exc:
         run = store.update_agent_run_status(db, run_id, "failed", str(exc))

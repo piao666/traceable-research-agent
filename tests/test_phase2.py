@@ -86,7 +86,7 @@ class WebFetcherTests(unittest.TestCase):
     def test_metadata_fields(self):
         result = self.fetch({"urls": ["https://example.com"]})
         self.assertEqual(result.metadata.get("tool_name"), "web_fetcher")
-        self.assertEqual(result.metadata.get("fetcher_backend"), "httpx_beautifulsoup")
+        self.assertEqual(result.metadata.get("fetcher_backend"), "httpx_multi_level")
         self.assertTrue(result.metadata.get("read_only"))
 
 

@@ -378,6 +378,7 @@ async def create_task(
             scenario_template=task_request.scenario_template_key or task_request.scenario_template,
             execution_mode_override=task_request.execution_mode_override,
             skill_name=task_request.skill_name,
+            retrieval_profile=task_request.retrieval_profile,
         )
         plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
         plan.setdefault("execution_mode", settings.execution_mode)
@@ -402,6 +403,7 @@ async def create_task(
         scenario_template=task_request.scenario_template_key or task_request.scenario_template,
         execution_mode_override=task_request.execution_mode_override,
         skill_name=task_request.skill_name,
+        retrieval_profile=task_request.retrieval_profile,
     )
     plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
     plan.setdefault("execution_mode", settings.execution_mode)

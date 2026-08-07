@@ -25,6 +25,7 @@ class TaskCreateRequest(BaseModel):
     session_id: str | None = None
     skill_name: str | None = None
     require_plan_approval: bool = False  # Phase 7.4: pause for plan review before execution
+    retrieval_profile: str | None = None  # Phase 8.1: source tier retrieval profile
 
 
 class TaskCreateResponse(BaseModel):

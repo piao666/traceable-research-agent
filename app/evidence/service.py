@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agent.evidence import ClaimEvidenceMap, EvidenceBundle, EvidenceItem, build_evidence_bundle
-from app.config import Settings
+from app.config import Settings, settings as _svc_settings
 from app.evidence import EVIDENCE_SCHEMA_VERSION
 from app.evidence.artifact_store import ArtifactStore
 from app.evidence.models import (
@@ -33,6 +33,7 @@ from app.evidence.normalizers import (
     source_organization,
     source_provider,
 )
+from app.evidence.policy import classify_tier, load_source_policy
 from app.evidence.reasoning_service import get_reasoning_bundle, materialize_reasoning
 from app.trace.models import AgentRun, ToolTrace
 
@@ -298,6 +299,26 @@ def _materialize_item(
     trace_input = _json_object(trace.input_json if trace else None)
     scalar = _extract_scalar(passage_text)
 
+    metadata_doc = {
+        "v1_evidence_id": item.evidence_id,
+        "tool_name": item.tool_name,
+        "is_mock": item.is_mock,
+        "is_fallback": item.is_fallback,
+    }
+    # ── Phase 8.1: tier classification ──────────────────────────
+    try:
+        tier_policy = load_source_policy(_svc_settings.source_policy_path)
+        tier_result = classify_tier(item.source_type, canonical_uri, item.metadata, tier_policy)
+        metadata_doc["source_tier"] = tier_result.tier
+        metadata_doc["source_class"] = tier_result.source_class
+        metadata_doc["classification_rule"] = tier_result.classification_rule
+        metadata_doc["classification_confidence"] = tier_result.classification_confidence
+    except Exception:
+        metadata_doc["source_tier"] = "T2"
+        metadata_doc["source_class"] = "unknown"
+        metadata_doc["classification_rule"] = "error_fallback"
+        metadata_doc["classification_confidence"] = 0.30
+
     document = SourceDocument(
         document_id=document_id,
         run_id=run.run_id,
@@ -306,14 +327,7 @@ def _materialize_item(
         title=item.title,
         provider=source_provider(item),
         organization=source_organization(item, canonical_uri),
-        metadata_json=_json_dump(
-            {
-                "v1_evidence_id": item.evidence_id,
-                "tool_name": item.tool_name,
-                "is_mock": item.is_mock,
-                "is_fallback": item.is_fallback,
-            }
-        ),
+        metadata_json=_json_dump(metadata_doc),
     )
     snapshot = SourceSnapshot(
         snapshot_id=snapshot_id,
