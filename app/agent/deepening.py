@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agent.react_executor import run_react_task
-from app.agent.executor import _persist_citation_validation
+from app.agent.executor import _persist_citation_validation, _persist_reference_verification
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings as _settings
 from app.evidence.service import materialize_execution_provenance
@@ -314,6 +314,7 @@ def run_deepening(
     from app.agent.report_generation import resolve_report_llm_client
     _llm = resolve_report_llm_client(settings_obj, client)
     citation_validation_reports: list[Any] = []
+    reference_verification_reports: list[Any] = []
     markdown = generate_markdown_report(
         run, plan,
         [
@@ -325,6 +326,7 @@ def run_deepening(
         provenance_bundle=provenance_bundle,
         report_type=run.report_type,
         citation_validation_callback=citation_validation_reports.append,
+        reference_verification_callback=reference_verification_reports.append,
     )
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
@@ -332,6 +334,12 @@ def run_deepening(
         db,
         run_id,
         citation_validation_reports,
+        all_traces,
+    )
+    _persist_reference_verification(
+        db,
+        run_id,
+        reference_verification_reports,
         all_traces,
     )
 

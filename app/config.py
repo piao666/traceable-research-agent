@@ -113,6 +113,12 @@ class Settings(BaseModel):
     pdf_reader_max_response_bytes: int = 52_428_800  # 50 MB
     pdf_reader_ocr_enabled: bool = False
     pdf_reader_timeout_seconds: int = 30
+    # ── Phase 8.4: reference existence gate ──────────────────────────
+    reference_verification_enabled: bool = True
+    reference_verifier_timeout_seconds: int = 30
+    reference_verifier_cache_ttl_seconds: int = 86400
+    reference_verifier_cache_dir: str = "workspace/cache/reference"
+    reference_verifier_allowed_indexes: str = "crossref,openalex,arxiv,semantic_scholar"
 
     @field_validator("external_tools_default_mode", mode="before")
     @classmethod
@@ -423,6 +429,12 @@ class Settings(BaseModel):
             pdf_reader_max_response_bytes=_env_bounded_int("PDF_READER_MAX_RESPONSE_BYTES", 52_428_800, 1024, 200_000_000),
             pdf_reader_ocr_enabled=_env_bool("PDF_READER_OCR_ENABLED", False),
             pdf_reader_timeout_seconds=_env_bounded_int("PDF_READER_TIMEOUT_SECONDS", 30, 5, 120),
+            # Phase 8.4
+            reference_verification_enabled=_env_bool("REFERENCE_VERIFICATION_ENABLED", True),
+            reference_verifier_timeout_seconds=_env_bounded_int("REFERENCE_VERIFIER_TIMEOUT_SECONDS", 30, 5, 120),
+            reference_verifier_cache_ttl_seconds=_env_int("REFERENCE_VERIFIER_CACHE_TTL_SECONDS", 86400),
+            reference_verifier_cache_dir=_env_str("REFERENCE_VERIFIER_CACHE_DIR", "workspace/cache/reference"),
+            reference_verifier_allowed_indexes=_env_str("REFERENCE_VERIFIER_ALLOWED_INDEXES", "crossref,openalex,arxiv,semantic_scholar"),
         )
 
     def get_llm_api_key(self, provider: str) -> str | None:
@@ -544,6 +556,9 @@ class Settings(BaseModel):
             "pdf_reader_enabled": self.pdf_reader_enabled,
             "pdf_reader_max_pages": self.pdf_reader_max_pages,
             "pdf_reader_ocr_enabled": self.pdf_reader_ocr_enabled,
+            # Phase 8.4
+            "reference_verification_enabled": self.reference_verification_enabled,
+            "reference_verifier_allowed_indexes": self.reference_verifier_allowed_indexes.split(",") if self.reference_verifier_allowed_indexes else [],
         }
 
     def get_safe_auth_config_summary(self) -> dict:

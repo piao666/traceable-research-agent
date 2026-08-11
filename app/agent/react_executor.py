@@ -15,7 +15,7 @@ from app.agent.file_access_policy import (
     is_path_approved,
     resolve_file_reader_path,
 )
-from app.agent.executor import _persist_citation_validation, run_plan
+from app.agent.executor import _persist_citation_validation, _persist_reference_verification, run_plan
 from app.agent.report_generation import resolve_report_llm_client
 from app.agent.react_prompt import build_react_messages
 from app.agent.react_schema import (
@@ -322,6 +322,7 @@ def _complete_report(
     )
     _llm = resolve_report_llm_client(settings_obj, llm_client)
     citation_validation_reports: list[Any] = []
+    reference_verification_reports: list[Any] = []
     markdown = generate_markdown_report(
         run,
         plan,
@@ -331,6 +332,7 @@ def _complete_report(
         provenance_bundle=provenance_bundle,
         report_type=run.report_type,
         citation_validation_callback=citation_validation_reports.append,
+        reference_verification_callback=reference_verification_reports.append,
     )
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
@@ -338,6 +340,13 @@ def _complete_report(
         db,
         run_id,
         citation_validation_reports,
+        traces,
+    )
+    traces = store.list_tool_traces(db, run_id)
+    _persist_reference_verification(
+        db,
+        run_id,
+        reference_verification_reports,
         traces,
     )
     run = store.update_agent_run_status(db, run_id, "completed", None)

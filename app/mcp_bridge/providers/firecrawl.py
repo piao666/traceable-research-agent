@@ -17,7 +17,13 @@ class FirecrawlProvider(SourcePackProvider):
         return os.getenv("FIRECRAWL_API_KEY", "").strip()
 
     @property
+    def self_hosted(self) -> bool:
+        return os.getenv("FIRECRAWL_SELF_HOSTED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @property
     def base_url(self) -> str:
+        if self.self_hosted:
+            return os.getenv("FIRECRAWL_BASE_URL", "http://localhost:3002").strip().rstrip("/")
         return os.getenv("FIRECRAWL_BASE_URL", "https://api.firecrawl.dev").strip().rstrip("/")
 
     def list_tools(self) -> list[BridgeTool]:
@@ -78,7 +84,7 @@ class FirecrawlProvider(SourcePackProvider):
         local_name = tool_name.split(".", 1)[-1]
         if self.fake_mode:
             return self._fake(local_name, arguments)
-        if not self.api_key:
+        if not self.self_hosted and not self.api_key:
             return self._failure(local_name, "FIRECRAWL_API_KEY is not configured.", error_type="missing_api_key")
         if local_name == "search":
             return self._search(arguments)
@@ -91,10 +97,10 @@ class FirecrawlProvider(SourcePackProvider):
         return self._failure(local_name, f"Unknown Firecrawl tool: {tool_name}", error_type="unknown_tool")
 
     def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if not self.self_hosted:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     def _search(self, arguments: dict[str, Any]) -> BridgeToolResult:
         query = str(arguments.get("query") or "").strip()

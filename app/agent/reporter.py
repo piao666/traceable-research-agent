@@ -1442,6 +1442,7 @@ def generate_markdown_report(
     report_type: str = "summary",
     usage_callback: Callable[[Any], None] | None = None,
     citation_validation_callback: Callable[[Any], None] | None = None,
+    reference_verification_callback: Callable[[Any], None] | None = None,
 ) -> str:
     """Build a Markdown report from persisted run evidence.
 
@@ -1722,6 +1723,37 @@ def generate_markdown_report(
                     lines.extend(validation_lines)
         except Exception:
             pass  # Citation validation failure must not block report generation
+
+    # ── Phase 8.4: Reference existence gate ──────────────────────────────
+    if provenance_bundle:
+        try:
+            from app.config import settings as _ref_settings
+            if _ref_settings.reference_verification_enabled:
+                from app.evidence.reference_verifier import (
+                    ReferenceVerifier,
+                    extract_academic_references,
+                    render_reference_verification_section,
+                )
+                academic_refs = extract_academic_references(provenance_bundle)
+                if academic_refs:
+                    verifier = ReferenceVerifier(
+                        allowed_indexes=[
+                            i.strip()
+                            for i in _ref_settings.reference_verifier_allowed_indexes.split(",")
+                            if i.strip()
+                        ],
+                        timeout=_ref_settings.reference_verifier_timeout_seconds,
+                        cache_dir=_ref_settings.reference_verifier_cache_dir,
+                        cache_ttl=_ref_settings.reference_verifier_cache_ttl_seconds,
+                    )
+                    ref_report = verifier.verify(academic_refs)
+                    if reference_verification_callback is not None:
+                        reference_verification_callback(ref_report)
+                    ref_lines = render_reference_verification_section(ref_report)
+                    if ref_lines:
+                        lines.extend(ref_lines)
+        except Exception:
+            pass  # Reference verification failure must not block report generation
 
     # ── Phase 8.1: Source tier distribution ──────────────────────────
     if provenance_bundle:

@@ -80,6 +80,43 @@ def _persist_citation_validation(
     return run
 
 
+def _persist_reference_verification(
+    db: Session,
+    run_id: str,
+    ref_reports: list[Any],
+    traces: list[Any],
+) -> AgentRun:
+    """Persist and trace reference verification results from the report pipeline.
+
+    Metrics are stored in the trace event output_data. Dedicated columns on
+    AgentRun will be added by migration 0010 after the schema stabilizes.
+    """
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise ValueError("Task run not found")
+    if not ref_reports:
+        return run
+    report = ref_reports[-1]
+    if report.total <= 0:
+        return run
+
+    # Trace event (metrics stored here; migration 0010 adds AgentRun columns later)
+    record_trace_event(
+        db=db,
+        run_id=run_id,
+        step_no=max((trace.step_no for trace in traces), default=0) + 1,
+        tool_name="reference_verifier",
+        status="success",
+        input_data={"total_references": report.total},
+        output_summary=(
+            f"Reference verification: {report.verified}/{report.total} verified, "
+            f"{report.inconsistent} inconsistent, {report.unresolved} unresolved"
+        ),
+        output_data=report.to_dict(),
+    )
+    return run
+
+
 def _after_run_completed(
     db: Session,
     run: AgentRun,
@@ -469,6 +506,7 @@ def run_plan(
         _llm = resolve_report_llm_client(settings_obj, report_llm_client)
         report_llm_responses: list[Any] = []
         citation_validation_reports: list[Any] = []
+        reference_verification_reports: list[Any] = []
         markdown = generate_markdown_report(
             run,
             plan,
@@ -479,6 +517,7 @@ def run_plan(
             report_type=run.report_type,
             usage_callback=report_llm_responses.append,
             citation_validation_callback=citation_validation_reports.append,
+            reference_verification_callback=reference_verification_reports.append,
         )
         if report_llm_responses:
             from app.llm.cost import estimate_cost
@@ -506,6 +545,13 @@ def run_plan(
             db,
             run_id,
             citation_validation_reports,
+            traces,
+        )
+        traces = store.list_tool_traces(db, run_id)
+        run = _persist_reference_verification(
+            db,
+            run_id,
+            reference_verification_reports,
             traces,
         )
         traces = store.list_tool_traces(db, run_id)
