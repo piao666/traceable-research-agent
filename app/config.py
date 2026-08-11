@@ -119,6 +119,9 @@ class Settings(BaseModel):
     reference_verifier_cache_ttl_seconds: int = 86400
     reference_verifier_cache_dir: str = "workspace/cache/reference"
     reference_verifier_allowed_indexes: str = "crossref,openalex,arxiv,semantic_scholar"
+    # ── Phase 8.5: free academic retrievers ──────────────────────────
+    openalex_search_enabled: bool = True
+    crossref_search_enabled: bool = True
 
     @field_validator("external_tools_default_mode", mode="before")
     @classmethod
@@ -435,6 +438,9 @@ class Settings(BaseModel):
             reference_verifier_cache_ttl_seconds=_env_int("REFERENCE_VERIFIER_CACHE_TTL_SECONDS", 86400),
             reference_verifier_cache_dir=_env_str("REFERENCE_VERIFIER_CACHE_DIR", "workspace/cache/reference"),
             reference_verifier_allowed_indexes=_env_str("REFERENCE_VERIFIER_ALLOWED_INDEXES", "crossref,openalex,arxiv,semantic_scholar"),
+            # Phase 8.5
+            openalex_search_enabled=_env_bool("OPENALEX_SEARCH_ENABLED", True),
+            crossref_search_enabled=_env_bool("CROSSREF_SEARCH_ENABLED", True),
         )
 
     def get_llm_api_key(self, provider: str) -> str | None:
@@ -559,6 +565,9 @@ class Settings(BaseModel):
             # Phase 8.4
             "reference_verification_enabled": self.reference_verification_enabled,
             "reference_verifier_allowed_indexes": self.reference_verifier_allowed_indexes.split(",") if self.reference_verifier_allowed_indexes else [],
+            # Phase 8.5
+            "openalex_search_enabled": self.openalex_search_enabled,
+            "crossref_search_enabled": self.crossref_search_enabled,
         }
 
     def get_safe_auth_config_summary(self) -> dict:

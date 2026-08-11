@@ -192,6 +192,8 @@ EXECUTABLE_TOOLS = {
     "web_fetcher",
     "arxiv_search",
     "semantic_scholar_search",
+    "openalex_search",
+    "crossref_search",
 }
 
 

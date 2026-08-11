@@ -578,7 +578,7 @@ class PresetSkillFileTests(unittest.TestCase):
         from app.skills.loader import load_all_skills
 
         skills = load_all_skills(self.skills_dir)
-        self.assertEqual(len(skills), 4, f"Expected 4 skills, got {len(skills)}: {list(skills.keys())}")
+        self.assertGreaterEqual(len(skills), 4, f"Expected ≥4 skills, got {len(skills)}: {list(skills.keys())}")
 
         for name, skill in skills.items():
             with self.subTest(skill=name):

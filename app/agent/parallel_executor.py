@@ -47,6 +47,8 @@ PARALLEL_SAFE_TOOLS = {
     "web_fetcher",
     "arxiv_search",
     "semantic_scholar_search",
+    "openalex_search",
+    "crossref_search",
 }
 BARRIER_TOOLS = {"report_writer"}
 DEPENDENCY_KEYS = {

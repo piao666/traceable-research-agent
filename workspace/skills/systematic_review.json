@@ -1,0 +1,58 @@
+{
+  "name": "systematic_review",
+  "version": "1.0",
+  "description": "多源学术文献系统综述：arXiv + Semantic Scholar + OpenAlex + Crossref 四源交叉检索，DOI/标题/arXiv ID 去重归一化，声明纳入/排除标准与检索时间范围，生成证据表与 PRISMA 风格统计。质量门禁含 reference existence gate (Phase 8.4) + entailment gate (Phase 7.5) + read_scope。所有引用必须有 locator 或明确记录无全文定位；unresolved、inconsistent、T2-only claims 进入报告限制章节。",
+  "required_tools": ["arxiv_search", "semantic_scholar_search", "openalex_search", "crossref_search"],
+  "changelog": [
+    {"version": "1.0", "date": "2026-08-11", "changes": "初始版本：arXiv + Semantic Scholar + OpenAlex + Crossref 四源检索 + report_writer 去重纳排，含纳入/排除标准声明与 PRISMA 统计"}
+  ],
+  "parameters": {
+    "query": {"type": "string", "required": true},
+    "year_from": {"type": "integer", "default": 2018},
+    "year_to": {"type": "integer", "default": 2026},
+    "max_papers": {"type": "integer", "default": 30},
+    "exclude_keywords": {"type": "string"}
+  },
+  "steps": [
+    {
+      "tool_name": "arxiv_search",
+      "goal": "检索 arXiv 预印本：搜索与查询相关的论文，获取标题、作者、摘要、分类和 PDF 链接",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "max_results": "{{parameters.max_papers}}",
+        "sort_by": "relevance",
+        "sort_order": "descending"
+      }
+    },
+    {
+      "tool_name": "semantic_scholar_search",
+      "goal": "交叉检索 Semantic Scholar Academic Graph：补充发现论文并获取被引次数、外部标识符（DOI/ArXiv）、开放获取链接",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "limit": "{{parameters.max_papers}}"
+      }
+    },
+    {
+      "tool_name": "openalex_search",
+      "goal": "补充检索 OpenAlex 数据库：获取开放获取状态、被引次数、作者机构和出版物来源",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "max_results": "{{parameters.max_papers}}",
+        "sort": "relevance"
+      }
+    },
+    {
+      "tool_name": "crossref_search",
+      "goal": "补充检索 Crossref 数据库：获取持久 DOI 链接、出版商信息和发表日期",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "max_results": "{{parameters.max_papers}}"
+      }
+    },
+    {
+      "tool_name": "report_writer",
+      "goal": "系统综述报告生成：去重归一化（DOI → arXiv ID → 标题 Jaccard≥0.85），声明纳入/排除标准（year_from={{parameters.year_from}} year_to={{parameters.year_to}} exclude_keywords={{parameters.exclude_keywords}} language=en/zh max_papers={{parameters.max_papers}}），生成证据表与 PRISMA 流程图统计，质量门禁含 reference existence gate + entailment gate + read_scope。版本归并：预印本↔正式版关联但不静默覆盖。所有引用必须有 locator 或明确记录无全文定位。unresolved/inconsistent/T2-only claims 进入报告限制章节。",
+      "arguments": {}
+    }
+  ]
+}

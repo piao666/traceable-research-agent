@@ -10,6 +10,8 @@ from app.tools.sql_query import run_query
 from app.tools.tavily_search import tavily_search_handler
 from app.tools.web_fetcher import web_fetch
 from app.tools.pdf_reader import pdf_read
+from app.tools.openalex_search import openalex_search_handler
+from app.tools.crossref_search import crossref_search_handler
 
 
 def _memory_search_handler(arguments: dict) -> "ToolResult":
@@ -197,4 +199,36 @@ def register_default_tools() -> None:
             tags=["academic", "semantic-scholar", "read-only"],
         ),
         handler=semantic_scholar_handler,
+    )
+    register_tool(
+        ToolSpec(
+            name="openalex_search",
+            description=(
+                "Search academic works via the OpenAlex API. "
+                "Free, no API key required. OpenAlex indexes ~250M scholarly works "
+                "with open access status, citation counts, and DOI links. "
+                "Read-only, returns paper metadata."
+            ),
+            input_schema={"query": "string", "max_results": "integer", "sort": "string"},
+            output_schema={"papers": "array", "total": "integer", "returned": "integer"},
+            risk_level=RiskLevel.LOW,
+            tags=["academic", "openalex", "read-only"],
+        ),
+        handler=openalex_search_handler,
+    )
+    register_tool(
+        ToolSpec(
+            name="crossref_search",
+            description=(
+                "Search academic works via the Crossref API. "
+                "Free (polite pool), no API key required. Crossref is the DOI registration "
+                "agency with ~150M records covering journals, books, conference proceedings. "
+                "Read-only, returns paper metadata with persistent DOI links."
+            ),
+            input_schema={"query": "string", "max_results": "integer"},
+            output_schema={"papers": "array", "total": "integer", "returned": "integer"},
+            risk_level=RiskLevel.LOW,
+            tags=["academic", "crossref", "read-only"],
+        ),
+        handler=crossref_search_handler,
     )
