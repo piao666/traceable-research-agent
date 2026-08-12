@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 from typing import Any
+
+
+_CACHE_LOCK = RLock()
 
 
 @dataclass
@@ -27,15 +30,16 @@ class FetchCacheEntry:
     etag: str | None = None
     extraction_method: str = "unknown"
     extraction_confidence: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_expired(self, now: float | None = None) -> bool:
-        now = now or time.time()
+        now = time.time() if now is None else now
         return (now - self.fetched_at) > self.ttl_seconds
 
     @property
     def age_seconds(self, now: float | None = None) -> float:
-        now = now or time.time()
+        now = time.time() if now is None else now
         return max(0.0, now - self.fetched_at)
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,6 +54,7 @@ class FetchCacheEntry:
             "etag": self.etag,
             "extraction_method": self.extraction_method,
             "extraction_confidence": self.extraction_confidence,
+            "metadata": self.metadata,
         }
 
 
@@ -67,18 +72,22 @@ class FetchCache:
         if not self._index_path.is_file():
             return {}
         try:
-            return json.loads(self._index_path.read_text(encoding="utf-8"))
+            loaded = json.loads(self._index_path.read_text(encoding="utf-8"))
+            return loaded if isinstance(loaded, dict) else {}
         except Exception:
             return {}
 
-    def _save_index(self) -> None:
+    def _save_index(self) -> bool:
         try:
-            self._index_path.write_text(
+            temp_path = self._index_path.with_suffix(".tmp")
+            temp_path.write_text(
                 json.dumps(self._index, ensure_ascii=False, default=str),
                 encoding="utf-8",
             )
+            temp_path.replace(self._index_path)
+            return True
         except Exception:
-            pass
+            return False
 
     @staticmethod
     def _compute_key(url: str, params: dict[str, Any] | None = None) -> str:
@@ -98,90 +107,119 @@ class FetchCache:
         params: dict[str, Any] | None = None,
         now: float | None = None,
     ) -> FetchCacheEntry | None:
-        """Retrieve a cached entry. Returns None if missing or expired."""
-        now = now or time.time()
+        """Retrieve a fresh cached entry. Returns None for every non-hit state."""
+        entry, status = self.lookup(url, params=params, now=now)
+        return entry if status == "hit" else None
+
+    def lookup(
+        self,
+        url: str,
+        params: dict[str, Any] | None = None,
+        now: float | None = None,
+    ) -> tuple[FetchCacheEntry | None, str]:
+        """Return an entry and one of hit/miss/expired/corrupt."""
+
+        now = time.time() if now is None else now
         cache_key = self._compute_key(url, params)
 
-        if cache_key not in self._index:
-            return None
+        with _CACHE_LOCK:
+            self._index = self._load_index()
+            if cache_key not in self._index:
+                return None, "miss"
 
-        entry_data = self._index[cache_key]
-        content_hash = entry_data.get("content_hash", "")
-        content_file = self._content_file(self.cache_dir, content_hash)
+            entry_data = self._index[cache_key]
+            if not isinstance(entry_data, dict):
+                self._index.pop(cache_key, None)
+                self._save_index()
+                return None, "corrupt"
+            content_hash = str(entry_data.get("content_hash") or "")
+            content_file = self._content_file(self.cache_dir, content_hash)
 
-        if not content_file.is_file():
-            # Stale index entry
-            self._index.pop(cache_key, None)
-            self._save_index()
-            return None
+            if not content_hash or not content_file.is_file():
+                self._index.pop(cache_key, None)
+                self._save_index()
+                return None, "corrupt"
 
-        entry = FetchCacheEntry(
-            cache_key=cache_key,
-            url=entry_data.get("url", url),
-            content_hash=content_hash,
-            content="",  # loaded below
-            content_type=entry_data.get("content_type", "text/html"),
-            fetched_at=float(entry_data.get("fetched_at", 0)),
-            ttl_seconds=int(entry_data.get("ttl_seconds", self.default_ttl)),
-            etag=entry_data.get("etag"),
-            extraction_method=entry_data.get("extraction_method", "unknown"),
-            extraction_confidence=float(entry_data.get("extraction_confidence", 0)),
-        )
+            try:
+                content = content_file.read_text(encoding="utf-8")
+                if hashlib.sha256(content.encode("utf-8")).hexdigest() != content_hash:
+                    raise ValueError("content hash mismatch")
+                entry = FetchCacheEntry(
+                    cache_key=cache_key,
+                    url=str(entry_data.get("url") or url),
+                    content_hash=content_hash,
+                    content=content,
+                    content_type=str(entry_data.get("content_type") or "text/html"),
+                    fetched_at=float(entry_data.get("fetched_at", 0)),
+                    ttl_seconds=int(entry_data.get("ttl_seconds", self.default_ttl)),
+                    etag=entry_data.get("etag"),
+                    extraction_method=str(entry_data.get("extraction_method") or "unknown"),
+                    extraction_confidence=float(entry_data.get("extraction_confidence", 0)),
+                    metadata=(
+                        dict(entry_data.get("metadata"))
+                        if isinstance(entry_data.get("metadata"), dict)
+                        else {}
+                    ),
+                )
+            except Exception:
+                self._index.pop(cache_key, None)
+                self._save_index()
+                return None, "corrupt"
 
-        if entry.is_expired(now):
-            # Expired: remove from index but keep file for reference
-            self._index.pop(cache_key, None)
-            self._save_index()
-            return None
+            if (now - entry.fetched_at) > entry.ttl_seconds:
+                return entry, "expired"
+            return entry, "hit"
 
-        try:
-            entry.content = content_file.read_text(encoding="utf-8")
-        except Exception:
-            self._index.pop(cache_key, None)
-            self._save_index()
-            return None
-
-        return entry
-
-    def put(self, entry: FetchCacheEntry) -> None:
+    def put(self, entry: FetchCacheEntry) -> bool:
         """Store an entry in the cache."""
+        expected_hash = hashlib.sha256(entry.content.encode("utf-8")).hexdigest()
+        if entry.content_hash != expected_hash:
+            return False
         content_file = self._content_file(self.cache_dir, entry.content_hash)
-        try:
-            content_file.write_text(entry.content, encoding="utf-8")
-        except Exception:
-            return  # Don't update index if write fails
+        with _CACHE_LOCK:
+            self._index = self._load_index()
+            try:
+                temp_path = content_file.with_suffix(".tmp")
+                temp_path.write_text(entry.content, encoding="utf-8")
+                temp_path.replace(content_file)
+            except Exception:
+                return False  # Don't update index if write fails
 
-        self._index[entry.cache_key] = {
-            "url": entry.url,
-            "content_hash": entry.content_hash,
-            "content_type": entry.content_type,
-            "fetched_at": entry.fetched_at,
-            "ttl_seconds": entry.ttl_seconds,
-            "etag": entry.etag,
-            "extraction_method": entry.extraction_method,
-            "extraction_confidence": entry.extraction_confidence,
-        }
-        self._save_index()
+            self._index[entry.cache_key] = {
+                "url": entry.url,
+                "content_hash": entry.content_hash,
+                "content_type": entry.content_type,
+                "fetched_at": entry.fetched_at,
+                "ttl_seconds": entry.ttl_seconds,
+                "etag": entry.etag,
+                "extraction_method": entry.extraction_method,
+                "extraction_confidence": entry.extraction_confidence,
+                "metadata": entry.metadata,
+            }
+            return self._save_index()
 
     def invalidate(self, url: str, params: dict[str, Any] | None = None) -> bool:
         """Remove a specific entry from the cache index. Returns True if removed."""
         cache_key = self._compute_key(url, params)
-        if cache_key in self._index:
-            self._index.pop(cache_key)
-            self._save_index()
-            return True
+        with _CACHE_LOCK:
+            self._index = self._load_index()
+            if cache_key in self._index:
+                self._index.pop(cache_key)
+                return self._save_index()
         return False
 
     def stats(self) -> dict[str, Any]:
         """Return cache statistics."""
-        total = len(self._index)
-        expired = 0
-        now = time.time()
-        for entry_data in self._index.values():
-            fetched_at = float(entry_data.get("fetched_at", 0))
-            ttl = int(entry_data.get("ttl_seconds", self.default_ttl))
-            if (now - fetched_at) > ttl:
-                expired += 1
+        with _CACHE_LOCK:
+            self._index = self._load_index()
+            total = len(self._index)
+            expired = 0
+            now = time.time()
+            for entry_data in self._index.values():
+                fetched_at = float(entry_data.get("fetched_at", 0))
+                ttl = int(entry_data.get("ttl_seconds", self.default_ttl))
+                if (now - fetched_at) > ttl:
+                    expired += 1
         return {
             "total_entries": total,
             "expired_entries": expired,

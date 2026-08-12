@@ -20,6 +20,11 @@ and produces an evidence-backed Markdown report.
   for confirmation instead of running silently.
 - **Evidence-first reports**: citations, provenance, source basis, conflicts,
   and citation-validation metrics are available alongside the report.
+- **Governed research inputs**: retrieval profiles enforce source-tier quotas,
+  bounded discovery and fetch budgets, and auditable targeted refetches.
+- **Local extraction pipeline**: HTML fallback extraction, integrity-checked
+  fetch caching, page-level PDF evidence, and reference verification work
+  through the same traceable tool boundary.
 - **Works without remote services**: deterministic planning and local tools
   support an offline-friendly audit flow; remote search and LLM synthesis are
   optional enhancements.
@@ -192,10 +197,11 @@ workspace/     local databases, reports, artifacts, and skills
 
 ## Quality Checks
 
-The most recent local Docker closure verified the built images, container
-startup, API health, Streamlit availability, Alembic head migration, an
-approval-based task, and the full test suite: **205 tests and 15 subtests
-passed**.
+The current registry exposes **12 read-only tools**. The latest local closure
+passed **338 tests and 17 subtests**, plus **80/80 deterministic evaluation
+cases** with no hard failures or network skips. The checks cover source
+governance, cache behavior, PDF extraction, reference verification, academic
+retrievers, API contracts, and the existing execution paths.
 
 Run the same core checks locally:
 
@@ -212,6 +218,7 @@ docker compose config --quiet
 
 - [x] Traceable planned and optional ReAct execution
 - [x] Evidence provenance, citation validation, and human plan approval
+- [x] Source-tier governance, cached extraction, PDF evidence, and academic verification
 - [x] Docker deployment with persistent local runtime data
 - [ ] Add a repository license before public redistribution
 - [ ] Expand operational observability for long-running self-hosted instances

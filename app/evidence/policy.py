@@ -216,9 +216,6 @@ def classify_source(
     if "github" in normalized_type:
         if metadata.get("verified_official_owner") is True:
             return "official_code"
-        org = str(metadata.get("organization") or "").lower()
-        if org in {"pytorch", "tensorflow", "apache", "microsoft", "python", "facebook", "google"}:
-            return "official_code"
         return "blog"
     if normalized_type in {"file", "internal"}:
         return "internal_document"
@@ -247,8 +244,8 @@ def classify_tier(
     """Deterministic tier classification with 6-level priority chain.
 
     Priority:
-    1. User-maintained domain table (tier_hints.domain_tiers)
-    2. Verified official repos (tier_hints.org_verified_official_repos)
+    1. Verified official repos (tier_hints.org_verified_official_repos)
+    2. User-maintained domain table (tier_hints.domain_tiers)
     3. URL / content-type rules (.gov, arxiv paper pages, DOI, etc.)
     4. Org identity verification (GitHub owner matches config)
     5. Paper context (peer-reviewed vs preprint vs review)
@@ -257,7 +254,23 @@ def classify_tier(
     hostname = (urlsplit(canonical_uri).hostname or "").lower()
     source_class = classify_source(source_type, canonical_uri, metadata, policy)
 
-    # ── Priority 1: user-maintained domain table ─────────────────
+    # ── Priority 1: verified official repos ──────────────────────
+    # A repository-specific rule must win over the generic github.com tier.
+    if hostname == "github.com" or hostname.endswith(".github.com"):
+        org_repo = _github_org_repo(hostname, canonical_uri)
+        if org_repo:
+            for verified_path, tier in policy.tier_hints.org_verified_official_repos.items():
+                normalized_path = verified_path.lower().removeprefix("https://").removeprefix("http://")
+                normalized_path = normalized_path.removeprefix("github.com/").strip("/")
+                if org_repo == normalized_path or org_repo.startswith(f"{normalized_path}/"):
+                    return TierClassification(
+                        tier=tier,
+                        source_class=source_class,
+                        classification_rule=f"verified_repo:{verified_path}",
+                        classification_confidence=0.90,
+                    )
+
+    # ── Priority 2: user-maintained domain table ─────────────────
     for domain, tier in sorted(policy.tier_hints.domain_tiers.items(), key=lambda x: -len(x[0])):
         if hostname == domain or hostname.endswith(f".{domain}"):
             return TierClassification(
@@ -266,19 +279,6 @@ def classify_tier(
                 classification_rule=f"domain_table:{domain}",
                 classification_confidence=0.95,
             )
-
-    # ── Priority 2: verified official repos ──────────────────────
-    if "github" in source_type.casefold():
-        org_repo = _github_org_repo(hostname, canonical_uri)
-        if org_repo:
-            for verified_path, tier in policy.tier_hints.org_verified_official_repos.items():
-                if org_repo.startswith(verified_path.lower()):
-                    return TierClassification(
-                        tier=tier,
-                        source_class=source_class,
-                        classification_rule=f"verified_repo:{verified_path}",
-                        classification_confidence=0.90,
-                    )
 
     # ── Priority 3: URL / content-type rules ─────────────────────
     # Government domains
@@ -515,6 +515,9 @@ def select_sources_by_profile(
     for c, tc in t0_items:
         if t0_selected >= t0_target:
             break
+        if len(selected) >= max_candidates:
+            selection_log.append(f"skip: max_candidates {max_candidates} reached")
+            break
         if _count_domain(selected, c.hostname) >= profile.max_per_domain:
             selection_log.append(f"skip T0 {c.uri}: domain limit {profile.max_per_domain}")
             continue
@@ -526,6 +529,9 @@ def select_sources_by_profile(
     t1_selected = 0
     for c, tc in t1_items:
         if t1_selected >= t1_target:
+            break
+        if len(selected) >= max_candidates:
+            selection_log.append(f"skip: max_candidates {max_candidates} reached")
             break
         if _count_domain(selected, c.hostname) >= profile.max_per_domain:
             continue
@@ -551,7 +557,7 @@ def select_sources_by_profile(
 
     # Step 4: If still under min_independent_sources, add more T1 then T0
     for c, tc in (t1_items + t0_items):
-        if len(selected) >= profile.min_independent_sources:
+        if len(selected) >= profile.min_independent_sources or len(selected) >= max_candidates:
             break
         if any(s.uri == c.uri for s in selected):
             continue
@@ -568,24 +574,35 @@ def select_sources_by_profile(
         for i, s in enumerate(candidates) if s in selected
     ))
 
+    final_t1 = sum(1 for s in selected if any(
+        tc.tier == T1 for candidate, tc in tiered if candidate.uri == s.uri
+    ))
+    final_t2 = sum(1 for s in selected if any(
+        tc.tier == T2 for candidate, tc in tiered if candidate.uri == s.uri
+    ))
+    t0_shortfall = max(0, profile.min_t0_sources - final_t0)
+    independent_shortfall = max(0, profile.min_independent_sources - final_clusters)
+    t2_shortfall = max(0, profile.min_t2_sources - final_t2)
     quota_shortfall: dict[str, Any] = {}
-    if final_t0 < profile.min_t0_sources:
+    if t0_shortfall or independent_shortfall or t2_shortfall:
         quota_shortfall = {
             "t0_required": profile.min_t0_sources,
             "t0_achieved": final_t0,
-            "shortfall": profile.min_t0_sources - final_t0,
+            "t0_shortfall": t0_shortfall,
+            "independent_required": profile.min_independent_sources,
+            "independent_achieved": final_clusters,
+            "independent_shortfall": independent_shortfall,
+            "t2_required": profile.min_t2_sources,
+            "t2_achieved": final_t2,
+            "t2_shortfall": t2_shortfall,
             "shortfall_policy": profile.shortfall_policy,
         }
 
     return SourceSelection(
         selected=selected,
         t0_count=final_t0,
-        t1_count=sum(1 for s in selected if any(
-            tc.tier == T1 for _, tc in tiered if _.uri == s.uri
-        )),
-        t2_count=sum(1 for s in selected if any(
-            tc.tier == T2 for _, tc in tiered if _.uri == s.uri
-        )),
+        t1_count=final_t1,
+        t2_count=final_t2,
         independent_clusters=final_clusters,
         quota_shortfall=quota_shortfall,
         selection_log=selection_log,

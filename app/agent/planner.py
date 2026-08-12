@@ -792,19 +792,20 @@ def plan_task(
 
     # ── Phase 8.1: retrieval profile constraint ──────────────────
     _profile_extra: dict[str, Any] = {}
-    if retrieval_profile:
-        try:
-            from app.evidence.policy import load_source_policy
-            policy = load_source_policy(settings.source_policy_path)
-            profile = policy.retrieval_profiles.get(retrieval_profile)
-            if profile is not None:
-                _profile_extra = {
-                    "retrieval_profile": retrieval_profile,
-                    "profile_constraints": profile.to_dict(),
-                    "policy_version": policy.version,
-                }
-        except Exception:
-            pass
+    selected_profile = retrieval_profile or settings.default_retrieval_profile
+    try:
+        from app.evidence.policy import load_source_policy
+        policy = load_source_policy(settings.source_policy_path)
+        profile = policy.retrieval_profiles.get(selected_profile)
+        if profile is None:
+            raise ValueError(f"Unknown retrieval profile: {selected_profile}")
+        _profile_extra = {
+            "retrieval_profile": selected_profile,
+            "profile_constraints": profile.to_dict(),
+            "policy_version": policy.version,
+        }
+    except (OSError, ValueError, KeyError):
+        pass
     if _profile_extra:
         _memory_extra.update(_profile_extra)
 

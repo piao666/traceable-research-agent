@@ -18,6 +18,7 @@ from app.agent.report_generation import resolve_report_llm_client
 from app.agent.executor import (
     EXECUTABLE_TOOLS,
     _after_run_completed,
+    _check_profile_quota,
     _failed_observation,
     _is_step_confirmed,
     _resolve_arguments_from,
@@ -30,6 +31,12 @@ from app.agent.executor import (
     _summary,
 )
 from app.agent.reporter import generate_markdown_report, save_report
+from app.agent.source_governance import (
+    execute_targeted_refetches,
+    govern_tool_result,
+    persisted_refetch_rounds,
+    prepare_tool_arguments,
+)
 from app.config import Settings, settings
 from app.evidence.service import materialize_execution_provenance
 from app.mcp.policy import is_parallel_safe_tool
@@ -77,6 +84,8 @@ def _utc_iso() -> str:
 
 
 def _has_explicit_dependency(step: dict[str, Any]) -> bool:
+    if isinstance(step.get("arguments_from"), dict):
+        return True
     if any(key in step for key in DEPENDENCY_KEYS):
         return True
     arguments = step.get("arguments")
@@ -167,6 +176,7 @@ def _execute_step(
     plan: dict[str, Any] | None = None,
     visited_urls: set[str] | None = None,
     visited_urls_lock: Lock | None = None,
+    settings_obj: Settings = settings,
 ) -> _StepResult:
     tool_name = str(step.get("tool_name") or "")
     arguments = step.get("arguments") or {}
@@ -192,6 +202,9 @@ def _execute_step(
                 arguments["urls"] = filtered
                 step["arguments"] = arguments
 
+    arguments = prepare_tool_arguments(tool_name, arguments, plan or {}, settings_obj)
+    step = dict(step)
+    step["arguments"] = arguments
     execution_arguments = (
         file_reader_execution_arguments(arguments, plan)
         if tool_name == "file_reader"
@@ -201,6 +214,7 @@ def _execute_step(
     started = perf_counter()
     result = execute_tool(tool_name, execution_arguments)
     latency_ms = int((perf_counter() - started) * 1000)
+    result = govern_tool_result(tool_name, result, plan or {}, settings_obj)
     finished_at = _utc_iso()
     return _StepResult(step, result, latency_ms, started_at, finished_at, worker_id)
 
@@ -221,7 +235,7 @@ def _run_parallel_group(
     try:
         for index, step in enumerate(group, 1):
             futures[executor.submit(
-                _execute_step, step, index, plan, visited_urls, visited_urls_lock
+                _execute_step, step, index, plan, visited_urls, visited_urls_lock, settings_obj
             )] = (step, index, group_started_at)
 
         done, pending = wait(set(futures), timeout=settings_obj.parallel_timeout_seconds)
@@ -298,8 +312,9 @@ def _run_single_tool_step(
     plan: dict[str, Any] | None = None,
     visited_urls: set[str] | None = None,
     visited_urls_lock: Lock | None = None,
+    settings_obj: Settings = settings,
 ) -> _StepResult:
-    return _execute_step(step, 1, plan, visited_urls, visited_urls_lock)
+    return _execute_step(step, 1, plan, visited_urls, visited_urls_lock, settings_obj)
 
 
 def _observation(step: dict[str, Any], result: ToolResult) -> dict[str, Any]:
@@ -333,6 +348,7 @@ def run_plan_parallel(
     steps = plan.get("steps") or []
     observations: list[dict[str, Any]] = []
     resume_after_step = run.current_step
+    refetch_rounds_used = persisted_refetch_rounds(store.list_tool_traces(db, run_id))
 
     # Shared URL dedup across sub-queries
     visited_urls: set[str] = set()
@@ -390,18 +406,25 @@ def run_plan_parallel(
                 # Resolve arguments_from references
                 if step.get("arguments_from"):
                     arguments = _resolve_arguments_from(step, observations)
+                    step = dict(step)
+                    step["arguments"] = arguments
 
-                step_result = _run_single_tool_step(step, plan, visited_urls, visited_urls_lock)
-                record_tool_result(
+                step_result = _run_single_tool_step(
+                    step, plan, visited_urls, visited_urls_lock, settings_obj
+                )
+                actual_arguments = step_result.step.get("arguments") or arguments
+                trace = record_tool_result(
                     db,
                     run_id,
                     step_no,
                     tool_name,
-                    arguments,
+                    actual_arguments,
                     step_result.result,
                     step_result.latency_ms,
                 )
-                observations.append(_observation(step, step_result.result))
+                observation = _observation(step, step_result.result)
+                observation["trace_id"] = trace.trace_id
+                observations.append(observation)
                 run = store.update_agent_run_progress(
                     db,
                     run_id,
@@ -409,6 +432,44 @@ def run_plan_parallel(
                     total_tool_calls_delta=1,
                     latency_ms_delta=step_result.latency_ms,
                 )
+
+                def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
+                    refetch_started = perf_counter()
+                    refetch_result = execute_tool(name, refetch_args)
+                    return refetch_result, int((perf_counter() - refetch_started) * 1000)
+
+                refetches = execute_targeted_refetches(
+                    tool_name,
+                    actual_arguments,
+                    step_result.result,
+                    plan,
+                    settings_obj,
+                    execute=_execute_refetch,
+                    max_rounds=settings_obj.max_refetch_rounds - refetch_rounds_used,
+                    starting_round=refetch_rounds_used,
+                )
+                refetch_rounds_used += len(refetches)
+                for refetch in refetches:
+                    trace = record_tool_result(
+                        db,
+                        run_id,
+                        step_no,
+                        tool_name,
+                        refetch.arguments,
+                        refetch.result,
+                        refetch.latency_ms,
+                        sub_query=f"source_refetch_round:{refetch.round_no}",
+                    )
+                    observation = _observation(step, refetch.result)
+                    observation["trace_id"] = trace.trace_id
+                    observations.append(observation)
+                    run = store.update_agent_run_progress(
+                        db,
+                        run_id,
+                        step_no,
+                        total_tool_calls_delta=1,
+                        latency_ms_delta=refetch.latency_ms,
+                    )
                 continue
 
             parallel_results = _run_parallel_group(
@@ -419,7 +480,7 @@ def run_plan_parallel(
                 step_no = int(step.get("step_no") or 0)
                 tool_name = str(step.get("tool_name") or "")
                 arguments = step.get("arguments") or {}
-                record_tool_result(
+                trace = record_tool_result(
                     db,
                     run_id,
                     step_no,
@@ -428,7 +489,46 @@ def run_plan_parallel(
                     step_result.result,
                     step_result.latency_ms,
                 )
-                observations.append(_observation(step, step_result.result))
+                observation = _observation(step, step_result.result)
+                observation["trace_id"] = trace.trace_id
+                observations.append(observation)
+                def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
+                    refetch_started = perf_counter()
+                    refetch_result = execute_tool(name, refetch_args)
+                    return refetch_result, int((perf_counter() - refetch_started) * 1000)
+
+                refetches = execute_targeted_refetches(
+                    tool_name,
+                    arguments,
+                    step_result.result,
+                    plan,
+                    settings_obj,
+                    execute=_execute_refetch,
+                    max_rounds=settings_obj.max_refetch_rounds - refetch_rounds_used,
+                    starting_round=refetch_rounds_used,
+                )
+                refetch_rounds_used += len(refetches)
+                for refetch in refetches:
+                    trace = record_tool_result(
+                        db,
+                        run_id,
+                        step_no,
+                        tool_name,
+                        refetch.arguments,
+                        refetch.result,
+                        refetch.latency_ms,
+                        sub_query=f"source_refetch_round:{refetch.round_no}",
+                    )
+                    observation = _observation(step, refetch.result)
+                    observation["trace_id"] = trace.trace_id
+                    observations.append(observation)
+                    run = store.update_agent_run_progress(
+                        db,
+                        run_id,
+                        step_no,
+                        total_tool_calls_delta=1,
+                        latency_ms_delta=refetch.latency_ms,
+                    )
             if parallel_results:
                 max_step = max(int(item.step.get("step_no") or 0) for item in parallel_results)
                 run = store.update_agent_run_progress(
@@ -479,6 +579,8 @@ def run_plan_parallel(
             reference_verification_reports,
             traces,
         )
+        traces = store.list_tool_traces(db, run_id)
+        _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
         run = store.update_agent_run_status(db, run_id, "completed", None)
         _after_run_completed(db, run, markdown, step_no=0)
         return _summary(run)

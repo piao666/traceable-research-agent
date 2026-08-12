@@ -346,6 +346,23 @@ def _export_run_evidence(
     return export_evidence_bundle(bundle, export_format)
 
 
+def _persist_plan_config_snapshot(
+    db: Session,
+    run_id: str,
+    safe_config: dict[str, Any],
+    plan: dict[str, Any],
+) -> None:
+    snapshot = dict(safe_config)
+    snapshot.update(
+        {
+            "retrieval_profile": plan.get("retrieval_profile"),
+            "source_policy_version": plan.get("policy_version"),
+            "profile_constraints": plan.get("profile_constraints") or {},
+        }
+    )
+    store.update_agent_run_config_snapshot(db, run_id, snapshot)
+
+
 @router.post("", response_model=TaskCreateResponse)
 async def create_task(
     task_request: TaskCreateRequest,
@@ -384,6 +401,7 @@ async def create_task(
         plan.setdefault("execution_mode", settings.execution_mode)
         memory_recall_trace = plan.pop("memory_recall_trace", None)
         run = store.update_agent_run_plan(db, run.run_id, plan)
+        _persist_plan_config_snapshot(db, run.run_id, safe_config, plan)
         _record_memory_recall_trace(db, run.run_id, memory_recall_trace)
         run = store.update_agent_run_status(db, run.run_id, WAITING_HUMAN_PLAN, None)
         return TaskCreateResponse(
@@ -409,6 +427,7 @@ async def create_task(
     plan.setdefault("execution_mode", settings.execution_mode)
     memory_recall_trace = plan.pop("memory_recall_trace", None)
     run = store.update_agent_run_plan(db, run.run_id, plan)
+    _persist_plan_config_snapshot(db, run.run_id, safe_config, plan)
 
     # ── Phase 5: record memory_recall trace event ─────────────────
     _record_memory_recall_trace(db, run.run_id, memory_recall_trace)

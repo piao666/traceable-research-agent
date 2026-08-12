@@ -7,15 +7,19 @@ and extraction metadata.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import re
 import time
+from contextlib import nullcontext
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from app.config import Settings, settings
 from app.tools.base import ToolResult
+from app.tools.fetch_cache import FetchCache, FetchCacheEntry
 from app.tools.web_content_cleaner import clean_web_snippet
 
 
@@ -85,7 +89,7 @@ def _is_pdf_content_type(content_type: str) -> bool:
 
 def _check_pdf_magic(data: bytes) -> bool:
     """Check if data starts with PDF magic bytes."""
-    return data[:4] == PDF_MAGIC if len(data) >= 4 else False
+    return data.startswith(PDF_MAGIC)
 
 
 def _extract_title(html: str, url: str) -> str:
@@ -156,7 +160,12 @@ def _extract_raw_regex(html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _extract_body_v2(html: str, url: str) -> tuple[str, str, dict[str, Any]]:
+def _extract_body_v2(
+    html: str,
+    url: str,
+    *,
+    trafilatura_enabled: bool = True,
+) -> tuple[str, str, dict[str, Any]]:
     """Multi-level extraction with metadata.
 
     Returns: (content, extraction_method, metadata)
@@ -168,7 +177,7 @@ def _extract_body_v2(html: str, url: str) -> tuple[str, str, dict[str, Any]]:
 
     # Level 1: trafilatura
     traf_start = time.monotonic()
-    traf_result = _extract_with_trafilatura(html, url)
+    traf_result = _extract_with_trafilatura(html, url) if trafilatura_enabled else None
     traf_ms = int((time.monotonic() - traf_start) * 1000)
     if traf_result:
         extraction_meta["extraction_chain"].append({
@@ -183,6 +192,7 @@ def _extract_body_v2(html: str, url: str) -> tuple[str, str, dict[str, Any]]:
         "method": EXTRACT_TRAFILATURA,
         "success": False,
         "duration_ms": traf_ms,
+        "disabled": not trafilatura_enabled,
     })
 
     # Level 2: BeautifulSoup
@@ -243,7 +253,13 @@ def _classify_content_basis(
     return "full_text"
 
 
-def web_fetch(arguments: dict[str, Any]) -> ToolResult:
+def web_fetch(
+    arguments: dict[str, Any],
+    *,
+    settings_obj: Settings | None = None,
+    cache: FetchCache | None = None,
+    client: httpx.Client | None = None,
+) -> ToolResult:
     """Fetch full-text content from a list of URLs via httpx + multi-level extraction.
 
     Phase 8.2: trafilatura → BeautifulSoup → raw regex fallback chain,
@@ -267,12 +283,25 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
     timeout_seconds = int(arguments.get("timeout_seconds", 10))
     timeout_seconds = max(3, min(timeout_seconds, 60))
 
-    # ── Phase 8.2: config-driven limits ───────────────────────────
-    try:
-        from app.config import settings as _fetch_settings
-        max_response_bytes = _fetch_settings.web_fetcher_max_response_bytes
-    except Exception:
-        max_response_bytes = 10_485_760  # 10 MB default
+    active = settings_obj or settings
+    max_response_bytes = active.web_fetcher_max_response_bytes
+    cache_enabled = active.web_fetcher_cache_enabled
+    fetch_cache = cache
+    cache_init_error: str | None = None
+    if cache_enabled and fetch_cache is None:
+        try:
+            fetch_cache = FetchCache(
+                active.web_fetcher_cache_dir,
+                active.web_fetcher_cache_ttl_seconds,
+            )
+        except Exception as exc:
+            cache_init_error = type(exc).__name__
+            fetch_cache = None
+    cache_params = {
+        "extractor_version": "web-fetch-v2",
+        "trafilatura_enabled": active.web_fetcher_trafilatura_enabled,
+        "max_response_bytes": max_response_bytes,
+    }
 
     pages: list[dict[str, Any]] = []
     validated: list[tuple[str, str]] = []
@@ -290,6 +319,7 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
                 "content": "",
                 "content_basis": "snippet_only",
                 "extraction_method": EXTRACT_NONE,
+                "cache_status": "disabled" if not cache_enabled else "not_applicable",
                 "error": "URL failed validation (non-http scheme or private IP).",
             })
 
@@ -307,16 +337,22 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
                 "tool_name": "web_fetcher",
                 "fetcher_backend": "httpx_beautifulsoup",
                 "read_only": True,
+                "cache_enabled": cache_enabled,
+                "cache_init_error": cache_init_error,
             },
         )
 
     # Fetch each URL
-    with httpx.Client(
-        timeout=timeout_seconds,
-        headers={"User-Agent": USER_AGENT},
-        follow_redirects=True,
-        max_redirects=5,
-    ) as client:
+    owned_client = None
+    if client is None:
+        owned_client = httpx.Client(
+            timeout=timeout_seconds,
+            headers={"User-Agent": USER_AGENT},
+            follow_redirects=True,
+            max_redirects=5,
+        )
+    client_context = owned_client if owned_client is not None else nullcontext(client)
+    with client_context as active_client:
         for original_url, valid_url in validated:
             fetch_error: str | None = None
             title = valid_url
@@ -327,12 +363,72 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
             started = time.monotonic()
             content_type = ""
             redirect_chain: list[str] = []
+            cache_status = "disabled" if not cache_enabled else "miss"
+            cached_entry: FetchCacheEntry | None = None
+            cache_age_seconds: float | None = None
+
+            if cache_enabled and fetch_cache is not None:
+                cached_entry, cache_status = fetch_cache.lookup(valid_url, cache_params)
+                if cached_entry is not None:
+                    cache_age_seconds = cached_entry.age_seconds
+                if cache_status == "hit" and cached_entry is not None:
+                    content = cached_entry.content
+                    extraction_method = cached_entry.extraction_method
+                    extraction_meta = dict(cached_entry.metadata.get("extraction_meta") or {})
+                    title = str(cached_entry.metadata.get("title") or valid_url)
+                    content_type = cached_entry.content_type
+                    raw_length = int(cached_entry.metadata.get("raw_length") or len(content))
+                    content_basis = _classify_content_basis(
+                        raw_length,
+                        len(content),
+                        max_chars,
+                        None,
+                        extraction_method,
+                    )
+                    page_entry = {
+                        "url": valid_url,
+                        "final_url": cached_entry.metadata.get("final_url") or valid_url,
+                        "title": title,
+                        "content": content[:max_chars],
+                        "content_basis": content_basis,
+                        "extraction_method": extraction_method,
+                        "extraction_confidence": cached_entry.extraction_confidence,
+                        "extraction_chain": extraction_meta.get("extraction_chain") or [],
+                        "fetched_at_ms": 0,
+                        "content_type": content_type,
+                        "cache_status": "hit",
+                        "cache_hit": True,
+                        "cache_age_seconds": round(cache_age_seconds or 0.0, 3),
+                        "cache_fetched_at": cached_entry.fetched_at,
+                        "content_hash": cached_entry.content_hash,
+                    }
+                    redirect_chain = list(cached_entry.metadata.get("redirect_chain") or [])
+                    if redirect_chain:
+                        page_entry["redirect_chain"] = redirect_chain
+                    pages.append(page_entry)
+                    continue
 
             try:
-                response = client.get(valid_url)
+                request_headers: dict[str, str] = {}
+                if cache_status == "expired" and cached_entry and cached_entry.etag:
+                    request_headers["If-None-Match"] = cached_entry.etag
+                response = active_client.get(valid_url, headers=request_headers or None)
+
+                if response.status_code == 304 and cached_entry is not None:
+                    cached_entry.fetched_at = time.time()
+                    cached_entry.ttl_seconds = active.web_fetcher_cache_ttl_seconds
+                    if fetch_cache is not None:
+                        fetch_cache.put(cached_entry)
+                    content = cached_entry.content
+                    extraction_method = cached_entry.extraction_method
+                    extraction_meta = dict(cached_entry.metadata.get("extraction_meta") or {})
+                    title = str(cached_entry.metadata.get("title") or valid_url)
+                    content_type = cached_entry.content_type
+                    raw_html = " " * int(cached_entry.metadata.get("raw_length") or len(content))
+                    cache_status = "revalidated"
 
                 # Record redirect chain for audit
-                if response.history:
+                if response.status_code != 304 and response.history:
                     redirect_chain = [str(r.url) for r in response.history]
                     redirect_chain.append(str(response.url))
                     # ── Phase 8.2: re-check SSRF after redirects ─────
@@ -347,12 +443,16 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
                             "content": "",
                             "content_basis": content_basis,
                             "extraction_method": EXTRACT_NONE,
+                            "cache_status": cache_status,
+                            "cache_hit": False,
                             "error": fetch_error,
                             "redirect_chain": redirect_chain,
                         })
                         continue
 
-                if response.status_code == 200:
+                if response.status_code == 304 and cached_entry is not None:
+                    pass
+                elif response.status_code == 200:
                     content_type = response.headers.get("content-type", "")
 
                     # ── Phase 8.2: PDF routing ──────────────────────
@@ -368,6 +468,8 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
                                 "content_basis": "snippet_only",
                                 "extraction_method": EXTRACT_NONE,
                                 "content_type": "application/pdf",
+                                "cache_status": cache_status,
+                                "cache_hit": False,
                                 "error": fetch_error,
                                 "redirect_chain": redirect_chain if redirect_chain else None,
                             })
@@ -389,7 +491,11 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
                     title = _extract_title(raw_html, valid_url)
 
                     # ── Phase 8.2: multi-level extraction ───────────
-                    content, extraction_method, extraction_meta = _extract_body_v2(raw_html, valid_url)
+                    content, extraction_method, extraction_meta = _extract_body_v2(
+                        raw_html,
+                        valid_url,
+                        trafilatura_enabled=active.web_fetcher_trafilatura_enabled,
+                    )
                 else:
                     fetch_error = f"HTTP {response.status_code}"
             except httpx.TimeoutException:
@@ -414,6 +520,8 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
                 "content_basis": content_basis,
                 "extraction_method": extraction_method,
                 "fetched_at_ms": elapsed_ms,
+                "cache_status": cache_status,
+                "cache_hit": cache_status in {"hit", "revalidated"},
             }
             if fetch_error:
                 page_entry["error"] = fetch_error
@@ -424,6 +532,40 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
                 page_entry["redirect_chain"] = redirect_chain
             if content_type:
                 page_entry["content_type"] = content_type
+            if cache_age_seconds is not None:
+                page_entry["cache_age_seconds"] = round(cache_age_seconds, 3)
+
+            if (
+                cache_enabled
+                and fetch_cache is not None
+                and not fetch_error
+                and content
+                and extraction_method != EXTRACT_NONE
+                and cache_status != "revalidated"
+            ):
+                content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                entry = FetchCacheEntry(
+                    cache_key=fetch_cache._compute_key(valid_url, cache_params),
+                    url=valid_url,
+                    content_hash=content_hash,
+                    content=content,
+                    content_type=content_type or "text/html",
+                    fetched_at=time.time(),
+                    ttl_seconds=active.web_fetcher_cache_ttl_seconds,
+                    etag=response.headers.get("etag"),
+                    extraction_method=extraction_method,
+                    extraction_confidence=float(extraction_meta.get("extraction_confidence") or 0.0),
+                    metadata={
+                        "title": title,
+                        "final_url": str(response.url),
+                        "raw_length": len(raw_html),
+                        "redirect_chain": redirect_chain,
+                        "extraction_meta": extraction_meta,
+                    },
+                )
+                if fetch_cache.put(entry):
+                    page_entry["cache_stored"] = True
+                    page_entry["content_hash"] = content_hash
             pages.append(page_entry)
 
     fetched_count = sum(1 for p in pages if not p.get("error"))
@@ -448,5 +590,12 @@ def web_fetch(arguments: dict[str, Any]) -> ToolResult:
             "fetcher_backend": "httpx_multi_level",
             "read_only": True,
             "result_count": len(pages),
+            "cache_enabled": cache_enabled,
+            "cache_init_error": cache_init_error,
+            "cache_hits": sum(1 for page in pages if page.get("cache_status") == "hit"),
+            "cache_revalidated": sum(1 for page in pages if page.get("cache_status") == "revalidated"),
+            "cache_misses": sum(1 for page in pages if page.get("cache_status") == "miss"),
+            "cache_expired": sum(1 for page in pages if page.get("cache_status") == "expired"),
+            "cache_corrupt": sum(1 for page in pages if page.get("cache_status") == "corrupt"),
         },
     )

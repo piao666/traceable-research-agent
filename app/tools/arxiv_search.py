@@ -54,11 +54,11 @@ def _parse_paper(entry: ET.Element) -> dict[str, Any]:
         el = entry.find(f"arxiv:{tag}", NAMESPACES)
         return (el.text or "").strip() if el is not None and el.text else ""
 
-    authors = [
-        (author.find("atom:name", NAMESPACES) or ET.Element("name")).text or ""
-        for author in entry.findall("atom:author", NAMESPACES)
-    ]
-    authors = [a.strip() for a in authors if a.strip()]
+    authors = []
+    for author in entry.findall("atom:author", NAMESPACES):
+        name = author.find("atom:name", NAMESPACES)
+        if name is not None and name.text and name.text.strip():
+            authors.append(name.text.strip())
 
     links = entry.findall("atom:link", NAMESPACES)
     pdf_url = ""

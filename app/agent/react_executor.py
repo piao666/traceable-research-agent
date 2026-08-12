@@ -15,7 +15,12 @@ from app.agent.file_access_policy import (
     is_path_approved,
     resolve_file_reader_path,
 )
-from app.agent.executor import _persist_citation_validation, _persist_reference_verification, run_plan
+from app.agent.executor import (
+    _check_profile_quota,
+    _persist_citation_validation,
+    _persist_reference_verification,
+    run_plan,
+)
 from app.agent.report_generation import resolve_report_llm_client
 from app.agent.react_prompt import build_react_messages
 from app.agent.react_schema import (
@@ -27,6 +32,12 @@ from app.agent.react_schema import (
     validate_react_decision,
 )
 from app.agent.reporter import generate_markdown_report, save_report
+from app.agent.source_governance import (
+    execute_targeted_refetches,
+    govern_tool_result,
+    persisted_refetch_rounds,
+    prepare_tool_arguments,
+)
 from app.config import Settings
 from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
@@ -349,6 +360,8 @@ def _complete_report(
         reference_verification_reports,
         traces,
     )
+    traces = store.list_tool_traces(db, run_id)
+    _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
     run = store.update_agent_run_status(db, run_id, "completed", None)
 
     # ── Phase 6: Summarize LLM token/cost ─────────────────────────────
@@ -441,6 +454,10 @@ def run_react_task(
     state = plan.get("react_state")
     if not isinstance(state, dict):
         state = _initial_state(settings, provider, model)
+    state["source_refetch_rounds_used"] = max(
+        int(state.get("source_refetch_rounds_used") or 0),
+        persisted_refetch_rounds(store.list_tool_traces(db, run_id)),
+    )
     state["llm_provider"] = provider
     state["llm_model"] = model
     plan["requested_execution_mode"] = "react"
@@ -754,14 +771,21 @@ def run_react_task(
             store.update_agent_run_progress(db, run_id, step_no)
             return _complete_report(db, run_id, plan, state, "report_generated", settings, client)
 
+        governed_args = prepare_tool_arguments(
+            decision.action,
+            decision.args,
+            plan,
+            settings,
+        )
         execution_args = (
-            file_reader_execution_arguments(decision.args, plan)
+            file_reader_execution_arguments(governed_args, plan)
             if decision.action == "file_reader"
-            else decision.args
+            else governed_args
         )
         started = perf_counter()
         result = execute_tool(decision.action, execution_args)
         latency_ms = int((perf_counter() - started) * 1000)
+        result = govern_tool_result(decision.action, result, plan, settings)
         observation_summary = _observation_summary(decision.action, result)
         metadata = _react_metadata(decision, observation_summary, count, state)
         metadata.update(result.metadata)
@@ -800,6 +824,72 @@ def run_react_task(
             total_tool_calls_delta=1,
             latency_ms_delta=latency_ms,
         )
+
+        refetch_rounds_used = int(state.get("source_refetch_rounds_used") or 0)
+
+        def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
+            refetch_started = perf_counter()
+            refetch_result = execute_tool(name, refetch_args)
+            return refetch_result, int((perf_counter() - refetch_started) * 1000)
+
+        refetches = execute_targeted_refetches(
+            decision.action,
+            governed_args,
+            result,
+            plan,
+            settings,
+            execute=_execute_refetch,
+            max_rounds=settings.max_refetch_rounds - refetch_rounds_used,
+            starting_round=refetch_rounds_used,
+        )
+        for refetch in refetches:
+            refetch_summary = _observation_summary(decision.action, refetch.result)
+            refetch_metadata = _react_metadata(
+                decision,
+                refetch_summary,
+                count,
+                state,
+                source_refetch_round=refetch.round_no,
+            )
+            refetch_metadata.update(refetch.result.metadata)
+            refetch_trace_result = ToolResult(
+                success=refetch.result.success,
+                output=refetch.result.output,
+                output_summary=refetch_summary,
+                error_message=refetch.result.error_message,
+                metadata=refetch_metadata,
+            )
+            record_tool_result(
+                db,
+                run_id,
+                step_no,
+                decision.action,
+                {"action": decision.action, "args": refetch.arguments},
+                refetch_trace_result,
+                refetch.latency_ms,
+                sub_query=f"source_refetch_round:{refetch.round_no}",
+            )
+            _append_observation(
+                state,
+                step_no,
+                decision,
+                refetch_summary,
+                refetch.result.success,
+                refetch.result.error_message,
+                refetch_metadata,
+                output=refetch.result.output,
+            )
+            store.update_agent_run_progress(
+                db,
+                run_id,
+                step_no,
+                total_tool_calls_delta=1,
+                latency_ms_delta=refetch.latency_ms,
+            )
+        if refetches:
+            state["source_refetch_rounds_used"] = refetch_rounds_used + len(refetches)
+            plan["react_state"] = state
+            _persist_plan(db, run_id, plan)
 
     reason = f"react_max_steps reached: limit={settings.react_max_steps}."
     record_trace_event(

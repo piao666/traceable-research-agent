@@ -59,6 +59,7 @@ class AcademicSearchTests(unittest.TestCase):
           xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
           <opensearch:totalResults>1</opensearch:totalResults><entry>
           <id>paper-1</id><title>Title</title><summary>Summary</summary>
+          <author><name>Ada Smith</name></author>
           <arxiv:primary_category term="cs.AI"/><category term="cs.AI"/><category term="cs.CL"/>
           </entry></feed>'''
         seen_url = ""
@@ -75,6 +76,7 @@ class AcademicSearchTests(unittest.TestCase):
 
         query = parse_qs(urlsplit(seen_url).query)["search_query"][0]
         self.assertEqual(query, "all:agent safety")
+        self.assertEqual(result.output["papers"][0]["authors"], ["Ada Smith"])
         self.assertEqual(result.output["papers"][0]["primary_category"], "cs.AI")
         self.assertEqual(result.output["papers"][0]["categories"], ["cs.AI", "cs.CL"])
 

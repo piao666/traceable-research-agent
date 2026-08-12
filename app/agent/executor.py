@@ -11,6 +11,12 @@ from sqlalchemy.orm import Session
 from app.agent.file_access_policy import file_reader_execution_arguments
 from app.agent.report_generation import resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
+from app.agent.source_governance import (
+    execute_targeted_refetches,
+    govern_tool_result,
+    persisted_refetch_rounds,
+    prepare_tool_arguments,
+)
 from app.config import Settings, settings as _exec_settings
 from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
@@ -269,27 +275,39 @@ def _resolve_arguments_from(
         return step.get("arguments") or {}
 
     # Find the observation from the referenced step
-    source_obs = None
-    for obs in observations:
-        if obs.get("step_no") == source_step_no:
-            source_obs = obs
-            break
-
-    if source_obs is None:
+    source_observations = [
+        obs for obs in observations if obs.get("step_no") == source_step_no
+    ]
+    if not source_observations:
         return step.get("arguments") or {}
 
-    source_output = source_obs.get("output")
-    if not isinstance(source_output, dict):
-        return step.get("arguments") or {}
-
-    resolved_value = source_output.get(field)
+    resolved_values = [
+        output.get(field)
+        for obs in source_observations
+        if isinstance((output := obs.get("output")), dict)
+        and output.get(field) is not None
+    ]
+    resolved_value = resolved_values[0] if resolved_values else None
 
     # For tavily_search results → extract URLs
-    if field == "results" and isinstance(resolved_value, list):
+    if field in {"results", "papers"} and resolved_values:
         urls: list[str] = []
-        for item in resolved_value:
-            if isinstance(item, dict) and item.get("url"):
-                urls.append(str(item["url"]))
+        for value in resolved_values:
+            if not isinstance(value, list):
+                continue
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                url = next(
+                    (
+                        str(item[key])
+                        for key in ("url", "abstract_url", "openAccessUrl", "pdf_url", "id")
+                        if str(item.get(key) or "").startswith(("http://", "https://"))
+                    ),
+                    "",
+                )
+                if url and url not in urls:
+                    urls.append(url)
         if urls:
             merged = dict(step.get("arguments") or {})
             merged["urls"] = urls
@@ -351,7 +369,7 @@ def _check_profile_quota(
     try:
         from app.evidence.policy import T0, T1, T2, load_source_policy, SourceCandidate
 
-        policy = load_source_policy(settings.source_policy_path)
+        policy = load_source_policy(_exec_settings.source_policy_path)
         profile_name = plan.get("retrieval_profile", "generic")
 
         # Count tiers from documents
@@ -420,6 +438,7 @@ def run_plan(
     steps = plan.get("steps") or []
     observations: list[dict[str, Any]] = []
     resume_after_step = run.current_step
+    refetch_rounds_used = persisted_refetch_rounds(store.list_tool_traces(db, run_id))
 
     try:
         run = store.update_agent_run_status(db, run_id, "running", None)
@@ -466,6 +485,12 @@ def run_plan(
             if step.get("arguments_from"):
                 arguments = _resolve_arguments_from(step, observations)
 
+            arguments = prepare_tool_arguments(
+                tool_name,
+                arguments,
+                plan,
+                settings_obj,
+            )
             execution_arguments = (
                 file_reader_execution_arguments(arguments, plan)
                 if tool_name == "file_reader"
@@ -474,9 +499,13 @@ def run_plan(
             started = perf_counter()
             result = execute_tool(tool_name, execution_arguments)
             latency_ms = int((perf_counter() - started) * 1000)
-            record_tool_result(db, run_id, step_no, tool_name, arguments, result, latency_ms)
+            result = govern_tool_result(tool_name, result, plan, settings_obj)
+            trace = record_tool_result(
+                db, run_id, step_no, tool_name, arguments, result, latency_ms
+            )
             observations.append(
                 {
+                    "trace_id": trace.trace_id,
                     "step_no": step_no,
                     "tool_name": tool_name,
                     "success": result.success,
@@ -493,6 +522,53 @@ def run_plan(
                 total_tool_calls_delta=1,
                 latency_ms_delta=latency_ms,
             )
+
+            def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
+                refetch_started = perf_counter()
+                refetch_result = execute_tool(name, refetch_args)
+                return refetch_result, int((perf_counter() - refetch_started) * 1000)
+
+            refetches = execute_targeted_refetches(
+                tool_name,
+                arguments,
+                result,
+                plan,
+                settings_obj,
+                execute=_execute_refetch,
+                max_rounds=settings_obj.max_refetch_rounds - refetch_rounds_used,
+                starting_round=refetch_rounds_used,
+            )
+            refetch_rounds_used += len(refetches)
+            for refetch in refetches:
+                trace = record_tool_result(
+                    db,
+                    run_id,
+                    step_no,
+                    tool_name,
+                    refetch.arguments,
+                    refetch.result,
+                    refetch.latency_ms,
+                    sub_query=f"source_refetch_round:{refetch.round_no}",
+                )
+                observations.append(
+                    {
+                        "trace_id": trace.trace_id,
+                        "step_no": step_no,
+                        "tool_name": tool_name,
+                        "success": refetch.result.success,
+                        "output_summary": refetch.result.output_summary,
+                        "error_message": refetch.result.error_message,
+                        "output": refetch.result.output,
+                        "metadata": refetch.result.metadata,
+                    }
+                )
+                run = store.update_agent_run_progress(
+                    db,
+                    run_id,
+                    step_no,
+                    total_tool_calls_delta=1,
+                    latency_ms_delta=refetch.latency_ms,
+                )
 
         traces = store.list_tool_traces(db, run_id)
         run.status = "completed"

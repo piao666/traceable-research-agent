@@ -97,12 +97,7 @@
       "jianshu.com": "T2"
     },
     "org_verified_official_repos": {
-      "github.com/pytorch/pytorch": "T0",
-      "github.com/tensorflow/tensorflow": "T0",
-      "github.com/python/cpython": "T0",
-      "github.com/microsoft/vscode": "T0",
-      "github.com/facebook/react": "T0",
-      "github.com/apache": "T0"
+      "github.com/example-org/verified-repo": "T0"
     }
   },
   "retrieval_profiles": {

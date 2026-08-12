@@ -62,6 +62,28 @@ def update_agent_run_plan(db: Session, run_id: str, plan: dict) -> AgentRun:
     return run
 
 
+def update_agent_run_config_snapshot(
+    db: Session,
+    run_id: str,
+    snapshot: dict,
+) -> AgentRun:
+    """Persist the safe runtime and task-specific execution constraints."""
+
+    run = db.get(AgentRun, run_id)
+    if run is None:
+        raise ValueError("Task run not found")
+    run.run_config_snapshot = json.dumps(
+        snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    run.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
 def update_agent_run_status(
     db: Session,
     run_id: str,

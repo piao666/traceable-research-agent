@@ -119,6 +119,11 @@ def tavily_search(
 
     include_answer = bool(arguments.get("include_answer", False))
     include_raw_content = bool(arguments.get("include_raw_content", False))
+    include_domains = [
+        str(domain).strip().lower()
+        for domain in (arguments.get("include_domains") or [])
+        if str(domain).strip()
+    ][:20]
     body = json.dumps(
         {
             "query": query,
@@ -126,6 +131,7 @@ def tavily_search(
             "search_depth": search_depth,
             "include_answer": include_answer,
             "include_raw_content": include_raw_content,
+            "include_domains": include_domains,
         }
     ).encode("utf-8")
     request = Request(

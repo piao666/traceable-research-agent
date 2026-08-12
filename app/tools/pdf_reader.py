@@ -313,6 +313,7 @@ def _extract_pdf(
                     text = text[:remaining] if remaining > 0 else ""
                     char_count = len(text)
                     truncated = True
+                    integrity["truncated"] = True
 
                 pages.append({
                     "page_number": page_idx + 1,
