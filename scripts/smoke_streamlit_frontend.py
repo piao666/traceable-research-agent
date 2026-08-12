@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import py_compile
 import re
+import socket
+import subprocess
 from pathlib import Path
 
 
@@ -18,6 +21,12 @@ START_SCRIPT = ROOT / "start_traceable_demo.bat"
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def _unused_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as candidate:
+        candidate.bind(("127.0.0.1", 0))
+        return int(candidate.getsockname()[1])
 
 
 def main() -> None:
@@ -109,11 +118,74 @@ def main() -> None:
     assert_true("HITL 人工确认流程" not in source, "standalone HITL template should be removed")
     assert_true("MCP 已注册" in source and "远端 MCP 已配置但尚未注册" in source, "MCP registration status should be visible")
     assert_true("重新注册远端 MCP" in source, "MCP refresh action should be visible")
-    assert_true("MCP_CHANNEL_READONLY_SERVERS" in start_script, "demo starter should configure source-pack readonly MCP")
-    assert_true("source_pack=http://127.0.0.1:9001/mcp" in start_script, "demo starter should use parseable source-pack shorthand")
-    assert_true("Waiting for MCP Source Pack Bridge readiness" in start_script, "demo starter should wait for bridge readiness")
-    assert_true(start_script.find("Waiting for MCP Source Pack Bridge readiness") < start_script.find("[1/3] FastAPI backend"), "FastAPI should start after bridge readiness wait")
-    assert_true("-Providers 'firecrawl,exa'" in start_script, "demo starter should quote comma-separated providers")
+    assert_true('%~dp0.' in start_script, "demo starter should resolve the repository from its own location")
+    assert_true(
+        not re.search(r'set\s+"PROJECT_DIR=[A-Za-z]:\\', start_script, re.IGNORECASE),
+        "demo starter must not contain a machine-specific project path",
+    )
+    assert_true("--check" in start_script, "demo starter should provide a non-launching prerequisite check")
+    assert_true("--with-mcp" in start_script, "demo starter should expose MCP as an explicit option")
+    assert_true(
+        'if /I "%WITH_MCP%"=="true"' in start_script,
+        "optional MCP startup should be guarded by the explicit option",
+    )
+    assert_true("MCP_CHANNEL_READONLY_SERVERS" in start_script, "optional MCP startup should configure readonly discovery")
+    assert_true("source_pack=http://127.0.0.1:%TRACEABLE_MCP_PORT%/mcp" in start_script, "optional MCP should use parseable source-pack shorthand")
+    assert_true("Waiting for optional MCP Source Pack readiness" in start_script, "optional MCP startup should wait for readiness")
+    assert_true("-Providers 'firecrawl,exa'" not in start_script, "demo starter should not force a fixed provider pair")
+    assert_true("--host 127.0.0.1 --port $env:TRACEABLE_API_PORT" in start_script, "FastAPI should bind to the configured local port")
+    assert_true("--server.address 127.0.0.1" in start_script, "Streamlit should bind to the documented local address")
+    assert_true("--server.headless true" in start_script, "Streamlit should start headlessly")
+    assert_true("[System.Net.Sockets.TcpListener]::new" in start_script, "port checks should test an actual socket bind")
+    if os.name == "nt":
+        check_env = os.environ.copy()
+        check_env.update(
+            {
+                "TRACEABLE_API_PORT": str(_unused_local_port()),
+                "TRACEABLE_STREAMLIT_PORT": str(_unused_local_port()),
+                "TRACEABLE_MCP_PORT": str(_unused_local_port()),
+            }
+        )
+        check = subprocess.run(
+            ["cmd.exe", "/d", "/c", str(START_SCRIPT), "--check"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            env=check_env,
+        )
+        assert_true(
+            check.returncode == 0,
+            f"demo starter --check failed ({check.returncode}): {check.stdout}{check.stderr}",
+        )
+        assert_true("Startup checks passed for FastAPI and Streamlit" in check.stdout, "startup check success output missing")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied_mcp_port:
+            occupied_mcp_port.bind(("127.0.0.1", 0))
+            occupied_mcp_port.listen(1)
+            occupied_port = int(occupied_mcp_port.getsockname()[1])
+            occupied_env = {**check_env, "TRACEABLE_MCP_PORT": str(occupied_port)}
+            core_check = subprocess.run(
+                ["cmd.exe", "/d", "/c", str(START_SCRIPT), "--check"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                env=occupied_env,
+            )
+            mcp_check = subprocess.run(
+                ["cmd.exe", "/d", "/c", str(START_SCRIPT), "--check", "--with-mcp"],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                env=occupied_env,
+            )
+        assert_true(core_check.returncode == 0, "core startup check should not depend on the MCP port")
+        assert_true(mcp_check.returncode == 1, "optional MCP startup check should reject its occupied port")
+        assert_true(f"Port {occupied_port} is already in use" in mcp_check.stdout, "occupied optional MCP port error missing")
     assert_true("Exa 负责发现候选来源" in source, "MCP role explanation for Exa/Firecrawl missing")
     assert_true("Context7 adapter 已预留" in source, "Context7 reserved-state explanation missing")
     assert_true("降级状态" in source and "部分降级" in source, "degradation summary should be user-facing")

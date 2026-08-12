@@ -103,6 +103,19 @@ docker compose logs --tail 100 streamlit
 docker compose down
 ```
 
+若使用 Windows 本地虚拟环境，根目录启动脚本会根据自身位置自动解析项目路径，
+并启动 FastAPI 与 Streamlit：
+
+```powershell
+.\start_traceable_demo.bat --check
+.\start_traceable_demo.bat
+```
+
+核心应用不依赖 MCP。若需要同时在 9001 端口启动可选 MCP Source Pack，请使用
+`start_traceable_demo.bat --with-mcp`。
+默认端口不可用时，可在运行脚本前设置 `TRACEABLE_API_PORT`、
+`TRACEABLE_STREAMLIT_PORT` 或 `TRACEABLE_MCP_PORT`。
+
 ## 配置
 
 复制 `.env.example` 为 `.env`，其中包含全部可配置项。`.env` 只供本地使用，

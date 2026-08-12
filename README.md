@@ -110,6 +110,19 @@ without removing that data:
 docker compose down
 ```
 
+For a local Windows virtual environment, the repository-root starter resolves
+the project path from its own location and launches FastAPI plus Streamlit:
+
+```powershell
+.\start_traceable_demo.bat --check
+.\start_traceable_demo.bat
+```
+
+MCP is not required by the core application. To also launch the optional MCP
+Source Pack on port 9001, use `start_traceable_demo.bat --with-mcp`.
+When a default port is unavailable, set `TRACEABLE_API_PORT`,
+`TRACEABLE_STREAMLIT_PORT`, or `TRACEABLE_MCP_PORT` before running the script.
+
 ## Configuration
 
 Copy `.env.example` to `.env`; it documents every available setting. `.env` is
