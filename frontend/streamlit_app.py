@@ -46,29 +46,37 @@ TOOL_CN = {
 RISK_COLOR = {"low": "#15803D", "medium": "#B45309", "high": "#B91C1C"}
 
 DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
+    "自由研究": {
+        "task": "请描述需要研究的问题、期望比较的维度、可用资料或必须核实的来源。",
+        "description": "不预设流程，由系统根据问题自动选择研究策略。",
+        "allowed_tools": None,
+        "scenario_template_key": "auto",
+    },
     "本地资料分析": {
         "task": "结合本地产品资料和示例 SQL 指标，复盘一个 AI 调研功能的效果、风险和下一步优化建议，生成可审计中文报告。",
         "description": "适合演示内部资料复盘：本地文件、只读 SQL 和报告生成。",
-        "allowed_tools": ["file_reader", "sql_query", "report_writer"],
-        "scenario_template_key": "standard",
+        "allowed_tools": None,
+        "scenario_template_key": "auto",
     },
     "联网深度调研": {
         "task": "调研 OpenAI-compatible API 网关产品的竞品格局：比较定价、模型支持、限流策略、文档成熟度和迁移风险，生成带来源链接的中文报告。",
         "description": "适合演示竞品/市场情报：Exa/Tavily 做来源发现，Firecrawl 读取网页正文。",
         "allowed_tools": None,
-        "scenario_template_key": "deep_web_research",
+        "scenario_template_key": "auto",
     },
     "技术文档调研": {
         "task": "比较 FastAPI、LangGraph、MCP SDK 在企业 Agent 工具链落地中的适用边界、集成成本、风险点和推荐采用路径。",
         "description": "适合演示技术选型/供应商评估；Context7 adapter 已预留，当前以已注册的只读 MCP 工具为准。",
         "allowed_tools": None,
-        "scenario_template_key": "technical_docs_research",
+        "scenario_template_key": "auto",
+    },
+    "学术文献综述": {
+        "task": "系统检索并综述近五年关于 AI Agent 评测方法的学术文献，说明检索范围、纳入排除标准、主要结论、证据冲突和研究局限。",
+        "description": "适合论文检索、证据核验和系统综述类问题。",
+        "allowed_tools": None,
+        "scenario_template_key": "auto",
     },
 }
-
-# Dynamically loaded from /api/skills — merged at display time
-_DYNAMIC_SKILLS: dict[str, dict[str, Any]] = {}
-_DYNAMIC_SKILLS_LOADED: bool = False
 
 EXECUTION_MODE_CN = {
     "planned": "固定计划",
@@ -79,7 +87,18 @@ PLANNER_SOURCE_CN = {
     "llm": "LLM 规划器",
     "deterministic": "规则规划器",
     "deterministic_fallback": "规则兜底",
+    "skill": "指定研究流程",
+    "skill_auto": "自动选择研究流程",
 }
+
+MEMORY_KIND_CN = {"preference": "偏好", "interest": "研究兴趣", "fact": "事实"}
+MEMORY_STATUS_CN = {
+    "active": "已启用",
+    "pending": "待确认",
+    "superseded": "已替代",
+    "expired": "已过期",
+}
+MEMORY_METHOD_CN = {"rule": "规则识别", "llm": "模型归纳", "manual": "手动添加"}
 
 STATUS_CN = {
     "pending":            ("⏳", "待执行", "#6B7280"),
@@ -129,35 +148,9 @@ def _template_allowed_tools(template: dict[str, Any]) -> list[str] | None:
     return list(tools) if isinstance(tools, list) else None
 
 
-def _load_dynamic_skills() -> dict[str, dict[str, Any]]:
-    """Fetch skill list from backend and merge with hardcoded templates."""
-    global _DYNAMIC_SKILLS, _DYNAMIC_SKILLS_LOADED
-    if _DYNAMIC_SKILLS_LOADED:
-        return _DYNAMIC_SKILLS
-    try:
-        skills_data = api_get("/api/skills", timeout=5)
-        for skill in skills_data.get("skills") or []:
-            name = str(skill.get("name") or "")
-            if name and name not in DEMO_TEMPLATES:
-                _DYNAMIC_SKILLS[name] = {
-                    "task": "",
-                    "description": str(skill.get("description") or ""),
-                    "allowed_tools": list(skill.get("required_tools") or []),
-                    "scenario_template_key": name,
-                    "skill_name": name,
-                    "is_skill": True,
-                }
-    except ApiError:
-        pass
-    _DYNAMIC_SKILLS_LOADED = True
-    return _DYNAMIC_SKILLS
-
-
 def _all_templates() -> dict[str, dict[str, Any]]:
-    """Merge hardcoded DEMO_TEMPLATES with dynamically loaded skills."""
-    merged = dict(DEMO_TEMPLATES)
-    merged.update(_load_dynamic_skills())
-    return merged
+    """Return user-facing task prompts; Skills stay internal to Planner routing."""
+    return dict(DEMO_TEMPLATES)
 
 
 def _current_template() -> dict[str, Any]:
@@ -208,6 +201,26 @@ html, body, [data-testid="stAppViewContainer"] {
 [data-testid="stSidebar"] {
     background: #F3F6FA;
     border-right: 1px solid var(--ra-border);
+}
+
+[data-testid="stSidebar"] [data-testid="stSidebarContent"] {
+    padding-top: 1.25rem;
+}
+
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"] {
+    gap: 0.5rem;
+}
+
+[data-testid="stSidebar"] hr {
+    margin: 0.55rem 0;
+}
+
+[data-testid="stSidebar"] div[data-testid="stButton"] > button {
+    min-height: 40px;
+}
+
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {
+    margin-top: -0.15rem;
 }
 
 [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
@@ -610,8 +623,6 @@ def init_state() -> None:
         "use_async_run": True,   # async by default to avoid 30s sync timeout
         "realtime_auto_refresh": False,
         "realtime_poll_seconds": 2,
-        # EXECUTION_MODE 由后端 .env 控制，这里只做显示用
-        "execution_mode_display": os.environ.get("EXECUTION_MODE", "planned"),
         "run_id": "",
         "last_task_response": None,
         "last_run_response": None,
@@ -855,9 +866,7 @@ def _sync_template_state() -> None:
     """
     template = _current_template()
     st.session_state.allowed_tools = _template_allowed_tools(template)
-    # Only overwrite task_text for hardcoded templates (not skills)
-    if not template.get("is_skill"):
-        st.session_state.task_text = str(template.get("task") or "")
+    st.session_state.task_text = str(template.get("task") or "")
     for key, empty_value in {
         "run_id": "",
         "last_task_response": None,
@@ -894,6 +903,23 @@ def status_chip(status: str | None) -> str:
 def _execution_mode_label(value: str | None) -> str:
     raw = str(value or "planned")
     return EXECUTION_MODE_CN.get(raw, raw)
+
+
+def _memory_content_cn(content: Any) -> str:
+    """Render historical English rule memories in Chinese without mutating storage."""
+
+    text = str(content or "").strip()
+    match = re.fullmatch(r"User researches (.+)", text, flags=re.IGNORECASE)
+    if match:
+        return f"经常调研：{match.group(1).strip()}"
+    match = re.fullmatch(r"User prefers (Chinese|English) research reports", text, flags=re.IGNORECASE)
+    if match:
+        language = "中文" if match.group(1).lower() == "chinese" else "英文"
+        return f"偏好使用{language}研究报告"
+    match = re.fullmatch(r"User prefers ([A-Z]+) report format", text, flags=re.IGNORECASE)
+    if match:
+        return f"偏好 {match.group(1).upper()} 报告格式"
+    return text
 
 
 def _planner_source_label(value: str | None) -> str:
@@ -1520,13 +1546,17 @@ def render_sidebar() -> None:
                 status_icon = {"active": "✅", "pending": "⏳", "superseded": "📦", "expired": "⏰"}.get(
                     mem.get("status"), "❓"
                 )
+                kind_label = MEMORY_KIND_CN.get(str(mem.get("kind") or ""), "其他")
+                status_label = MEMORY_STATUS_CN.get(str(mem.get("status") or ""), "未知")
+                method_label = MEMORY_METHOD_CN.get(str(mem.get("extraction_method") or ""), "其他方式")
+                content_label = _memory_content_cn(mem.get("content"))
                 with st.expander(
-                    f"{status_icon} [{mem.get('kind', '?')}] {mem.get('content', '')[:60]}…",
+                    f"{status_icon} {kind_label} · {content_label[:42]}",
                     expanded=False,
                 ):
-                    st.caption(f"类型：{mem.get('kind')} | 方式：{mem.get('extraction_method')}")
-                    st.caption(f"置信度：{mem.get('confidence', 0):.1f} | 状态：{mem.get('status')}")
-                    st.text(mem.get("content", ""))
+                    st.caption(f"类型：{kind_label} · 识别方式：{method_label}")
+                    st.caption(f"置信度：{mem.get('confidence', 0):.1f} · 状态：{status_label}")
+                    st.text(content_label)
                     if mem.get("source_run_id"):
                         st.caption(f"来源 Run：{mem['source_run_id'][:16]}…")
                     # Action buttons
@@ -1559,9 +1589,9 @@ def render_sidebar() -> None:
             st.caption("加载中…")
 
         st.divider()
-        st.markdown("**场景模板**")
+        st.markdown("**任务场景**")
         st.selectbox(
-            "选择演示场景",
+            "选择任务示例",
             list(_all_templates().keys()),
             key="selected_template",       # Streamlit 独占管理此 key，禁止在回调外赋值
             on_change=_sync_template_state,
@@ -1571,8 +1601,7 @@ def render_sidebar() -> None:
         template_description = str(template.get("description") or "")
         if template_description:
             st.caption(template_description)
-        if template.get("is_skill"):
-            st.caption(f"📦 Skill 模板 · 工具: {', '.join(template.get('allowed_tools') or [])}")
+        st.caption("研究流程和执行方式由系统根据问题自动判断。")
         scenario_key = _current_scenario_template_key()
         if scenario_key in {"deep_web_research", "technical_docs_research"}:
             try:
@@ -1622,17 +1651,6 @@ def render_sidebar() -> None:
                         st.warning("远端 MCP 未配置，本场景会降级到内置搜索工具。", icon="⚠️")
             except ApiError:
                 st.caption("MCP 状态暂不可用")
-
-        st.divider()
-        st.markdown("**执行模式**")
-        st.selectbox(
-            "执行模式",
-            ["planned", "react"],
-            format_func=lambda x: "固定计划（推荐）" if x == "planned" else "ReAct 动态决策",
-            key="execution_mode_display",
-            label_visibility="collapsed",
-        )
-        st.caption("先生成计划，经确认后执行；过程可追踪、可干预。")
 
         st.divider()
         if st.session_state.get("run_id"):
@@ -1686,11 +1704,11 @@ def tab_task() -> None:
                 "allowed_tools": st.session_state.allowed_tools,
                 "report_type": "summary",
                 "source_mode": st.session_state.get("source_mode_ui", "real"),
-                "execution_mode_override": st.session_state.execution_mode_display,
+                "execution_mode_override": None,
                 "scenario_template": st.session_state.get("selected_template", ""),
                 "scenario_template_key": _current_scenario_template_key(),
                 "session_id": st.session_state.get("active_session_id") or None,
-                "skill_name": template.get("skill_name") or None,
+                "skill_name": "auto",
                 "require_plan_approval": st.session_state.get("require_plan_approval", False),
             }
             try:

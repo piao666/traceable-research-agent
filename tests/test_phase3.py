@@ -567,6 +567,31 @@ class SkillPlannerIntegrationTests(unittest.TestCase):
         self.assertNotEqual(plan.get("planner_source"), "skill")
         self.assertGreaterEqual(len(plan.get("steps", [])), 1)
 
+    def test_plan_task_auto_skill_routing_is_auditable(self):
+        from app.skills.registry import init_skill_registry
+        from app.agent.planner import plan_task
+        from app.tools.defaults import register_default_tools
+
+        register_default_tools()
+        init_skill_registry(self.skills_dir)
+        plan = plan_task("深度调研 AI Agent 框架并比较证据和风险", skill_name="auto")
+
+        self.assertEqual(plan.get("skill_name"), "deep_web_research")
+        self.assertEqual(plan.get("planner_source"), "skill_auto")
+        self.assertEqual(plan.get("skill_routing", {}).get("requested"), "auto")
+        self.assertEqual(plan.get("execution_mode"), "react")
+
+    def test_plan_task_auto_skill_can_fall_back_to_generic_planner(self):
+        from app.skills.registry import init_skill_registry
+        from app.agent.planner import plan_task
+
+        init_skill_registry(self.skills_dir)
+        plan = plan_task("整理这个问题", skill_name="auto")
+
+        self.assertNotEqual(plan.get("planner_source"), "skill_auto")
+        self.assertIsNone(plan.get("skill_routing", {}).get("selected_skill"))
+        self.assertEqual(plan.get("execution_mode"), "planned")
+
 
 class PresetSkillFileTests(unittest.TestCase):
     """Verify the 4 preset Skill JSON files are well-formed (TASK.md §5.5)."""

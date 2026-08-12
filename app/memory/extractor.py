@@ -127,7 +127,7 @@ def extract_preferences_from_run(
         candidates.append({
             "kind": "preference",
             "extraction_method": "rule",
-            "content": f"User prefers {'Chinese' if lang == 'zh' else 'English'} research reports",
+            "content": f"偏好使用{'中文' if lang == 'zh' else '英文'}研究报告",
             "confidence": 0.6,
             "source_run_id": run.run_id,
         })
@@ -138,7 +138,7 @@ def extract_preferences_from_run(
         candidates.append({
             "kind": "preference",
             "extraction_method": "rule",
-            "content": f"User prefers {fmt.upper()} report format",
+            "content": f"偏好 {fmt.upper()} 报告格式",
             "confidence": 0.5,
             "source_run_id": run.run_id,
         })
@@ -149,7 +149,7 @@ def extract_preferences_from_run(
         candidates.append({
             "kind": "interest",
             "extraction_method": "rule",
-            "content": f"User researches {kw}",
+            "content": f"经常调研：{kw}",
             "confidence": 0.5,
             "source_run_id": run.run_id,
         })
@@ -245,14 +245,23 @@ def _extract_keyword_from_content(content: str) -> str | None:
     m = _re.match(r"User researches (.+)", content, _re.IGNORECASE)
     if m:
         return m.group(1).strip()
+    m = _re.match(r"经常调研[：:]\s*(.+)", content)
+    if m:
+        return m.group(1).strip()
 
     # For language: "User prefers Chinese/English research reports"
     m = _re.match(r"User prefers (Chinese|English) research reports", content, _re.IGNORECASE)
     if m:
         return m.group(1).strip()
+    m = _re.match(r"偏好使用(中文|英文)研究报告", content)
+    if m:
+        return m.group(1).strip()
 
     # For format: "User prefers WORD report format"
     m = _re.match(r"User prefers ([A-Z]+) report format", content, _re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    m = _re.match(r"偏好\s+([A-Z]+)\s+报告格式", content, _re.IGNORECASE)
     if m:
         return m.group(1).strip()
 

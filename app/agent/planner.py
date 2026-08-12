@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from app.config import settings
 from app.agent.plan_guardrails import normalize_plan_arguments
+from app.agent.routing import select_execution_mode, select_skill
 from app.llm.planner_client import call_llm_for_plan
 from app.llm.providers import create_llm_client
 from app.llm.schema import extract_json_object, validate_and_normalize_plan
@@ -710,13 +711,23 @@ def _append_step(
 
 
 
-def _apply_execution_mode(plan: dict, override: str | None, extra: dict | None = None) -> dict:
-    """Write execution_mode into plan from override or global settings."""
-    effective = (override or settings.execution_mode or "planned").strip().lower()
-    if effective not in ("planned", "react"):
-        effective = "planned"
-    plan["execution_mode"] = effective
-    plan["requested_execution_mode"] = effective
+def _apply_execution_mode(
+    plan: dict,
+    override: str | None,
+    extra: dict | None = None,
+    task: str | None = None,
+) -> dict:
+    """Persist the automatic execution route and any explicit API override."""
+
+    decision = select_execution_mode(
+        task or str(plan.get("task") or ""),
+        plan,
+        override=override,
+        react_enabled=settings.react_enabled,
+    )
+    plan["execution_mode"] = decision["selected"]
+    plan["requested_execution_mode"] = decision["requested"]
+    plan["execution_routing"] = decision
     if extra:
         plan.update(extra)
     return plan
@@ -809,17 +820,32 @@ def plan_task(
     if _profile_extra:
         _memory_extra.update(_profile_extra)
 
-    # ── Phase 3: Skill-based planning ──────────────────────────────
-    if skill_name:
-        from app.skills.registry import get_skill as get_skill_def
+    # ── Skill routing: explicit API choice or automatic task matching ──
+    from app.skills.registry import get_skill as get_skill_def, list_skills
 
-        skill = get_skill_def(skill_name)
+    resolved_skill_name = str(skill_name or "auto").strip()
+    skill_routing: dict[str, Any]
+    if resolved_skill_name.lower() == "auto":
+        skill_routing = select_skill(task, list_skills(), allowed_tools)
+        resolved_skill_name = str(skill_routing.get("selected_skill") or "")
+    else:
+        skill_routing = {
+            "requested": "explicit",
+            "selected_skill": resolved_skill_name if get_skill_def(resolved_skill_name) else None,
+            "reason": "调用方显式指定 Skill。",
+            "candidates": [],
+        }
+    _memory_extra["skill_routing"] = skill_routing
+
+    if resolved_skill_name:
+        skill = get_skill_def(resolved_skill_name)
         if skill is not None:
             plan = _skill_to_plan(skill, task, allowed_tools, source_mode)
-            plan["planner_source"] = "skill"
+            plan["skill_routing"] = skill_routing
+            plan["planner_source"] = "skill_auto" if skill_routing["requested"] == "auto" else "skill"
             plan["llm_provider"] = None
             plan["llm_model"] = None
-            return _apply_execution_mode(plan, execution_mode_override, _memory_extra)
+            return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
         # Fall through to deterministic if skill not found
 
     mode = (planner_mode or settings.llm_planner_mode or "deterministic").lower()
@@ -831,7 +857,7 @@ def plan_task(
         plan["planner_source"] = "deterministic"
         plan["llm_provider"] = None
         plan["llm_model"] = None
-        return _apply_execution_mode(plan, execution_mode_override, _memory_extra)
+        return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
 
     should_try_llm = mode == "llm" or (mode == "auto" and settings.llm_planner_enabled)
     if should_try_llm:
@@ -876,7 +902,7 @@ def plan_task(
                     )
                     normalize_plan_arguments(normalized, task, source_mode)
                     _apply_requested_result_count(normalized, task)
-                    return _apply_execution_mode(normalized, execution_mode_override, _memory_extra)
+                    return _apply_execution_mode(normalized, execution_mode_override, _memory_extra, task)
                 fallback_reason = "LLM output failed schema validation; used deterministic fallback."
                 fallback_reason = "LLM output was not valid JSON; used deterministic fallback."
         elif response.error_message:
@@ -889,7 +915,7 @@ def plan_task(
         plan["notes"] = list(plan.get("notes") or []) + [_safe_fallback_reason(fallback_reason)]
         _synchronize_confirmation_notes(plan)
         _apply_requested_result_count(plan, task)
-        return _apply_execution_mode(plan, execution_mode_override, _memory_extra)
+        return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
 
     plan = deterministic_plan_task(task, allowed_tools, source_mode, scenario_template)
     plan["planner_source"] = "deterministic"
@@ -897,7 +923,7 @@ def plan_task(
     plan["llm_model"] = None
     _synchronize_confirmation_notes(plan)
     _apply_requested_result_count(plan, task)
-    return _apply_execution_mode(plan, execution_mode_override, _memory_extra)
+    return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
 
 
 def deterministic_plan_task(
@@ -1061,15 +1087,11 @@ def deterministic_plan_task(
     for index, step in enumerate(steps, start=1):
         step["step_no"] = index
 
-    default_allowed = DEFAULT_TOOL_ORDER.copy()
-    for spec in list_tools():
-        if (
-            spec.enabled
-            and "mcp_remote" in spec.tags
-            and tool_channel(spec) == "readonly"
-            and spec.name not in default_allowed
-        ):
-            default_allowed.append(spec.name)
+    default_allowed = [
+        spec.name
+        for spec in list_tools()
+        if spec.enabled and tool_channel(spec) != "write"
+    ]
 
     plan = {
         "version": "deterministic-v1",
@@ -1584,6 +1606,7 @@ def _skill_to_plan(
         "source_mode": source_mode,
         "skill_name": skill.name,
         "skill_version": skill.version,
+        "scenario_template": skill.name,
         "allowed_tools": allowed_tools if allowed_tools is not None else default_allowed,
         "steps": steps,
         "notes": notes,

@@ -123,6 +123,18 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(commit_pending_memories(self.db, runs[-1], [candidate]), 1)
         self.assertEqual(len(list_user_memories(self.db, status="pending")), 1)
 
+    def test_rule_extraction_generates_chinese_memory_content(self) -> None:
+        from app.memory.extractor import extract_preferences_from_run
+        from app.trace.store import create_agent_run
+
+        run = create_agent_run(self.db, "用中文调研 LLM 并生成 PDF 报告", "summary", "mock")
+        candidates = extract_preferences_from_run(self.db, run)
+        contents = {item["content"] for item in candidates}
+
+        self.assertIn("偏好使用中文研究报告", contents)
+        self.assertIn("偏好 PDF 报告格式", contents)
+        self.assertIn("经常调研：LLM", contents)
+
     def test_after_run_completion_adds_agent_turn(self) -> None:
         from app.agent.executor import _after_run_completed
         from app.memory.store import create_session, list_chat_turns
