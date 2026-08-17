@@ -29,10 +29,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Compile Python sources
-        run: python -m compileall app scripts frontend tests
+        run: python -m compileall app scripts frontend migrations tests
 
       - name: Run offline unit contracts
         run: python -m pytest tests

@@ -20,11 +20,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Fix Windows GBK encoding for emoji output
-if sys.platform == "win32":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -32,7 +27,9 @@ from app.database import SessionLocal
 from app.eval.run_eval import load_cases, prepare_runtime, run_case
 
 OUTPUT_DIR = ROOT / "workspace" / "eval_outputs"
-BAD_CASES_PATH = ROOT / "docs" / "bad_cases.md"
+BAD_CASES_PATH = ROOT / "app" / "eval" / "bad_cases.json"
+BAD_CASE_STATUSES = {"known", "expected_to_pass"}
+BAD_CASE_PRIORITIES = {"high", "medium", "low"}
 
 CATEGORY_LABELS = {
     "tool_safety": "工具安全边界",
@@ -45,43 +42,70 @@ CATEGORY_LABELS = {
 }
 
 
-def load_bad_cases() -> list[dict[str, Any]]:
-    """Parse docs/bad_cases.md into structured entries.
+def _configure_stdout() -> None:
+    """Use UTF-8 for direct Windows CLI runs without mutating importers."""
 
-    Expected format per entry:
-        ### BAD-XXX: Title
-        - **关联 case_id**: xxx
-        - **状态**: known | expected_to_pass
-        - **优先级**: high | medium | low
-    """
-    if not BAD_CASES_PATH.exists():
-        return []
-    text = BAD_CASES_PATH.read_text(encoding="utf-8")
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
+def load_bad_cases(
+    path: Path = BAD_CASES_PATH,
+    known_case_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Load and validate the versioned bad-case registry."""
+
+    if not path.is_file():
+        raise FileNotFoundError(f"Bad-case registry not found: {path}")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError("Bad-case registry must be a JSON array")
+
+    required = {"id", "title", "case_id", "status", "priority"}
     entries: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    for line in text.splitlines():
-        if line.startswith("### BAD-"):
-            if current:
-                entries.append(current)
-            current = {"id": line[4:].strip().split(":")[0].strip(), "title": line[4:].strip()}
-        elif current is not None and "关联 case_id" in line:
-            current["case_id"] = line.split(":", 1)[-1].strip()
-        elif current is not None and "状态" in line:
-            current["status"] = line.split(":", 1)[-1].strip()
-        elif current is not None and "优先级" in line:
-            current["priority"] = line.split(":", 1)[-1].strip()
-    if current:
-        entries.append(current)
+    seen_ids: set[str] = set()
+    seen_case_ids: set[str] = set()
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Bad-case entry {index} must be an object")
+        missing = required - item.keys()
+        if missing:
+            raise ValueError(
+                f"Bad-case entry {index} is missing: {', '.join(sorted(missing))}"
+            )
+
+        entry = {key: str(value).strip() for key, value in item.items()}
+        bad_case_id = entry["id"]
+        case_id = entry["case_id"]
+        if not bad_case_id.startswith("BAD-"):
+            raise ValueError(f"Invalid bad-case id: {bad_case_id}")
+        if bad_case_id in seen_ids:
+            raise ValueError(f"Duplicate bad-case id: {bad_case_id}")
+        if case_id in seen_case_ids:
+            raise ValueError(f"Duplicate bad-case case_id: {case_id}")
+        if entry["status"] not in BAD_CASE_STATUSES:
+            raise ValueError(f"Invalid bad-case status for {bad_case_id}: {entry['status']}")
+        if entry["priority"] not in BAD_CASE_PRIORITIES:
+            raise ValueError(f"Invalid bad-case priority for {bad_case_id}: {entry['priority']}")
+        if known_case_ids is not None and case_id not in known_case_ids:
+            raise ValueError(f"Unknown eval case_id for {bad_case_id}: {case_id}")
+
+        seen_ids.add(bad_case_id)
+        seen_case_ids.add(case_id)
+        entries.append(entry)
     return entries
 
 
 def check_bad_cases(results: list[dict[str, Any]], bad_cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Cross-reference failed results with bad_cases entries."""
     failed_ids = {r["case_id"] for r in results if not r.get("passed")}
+    evaluated_ids = {r["case_id"] for r in results}
     alerts: list[dict[str, Any]] = []
     for bc in bad_cases:
         bc_case_id = bc.get("case_id", "")
         bc_status = bc.get("status", "")
+        if bc_case_id not in evaluated_ids:
+            continue
         if bc_case_id in failed_ids and bc_status == "expected_to_pass":
             alerts.append({
                 "bad_case_id": bc.get("id"),
@@ -301,6 +325,7 @@ def build_markdown_report(
 
 
 def main() -> int:
+    _configure_stdout()
     parser = argparse.ArgumentParser(description="Eval regression runner")
     parser.add_argument(
         "--baseline", type=str, default=None,
@@ -334,7 +359,9 @@ def main() -> int:
             baseline = json.loads(bl_path.read_text(encoding="utf-8"))
 
     # ── Bad cases ────────────────────────────────────────────────────
-    bad_cases = load_bad_cases()
+    bad_cases = load_bad_cases(
+        known_case_ids={str(case["case_id"]) for case in all_cases},
+    )
     bad_case_alerts = check_bad_cases(results, bad_cases)
 
     # ── Output ───────────────────────────────────────────────────────
