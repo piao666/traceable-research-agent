@@ -69,16 +69,12 @@ async def get_tool(tool_name: str) -> ToolInfo:
 
 
 @router.post("/{tool_name}/execute", response_model=ToolExecuteResponse)
-async def execute_tool(
+def execute_tool(
     tool_name: str,
     request: ToolExecuteRequest,
     db: Session = Depends(get_db),
 ) -> ToolExecuteResponse:
-    """Execute a registry tool and optionally write one trace row.
-
-    The optional `run_id`/`step_no` path exists for Day6-8 tool verification. It
-    is not an Agent Executor implementation.
-    """
+    """Execute a registry tool and optionally write one trace row."""
 
     if request.run_id:
         run = store.get_agent_run(db, request.run_id)

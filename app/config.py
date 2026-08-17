@@ -403,9 +403,9 @@ class Settings(BaseModel):
             ),
             evidence_reasoning_enabled=_env_bool("EVIDENCE_REASONING_ENABLED", True),
             source_policy_path=os.getenv(
-                "SOURCE_POLICY_PATH", "config/source_policy.v1.json"
+                "SOURCE_POLICY_PATH", "config/source_policy.v2.json"
             ).strip()
-            or "config/source_policy.v1.json",
+            or "config/source_policy.v2.json",
             deep_research_enabled=_env_bool("DEEP_RESEARCH_ENABLED", False),
             deep_research_max_depth=_env_bounded_int("DEEP_RESEARCH_MAX_DEPTH", 2, 1, 5),
             deep_research_breadth=_env_bounded_int("DEEP_RESEARCH_BREADTH", 3, 1, 10),

@@ -132,6 +132,9 @@ def file_reader_execution_arguments(
     """Attach a narrow per-file approval token for the tool handler."""
 
     prepared = dict(arguments or {})
+    # Never trust a plan-supplied approval token: the executor is the only
+    # authority allowed to attach this field, and only after human approval.
+    prepared.pop("_approved_file_reader_path", None)
     raw_path = str(prepared.get("path") or "").strip()
     if not raw_path:
         return prepared

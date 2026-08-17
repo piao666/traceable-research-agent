@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from app.tools.base import ToolResult
 
+from app.tools.ssrf import is_blocked_host
 
 # ── web_fetcher tests ──────────────────────────────────────────────────
 
@@ -299,6 +300,58 @@ class ConcurrentWriteTests(unittest.TestCase):
             os.unlink(self._db_path)
         except OSError:
             pass
+
+
+# ── SSRF module direct tests ──────────────────────────────────────────
+
+
+class SsrfModuleTests(unittest.TestCase):
+    """Direct tests for the shared SSRF module (app/tools/ssrf.py)."""
+
+    def test_blocks_cloud_metadata(self):
+        """169.254.0.0/16 (cloud metadata) was missing from original web_fetcher."""
+        self.assertTrue(is_blocked_host("169.254.169.254"))
+
+    def test_blocks_decimal_integer_shorthand(self):
+        """2130706433 is 127.0.0.1 in decimal."""
+        self.assertTrue(is_blocked_host("2130706433"))
+
+    def test_blocks_hex_integer_shorthand(self):
+        """0x7f000001 is 127.0.0.1 in hex."""
+        self.assertTrue(is_blocked_host("0x7f000001"))
+
+    def test_blocks_dotted_octal(self):
+        """0177.0.0.1 is 127.0.0.1 with leading octal octet."""
+        self.assertTrue(is_blocked_host("0177.0.0.1"))
+
+    def test_blocks_dotted_hex(self):
+        """0x7f.0.0.1 is 127.0.0.1 with leading hex octet."""
+        self.assertTrue(is_blocked_host("0x7f.0.0.1"))
+
+    def test_blocks_ipv4_mapped_ipv6(self):
+        """::ffff:127.0.0.1 is the IPv4-mapped IPv6 form of 127.0.0.1."""
+        self.assertTrue(is_blocked_host("::ffff:127.0.0.1"))
+
+    def test_blocks_ipv4_mapped_ipv6_bracketed(self):
+        """[::ffff:127.0.0.1] — bracketed form used in URLs."""
+        self.assertTrue(is_blocked_host("[::ffff:127.0.0.1]"))
+
+    def test_blocks_link_local_ipv6(self):
+        """fe80::/10 is link-local IPv6."""
+        self.assertTrue(is_blocked_host("fe80::1"))
+
+    def test_blocks_link_local_ipv6_bracketed(self):
+        self.assertTrue(is_blocked_host("[fe80::1]"))
+
+    def test_blocks_octal_leading_zero(self):
+        """0177 should be treated as octal 127."""
+        self.assertTrue(is_blocked_host("0177"))
+
+    def test_accepts_public_hostname(self):
+        self.assertFalse(is_blocked_host("example.com"))
+
+    def test_accepts_public_ip(self):
+        self.assertFalse(is_blocked_host("93.184.216.34"))
 
 
 if __name__ == "__main__":

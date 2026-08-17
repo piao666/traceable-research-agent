@@ -15,7 +15,20 @@ SENSITIVE_KEY_PARTS = (
     "password",
     "private_key",
     "secret",
-    "token",
+    "access_token",
+    "auth_token",
+    "refresh_token",
+)
+
+# Token-derived keys that are metrics/config rather than secrets. They must
+# not be redacted even though they contain the substring "token".
+_NON_SECRET_TOKEN_SUFFIXES = (
+    "token_in",
+    "token_out",
+    "token_usage",
+    "token_count",
+    "token_limit",
+    "token_total",
 )
 
 SECRET_VALUE_PATTERNS = (
@@ -32,7 +45,18 @@ SECRET_VALUE_PATTERNS = (
 
 def is_sensitive_key(key: str) -> bool:
     normalized = key.lower().replace("-", "_")
-    return any(part in normalized for part in SENSITIVE_KEY_PARTS)
+    if any(part in normalized for part in SENSITIVE_KEY_PARTS):
+        return True
+    # Handle the bare "token" family: redact real secret tokens ("token",
+    # "github_token", "api_token", ...) while preserving token metrics
+    # ("token_in", "token_out", "token_usage", "total_tokens", ...).
+    if "token" in normalized:
+        if "tokens" in normalized:  # plural metric keys (total_tokens, ...)
+            return False
+        if normalized.endswith(_NON_SECRET_TOKEN_SUFFIXES):
+            return False
+        return True
+    return False
 
 
 def redact_text(value: object) -> str:

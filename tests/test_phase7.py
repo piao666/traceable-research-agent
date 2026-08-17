@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import unittest
 from unittest.mock import patch
@@ -12,6 +11,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.agent.file_access_policy import file_reader_execution_arguments
 from app.database import Base
 from app.evidence import models as evidence_models  # noqa: F401
 from app.memory import models as memory_models  # noqa: F401
@@ -146,12 +146,10 @@ class PlanApprovalTests(Phase7DatabaseTestCase):
             return tasks._run_summary(completed, "completed in test")
 
         with patch("app.api.tasks.run_task_by_mode", side_effect=fake_run):
-            response = asyncio.run(
-                tasks.approve_plan(
-                    run.run_id,
-                    PlanApproveRequest(approved=True, modified_steps=modified),
-                    self.db,
-                )
+            response = tasks.approve_plan(
+                run.run_id,
+                PlanApproveRequest(approved=True, modified_steps=modified),
+                self.db,
             )
 
         self.assertEqual(response.status, "completed")
@@ -176,11 +174,9 @@ class PlanApprovalTests(Phase7DatabaseTestCase):
             "reason": "cold_start",
         }
         with patch("app.api.tasks.plan_task_for_review", return_value=plan):
-            response = asyncio.run(
-                tasks.create_task(
-                    TaskCreateRequest(task="research", require_plan_approval=True),
-                    self.db,
-                )
+            response = tasks.create_task(
+                TaskCreateRequest(task="research", require_plan_approval=True),
+                self.db,
             )
         run = store.get_agent_run(self.db, response.run_id)
         self.assertEqual(run.status, "waiting_human_plan")
@@ -196,12 +192,10 @@ class PlanApprovalTests(Phase7DatabaseTestCase):
         run = store.create_agent_run(self.db, "research", "summary", "mock")
         store.update_agent_run_plan(self.db, run.run_id, self._plan())
         store.update_agent_run_status(self.db, run.run_id, "waiting_human_plan")
-        response = asyncio.run(
-            tasks.approve_plan(
-                run.run_id,
-                PlanApproveRequest(approved=False, comment="cancelled in test"),
-                self.db,
-            )
+        response = tasks.approve_plan(
+            run.run_id,
+            PlanApproveRequest(approved=False, comment="cancelled in test"),
+            self.db,
         )
         self.assertEqual(response.status, "failed")
         traces = store.list_tool_traces(self.db, run.run_id)
@@ -287,6 +281,89 @@ class CitationValidationTests(Phase7DatabaseTestCase):
         self.assertEqual(updated.citation_accuracy, 1.0)
         traces = store.list_tool_traces(self.db, run.run_id)
         self.assertEqual([trace.tool_name for trace in traces], ["citation_validator"])
+
+
+# ── File access policy: HITL approval token injection ─────────────────
+
+
+class FileAccessPolicyTests(unittest.TestCase):
+    """Verify file_reader_execution_arguments strips plan-injected approval tokens."""
+
+    def test_strips_plan_injected_approved_path(self):
+        """A plan that already contains _approved_file_reader_path must be stripped."""
+        prepared = file_reader_execution_arguments(
+            arguments={
+                "path": "C:/outside/file.txt",
+                "_approved_file_reader_path": "C:/outside/file.txt",
+            },
+            plan=None,
+        )
+        # The injected token must be removed regardless of plan approval
+        self.assertNotIn("_approved_file_reader_path", prepared)
+
+    def test_strips_plan_injected_path_even_when_approved(self):
+        """When plan is approved, plan-supplied token is stripped, then executor
+        re-adds the correct token — this is the security guarantee: the executor
+        is the only authority allowed to attach this field."""
+        prepared = file_reader_execution_arguments(
+            arguments={
+                "path": "C:/outside/file.txt",
+                "_approved_file_reader_path": "C:/outside/file.txt",
+            },
+            plan={
+                "confirmation": {
+                    "approved": True,
+                    "approved_file_reader_paths": ["C:/outside/file.txt"],
+                }
+            },
+        )
+        # The final token was added by the executor (not the original plan-supplied value)
+        self.assertIn("_approved_file_reader_path", prepared)
+        self.assertEqual(
+            prepared["_approved_file_reader_path"],
+            "C:\\outside\\file.txt",
+        )
+
+    def test_inside_allowed_root_no_token(self):
+        """Paths inside allowed roots should not get an approval token."""
+        prepared = file_reader_execution_arguments(
+            arguments={"path": "workspace/docs/readme.txt"},
+            plan=None,
+        )
+        self.assertNotIn("_approved_file_reader_path", prepared)
+
+    def test_outside_allowed_root_approved_adds_token(self):
+        """When path is outside allowed roots and plan is approved, token is added."""
+        prepared = file_reader_execution_arguments(
+            arguments={"path": "C:/outside/file.txt"},
+            plan={
+                "confirmation": {
+                    "approved": True,
+                    "approved_file_reader_paths": ["C:/outside/file.txt"],
+                }
+            },
+        )
+        self.assertIn("_approved_file_reader_path", prepared)
+        self.assertEqual(
+            prepared["_approved_file_reader_path"],
+            "C:\\outside\\file.txt",
+        )
+
+    def test_outside_allowed_root_not_approved_no_token(self):
+        """When path is outside allowed roots and plan is NOT approved, no token."""
+        prepared = file_reader_execution_arguments(
+            arguments={"path": "C:/outside/file.txt"},
+            plan={"confirmation": {"approved": False}},
+        )
+        self.assertNotIn("_approved_file_reader_path", prepared)
+
+    def test_empty_path_no_token(self):
+        """Empty path should not inject any token."""
+        prepared = file_reader_execution_arguments(
+            arguments={"path": ""},
+            plan=None,
+        )
+        self.assertNotIn("_approved_file_reader_path", prepared)
 
 
 if __name__ == "__main__":

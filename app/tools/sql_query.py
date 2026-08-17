@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,9 @@ def _coerce_limit(value: Any) -> int:
 
 def _query_with_limit(query: str, limit: int) -> str:
     clean = query.strip().rstrip(";")
-    if "LIMIT" in clean.upper().split():
+    # Only treat an actual "LIMIT <n>" clause as a user-provided limit; a
+    # bare column named "limit" must not disable the enforced row cap.
+    if re.search(r"\bLIMIT\s+\d+", clean, flags=re.IGNORECASE):
         return clean
     return f"{clean} LIMIT {limit}"
 

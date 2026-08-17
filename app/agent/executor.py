@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from time import perf_counter
 from typing import Any
 
@@ -20,7 +21,7 @@ from app.agent.source_governance import (
 from app.config import Settings, settings as _exec_settings
 from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
-from app.mcp.policy import MCPChannel, requires_interactive_confirmation, tool_channel
+from app.mcp.policy import MCPChannel, is_tool_read_only, requires_interactive_confirmation, tool_channel
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool, get_tool
 from app.trace import store
@@ -195,7 +196,9 @@ EXECUTABLE_TOOLS = {
     "sql_query",
     "mcp_github_search",
     "tavily_search",
+    "memory_search",
     "web_fetcher",
+    "pdf_reader",
     "arxiv_search",
     "semantic_scholar_search",
     "openalex_search",
@@ -204,12 +207,23 @@ EXECUTABLE_TOOLS = {
 
 
 def is_executable_tool(tool_name: str) -> bool:
-    """Return whether a tool can be executed by the structured executor."""
+    """Return whether a tool can be executed by the structured executor.
+
+    Enforces the explicit executable allowlist, the WRITE-channel boundary,
+    and the read-only guarantee (structural, not just a tag convention).
+    """
 
     if tool_name == "report_writer":
         return False
+    if tool_name not in EXECUTABLE_TOOLS:
+        return False
     spec = get_tool(tool_name)
-    return bool(spec and spec.enabled and tool_channel(spec) != MCPChannel.WRITE.value)
+    return bool(
+        spec
+        and spec.enabled
+        and tool_channel(spec) != MCPChannel.WRITE.value
+        and is_tool_read_only(spec)
+    )
 
 
 def _step_requires_confirmation(step: dict[str, Any], tool_name: str) -> bool:
@@ -367,13 +381,11 @@ def _check_profile_quota(
         return
 
     try:
-        from app.evidence.policy import T0, T1, T2, load_source_policy, SourceCandidate
+        from app.evidence.policy import T0, T1, T2
 
-        policy = load_source_policy(_exec_settings.source_policy_path)
-        profile_name = plan.get("retrieval_profile", "generic")
-
-        # Count tiers from documents
         tier_counts = {T0: 0, T1: 0, T2: 0}
+        cluster_ids: set[str] = set()
+        domain_counts: dict[str, int] = {}
         for doc in documents:
             metadata = doc.get("metadata") or {}
             if isinstance(metadata, str):
@@ -384,23 +396,72 @@ def _check_profile_quota(
             tier = metadata.get("source_tier", T2)
             if tier in tier_counts:
                 tier_counts[tier] += 1
+            cluster = str(metadata.get("source_cluster_id") or "").strip()
+            if cluster:
+                cluster_ids.add(cluster)
+            hostname = str(
+                metadata.get("hostname")
+                or metadata.get("source_hostname")
+                or metadata.get("canonical_uri")
+                or ""
+            ).strip().lower()
+            if hostname:
+                domain_counts[hostname] = domain_counts.get(hostname, 0) + 1
 
-        min_t0 = profile_constraints.get("min_t0_sources", 1)
-        shortfall = max(0, min_t0 - tier_counts[T0])
+        total = len(documents)
+        t0 = tier_counts[T0]
+        t1 = tier_counts[T1]
+        t2 = tier_counts[T2]
+        independent = len(cluster_ids) or total
+
+        min_t0 = int(profile_constraints.get("min_t0_sources", 1))
+        min_independent = int(profile_constraints.get("min_independent_sources", 2))
+        min_t2 = int(profile_constraints.get("min_t2_sources", 0))
+        max_t2_ratio = float(profile_constraints.get("max_t2_ratio", 0.50))
+        max_per_domain = profile_constraints.get("max_per_domain")
         shortfall_policy = profile_constraints.get("shortfall_policy", "report_only")
 
+        t0_shortfall = max(0, min_t0 - t0)
+        independent_shortfall = max(0, min_independent - independent)
+        t2_shortfall = max(0, min_t2 - t2)
+        t2_ratio = (t2 / total) if total else 0.0
+        t2_ratio_exceeded = t2_ratio > max_t2_ratio
+        domain_overages = [
+            domain for domain, count in domain_counts.items()
+            if max_per_domain and count > int(max_per_domain)
+        ]
+
         quota_info = {
-            "profile": profile_name,
+            "profile": plan.get("retrieval_profile", "generic"),
+            "total_sources": total,
             "t0_required": min_t0,
-            "t0_achieved": tier_counts[T0],
-            "t1_count": tier_counts[T1],
-            "t2_count": tier_counts[T2],
-            "shortfall": shortfall,
+            "t0_achieved": t0,
+            "t1_count": t1,
+            "t2_count": t2,
+            "independent_required": min_independent,
+            "independent_achieved": independent,
+            "max_t2_ratio": max_t2_ratio,
+            "t2_ratio": round(t2_ratio, 4),
+            "t2_required": min_t2,
+            "max_per_domain": max_per_domain,
+            "domain_overages": domain_overages,
+            "shortfalls": {
+                "t0_shortfall": t0_shortfall,
+                "independent_shortfall": independent_shortfall,
+                "t2_shortfall": t2_shortfall,
+                "t2_ratio_exceeded": t2_ratio_exceeded,
+            },
             "shortfall_policy": shortfall_policy,
-            "independent_sources": len(documents),
         }
 
-        if shortfall > 0:
+        has_shortfall = bool(
+            t0_shortfall
+            or independent_shortfall
+            or t2_shortfall
+            or t2_ratio_exceeded
+            or domain_overages
+        )
+        if has_shortfall:
             record_trace_event(
                 db=db,
                 run_id=run_id,
@@ -409,13 +470,14 @@ def _check_profile_quota(
                 status="success",
                 input_data={"profile_constraints": profile_constraints},
                 output_summary=(
-                    f"Source quota shortfall: T0={tier_counts[T0]}/{min_t0} "
-                    f"(policy={shortfall_policy})"
+                    f"Source quota shortfall: T0={t0}/{min_t0}, "
+                    f"independent={independent}/{min_independent}, "
+                    f"T2={t2} (ratio {t2_ratio:.2f}), policy={shortfall_policy}"
                 ),
                 output_data=quota_info,
             )
-    except Exception:
-        pass  # Quota check must not block run completion
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Source quota check failed: %s", exc)
 
 
 def run_plan(
@@ -432,7 +494,7 @@ def run_plan(
     if run.status == "completed":
         return _message_summary(run, "Run already completed; no tools executed.")
     if run.status == "failed":
-        return _message_summary(run, "Run is failed and cannot be rerun in Day13-15.")
+        return _message_summary(run, "Run is failed and cannot be rerun.")
 
     plan = _parse_plan(run)
     steps = plan.get("steps") or []

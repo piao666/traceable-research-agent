@@ -8,29 +8,20 @@ and extraction metadata.
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import re
 import time
 from contextlib import nullcontext
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
 from app.config import Settings, settings
 from app.tools.base import ToolResult
 from app.tools.fetch_cache import FetchCache, FetchCacheEntry
+from app.tools.ssrf import validate_url as _validate_url
 from app.tools.web_content_cleaner import clean_web_snippet
 
-
-PRIVATE_NETWORKS = (
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-)
 
 USER_AGENT = "traceable-research-agent-read-only/1.0"
 
@@ -51,29 +42,6 @@ EXTRACT_TRAFILATURA = "trafilatura"
 EXTRACT_BEAUTIFULSOUP = "beautifulsoup"
 EXTRACT_RAW_REGEX = "raw_regex"
 EXTRACT_NONE = "none"
-
-
-def _is_private_host(host: str) -> bool:
-    """Return True if host is a private / loopback address."""
-    if not host:
-        return True
-    host = host.split("%")[0].strip("[]")
-    try:
-        addr = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return any(addr in net for net in PRIVATE_NETWORKS)
-
-
-def _validate_url(raw: str) -> str | None:
-    """Return a normalized URL or None if the URL is unsafe."""
-    parsed = urlparse(raw)
-    if parsed.scheme not in ("http", "https"):
-        return None
-    host = (parsed.hostname or "").lower()
-    if not host or _is_private_host(host):
-        return None
-    return parsed.geturl()
 
 
 def _is_pdf_url(url: str) -> bool:
@@ -253,6 +221,51 @@ def _classify_content_basis(
     return "full_text"
 
 
+def _read_bounded(response: httpx.Response, max_bytes: int) -> tuple[bytes | None, int]:
+    """Read a response body up to ``max_bytes``; return ``(None, received)`` on overflow."""
+    chunks: list[bytes] = []
+    received = 0
+    for chunk in response.iter_bytes(chunk_size=65536):
+        chunks.append(chunk)
+        received += len(chunk)
+        if received > max_bytes:
+            return None, received
+    return b"".join(chunks), received
+
+
+def _get_following_redirects(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    max_redirects: int = 5,
+) -> tuple[httpx.Response | None, str | None, list[str]]:
+    """GET a URL, following redirects manually and validating every hop.
+
+    Returns ``(response, error, redirect_chain)``. When ``error`` is set the
+    response is ``None`` and no unsafe redirect target was requested. This
+    replaces ``follow_redirects=True`` so redirects are validated *before*
+    each hop is fetched (no TOCTOU on the final URL).
+    """
+    chain: list[str] = []
+    current = url
+    request_headers = dict(headers or {})
+    for _ in range(max_redirects + 1):
+        response = client.get(current, headers=request_headers or None)
+        chain.append(str(response.url))
+        if not response.is_redirect:
+            return response, None, chain
+        location = response.headers.get("location")
+        if not location:
+            return None, "redirect_error: missing location header", chain
+        next_url = urljoin(current, location)
+        if _validate_url(next_url) is None:
+            return None, f"redirect_target_unsafe: {next_url}", chain
+        current = next_url
+        request_headers = {}  # drop If-None-Match across redirect hops
+    return None, "redirect_error: too many redirects", chain
+
+
 def web_fetch(
     arguments: dict[str, Any],
     *,
@@ -348,8 +361,7 @@ def web_fetch(
         owned_client = httpx.Client(
             timeout=timeout_seconds,
             headers={"User-Agent": USER_AGENT},
-            follow_redirects=True,
-            max_redirects=5,
+            follow_redirects=False,
         )
     client_context = owned_client if owned_client is not None else nullcontext(client)
     with client_context as active_client:
@@ -412,53 +424,41 @@ def web_fetch(
                 request_headers: dict[str, str] = {}
                 if cache_status == "expired" and cached_entry and cached_entry.etag:
                     request_headers["If-None-Match"] = cached_entry.etag
-                response = active_client.get(valid_url, headers=request_headers or None)
 
-                if response.status_code == 304 and cached_entry is not None:
-                    cached_entry.fetched_at = time.time()
-                    cached_entry.ttl_seconds = active.web_fetcher_cache_ttl_seconds
-                    if fetch_cache is not None:
-                        fetch_cache.put(cached_entry)
-                    content = cached_entry.content
-                    extraction_method = cached_entry.extraction_method
-                    extraction_meta = dict(cached_entry.metadata.get("extraction_meta") or {})
-                    title = str(cached_entry.metadata.get("title") or valid_url)
-                    content_type = cached_entry.content_type
-                    raw_html = " " * int(cached_entry.metadata.get("raw_length") or len(content))
-                    cache_status = "revalidated"
+                response, redirect_error, redirect_chain = _get_following_redirects(
+                    active_client,
+                    valid_url,
+                    headers=request_headers or None,
+                )
+                if redirect_error:
+                    fetch_error = redirect_error
+                    response = None
 
-                # Record redirect chain for audit
-                if response.status_code != 304 and response.history:
-                    redirect_chain = [str(r.url) for r in response.history]
-                    redirect_chain.append(str(response.url))
-                    # ── Phase 8.2: re-check SSRF after redirects ─────
-                    final_url = str(response.url)
-                    if _validate_url(final_url) is None:
-                        fetch_error = "redirect_target_unsafe: final URL failed validation after redirect"
-                        content_basis = _classify_content_basis(0, 0, max_chars, fetch_error)
-                        pages.append({
-                            "url": valid_url,
-                            "final_url": final_url,
-                            "title": "",
-                            "content": "",
-                            "content_basis": content_basis,
-                            "extraction_method": EXTRACT_NONE,
-                            "cache_status": cache_status,
-                            "cache_hit": False,
-                            "error": fetch_error,
-                            "redirect_chain": redirect_chain,
-                        })
-                        continue
-
-                if response.status_code == 304 and cached_entry is not None:
-                    pass
-                elif response.status_code == 200:
+                if response is not None and response.status_code == 304:
+                    if cached_entry is not None:
+                        cached_entry.fetched_at = time.time()
+                        cached_entry.ttl_seconds = active.web_fetcher_cache_ttl_seconds
+                        if fetch_cache is not None:
+                            fetch_cache.put(cached_entry)
+                        content = cached_entry.content
+                        extraction_method = cached_entry.extraction_method
+                        extraction_meta = dict(cached_entry.metadata.get("extraction_meta") or {})
+                        title = str(cached_entry.metadata.get("title") or valid_url)
+                        content_type = cached_entry.content_type
+                        raw_html = " " * int(cached_entry.metadata.get("raw_length") or len(content))
+                        cache_status = "revalidated"
+                    else:
+                        fetch_error = "HTTP 304"
+                elif response is not None and response.status_code == 200:
                     content_type = response.headers.get("content-type", "")
 
+                    # ── Phase 8.2: bounded streaming read ────────────
+                    content_bytes, _received = _read_bounded(response, max_response_bytes)
+                    if content_bytes is None:
+                        fetch_error = f"response_too_large: >{max_response_bytes} bytes (max {max_response_bytes})"
+
                     # ── Phase 8.2: PDF routing ──────────────────────
-                    if _is_pdf_content_type(content_type) or _is_pdf_url(valid_url):
-                        # Check magic bytes for confirmation
-                        content_bytes = response.content[:max_response_bytes]
+                    if not fetch_error and (_is_pdf_content_type(content_type) or _is_pdf_url(valid_url)):
                         if _check_pdf_magic(content_bytes):
                             fetch_error = "pdf_routed: PDF detected — use the pdf_reader tool (Phase 8.3) for page-level extraction"
                             pages.append({
@@ -475,28 +475,17 @@ def web_fetch(
                             })
                             continue
 
-                    # ── Phase 8.2: response size limit ──────────────
-                    if response.headers.get("content-length"):
-                        try:
-                            cl = int(response.headers["content-length"])
-                            if cl > max_response_bytes:
-                                raw_html = response.text[:max_chars * 10]  # read a portion
-                                fetch_error = f"response_too_large: {cl} bytes (max {max_response_bytes})"
-                        except ValueError:
-                            pass
-
                     if not fetch_error:
-                        raw_html = response.text or ""
+                        raw_html = content_bytes.decode(response.encoding or "utf-8", errors="replace")
+                        title = _extract_title(raw_html, valid_url)
 
-                    title = _extract_title(raw_html, valid_url)
-
-                    # ── Phase 8.2: multi-level extraction ───────────
-                    content, extraction_method, extraction_meta = _extract_body_v2(
-                        raw_html,
-                        valid_url,
-                        trafilatura_enabled=active.web_fetcher_trafilatura_enabled,
-                    )
-                else:
+                        # ── Phase 8.2: multi-level extraction ───────
+                        content, extraction_method, extraction_meta = _extract_body_v2(
+                            raw_html,
+                            valid_url,
+                            trafilatura_enabled=active.web_fetcher_trafilatura_enabled,
+                        )
+                elif response is not None:
                     fetch_error = f"HTTP {response.status_code}"
             except httpx.TimeoutException:
                 fetch_error = "timeout"

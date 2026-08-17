@@ -68,8 +68,8 @@ def execute_tool(
 ) -> ToolResult:
     """Execute a registered tool or return a stable failure result.
 
-    Day5 intentionally does not write trace rows. Trace persistence is added
-    later when real handlers exist.
+    Trace persistence is the caller's responsibility: the executor records a
+    trace row after this call returns.
     """
 
     spec = get_tool(name)

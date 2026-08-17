@@ -22,6 +22,8 @@ class ToolSpec(BaseModel):
     input_schema: dict[str, Any]
     output_schema: dict[str, Any] = Field(default_factory=dict)
     risk_level: RiskLevel = RiskLevel.LOW
+    read_only: bool = False
+    side_effect_free: bool = False
     requires_confirmation: bool = False
     enabled: bool = True
     timeout_seconds: int = 30

@@ -8,12 +8,11 @@ and page-level locators for citation. OCR is an optional independent profile.
 from __future__ import annotations
 
 import io
-import ipaddress
 import re
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -25,16 +24,8 @@ from app.agent.file_access_policy import (
     resolve_file_reader_path,
 )
 from app.tools.base import ToolResult
+from app.tools.ssrf import validate_url as _validate_url
 
-
-PRIVATE_NETWORKS = (
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-)
 
 PDF_MAGIC = b"%PDF"
 USER_AGENT = "traceable-research-agent-read-only/1.0"
@@ -47,27 +38,7 @@ EXTRACT_NONE = "none"
 # Minimum text density to consider a page "readable" without OCR
 MIN_TEXT_DENSITY = 0.05
 
-
-def _is_private_host(host: str) -> bool:
-    if not host:
-        return True
-    host = host.split("%")[0].strip("[]")
-    try:
-        addr = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return any(addr in net for net in PRIVATE_NETWORKS)
-
-
-def _validate_url(raw: str) -> str | None:
-    """Return a normalized URL or None if unsafe."""
-    parsed = urlparse(raw)
-    if parsed.scheme not in ("http", "https"):
-        return None
-    host = (parsed.hostname or "").lower()
-    if not host or _is_private_host(host):
-        return None
-    return parsed.geturl()
+MAX_REDIRECTS = 5
 
 
 def _check_pdf_magic(data: bytes) -> bool:
@@ -103,12 +74,7 @@ def _download_pdf(
     max_response_bytes: int,
 ) -> tuple[bytes | None, ToolResult | None]:
     """Download a PDF from a public URL. Returns (bytes, failure)."""
-    try:
-        from app.tools.web_fetcher import _validate_url as wf_validate
-    except ImportError:
-        wf_validate = _validate_url
-
-    validated = wf_validate(url)
+    validated = _validate_url(url)
     if validated is None:
         return None, ToolResult(
             success=False,
@@ -120,25 +86,40 @@ def _download_pdf(
         with httpx.Client(
             timeout=timeout_seconds,
             headers={"User-Agent": USER_AGENT},
-            follow_redirects=True,
-            max_redirects=5,
+            follow_redirects=False,
         ) as client:
-            response = client.get(validated)
-
-            # Re-check SSRF after redirects
-            if response.history:
-                final_url = str(response.url)
-                if wf_validate(final_url) is None:
-                    return None, ToolResult(
-                        success=False,
-                        error_message="redirect_target_unsafe: final URL failed validation after redirect",
-                        metadata={
-                            "error_type": "redirect_unsafe",
-                            "url": url,
-                            "final_url": final_url,
-                            "tool_name": "pdf_reader",
-                        },
-                    )
+            # Follow redirects manually, validating every hop before fetching.
+            chain: list[str] = []
+            current = validated
+            response = None
+            for _ in range(MAX_REDIRECTS + 1):
+                hop = client.get(current)
+                chain.append(str(hop.url))
+                if hop.is_redirect:
+                    location = hop.headers.get("location")
+                    if not location:
+                        return None, ToolResult(
+                            success=False,
+                            error_message="redirect_error: missing location header",
+                            metadata={"error_type": "redirect_unsafe", "url": url, "tool_name": "pdf_reader"},
+                        )
+                    next_url = urljoin(current, location)
+                    if _validate_url(next_url) is None:
+                        return None, ToolResult(
+                            success=False,
+                            error_message="redirect_target_unsafe: redirect target failed validation",
+                            metadata={"error_type": "redirect_unsafe", "url": url, "final_url": next_url, "tool_name": "pdf_reader"},
+                        )
+                    current = next_url
+                    continue
+                response = hop
+                break
+            else:
+                return None, ToolResult(
+                    success=False,
+                    error_message="redirect_error: too many redirects",
+                    metadata={"error_type": "redirect_unsafe", "url": url, "tool_name": "pdf_reader"},
+                )
 
             if response.status_code != 200:
                 return None, ToolResult(
@@ -147,26 +128,21 @@ def _download_pdf(
                     metadata={"error_type": "http_error", "url": url, "status_code": response.status_code, "tool_name": "pdf_reader"},
                 )
 
-            # Check Content-Type
             content_type = response.headers.get("content-type", "").lower()
-            if "application/pdf" not in content_type and not url.lower().endswith(".pdf"):
-                # Still try magic bytes check
-                pass
 
-            # Check response size
-            if response.headers.get("content-length"):
-                try:
-                    cl = int(response.headers["content-length"])
-                    if cl > max_response_bytes:
-                        return None, ToolResult(
-                            success=False,
-                            error_message=f"response_too_large: {cl} bytes (max {max_response_bytes})",
-                            metadata={"error_type": "too_large", "url": url, "content_length": cl, "tool_name": "pdf_reader"},
-                        )
-                except ValueError:
-                    pass
-
-            content = response.content[:max_response_bytes]
+            # Bounded streaming read, enforced regardless of content-length.
+            chunks: list[bytes] = []
+            received = 0
+            for chunk in response.iter_bytes(chunk_size=65536):
+                chunks.append(chunk)
+                received += len(chunk)
+                if received > max_response_bytes:
+                    return None, ToolResult(
+                        success=False,
+                        error_message=f"response_too_large: >{max_response_bytes} bytes (max {max_response_bytes})",
+                        metadata={"error_type": "too_large", "url": url, "tool_name": "pdf_reader"},
+                    )
+            content = b"".join(chunks)
 
             # Verify PDF magic
             if not _check_pdf_magic(content):

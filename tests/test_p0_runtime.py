@@ -14,6 +14,7 @@ from app.agent.report_generation import resolve_report_llm_client
 from app.config import Settings
 from app.database import Base
 from app.llm.base import LLMClient, LLMMessage, LLMResponse
+from app.security.redaction import is_sensitive_key
 from app.tools.base import ToolResult, ToolSpec
 from app.tools.errors import ToolErrorCategory, classify_tool_error
 from app.tools.registry import execute_tool, register_tool
@@ -147,6 +148,45 @@ class TraceRedactionTests(unittest.TestCase):
         self.assertNotIn(token, serialized)
         self.assertIn("[REDACTED]", serialized)
         self.assertEqual(json.loads(trace.output_json)["metadata"]["error_category"], "timeout")
+
+
+# ── Redaction key classification ──────────────────────────────────────
+
+
+class RedactionKeyTests(unittest.TestCase):
+    """Verify is_sensitive_key correctly distinguishes secrets from metrics."""
+
+    def test_token_metrics_are_not_sensitive(self):
+        """token_in, token_out, token_usage, total_tokens are metrics, not secrets."""
+        for key in ("token_in", "token_out", "token_usage", "token_count",
+                    "token_limit", "token_total", "total_tokens",
+                    "TOKEN_IN", "Token_Out"):
+            with self.subTest(key=key):
+                self.assertFalse(is_sensitive_key(key),
+                                 f"Metric key '{key}' should NOT be sensitive")
+
+    def test_secret_token_keys_are_sensitive(self):
+        """token, github_token, api_token, access_token, refresh_token are secrets."""
+        for key in ("token", "github_token", "api_token", "access_token",
+                    "auth_token", "refresh_token", "GITHUB_TOKEN"):
+            with self.subTest(key=key):
+                self.assertTrue(is_sensitive_key(key),
+                                f"Secret key '{key}' should be sensitive")
+
+    def test_non_token_sensitive_keys(self):
+        """api_key, authorization, secret, password, credential, private_key."""
+        for key in ("api_key", "apikey", "authorization", "secret", "password",
+                    "credential", "private_key", "API_KEY", "Authorization"):
+            with self.subTest(key=key):
+                self.assertTrue(is_sensitive_key(key),
+                                f"'{key}' should be sensitive")
+
+    def test_plain_metadata_keys_are_not_sensitive(self):
+        """Ordinary metadata keys like 'name', 'id', 'url' are not sensitive."""
+        for key in ("name", "id", "url", "query", "description", "run_id"):
+            with self.subTest(key=key):
+                self.assertFalse(is_sensitive_key(key),
+                                 f"'{key}' should NOT be sensitive")
 
 
 if __name__ == "__main__":

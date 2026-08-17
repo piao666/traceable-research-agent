@@ -77,8 +77,14 @@ def is_tool_exposable(spec: ToolSpec, *, alias: str | None = None) -> bool:
 
 
 def is_tool_read_only(spec: ToolSpec) -> bool:
-    """Infer read-only status from risk and registry tags."""
+    """Return read-only status, honoring the explicit ``read_only`` field first.
 
+    Falls back to risk/tag/name inference for tools registered without the
+    explicit field (e.g. dynamically registered MCP remote tools).
+    """
+
+    if spec.read_only:
+        return True
     tags = {tag.strip().lower() for tag in spec.tags}
     if "write" in tags or "mutation" in tags:
         return False

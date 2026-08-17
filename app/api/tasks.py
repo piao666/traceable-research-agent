@@ -364,7 +364,7 @@ def _persist_plan_config_snapshot(
 
 
 @router.post("", response_model=TaskCreateResponse)
-async def create_task(
+def create_task(
     task_request: TaskCreateRequest,
     db: Session = Depends(get_db),
 ) -> TaskCreateResponse:
@@ -475,7 +475,7 @@ async def get_task_plan(
 
 
 @router.post("/{run_id}/run", response_model=TaskRunResponse)
-async def run_task(
+def run_task(
     run_id: str,
     db: Session = Depends(get_db),
 ) -> TaskRunResponse:
@@ -501,7 +501,7 @@ async def run_task(
             _run_summary(run, "Plan is awaiting approval. Call POST /api/tasks/{run_id}/approve-plan.")
         )
     if run.status == "failed":
-        raise HTTPException(status_code=409, detail="Failed runs cannot be rerun in Day13-15")
+        raise HTTPException(status_code=409, detail="Failed runs cannot be rerun")
 
     summary = run_task_by_mode(db, run_id)
     return _task_run_response(summary)
@@ -538,7 +538,7 @@ async def run_task_async(
             "Plan is awaiting approval. Call POST /api/tasks/{run_id}/approve-plan.",
         )
     if run.status == "failed":
-        raise HTTPException(status_code=409, detail="Failed runs cannot be rerun in Day29")
+        raise HTTPException(status_code=409, detail="Failed runs cannot be rerun")
 
     if not store.claim_pending_agent_run(db, run_id):
         db.expire_all()
@@ -557,7 +557,7 @@ async def run_task_async(
 
 
 @router.post("/{run_id}/confirm", response_model=TaskConfirmResponse)
-async def confirm_task(
+def confirm_task(
     run_id: str,
     request: TaskConfirmRequest,
     db: Session = Depends(get_db),
@@ -731,7 +731,7 @@ async def get_plan_review(
 
 
 @router.post("/{run_id}/approve-plan", response_model=TaskRunResponse)
-async def approve_plan(
+def approve_plan(
     run_id: str,
     request: PlanApproveRequest,
     db: Session = Depends(get_db),
@@ -819,7 +819,7 @@ async def get_task_trace(
     run_id: str,
     db: Session = Depends(get_db),
 ) -> list[ToolTraceResponse]:
-    """Return trace rows for a run. Day4 permits an empty trace list."""
+    """Return trace rows for a run."""
 
     run = store.get_agent_run(db, run_id)
     if run is None:

@@ -23,6 +23,9 @@ DANGEROUS_KEYWORDS = {
     "DETACH",
     "PRAGMA",
     "VACUUM",
+    "LOAD_EXTENSION",
+    "READFILE",
+    "WRITEFILE",
 }
 DANGEROUS_EXPRESSIONS = (
     exp.Insert,
@@ -58,8 +61,11 @@ def _strip_comments(query: str) -> str:
 
 
 def _strip_quoted_content(query: str) -> str:
+    # Strip string literals first so "--" and "/*" inside them are not
+    # mistaken for comments.
     pattern = r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`[^`]*`|\[[^\]]*\]"
-    unquoted = re.sub(pattern, " ", _strip_comments(query))
+    unquoted = re.sub(pattern, " ", query)
+    unquoted = _strip_comments(unquoted)
     return re.sub(r"\bREPLACE\s*(?=\()", " ", unquoted, flags=re.IGNORECASE)
 
 

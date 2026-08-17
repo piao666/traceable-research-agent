@@ -119,7 +119,7 @@ def read_file(arguments: dict[str, Any]) -> ToolResult:
     extension = resolved_path.suffix.lower()
     if extension in DAY6_NOT_IMPLEMENTED_EXTENSIONS:
         return _failure(
-            "format not implemented in Day6",
+            "format not implemented",
             error_type="format_not_implemented",
             path=raw_path,
             extension=extension,
