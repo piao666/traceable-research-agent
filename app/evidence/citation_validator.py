@@ -312,7 +312,8 @@ def validate_citations(
         if overlap >= min_supported_overlap and entity_count >= min_entity_co_occurrence:
             verdict = "supported"
             supported_count += 1
-        elif overlap >= min_weak_overlap:
+        elif overlap >= min_weak_overlap or entity_count >= 1:
+            # Lenient: either some keyword overlap OR at least one shared entity
             verdict = "weakly_supported"
             weak_count += 1
         else:

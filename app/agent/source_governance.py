@@ -14,6 +14,7 @@ from app.evidence.policy import (
     SourceCandidate,
     SourcePolicy,
     SourceSelection,
+    classify_tier,
     load_source_policy,
     select_sources_by_profile,
 )
@@ -48,6 +49,11 @@ class GovernedRefetch:
 
 
 def governance_enabled(plan: dict[str, Any]) -> bool:
+    # evaluation profile: skip governance filtering, let LLM judge source quality
+    # This follows GPT Researcher's approach: trust the LLM, don't pre-filter.
+    profile = str(plan.get("retrieval_profile") or "")
+    if profile == "evaluation":
+        return False
     return bool(plan.get("retrieval_profile") and plan.get("profile_constraints"))
 
 
@@ -111,14 +117,51 @@ def govern_tool_result(
     """Select discovery candidates and expose the decision in trace metadata."""
 
     field = DISCOVERY_RESULT_FIELDS.get(tool_name)
-    if (
-        field is None
-        or not governance_enabled(plan)
-        or not result.success
-        or not isinstance(result.output, dict)
-        or not isinstance(result.output.get(field), list)
-    ):
+    if field is None or not result.success or not isinstance(result.output, dict):
         return result
+
+    if not governance_enabled(plan):
+        # Evaluation mode: annotate tiers without filtering
+        raw_items = [item for item in result.output.get(field, []) if isinstance(item, dict)]
+        if not raw_items:
+            return result
+        policy, profile = _policy_and_profile(plan, settings_obj)
+        candidates = []
+        for item in raw_items[:settings_obj.max_discovery_candidates]:
+            candidate = _candidate_from_item(tool_name, item)
+            if candidate is not None:
+                candidates.append(candidate)
+        tier_counts = {"T0": 0, "T1": 0, "T2": 0}
+        for c in candidates:
+            tc = classify_tier(tool_name, c.uri, c.metadata, policy)
+            tier_counts[tc.tier] = tier_counts.get(tc.tier, 0) + 1
+        metadata = dict(result.metadata or {})
+        metadata["source_governance"] = {
+            "mode": "annotation_only",
+            "profile": profile.name,
+            "policy_version": policy.version,
+            "discovery_candidate_count": len(raw_items),
+            "classified_candidate_count": len(candidates),
+            "selected_candidate_count": len(raw_items),
+            "tier_counts": tier_counts,
+            "independent_clusters": 0,
+            "quota_shortfall": {},
+            "shortfall_policy": "report_only",
+            "selection_log": ["evaluation mode: all results passed through"],
+            "oversample_factor": settings_obj.oversample_factor,
+            "max_discovery_candidates": settings_obj.max_discovery_candidates,
+            "max_fetch_candidates": settings_obj.max_fetch_candidates,
+            "max_refetch_rounds": settings_obj.max_refetch_rounds,
+            "refetch_round": refetch_round,
+            "budget_limited_selection": False,
+        }
+        metadata["result_count"] = len(raw_items)
+        return ToolResult(
+            success=True,
+            output=result.output,
+            output_summary=result.output_summary,
+            metadata=metadata,
+        )
 
     policy, profile = _policy_and_profile(plan, settings_obj)
     raw_items = [item for item in result.output[field] if isinstance(item, dict)]

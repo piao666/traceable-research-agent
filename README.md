@@ -222,7 +222,7 @@ Run the same core checks locally:
 .\.venv\Scripts\python.exe -m compileall -q app scripts frontend migrations tests
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe scripts\smoke_final_project.py
-.\.venv\Scripts\python.exe scripts\run_eval_regression.py
+.\.venv\Scripts\python.exe -m app.eval.regression
 .\.venv\Scripts\python.exe scripts\skill_smoke.py --all
 docker compose config --quiet
 ```

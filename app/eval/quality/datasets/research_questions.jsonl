@@ -1,0 +1,5 @@
+{"id":"rq_001","question":"对比 Transformer 和 Mamba 架构在长文本处理上的优劣","category":"technical_comparison","report_type":"detailed_report","skill":"hybrid_research","retrieval_profile":"evaluation"}
+{"id":"rq_002","question":"2024年 AI Agent 领域最重要的 3 个技术突破是什么？","category":"trend_analysis","report_type":"detailed_report","skill":"hybrid_research","retrieval_profile":"evaluation"}
+{"id":"rq_003","question":"评估开源 LLM 在中文基准测试上的最新性能","category":"benchmark_review","report_type":"detailed_report","skill":"hybrid_research","retrieval_profile":"evaluation"}
+{"id":"rq_004","question":"对比 RAG 和长上下文窗口两种技术路线的适用场景","category":"technical_comparison","report_type":"detailed_report","skill":"hybrid_research","retrieval_profile":"evaluation"}
+{"id":"rq_005","question":"AI 代码生成工具的安全性风险有哪些？","category":"risk_analysis","report_type":"detailed_report","skill":"hybrid_research","retrieval_profile":"evaluation"}

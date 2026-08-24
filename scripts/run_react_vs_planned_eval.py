@@ -1,4 +1,7 @@
-"""Run the full offline ReAct versus planned evaluation."""
+"""Run the full offline ReAct versus planned evaluation — thin wrapper.
+
+All logic lives in app/eval/react_vs_planned.py.
+"""
 
 from __future__ import annotations
 
@@ -29,7 +32,6 @@ def main() -> None:
                 "decision_source": payload["decision_source"],
                 "modes": payload["modes"],
             },
-            ensure_ascii=False,
             indent=2,
         )
     )

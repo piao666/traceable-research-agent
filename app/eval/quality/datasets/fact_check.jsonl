@@ -1,0 +1,3 @@
+{"id":"fc_001","question":"GPT-4 的上下文窗口长度是多少？","expected_answer":"128K tokens","tolerance":"fuzzy","report_type":"summary","skill":"hybrid_research","retrieval_profile":"evaluation"}
+{"id":"fc_002","question":"Llama 3 是什么时候发布的？","expected_answer":"2024年4月","tolerance":"fuzzy","report_type":"summary","skill":"hybrid_research","retrieval_profile":"evaluation"}
+{"id":"fc_003","question":"DeepSeek-V3 是 MoE 架构吗？","expected_answer":"是","tolerance":"exact","report_type":"summary","skill":"hybrid_research","retrieval_profile":"evaluation"}

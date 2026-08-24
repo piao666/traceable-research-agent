@@ -1,0 +1,407 @@
+"""Regression evaluation runner with category breakdown and baseline comparison.
+
+Usage:
+    python -m app.eval.regression                         # Run all, output report
+    python -m app.eval.regression --baseline <json>       # Compare with previous
+    python -m app.eval.regression --category tool_safety  # Filter by category
+
+Outputs:
+    workspace/eval_outputs/regression_{timestamp}.json  — full results
+    workspace/eval_outputs/regression_{timestamp}.md    — Markdown comparison report
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+
+from app.database import SessionLocal
+from app.eval.run_eval import load_cases, prepare_runtime, run_case
+
+OUTPUT_DIR = ROOT / "workspace" / "eval_outputs"
+BAD_CASES_PATH = ROOT / "app" / "eval" / "bad_cases.json"
+BAD_CASE_STATUSES = {"known", "expected_to_pass"}
+BAD_CASE_PRIORITIES = {"high", "medium", "low"}
+
+CATEGORY_LABELS = {
+    "tool_safety": "工具安全边界",
+    "tool_success": "工具成功路径",
+    "report_gen": "报告生成",
+    "degradation": "降级与恢复",
+    "evidence": "证据链",
+    "hitl": "HITL 路径",
+    "uncategorized": "未分类",
+}
+
+
+def _configure_stdout() -> None:
+    """Use UTF-8 for direct Windows CLI runs without mutating importers."""
+
+    if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+
+def load_bad_cases(
+    path: Path = BAD_CASES_PATH,
+    known_case_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Load and validate the versioned bad-case registry."""
+
+    if not path.is_file():
+        raise FileNotFoundError(f"Bad-case registry not found: {path}")
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError("Bad-case registry must be a JSON array")
+
+    required = {"id", "title", "case_id", "status", "priority"}
+    entries: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    seen_case_ids: set[str] = set()
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Bad-case entry {index} must be an object")
+        missing = required - item.keys()
+        if missing:
+            raise ValueError(
+                f"Bad-case entry {index} is missing: {', '.join(sorted(missing))}"
+            )
+
+        entry = {key: str(value).strip() for key, value in item.items()}
+        bad_case_id = entry["id"]
+        case_id = entry["case_id"]
+        if not bad_case_id.startswith("BAD-"):
+            raise ValueError(f"Invalid bad-case id: {bad_case_id}")
+        if bad_case_id in seen_ids:
+            raise ValueError(f"Duplicate bad-case id: {bad_case_id}")
+        if case_id in seen_case_ids:
+            raise ValueError(f"Duplicate bad-case case_id: {case_id}")
+        if entry["status"] not in BAD_CASE_STATUSES:
+            raise ValueError(f"Invalid bad-case status for {bad_case_id}: {entry['status']}")
+        if entry["priority"] not in BAD_CASE_PRIORITIES:
+            raise ValueError(f"Invalid bad-case priority for {bad_case_id}: {entry['priority']}")
+        if known_case_ids is not None and case_id not in known_case_ids:
+            raise ValueError(f"Unknown eval case_id for {bad_case_id}: {case_id}")
+
+        seen_ids.add(bad_case_id)
+        seen_case_ids.add(case_id)
+        entries.append(entry)
+    return entries
+
+
+def check_bad_cases(results: list[dict[str, Any]], bad_cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cross-reference failed results with bad_cases entries."""
+    failed_ids = {r["case_id"] for r in results if not r.get("passed")}
+    evaluated_ids = {r["case_id"] for r in results}
+    alerts: list[dict[str, Any]] = []
+    for bc in bad_cases:
+        bc_case_id = bc.get("case_id", "")
+        bc_status = bc.get("status", "")
+        if bc_case_id not in evaluated_ids:
+            continue
+        if bc_case_id in failed_ids and bc_status == "expected_to_pass":
+            alerts.append({
+                "bad_case_id": bc.get("id"),
+                "title": bc.get("title"),
+                "case_id": bc_case_id,
+                "expected": "expected_to_pass",
+                "actual": "still_failing",
+                "priority": bc.get("priority", "unknown"),
+            })
+        elif bc_case_id not in failed_ids and bc_status == "expected_to_pass":
+            alerts.append({
+                "bad_case_id": bc.get("id"),
+                "title": bc.get("title"),
+                "case_id": bc_case_id,
+                "expected": "expected_to_pass",
+                "actual": "now_passing",
+                "priority": bc.get("priority", "unknown"),
+            })
+    return alerts
+
+
+def build_category_summary(results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Group results by category and compute per-category stats.
+
+    Network-dependent cases that failed are counted as 'skipped' rather than 'failed'.
+    """
+    by_cat: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in results:
+        by_cat[r.get("category", "uncategorized")].append(r)
+    summary: dict[str, dict[str, Any]] = {}
+    for cat, items in sorted(by_cat.items()):
+        passed = sum(1 for i in items if i.get("passed"))
+        nd_failed = sum(1 for i in items if not i.get("passed") and i.get("network_dependent"))
+        hard_failed = sum(1 for i in items if not i.get("passed") and not i.get("network_dependent"))
+        total = len(items)
+        adjusted_total = total - nd_failed
+        summary[cat] = {
+            "label": CATEGORY_LABELS.get(cat, cat),
+            "total": total,
+            "passed": passed,
+            "failed": hard_failed,
+            "skipped_network": nd_failed,
+            "rate": round(passed / adjusted_total, 4) if adjusted_total > 0 else 1.0,
+            "cases": [i["case_id"] for i in items if not i.get("passed") and not i.get("network_dependent")],
+        }
+    return summary
+
+
+def build_markdown_report(
+    payload: dict[str, Any],
+    baseline: dict[str, Any] | None,
+    bad_case_alerts: list[dict[str, Any]],
+) -> str:
+    """Render a Markdown evaluation regression report."""
+    category_summary = payload["category_summary"]
+    results = payload["results"]
+    total = payload["total_cases"]
+    passed = payload["passed"]
+    failed = payload["failed"]
+
+    def pct(v: float) -> str:
+        return f"{v * 100:.1f}%"
+
+    nd_failed = sum(1 for r in results if not r.get("passed") and r.get("network_dependent"))
+    hard_failed = sum(1 for r in results if not r.get("passed") and not r.get("network_dependent"))
+    effective_total = total - nd_failed
+
+    lines: list[str] = [
+        "# Eval Regression Report",
+        "",
+        f"**Generated**: {payload['generated_at']}",
+        f"**Total cases**: {total}",
+        f"**Passed**: {passed} ({pct(passed / effective_total) if effective_total else 'N/A'})",
+        f"**Failed (hard)**: {hard_failed}",
+        f"**Skipped (network)**: {nd_failed}",
+        "",
+    ]
+
+    if baseline:
+        bl_passed = baseline.get("passed", 0)
+        bl_total = baseline.get("total_cases", 0)
+        regressions = [
+            r for r in results
+            if not r.get("passed")
+            and any(
+                br.get("case_id") == r["case_id"] and br.get("passed")
+                for br in baseline.get("results", [])
+            )
+        ]
+        fixes = [
+            r for r in results
+            if r.get("passed")
+            and any(
+                br.get("case_id") == r["case_id"] and not br.get("passed")
+                for br in baseline.get("results", [])
+            )
+        ]
+        lines.extend([
+            "## Baseline Comparison",
+            "",
+            f"* Baseline: `{baseline.get('generated_at', 'unknown')}`",
+            f"* Baseline passed: {bl_passed}/{bl_total} ({pct(bl_passed / bl_total) if bl_total else 'N/A'})",
+            f"* Regressions (new failures): **{len(regressions)}**",
+            f"* Fixes (previously failing, now passing): **{len(fixes)}**",
+            "",
+        ])
+        if regressions:
+            lines.append("### Regressions")
+            lines.append("")
+            lines.append("| case_id | category | baseline | current |")
+            lines.append("| --- | --- | --- | --- |")
+            for r in regressions:
+                lines.append(
+                    f"| {r['case_id']} | {r.get('category', '?')} | passed | **failed** |"
+                )
+            lines.append("")
+        if fixes:
+            lines.append("### Fixes")
+            lines.append("")
+            lines.append("| case_id | category |")
+            lines.append("| --- | --- |")
+            for r in fixes:
+                lines.append(f"| {r['case_id']} | {r.get('category', '?')} |")
+            lines.append("")
+    else:
+        lines.extend([
+            "## Baseline Comparison",
+            "",
+            "*No baseline provided. Use `--baseline <previous_report.json>` to compare.*",
+            "",
+        ])
+
+    lines.extend([
+        "## Category Summary",
+        "",
+        "| Category | Total | Passed | Failed | Skipped (network) | Rate |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for cat, stats in sorted(category_summary.items()):
+        lines.append(
+            f"| {stats['label']} | {stats['total']} | {stats['passed']} | "
+            f"{stats['failed']} | {stats.get('skipped_network', 0)} | {pct(stats['rate'])} |"
+        )
+    lines.append("")
+
+    hard_failed_results = [r for r in results if not r.get("passed") and not r.get("network_dependent")]
+    nd_results = [r for r in results if not r.get("passed") and r.get("network_dependent")]
+    if nd_results:
+        lines.extend([
+            "## Network-Dependent Cases (Skipped)",
+            "",
+            "These cases require external network access and were skipped in this run:",
+            "",
+            "| case_id | tool | category |",
+            "| --- | --- | --- |",
+        ])
+        for r in nd_results:
+            lines.append(
+                f"| {r['case_id']} | {r.get('planned_tools', ['?'])[0] if r.get('planned_tools') else '?'} "
+                f"| {CATEGORY_LABELS.get(r.get('category', ''), r.get('category', '?'))} |"
+            )
+        lines.append("")
+    if hard_failed_results:
+        lines.extend([
+            "## Failed Cases",
+            "",
+        ])
+        for r in hard_failed_results:
+            lines.extend([
+                f"### {r['case_id']}",
+                "",
+                f"* Category: {CATEGORY_LABELS.get(r.get('category', ''), r.get('category', '?'))}",
+                f"* Status: {r.get('status', '?')}",
+                f"* Trace count: {r.get('trace_count', 0)}",
+                f"* Report exists: {r.get('report_exists', False)}",
+                f"* Keywords OK: {r.get('keywords_ok', True)}",
+                f"* Keyword matches: {r.get('keyword_matches', [])}",
+                "",
+            ])
+            if r.get("failure_reason"):
+                lines.append(f"* Failure: {r['failure_reason']}")
+                lines.append("")
+
+    if bad_case_alerts:
+        lines.extend([
+            "## Bad Cases Check",
+            "",
+        ])
+        still_failing = [a for a in bad_case_alerts if a["actual"] == "still_failing"]
+        now_passing = [a for a in bad_case_alerts if a["actual"] == "now_passing"]
+        if still_failing:
+            lines.append("### Still Failing (expected to pass)")
+            lines.append("")
+            lines.append("| Bad Case | case_id | Priority |")
+            lines.append("| --- | --- | --- |")
+            for a in still_failing:
+                lines.append(
+                    f"| **{a['title']}** | {a['case_id']} | {a['priority']} |"
+                )
+            lines.append("")
+        if now_passing:
+            lines.append("### Now Passing")
+            lines.append("")
+            lines.append("| Bad Case | case_id |")
+            lines.append("| --- | --- |")
+            for a in now_passing:
+                lines.append(f"| {a['title']} | {a['case_id']} |")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def main() -> int:
+    _configure_stdout()
+    parser = argparse.ArgumentParser(description="Eval regression runner")
+    parser.add_argument(
+        "--baseline", type=str, default=None,
+        help="Path to previous regression JSON for comparison",
+    )
+    parser.add_argument(
+        "--category", "-c", type=str, default=None,
+        help="Filter by category (tool_safety, tool_success, report_gen, degradation, evidence, hitl)",
+    )
+    args = parser.parse_args()
+
+    prepare_runtime()
+    all_cases = load_cases()
+    cases = [c for c in all_cases if not args.category or c.get("category") == args.category]
+
+    with SessionLocal() as db:
+        results = [run_case(db, case) for case in cases]
+
+    passed = sum(1 for r in results if r.get("passed"))
+    nd_failed = sum(1 for r in results if not r.get("passed") and r.get("network_dependent"))
+    hard_failed = sum(1 for r in results if not r.get("passed") and not r.get("network_dependent"))
+    failed = hard_failed
+    category_summary = build_category_summary(results)
+
+    baseline: dict[str, Any] | None = None
+    if args.baseline:
+        bl_path = Path(args.baseline)
+        if bl_path.is_file():
+            baseline = json.loads(bl_path.read_text(encoding="utf-8"))
+
+    bad_cases = load_bad_cases(
+        known_case_ids={str(case["case_id"]) for case in all_cases},
+    )
+    bad_case_alerts = check_bad_cases(results, bad_cases)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "total_cases": len(results),
+        "passed": passed,
+        "failed": failed,
+        "category_filter": args.category,
+        "category_summary": {
+            cat: {k: v for k, v in stats.items() if k != "cases"}
+            for cat, stats in category_summary.items()
+        },
+        "bad_case_alerts": bad_case_alerts,
+        "results": results,
+    }
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    json_path = OUTPUT_DIR / f"regression_{timestamp}.json"
+    md_path = OUTPUT_DIR / f"regression_{timestamp}.md"
+
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    md_report = build_markdown_report(payload, baseline, bad_case_alerts)
+    md_path.write_text(md_report, encoding="utf-8")
+
+    nd = sum(1 for r in results if not r.get("passed") and r.get("network_dependent"))
+    hf = sum(1 for r in results if not r.get("passed") and not r.get("network_dependent"))
+    print(f"\n  Total: {len(results)}  Passed: {passed}  Failed (hard): {hf}  Skipped (network): {nd}")
+    for cat, stats in sorted(category_summary.items()):
+        snd = stats.get("skipped_network", 0)
+        if stats["failed"] == 0 and snd == 0:
+            icon = "✅"
+        elif stats["failed"] == 0 and snd > 0:
+            icon = "⚠️"
+        else:
+            icon = "❌"
+        extra = f" ({snd} network)" if snd > 0 else ""
+        print(f"  {icon} {stats['label']}: {stats['passed']}/{stats['total']}{extra}")
+    if bad_case_alerts:
+        still = [a for a in bad_case_alerts if a["actual"] == "still_failing"]
+        if still:
+            print(f"\n  ⚠️  {len(still)} bad case(s) still failing (expected to pass):")
+            for a in still:
+                print(f"     - {a['case_id']}: {a['title']}")
+    print(f"\n  Report: {md_path}")
+    print(f"  JSON:   {json_path}")
+
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

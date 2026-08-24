@@ -17,7 +17,7 @@
       "arguments": {
         "query": "{{parameters.query}}",
         "max_results": "{{parameters.max_urls}}",
-        "include_raw_content": false
+        "include_raw_content": true
       }
     },
     {

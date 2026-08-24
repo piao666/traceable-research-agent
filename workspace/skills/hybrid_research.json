@@ -1,0 +1,52 @@
+{
+  "name": "hybrid_research",
+  "version": "1.0",
+  "description": "混合调研：Tavily 网页搜索 + arXiv 学术检索双源并行，web_fetcher 抓取全文，生成综合报告。结合网页广度与学术深度，提升 T0/T1 来源比例。",
+  "required_tools": ["tavily_search", "arxiv_search", "web_fetcher", "report_writer"],
+  "changelog": [
+    {"version": "1.0", "date": "2026-09-02", "changes": "初始版本：Tavily + arXiv 双源发现 → web_fetcher 抓取 → report_writer 综合"}
+  ],
+  "parameters": {
+    "query": {"type": "string", "required": true},
+    "max_urls": {"type": "integer", "default": 10},
+    "max_papers": {"type": "integer", "default": 10}
+  },
+  "steps": [
+    {
+      "tool_name": "tavily_search",
+      "goal": "网页搜索：发现与查询相关的网页 URL 和内容摘要",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "max_results": "{{parameters.max_urls}}",
+        "search_depth": "advanced",
+        "include_answer": true,
+        "include_raw_content": true
+      }
+    },
+    {
+      "tool_name": "arxiv_search",
+      "goal": "学术检索：从 arXiv 获取相关论文的标题、作者、摘要和 PDF 链接",
+      "arguments": {
+        "query": "{{parameters.query}}",
+        "max_results": "{{parameters.max_papers}}",
+        "sort_by": "relevance",
+        "sort_order": "descending"
+      }
+    },
+    {
+      "tool_name": "web_fetcher",
+      "goal": "正文抓取：从 Tavily 发现的 URL 中提取全文内容",
+      "arguments": {
+        "urls": [],
+        "max_chars": 8000,
+        "timeout_seconds": 10
+      },
+      "arguments_from": {"step_no": "{{steps[0].step_no}}", "field": "results"}
+    },
+    {
+      "tool_name": "report_writer",
+      "goal": "综合报告生成：结合网页证据与学术论文，生成结构化调研报告",
+      "arguments": {}
+    }
+  ]
+}

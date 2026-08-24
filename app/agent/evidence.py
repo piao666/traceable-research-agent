@@ -307,6 +307,9 @@ def _items_from_record(
         return _tavily_items(run_id, record, existing_count)
     if _is_remote_mcp_record(record):
         return _remote_mcp_items(run_id, record, existing_count)
+    if tool_name in ("arxiv_search", "semantic_scholar_search",
+                     "openalex_search", "crossref_search"):
+        return _academic_items(run_id, record, existing_count)
     if tool_name == "finish":
         summary = str(output.get("summary") or record.get("summary") or "").strip()
         if summary:
@@ -444,6 +447,17 @@ def _tavily_items(run_id: str, record: dict[str, Any], existing_count: int) -> l
             or result.get("raw_content")
             or ""
         ).strip()
+        # When content is too short, compose a richer snippet from title + URL + score
+        if len(content) < 50:
+            parts = [title]
+            if url:
+                parts.append("URL: " + url)
+            score = result.get("score")
+            if score is not None:
+                parts.append("Relevance: " + str(round(float(score), 2)))
+            if content:
+                parts.append(content)
+            content = " | ".join(parts)
         if not content:
             continue
         item = _make_item(
@@ -616,6 +630,101 @@ def _remote_mcp_items(run_id: str, record: dict[str, Any], existing_count: int) 
     )
     item.metadata["evidence_role"] = role
     return [item]
+
+
+def _academic_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
+    """Extract individual paper evidence from academic search tools.
+
+    Unlike _generic_items which creates a single item per tool call, this
+    creates one EvidenceItem per paper so the reporter can reference
+    individual titles, abstracts, authors, and DOIs.
+    """
+    output = record.get("output") if isinstance(record.get("output"), dict) else {}
+    papers = [
+        item for item in (output.get("papers") or [])
+        if isinstance(item, dict)
+    ]
+    if not papers:
+        return [
+            _make_item(
+                run_id, record, existing_count + 1,
+                title=f"{record['tool_name']} returned no papers",
+                snippet=str(record.get("summary") or "No academic papers found."),
+                source_ref=str(record["tool_name"]),
+                source_type=_source_type(record),
+                unsupported_reason="empty_academic_result",
+            )
+        ]
+
+    items: list[EvidenceItem] = []
+    for paper in papers[:10]:
+        title = str(paper.get("title") or paper.get("name") or "Untitled")
+        authors_raw = paper.get("authors") or []
+        authors = ", ".join(
+            (str(a) if isinstance(a, str) else str(a.get("name", "")))
+            for a in (authors_raw if isinstance(authors_raw, list) else [])
+        )[:200]
+        year = paper.get("year") or paper.get("publication_year") or ""
+        abstract = str(
+            paper.get("abstract")
+            or paper.get("snippet")
+            or paper.get("summary")
+            or paper.get("description")
+            or ""
+        ).strip()
+        doi = str(
+            paper.get("doi")
+            or (paper.get("externalIds") or {}).get("DOI", "")
+            or ""
+        ).strip()
+        url = str(
+            paper.get("url")
+            or paper.get("pdf_url")
+            or paper.get("openAccessPdf", {}).get("url", "")
+            or (f"https://doi.org/{doi}" if doi else "")
+            or ""
+        ).strip()
+
+        snippet_parts = [f"标题: {title}"]
+        if authors:
+            snippet_parts.append(f"作者: {authors}")
+        if year:
+            snippet_parts.append(f"年份: {year}")
+        if doi:
+            snippet_parts.append(f"DOI: {doi}")
+        if abstract:
+            snippet_parts.append(f"摘要: {abstract[:500]}")
+        snippet = "\n".join(snippet_parts)
+
+        item = _make_item(
+            run_id, record, existing_count + len(items) + 1,
+            title=title,
+            snippet=snippet[:900],
+            source_ref=url or doi or title,
+            source_type=_source_type(record),
+        )
+        item.metadata.update({
+            k: v for k, v in {
+                "authors": authors, "year": year, "doi": doi,
+                "venue": str(paper.get("venue") or paper.get("journal") or ""),
+                "cited_by_count": paper.get("cited_by_count") or paper.get("citationCount"),
+                "is_open_access": paper.get("is_open_access"),
+            }.items() if v
+        })
+        items.append(item)
+
+    if not items:
+        items.append(
+            _make_item(
+                run_id, record, existing_count + 1,
+                title=f"{record['tool_name']} returned no usable papers",
+                snippet=str(record.get("summary") or "No usable academic papers found."),
+                source_ref=str(record["tool_name"]),
+                source_type=_source_type(record),
+                unsupported_reason="empty_academic_result",
+            )
+        )
+    return items
 
 
 def _generic_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:

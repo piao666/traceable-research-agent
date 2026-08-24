@@ -484,7 +484,8 @@ def select_sources_by_profile(
     # Classify all candidates
     tiered: list[tuple[SourceCandidate, TierClassification]] = []
     for c in candidates:
-        tc = classify_tier("web_search", c.uri, c.metadata, policy)
+        tool_name = str(c.metadata.get("tool_name") or "web_search")
+        tc = classify_tier(tool_name, c.uri, c.metadata, policy)
         tiered.append((c, tc))
 
     # Group by cluster
@@ -539,7 +540,12 @@ def select_sources_by_profile(
         t1_selected += 1
 
     # Step 3: Select T2 candidates respecting ratio
-    max_t2 = int(len(selected) * profile.max_t2_ratio / max(1.0 - profile.max_t2_ratio, 0.01)) + 1
+    # When no T0/T1 sources are available, allow a reasonable floor of T2
+    # sources instead of the formula collapsing to 1 (len(selected)==0 case).
+    if len(selected) == 0:
+        max_t2 = max(profile.min_independent_sources, 3)
+    else:
+        max_t2 = int(len(selected) * profile.max_t2_ratio / max(1.0 - profile.max_t2_ratio, 0.01)) + 1
     if profile.min_t2_sources > 0:
         max_t2 = max(max_t2, profile.min_t2_sources)
     t2_selected = 0

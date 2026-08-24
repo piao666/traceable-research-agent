@@ -12,3 +12,4 @@ PyMuPDF==1.25.5
 sqlglot==30.13.0
 streamlit==1.60.0
 uvicorn[standard]==0.51.0
+pytest==9.1.1

@@ -1,0 +1,2 @@
+{"id":"cp_001","question":"比较 FastAPI、Flask 和 Django 的异步支持能力","dimensions":["性能","生态","学习曲线","适用场景"],"report_type":"detailed_report","skill":"hybrid_research","retrieval_profile":"evaluation"}
+{"id":"cp_002","question":"比较 PostgreSQL 和 MySQL 在 OLAP 场景下的表现","dimensions":["查询性能","扩展性","索引机制","工具生态"],"report_type":"detailed_report","skill":"hybrid_research","retrieval_profile":"evaluation"}

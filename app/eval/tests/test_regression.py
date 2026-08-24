@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from app.eval.run_eval import load_cases
 from app.eval.regression import check_bad_cases, load_bad_cases
+from app.eval.run_eval import load_cases
 
 
 def test_default_bad_case_registry_references_known_eval_cases() -> None:

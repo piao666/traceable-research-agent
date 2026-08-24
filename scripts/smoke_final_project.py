@@ -25,7 +25,7 @@ CHECKS = [
     ("smoke_mcp_channels", [sys.executable, "scripts/smoke_mcp_channels.py"]),
     ("demo_mcp_external_client", [sys.executable, "scripts/demo_mcp_external_client.py"]),
     ("smoke_mcp_external_http_client", [sys.executable, "scripts/smoke_mcp_external_http_client.py"]),
-    ("smoke_react_vs_planned_eval", [sys.executable, "scripts/smoke_react_vs_planned_eval.py"]),
+    ("smoke_react_vs_planned_eval", [sys.executable, "-m", "app.eval.smoke.smoke_react_vs_planned_eval"]),
     ("smoke_provenance_v2", [sys.executable, "scripts/smoke_provenance_v2.py"]),
     (
         "smoke_provenance_capacity",

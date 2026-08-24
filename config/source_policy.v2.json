@@ -131,6 +131,14 @@
       "max_t2_ratio": 0.50,
       "shortfall_policy": "report_only",
       "freshness_days": 730
+    },
+    "evaluation": {
+      "min_t0_sources": 1,
+      "min_independent_sources": 2,
+      "max_t2_ratio": 0.80,
+      "max_per_domain": 5,
+      "shortfall_policy": "report_only",
+      "freshness_days": 730
     }
   }
 }

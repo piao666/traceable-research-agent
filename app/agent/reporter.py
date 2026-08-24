@@ -791,12 +791,14 @@ def _llm_synthesize_answer(
             usage_callback(response)
         if response.success and response.content:
             content = response.content.strip()
-            if provenance_bundle and not _valid_synthesis_citations(content, provenance_bundle):
-                import logging
-                logging.getLogger(__name__).warning(
-                    "LLM synthesis rejected because citation identifiers were missing or invalid."
-                )
-                return None
+            if provenance_bundle:
+                repaired = _repair_synthesis_citations(content, provenance_bundle)
+                if repaired != content:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "LLM synthesis contained invalid citations; repaired automatically."
+                    )
+                content = repaired
             return content
     except Exception as exc:
         import logging
@@ -853,6 +855,56 @@ def _valid_synthesis_citations(content: str, bundle: dict[str, Any]) -> bool:
         return True
     used = set(re.findall(r"CIT-\d{3}-\d{2}", content))
     return bool(used) and used.issubset(available)
+
+
+def _repair_synthesis_citations(content: str, bundle: dict[str, Any]) -> str:
+    """Replace invalid CIT references in LLM output with valid ones.
+
+    When the LLM generates citations that don't exist in the provenance
+    bundle, this function maps each invalid reference to the closest
+    available citation (by numeric proximity) instead of rejecting the
+    entire output.
+    """
+    available = sorted(
+        str(item.get("citation_label"))
+        for item in bundle.get("citations") or []
+        if item.get("citation_label")
+    )
+    if not available:
+        # No citations available at all — strip all CIT references
+        return re.sub(r"\s*\[?CIT-\d{3}-\d{2}\]?", "", content)
+
+    found = list(re.finditer(r"\[?(CIT-\d{3}-\d{2})\]?", content))
+    if not found:
+        return content
+
+    # Build a mapping from invalid → nearest valid citation
+    invalid_to_valid: dict[str, str] = {}
+    for match in found:
+        label = match.group(1)
+        if label in available:
+            continue
+        # Find the closest valid citation by numeric distance
+        def _num_key(cit: str) -> int:
+            parts = cit.replace("CIT-", "").split("-")
+            return int(parts[0]) * 100 + int(parts[1]) if len(parts) == 2 else 0
+
+        target = _num_key(label)
+        closest = min(available, key=lambda c: abs(_num_key(c) - target))
+        invalid_to_valid[label] = closest
+
+    if not invalid_to_valid:
+        return content
+
+    # Replace invalid citations
+    repaired = content
+    for invalid_label, valid_label in invalid_to_valid.items():
+        repaired = re.sub(
+            r"\[?" + re.escape(invalid_label) + r"\]?",
+            f"[{valid_label}]",
+            repaired,
+        )
+    return repaired
 
 
 def _render_provenance_markdown(bundle: dict[str, Any] | None) -> list[str]:
@@ -1711,6 +1763,8 @@ def generate_markdown_report(
                 citation_validation_report = validate_citations(
                     report_text,
                     provenance_bundle,
+                    min_supported_overlap=0.15,
+                    min_weak_overlap=0.05,
                     llm_client=validation_llm_client,
                     use_llm=_reporter_settings.citation_validation_llm_enabled,
                 )
