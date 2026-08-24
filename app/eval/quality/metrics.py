@@ -40,6 +40,7 @@ class ResearchQualityReport:
     t1_count: int = 0
     t2_count: int = 0
     t2_ratio: float = 0.0
+    source_relevance_ratio: float = 0.0    # cited sources / total sources
 
     # ── Auditability (deterministic) ───────────────────────────────
     auditability_score: float = 0.0        # 0-10
@@ -79,6 +80,7 @@ class ResearchQualityReport:
             "t1_count": self.t1_count,
             "t2_count": self.t2_count,
             "t2_ratio": self.t2_ratio,
+            "source_relevance_ratio": self.source_relevance_ratio,
             "auditability_score": self.auditability_score,
             "citation_count": self.citation_count,
             "citation_accuracy": self.citation_accuracy,
@@ -103,6 +105,7 @@ class QualityEvalSummary:
     overall_t2_count: int
     total_citations: int
     avg_citation_accuracy: float
+    avg_source_relevance_ratio: float = 0.0
     reports: list[ResearchQualityReport] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -114,6 +117,7 @@ class QualityEvalSummary:
             "avg_coverage": self.avg_coverage,
             "avg_source_quality": self.avg_source_quality,
             "avg_auditability": self.avg_auditability,
+            "avg_source_relevance_ratio": self.avg_source_relevance_ratio,
             "overall_t0_count": self.overall_t0_count,
             "overall_t1_count": self.overall_t1_count,
             "overall_t2_count": self.overall_t2_count,

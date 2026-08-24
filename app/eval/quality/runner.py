@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -77,7 +78,7 @@ def _compute_tier_metrics(traces: list) -> dict[str, Any]:
     }
 
 
-def _score_source_quality(t0: int, t1: int, t2: int, citation_count: int = 0) -> float:
+def _score_source_quality(t0: int, t1: int, t2: int, citation_count: int = 0, relevance_ratio: float = 0.5) -> float:
     """Score source quality with calibrated weights.
     
     Weights calibrated against real-world evaluation data:
@@ -85,6 +86,7 @@ def _score_source_quality(t0: int, t1: int, t2: int, citation_count: int = 0) ->
     - Volume bonus caps at 20 sources (not 15)
     - T2 ratio > 50% triggers a mild penalty
     - Citation rate ensures only actually-used sources count
+    - Relevance ratio penalizes collecting many unused sources
     """
     total = t0 + t1 + t2
     if total == 0:
@@ -105,6 +107,11 @@ def _score_source_quality(t0: int, t1: int, t2: int, citation_count: int = 0) ->
     t2_penalty = 0.85 if t2_ratio > 0.5 else 1.0
     # Combine
     raw_score = (tier_score * citation_rate + volume_bonus + diversity) * t2_penalty
+    # Relevance ratio: if many sources are collected but few cited, reduce score
+    if relevance_ratio < 0.3:
+        raw_score *= 0.8  # heavy penalty for low relevance
+    elif relevance_ratio < 0.5:
+        raw_score *= 0.9
     return round(min(raw_score, 10), 1)
 def _score_auditability(citation_count: int, citation_accuracy: float, full_text_ratio: float) -> float:
     """Score auditability: higher citations + accuracy + full-text ratio."""
@@ -172,6 +179,11 @@ def run_quality_eval(
         total_content = full_text_count + partial_count + snippet_count
         full_text_ratio = round(full_text_count / total_content, 2) if total_content > 0 else 0.0
 
+        # ── Source relevance ratio ─────────────────────────────────
+        total_sources = _count_total_sources_from_traces(traces)
+        cited_sources = _count_cited_sources_from_report(report_text)
+        source_relevance_ratio = _compute_source_relevance_ratio(total_sources, cited_sources)
+
         # ── LLM judge metrics ──────────────────────────────────────
         judge_result = judge_report(question, report_text, llm_client)
 
@@ -187,7 +199,7 @@ def run_quality_eval(
             coverage_score=float(judge_result.get("coverage_score", 6)),
             covered_dimensions=list(judge_result.get("covered_dimensions", [])),
             missing_dimensions=list(judge_result.get("missing_dimensions", [])),
-            source_quality_score=_score_source_quality(tier["t0_count"], tier["t1_count"], tier["t2_count"], citation_count=citation_total),
+            source_quality_score=_score_source_quality(tier["t0_count"], tier["t1_count"], tier["t2_count"], citation_count=citation_total, relevance_ratio=source_relevance_ratio),
             t0_count=tier["t0_count"],
             t1_count=tier["t1_count"],
             t2_count=tier["t2_count"],
@@ -196,6 +208,7 @@ def run_quality_eval(
             citation_count=citation_total,
             citation_accuracy=citation_accuracy,
             content_basis_full_text_ratio=full_text_ratio,
+            source_relevance_ratio=source_relevance_ratio,
         )
         quality.compute_overall()
 
@@ -224,6 +237,38 @@ def _compute_content_basis(traces: list) -> dict[str, int]:
         except Exception:
             pass
     return {"full_text": full_text, "partial": partial, "snippet_only": snippet_only}
+
+
+def _count_total_sources_from_traces(traces: list) -> int:
+    """Count unique source documents from trace metadata."""
+    source_refs: set[str] = set()
+    for t in traces:
+        try:
+            out = json.loads(t.output_json or "{}")
+            items = out.get("output", {}).get("items", [])
+            if isinstance(items, list):
+                for item in items:
+                    if isinstance(item, dict):
+                        ref = item.get("source_ref") or item.get("url") or ""
+                        if ref:
+                            source_refs.add(ref)
+        except Exception:
+            pass
+    return len(source_refs)
+
+
+def _count_cited_sources_from_report(report_text: str) -> int:
+    """Count unique CIT-XXX references in the report."""
+    if not report_text:
+        return 0
+    return len(set(re.findall(r"CIT-\d+-\d+", report_text)))
+
+
+def _compute_source_relevance_ratio(total_sources: int, cited_sources: int) -> float:
+    """Ratio of cited sources to total sources."""
+    if total_sources == 0:
+        return 0.0
+    return round(cited_sources / total_sources, 2)
 
 
 def run_dataset(
@@ -266,6 +311,7 @@ def run_dataset(
         avg_coverage=round(sum(r.coverage_score for r in reports) / n, 1),
         avg_source_quality=round(sum(r.source_quality_score for r in reports) / n, 1),
         avg_auditability=round(sum(r.auditability_score for r in reports) / n, 1),
+        avg_source_relevance_ratio=round(sum(r.source_relevance_ratio for r in reports) / n, 2) if n > 0 else 0.0,
         overall_t0_count=sum(r.t0_count for r in reports),
         overall_t1_count=sum(r.t1_count for r in reports),
         overall_t2_count=sum(r.t2_count for r in reports),
