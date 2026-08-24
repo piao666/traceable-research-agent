@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -11,6 +12,17 @@ from app.trace.models import AgentRun, ToolTrace
 
 MOCK_SOURCES = {"mock"}
 FALLBACK_SOURCES = {"fallback"}
+
+
+def _strip_html(html: str) -> str:
+    """Remove HTML tags from raw_content fallback."""
+    if not html or "<" not in html:
+        return html
+    text = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"&[a-z]+;", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 @dataclass
@@ -447,6 +459,9 @@ def _tavily_items(run_id: str, record: dict[str, Any], existing_count: int) -> l
             or result.get("raw_content")
             or ""
         ).strip()
+        # Strip HTML from raw_content fallback (Tavily raw_content is HTML)
+        if not result.get("clean_content") and not result.get("content") and result.get("raw_content"):
+            content = _strip_html(content)
         # When content is too short, compose a richer snippet from title + URL + score
         if len(content) < 50:
             parts = [title]
