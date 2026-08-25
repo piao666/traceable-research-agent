@@ -146,6 +146,8 @@ def _run_single_round(
     parent_run = store.get_agent_run(db, parent_run_id)
 
     for sq in sub_queries:
+        if store.is_agent_run_cancelled(db, parent_run_id):
+            break
         # Create a sub-run for this follow-up query
         sub_run = store.create_agent_run(
             db=db,
@@ -225,6 +227,14 @@ def run_deepening(
     run = store.get_agent_run(db, run_id)
     if run is None:
         return initial_result
+    if run.status == "cancelled":
+        return initial_result
+    # The initial ReAct pass produces an intermediate report.  Keep the
+    # parent visibly running while deepening rounds are still active so the
+    # cancellation endpoint remains effective.
+    run = store.mark_agent_run_running_unless_cancelled(db, run_id)
+    if run.status == "cancelled":
+        return initial_result
 
     # Collect initial observations
     traces = store.list_tool_traces(db, run_id)
@@ -241,6 +251,14 @@ def run_deepening(
 
     # Deepening rounds
     for round_num in range(1, max_depth + 1):
+        if store.is_agent_run_cancelled(db, run_id):
+            cancelled = store.get_fresh_agent_run(db, run_id)
+            return {
+                **initial_result,
+                "status": cancelled.status,
+                "error_message": cancelled.error_message,
+                "message": "Deepening research cancelled by user.",
+            }
         # Ask LLM for learnings + follow_up_queries
         messages = _build_deepening_messages(
             current_task, all_observations, all_learnings, breadth,
@@ -294,9 +312,16 @@ def run_deepening(
         store.replace_agent_run_plan(db, run_id, plan)
 
     # Regenerate the final report with all accumulated evidence
-    run = store.get_agent_run(db, run_id)
+    run = store.get_fresh_agent_run(db, run_id)
     if run is None:
         raise ValueError("Task run not found.")
+    if run.status == "cancelled":
+        return {
+            **initial_result,
+            "status": run.status,
+            "error_message": run.error_message,
+            "message": "Deepening research cancelled by user.",
+        }
 
     all_traces = store.list_tool_traces(db, run_id)
     plan = json.loads(run.plan_json) if run.plan_json else {}
@@ -355,6 +380,12 @@ def run_deepening(
         markdown += deepening_section
         save_report(run_id, markdown)
 
+    if store.is_agent_run_cancelled(db, run_id):
+        run = store.get_fresh_agent_run(db, run_id)
+    else:
+        run = store.update_agent_run_status(db, run_id, "completed", None)
+
+    cancelled = run.status == "cancelled"
     return {
         "run_id": run.run_id,
         "status": run.status,
@@ -364,7 +395,11 @@ def run_deepening(
         "report_url": f"/api/reports/{run.run_id}",
         "trace_url": f"/api/tasks/{run.run_id}/trace",
         "error_message": run.error_message,
-        "message": "Deepening research completed.",
+        "message": (
+            "Deepening research cancelled by user."
+            if cancelled
+            else "Deepening research completed."
+        ),
         "execution_mode": "react_deepening",
         "deepening_rounds": plan.get("deepening_total_rounds", 0),
         "deepening_learnings_count": len(all_learnings),

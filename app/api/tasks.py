@@ -307,6 +307,9 @@ def _tool_trace_response(trace: ToolTrace) -> ToolTraceResponse:
         output_summary=trace.output_summary,
         status=trace.status,
         latency_ms=trace.latency_ms,
+        token_in=trace.token_in,
+        token_out=trace.token_out,
+        estimated_cost=trace.estimated_cost,
         error_message=trace.error_message,
         created_at=trace.created_at,
         finished_at=trace.finished_at,
@@ -515,8 +518,8 @@ def run_task(
         return _task_run_response(
             _run_summary(run, "Plan is awaiting approval. Call POST /api/tasks/{run_id}/approve-plan.")
         )
-    if run.status == "failed":
-        raise HTTPException(status_code=409, detail="Failed runs cannot be rerun")
+    if run.status in ("failed", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"{run.status.title()} runs cannot be rerun directly")
 
     summary = run_task_by_mode(db, run_id)
     return _task_run_response(summary)
@@ -552,8 +555,8 @@ async def run_task_async(
             run,
             "Plan is awaiting approval. Call POST /api/tasks/{run_id}/approve-plan.",
         )
-    if run.status == "failed":
-        raise HTTPException(status_code=409, detail="Failed runs cannot be rerun")
+    if run.status in ("failed", "cancelled"):
+        raise HTTPException(status_code=409, detail=f"{run.status.title()} runs cannot be rerun directly")
 
     if not store.claim_pending_agent_run(db, run_id):
         db.expire_all()
@@ -749,6 +752,7 @@ async def get_plan_review(
 def approve_plan(
     run_id: str,
     request: PlanApproveRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     start_async: bool = False,
 ) -> TaskRunResponse:
@@ -832,15 +836,10 @@ def approve_plan(
     # Move to pending and execute
     store.update_agent_run_status(db, run_id, "pending", None)
     if start_async:
-        from app.agent.dispatcher import run_task_by_mode as _run_task_by_mode
-        import threading
-        def _background_run():
-            with SessionLocal() as bg_db:
-                try:
-                    _run_task_by_mode(bg_db, run_id)
-                except Exception:
-                    pass
-        threading.Thread(target=_background_run, daemon=True).start()
+        # Reuse the same failure-aware background wrapper as ``run_async``.
+        # It owns a fresh SQLAlchemy session and persists unexpected failures
+        # instead of leaving the task indefinitely pending.
+        background_tasks.add_task(_run_task_in_background, run_id)
         return _task_run_response(_run_summary(run, "Task started in background."))
     summary = run_task_by_mode(db, run_id)
     return _task_run_response(summary)
@@ -966,7 +965,7 @@ async def download_task_evidence_export(
 def list_tasks(
     session_id: str | None = Query(None),
     status: str | None = Query(None),
-    execution_mode: str | None = Query(None),
+    execution_mode: str | None = Query(None, pattern="^(planned|react)$"),
     created_after: datetime | None = Query(None),
     created_before: datetime | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
@@ -984,7 +983,14 @@ def list_tasks(
         limit=limit,
         offset=offset,
     )
-    total = store.count_agent_runs(db, session_id=session_id, status=status)
+    total = store.count_agent_runs(
+        db,
+        session_id=session_id,
+        status=status,
+        execution_mode=execution_mode,
+        created_after=created_after,
+        created_before=created_before,
+    )
     mode_key = "execution_mode"
     return TaskListResponse(
         tasks=[
@@ -1020,8 +1026,9 @@ def cancel_task(
         raise HTTPException(status_code=404, detail="Task run not found")
     if run.status not in ("pending", "running", "waiting_human", "waiting_human_plan"):
         raise HTTPException(status_code=400, detail=f"Cannot cancel task in status '{run.status}'")
+    previous_status = run.status
     reason = (request.reason if request else "") or "Cancelled by user"
-    run = store.update_agent_run_status(db, run_id, "failed", reason)
+    run = store.update_agent_run_status(db, run_id, "cancelled", reason)
     from app.trace.logger import record_trace_event
     record_trace_event(
         db=db, run_id=run_id, step_no=0,
@@ -1029,7 +1036,7 @@ def cancel_task(
         status="cancelled",
         input_data={"reason": reason},
         output_summary=reason,
-        output_data={"reason": reason, "previous_status": run.status},
+        output_data={"reason": reason, "previous_status": previous_status},
     )
     return _task_status_response(run)
 
@@ -1044,26 +1051,61 @@ def retry_task(
     original = store.get_agent_run(db, run_id)
     if original is None:
         raise HTTPException(status_code=404, detail="Original task run not found")
+    if original.status not in ("failed", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only failed or cancelled tasks can be retried (current status: '{original.status}')",
+        )
+    if request and request.from_failed_step:
+        raise HTTPException(
+            status_code=400,
+            detail="Retry from the failed step is not supported safely; retry the full run instead.",
+        )
     reuse_plan = request.reuse_plan if request else True
+    try:
+        allowed_tools = (
+            json.loads(original.allowed_tools_json)
+            if original.allowed_tools_json
+            else None
+        )
+    except (json.JSONDecodeError, TypeError):
+        allowed_tools = None
     plan = None
     if reuse_plan and original.plan_json:
         try:
             plan = json.loads(original.plan_json)
         except json.JSONDecodeError:
             plan = None
+    if not isinstance(plan, dict):
+        original_plan = _parse_run_plan(original)
+        plan = plan_task(
+            task=original.task,
+            allowed_tools=allowed_tools,
+            source_mode=original.source_mode,
+            execution_mode_override=(
+                original_plan.get("requested_execution_mode")
+                or original_plan.get("execution_mode")
+            ),
+            skill_name="auto",
+        )
+    # A retry is a fresh execution.  Never inherit an approval token or a
+    # partially consumed ReAct state from the original run.
+    plan.pop("confirmation", None)
+    plan.pop("react_state", None)
+    plan["parent_run_id"] = run_id
+    plan["notes"] = list(plan.get("notes") or []) + [
+        f"Full retry of failed or cancelled run {run_id}."
+    ]
     new_run = store.create_agent_run(
         db,
         task=original.task,
         report_type=original.report_type,
         source_mode=original.source_mode,
-        allowed_tools=json.loads(original.allowed_tools_json) if original.allowed_tools_json else None,
+        allowed_tools=allowed_tools,
         session_id=original.session_id,
         run_config_snapshot=original.run_config_snapshot,
     )
-    if plan:
-        plan["parent_run_id"] = run_id
-        plan["retry_from_failed_step"] = bool(request and request.from_failed_step)
-        store.update_agent_run_plan(db, new_run.run_id, plan)
+    store.update_agent_run_plan(db, new_run.run_id, plan)
     return TaskCreateResponse(
         run_id=new_run.run_id,
         status=new_run.status,

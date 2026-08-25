@@ -310,6 +310,9 @@ def _complete_report(
     llm_client: LLMClient | None = None,
     limitation: bool = False,
 ) -> dict:
+    if store.is_agent_run_cancelled(db, run_id):
+        cancelled = store.get_fresh_agent_run(db, run_id)
+        return _summary(cancelled, plan, "Run cancelled by user.")
     state["finish_reason"] = finish_reason
     state["completed_with_limitation"] = limitation
     state["pending_confirmation"] = None
@@ -362,6 +365,9 @@ def _complete_report(
     )
     traces = store.list_tool_traces(db, run_id)
     _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
+    if store.is_agent_run_cancelled(db, run_id):
+        cancelled = store.get_fresh_agent_run(db, run_id)
+        return _summary(cancelled, plan, "Run cancelled by user.")
     run = store.update_agent_run_status(db, run_id, "completed", None)
 
     # ── Phase 6: Summarize LLM token/cost ─────────────────────────────
@@ -435,8 +441,8 @@ def run_react_task(
     plan = _parse_plan(run)
     if run.status == "completed":
         return _summary(run, plan, "Run already completed; no tools executed.")
-    if run.status == "failed":
-        return _summary(run, plan, "Run is failed and cannot be rerun.")
+    if run.status in ("failed", "cancelled"):
+        return _summary(run, plan, f"Run is {run.status} and cannot be executed.")
     if run.status == "waiting_human":
         return _summary(run, plan, "Run is waiting for human confirmation.")
 
@@ -466,7 +472,9 @@ def run_react_task(
     run.total_steps = settings.react_max_steps
     db.commit()
     _persist_plan(db, run_id, plan)
-    run = store.update_agent_run_status(db, run_id, "running", None)
+    run = store.mark_agent_run_running_unless_cancelled(db, run_id)
+    if run.status == "cancelled":
+        return _summary(run, plan, "Run was cancelled before execution started.")
 
     pending = state.get("pending_confirmation")
     pending_decision: ReActDecision | None = None
@@ -480,6 +488,9 @@ def run_react_task(
 
     start_step = pending_step_no or max(run.current_step + 1, 1)
     for step_no in range(start_step, settings.react_max_steps + 1):
+        if store.is_agent_run_cancelled(db, run_id):
+            cancelled = store.get_fresh_agent_run(db, run_id)
+            return _summary(cancelled, plan, "Run cancelled by user.")
         if pending_decision is not None and step_no == pending_step_no:
             decision = pending_decision
             pending_decision = None

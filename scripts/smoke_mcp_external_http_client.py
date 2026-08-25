@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import requests
@@ -119,6 +120,7 @@ def create_demo_run(base_url: str) -> str:
 def main() -> None:
     port = free_port()
     base_url = f"http://127.0.0.1:{port}"
+    database_dir = TemporaryDirectory(prefix="traceable-mcp-http-")
     env = os.environ.copy()
     env.update(
         {
@@ -129,6 +131,7 @@ def main() -> None:
             "GITHUB_TOOL_DEFAULT_MODE": "mock",
             "TAVILY_FALLBACK_TO_MOCK": "true",
             "MCP_REMOTE_REGISTRY_ENABLED": "false",
+            "TRACE_DATABASE_PATH": str(Path(database_dir.name) / "trace.sqlite"),
         }
     )
     process = subprocess.Popen(
@@ -221,6 +224,7 @@ def main() -> None:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+        database_dir.cleanup()
 
 
 if __name__ == "__main__":

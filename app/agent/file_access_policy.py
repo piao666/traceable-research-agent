@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+import ntpath
 import re
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from app.config import Settings, settings
@@ -13,6 +14,7 @@ from app.config import Settings, settings
 ROOT = Path(__file__).resolve().parents[2]
 DOCS_ROOT = (ROOT / "workspace" / "docs").resolve()
 CONFIRMATION_REASON_OUTSIDE_ALLOWED_ROOTS = "file_reader_path_outside_allowed_roots"
+WINDOWS_ABSOLUTE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def _split_roots(value: str | None) -> list[str]:
@@ -41,10 +43,27 @@ def _looks_repo_relative(raw_path: str) -> bool:
     return normalized.startswith(("workspace/", "docs/", "app/", "scripts/", "frontend/"))
 
 
+def _looks_windows_absolute(raw_path: str) -> bool:
+    """Recognize drive-qualified Windows paths on every host OS.
+
+    ``pathlib.Path`` intentionally follows the host platform.  Without this
+    explicit check, a Windows path such as ``C:/private/file.pdf`` is treated
+    as a relative path on Linux and is incorrectly rebased below
+    ``workspace/docs``.
+    """
+
+    return bool(WINDOWS_ABSOLUTE_PATH.match(str(raw_path or "").strip()))
+
+
 def resolve_file_reader_path(raw_path: str) -> Path:
     """Resolve file_reader paths while preserving docs-relative compatibility."""
 
     text = str(raw_path or "").strip()
+    if _looks_windows_absolute(text):
+        normalized = str(PureWindowsPath(text))
+        # On Windows this is a native absolute path.  On POSIX retain the
+        # normalized foreign path without resolving it against the repo.
+        return Path(normalized).resolve() if os.name == "nt" else Path(normalized)
     path = Path(text)
     if path.is_absolute():
         return path.resolve()
@@ -59,6 +78,8 @@ def resolve_file_reader_path(raw_path: str) -> Path:
 
 
 def path_within_root(path: Path, root: Path) -> bool:
+    if os.name != "nt" and _looks_windows_absolute(str(path)):
+        return False
     resolved = path.resolve()
     root = root.resolve()
     return resolved == root or root in resolved.parents
@@ -72,6 +93,8 @@ def find_allowed_root(path: Path, settings_obj: Settings = settings) -> Path | N
 
 
 def display_path(path: Path) -> str:
+    if os.name != "nt" and _looks_windows_absolute(str(path)):
+        return str(PureWindowsPath(str(path)))
     try:
         return path.resolve().relative_to(ROOT).as_posix()
     except ValueError:
@@ -99,6 +122,8 @@ def confirmation_details_for_path(
 
 
 def _normalize_for_match(value: str) -> str:
+    if _looks_windows_absolute(value):
+        return ntpath.normcase(ntpath.normpath(value.replace("/", "\\")))
     return os.path.normcase(str(Path(value).resolve()))
 
 

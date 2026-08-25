@@ -107,6 +107,7 @@ STATUS_CN = {
     "waiting_human_plan": ("📋", "计划审批", "#7C3AED"),
     "completed":          ("✅", "已完成", "#15803D"),
     "failed":             ("❌", "执行失败", "#B91C1C"),
+    "cancelled":          ("⛔", "已取消", "#6B7280"),
     "success":            ("✅", "成功", "#15803D"),
     "rejected":           ("🚫", "已拒绝", "#B91C1C"),
 }
@@ -133,6 +134,7 @@ STREAM_STATUS_CN = {
     "success": "成功",
     "completed": "已完成",
     "failed": "失败",
+    "cancelled": "已取消",
     "waiting_human": "等待确认",
     "waiting_human_plan": "计划审批",
     "rejected": "已拒绝",
@@ -644,6 +646,7 @@ def init_state() -> None:
         "last_evidence_export_content": None,
         "last_report": None,
         "event_log": [],
+        "last_event_id": "",
         "selected_template": list(DEMO_TEMPLATES.keys())[0],
         "task_text": default_template["task"],
         "allowed_tools": _template_allowed_tools(default_template),
@@ -768,7 +771,9 @@ def maybe_auto_refresh() -> None:
     status = (st.session_state.get("last_status") or {}).get("status")
     if status not in ("pending", "running"):
         return
-    # ── Use SSE streaming for real-time updates (replaces polling) ──
+    # Consume a short resumable SSE slice.  A long-lived requests iterator
+    # would block Streamlit's single script thread for the entire research
+    # run, preventing the page from rendering intermediate progress.
     stream_task_events(run_id)
     refresh_all(show_errors=False)
     st.rerun()
@@ -797,7 +802,9 @@ def _format_stream_event(event: dict[str, Any]) -> str:
 
 def _append_event_log(event: dict[str, Any]) -> None:
     logs = list(st.session_state.get("event_log") or [])
-    logs.append(_format_stream_event(event))
+    formatted = _format_stream_event(event)
+    if not logs or logs[-1] != formatted:
+        logs.append(formatted)
     st.session_state.event_log = logs[-200:]
 
 
@@ -822,21 +829,30 @@ def render_event_summary() -> None:
 def stream_task_events(run_id: str, target: Any | None = None) -> None:
     if not run_id:
         return
-    url = api_url(
-        f"/api/tasks/{run_id}/events"
-        "?poll_interval_seconds=0.5&heartbeat_seconds=5&max_duration_seconds=600"
-    )
+    url = api_url(f"/api/tasks/{run_id}/events")
+    params: dict[str, Any] = {
+        "poll_interval_seconds": 0.25,
+        "heartbeat_seconds": 1,
+        "max_duration_seconds": 2,
+    }
+    if st.session_state.get("last_event_id"):
+        params["after_trace_id"] = st.session_state.last_event_id
     data_lines: list[str] = []
+    event_id = ""
     try:
         with requests.get(
             url,
+            params=params,
             headers=request_headers(),
             stream=True,
-            timeout=(5, 660),
+            timeout=(5, 10),
         ) as response:
             response.raise_for_status()
             for raw_line in response.iter_lines(decode_unicode=True):
                 line = raw_line or ""
+                if line.startswith("id:"):
+                    event_id = line[3:].strip()
+                    continue
                 if line.startswith("data:"):
                     data_lines.append(line[5:].strip())
                     continue
@@ -848,13 +864,20 @@ def stream_task_events(run_id: str, target: Any | None = None) -> None:
                     event = json.loads("\n".join(data_lines))
                 except json.JSONDecodeError:
                     data_lines = []
+                    event_id = ""
                     continue
                 data_lines = []
+                if event.get("status") == "stream_timeout":
+                    break
                 _append_event_log(event)
+                trace_id = str(event.get("trace_id") or "")
+                if trace_id:
+                    st.session_state.last_event_id = event_id or trace_id
                 if target is not None:
                     render_event_console(target)
                 if event.get("event_type") == "done":
                     break
+                event_id = ""
     except requests.RequestException as exc:
         _append_event_log(
             {
@@ -889,6 +912,7 @@ def _sync_template_state() -> None:
         "last_evidence_export_content": None,
         "last_report": None,
         "event_log": [],
+        "last_event_id": "",
     }.items():
         st.session_state[key] = empty_value
 
@@ -907,7 +931,7 @@ def apply_template(name: str, fill_task: bool = False) -> None:
 def status_chip(status: str | None) -> str:
     icon, label, color = STATUS_CN.get(status or "", ("❓", status or "未知", "#6B7280"))
     return (f"<span style='padding:2px 10px;border-radius:10px;background:{color};"
-            f"color:white;font-size:12px'>{icon} {label}</span>")
+            f"color:white;font-size:12px'>{_html_text(icon)} {_html_text(label)}</span>")
 
 
 def _execution_mode_label(value: str | None) -> str:
@@ -964,17 +988,14 @@ def _html_text(value: Any) -> str:
 
 
 def _sanitize_html(value: Any) -> str:
-    """Escape HTML but preserve safe formatting tags (b, i, em, strong, code)."""
-    text = str(value or "")
-    # Strip dangerous tags entirely
-    for tag in ("script", "iframe", "object", "embed", "form", "input", "link", "meta", "style"):
-        text = re.sub(rf"<{tag}\b[^>]*>.*?</{tag}>", "", text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(rf"<{tag}\b[^>]*/?>", "", text, flags=re.IGNORECASE)
-    # Strip event handlers and javascript: URLs
-    text = re.sub(r'\bon\w+\s*=\s*"[^"]*"', "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bon\w+\s*=\s*'[^']*'", "", text, flags=re.IGNORECASE)
-    text = re.sub(r'''href\s*=\s*["']javascript:''', 'href="#', text, flags=re.IGNORECASE)
-    return text
+    """Escape all untrusted HTML while retaining ordinary Markdown syntax.
+
+    Removing a blacklist of tags or attributes is not sufficient: unquoted
+    handlers, SVG, encoded protocols, and new browser features create bypasses.
+    Trusted citation/details markup is inserted only after this boundary.
+    """
+
+    return html.escape(str(value or ""), quote=False)
 
 
 def _short_tool_name(tool_name: Any) -> str:
@@ -1218,7 +1239,7 @@ def render_report_preview_panel() -> None:
 def risk_badge(level: str) -> str:
     c = RISK_COLOR.get(level, "#6B7280")
     cn = {"low": "低", "medium": "中", "high": "高"}.get(level, level)
-    return f"<span class='risk-badge' style='background:{c}'>风险 {cn}</span>"
+    return f"<span class='risk-badge' style='background:{c}'>风险 {_html_text(cn)}</span>"
 
 
 def _friendly_summary(text: Any) -> str:
@@ -1270,10 +1291,10 @@ def plan_step_card(step: dict) -> None:
     st.markdown(
         f"<div class='step-card'>"
         f"<div class='step-header'>"
-        f"步骤 {step.get('step_no')} &nbsp; {icon} {cn}"
+        f"步骤 {_html_text(step.get('step_no'))} &nbsp; {_html_text(icon)} {_html_text(cn)}"
         f"{risk_badge(risk)}"
         f"</div>"
-        f"<div class='step-meta'>{goal}</div>"
+        f"<div class='step-meta'>{_html_text(goal)}</div>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -1291,18 +1312,18 @@ def trace_step_card(trace: dict) -> None:
     s_icon, _, _ = STATUS_CN.get(status, ("❓", status, "#6B7280"))
 
     latency = trace.get("latency_ms")
-    lat_str = f"&nbsp;·&nbsp;{latency} ms" if latency is not None else ""
+    lat_str = f" · {latency} ms" if latency is not None else ""
 
     st.markdown(
         f"<div class='step-card {css}'>"
         f"<div class='step-header'>"
-        f"步骤 {trace.get('step_no')} &nbsp; {icon} {cn} &nbsp; {s_icon}"
-        f"{lat_str}"
+        f"步骤 {_html_text(trace.get('step_no'))} &nbsp; {_html_text(icon)} {_html_text(cn)} &nbsp; {_html_text(s_icon)}"
+        f"{_html_text(lat_str)}"
         f"</div>"
         f"<div class='step-meta'>"
-        f"输入：{trace.get('input_summary','—')}<br>"
-        f"输出：{_friendly_summary(trace.get('output_summary','—'))}"
-        + (f"<br>⚠️ {_friendly_error(trace.get('error_message'))}" if trace.get("error_message") else "")
+        f"输入：{_html_text(trace.get('input_summary','—'))}<br>"
+        f"输出：{_html_text(_friendly_summary(trace.get('output_summary','—')))}"
+        + (f"<br>⚠️ {_html_text(_friendly_error(trace.get('error_message')))}" if trace.get("error_message") else "")
         + f"</div></div>",
         unsafe_allow_html=True,
     )
@@ -1530,7 +1551,7 @@ def render_sidebar() -> None:
                 # NOTE: Streamlit single-page architecture limits session switching
                 # to setting active_session_id for new task creation. Full history
                 # browsing per session requires React frontend (see 前端构建.md).
-                st.caption("💡 切换会话后，新创建的任务将归属于此会话。历史任务浏览请使用侧边栏「任务列表」。")
+                st.caption("💡 切换后，新任务将归属于此会话；当前 Streamlit 暂不提供历史任务浏览。")
             if st.button("刷新会话列表", use_container_width=True):
                 st.session_state.sessions_loaded = False
                 st.rerun()
@@ -1741,6 +1762,7 @@ def tab_task() -> None:
             }
             try:
                 st.session_state.event_log = []
+                st.session_state.last_event_id = ""
                 _append_event_log(
                     {
                         "event_type": "create_task_started",
@@ -1777,6 +1799,7 @@ def tab_task() -> None:
                 st.session_state.last_run_response = resp
                 st.session_state.realtime_auto_refresh = True
                 st.session_state.event_log = []
+                st.session_state.last_event_id = ""
                 _append_event_log(
                     {
                         "event_type": "run_requested",
@@ -2306,7 +2329,7 @@ def _collapse_key_evidence_blocks(markdown: str) -> str:
     pattern = re.compile(r"关键证据片段：\s*\n\s*```(?:text)?\n(.*?)\n```", re.DOTALL)
 
     def replace(match: re.Match[str]) -> str:
-        escaped = html.escape(match.group(1).strip())
+        escaped = html.escape(html.unescape(match.group(1).strip()))
         return (
             "<details><summary>关键证据片段</summary>"
             f"<pre><code>{escaped}</code></pre></details>"

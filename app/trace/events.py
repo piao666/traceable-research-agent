@@ -13,7 +13,7 @@ from app.trace import store
 from app.trace.models import AgentRun, ToolTrace
 
 
-TERMINAL_STREAM_STATUSES = {"completed", "failed", "waiting_human"}
+TERMINAL_STREAM_STATUSES = {"completed", "failed", "cancelled", "waiting_human"}
 REVIEWABLE_STATUSES = {"waiting_human_plan"}
 
 

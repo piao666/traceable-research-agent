@@ -6,7 +6,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -149,7 +149,8 @@ class PlanApprovalTests(Phase7DatabaseTestCase):
             response = tasks.approve_plan(
                 run.run_id,
                 PlanApproveRequest(approved=True, modified_steps=modified),
-                self.db,
+                BackgroundTasks(),
+                db=self.db,
             )
 
         self.assertEqual(response.status, "completed")
@@ -195,7 +196,8 @@ class PlanApprovalTests(Phase7DatabaseTestCase):
         response = tasks.approve_plan(
             run.run_id,
             PlanApproveRequest(approved=False, comment="cancelled in test"),
-            self.db,
+            BackgroundTasks(),
+            db=self.db,
         )
         self.assertEqual(response.status, "failed")
         traces = store.list_tool_traces(self.db, run.run_id)

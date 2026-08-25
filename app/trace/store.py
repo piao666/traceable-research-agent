@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.trace.models import AgentRun, ToolTrace
@@ -47,6 +47,18 @@ def get_agent_run(db: Session, run_id: str) -> AgentRun | None:
     return db.get(AgentRun, run_id)
 
 
+def get_fresh_agent_run(db: Session, run_id: str) -> AgentRun | None:
+    """Reload a run so cooperative cancellation is visible across sessions."""
+
+    db.expire_all()
+    return db.get(AgentRun, run_id)
+
+
+def is_agent_run_cancelled(db: Session, run_id: str) -> bool:
+    run = get_fresh_agent_run(db, run_id)
+    return run is not None and run.status == "cancelled"
+
+
 def list_agent_runs(
     db: Session,
     session_id: str | None = None,
@@ -64,9 +76,13 @@ def list_agent_runs(
     if status:
         stmt = stmt.where(AgentRun.status == status)
     if execution_mode:
-        from app.trace.models import ToolTrace
-        # execution_mode is stored in plan_json, fall back to full scan
-        pass
+        stmt = stmt.where(
+            func.coalesce(
+                func.json_extract(AgentRun.plan_json, "$.execution_mode"),
+                "planned",
+            )
+            == execution_mode
+        )
     if created_after:
         stmt = stmt.where(AgentRun.created_at >= created_after)
     if created_before:
@@ -79,14 +95,28 @@ def count_agent_runs(
     db: Session,
     session_id: str | None = None,
     status: str | None = None,
+    execution_mode: str | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
 ) -> int:
     """Count agent runs matching optional filters."""
-    from sqlalchemy import func
     stmt = select(func.count()).select_from(AgentRun)
     if session_id:
         stmt = stmt.where(AgentRun.session_id == session_id)
     if status:
         stmt = stmt.where(AgentRun.status == status)
+    if execution_mode:
+        stmt = stmt.where(
+            func.coalesce(
+                func.json_extract(AgentRun.plan_json, "$.execution_mode"),
+                "planned",
+            )
+            == execution_mode
+        )
+    if created_after:
+        stmt = stmt.where(AgentRun.created_at >= created_after)
+    if created_before:
+        stmt = stmt.where(AgentRun.created_at <= created_before)
     return db.execute(stmt).scalar() or 0
 
 
@@ -160,6 +190,25 @@ def claim_pending_agent_run(db: Session, run_id: str) -> bool:
     )
     db.commit()
     return result.rowcount == 1
+
+
+def mark_agent_run_running_unless_cancelled(db: Session, run_id: str) -> AgentRun:
+    """Move a run to running without resurrecting a concurrent cancellation."""
+
+    db.execute(
+        update(AgentRun)
+        .where(AgentRun.run_id == run_id, AgentRun.status != "cancelled")
+        .values(
+            status="running",
+            error_message=None,
+            updated_at=datetime.now(timezone.utc),
+        )
+    )
+    db.commit()
+    run = get_fresh_agent_run(db, run_id)
+    if run is None:
+        raise ValueError("Task run not found")
+    return run
 
 
 def update_agent_run_progress(
