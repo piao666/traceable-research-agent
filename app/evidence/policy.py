@@ -299,13 +299,13 @@ def classify_tier(
             classification_confidence=0.95,
         )
 
-    # arXiv paper pages (not search pages, not listing pages)
+    # arXiv preprint pages — T1 (not peer-reviewed, but authoritative)
     if "arxiv.org" in hostname and ("/abs/" in canonical_uri or "/pdf/" in canonical_uri):
         return TierClassification(
-            tier=T0,
+            tier=T1,
             source_class=source_class,
-            classification_rule="url_pattern:arxiv_paper",
-            classification_confidence=0.92,
+            classification_rule="url_pattern:arxiv_preprint",
+            classification_confidence=0.85,
         )
 
     # DOI resolver pages

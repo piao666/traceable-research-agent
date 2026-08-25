@@ -109,18 +109,19 @@ def _score_source_quality(t0: int, t1: int, t2: int, citation_count: int = 0, re
     raw_score = (tier_score * citation_rate + volume_bonus + diversity) * t2_penalty
     # Relevance ratio: if many sources are collected but few cited, reduce score
     if relevance_ratio < 0.3:
-        raw_score *= 0.8  # heavy penalty for low relevance
+        raw_score *= 0.5  # heavy penalty for low relevance
     elif relevance_ratio < 0.5:
-        raw_score *= 0.9
+        raw_score *= 0.7
     return round(min(raw_score, 10), 1)
-def _score_auditability(citation_count: int, citation_accuracy: float, full_text_ratio: float) -> float:
-    """Score auditability: higher citations + accuracy + full-text ratio."""
+def _score_auditability(citation_count: int, citation_accuracy: float, full_text_ratio: float, partial_ratio: float = 0.0) -> float:
+    """Score auditability: higher citations + accuracy + content depth."""
     if citation_count == 0:
         return 3.0
     citation_score = min(citation_count / 10, 1.0) * 5
     accuracy_score = citation_accuracy * 3
-    full_text_score = full_text_ratio * 2
-    return round(min(citation_score + accuracy_score + full_text_score, 10), 1)
+    full_text_score = full_text_ratio * 1.5
+    partial_score = partial_ratio * 0.5
+    return round(min(citation_score + accuracy_score + full_text_score + partial_score, 10), 1)
 
 
 def run_quality_eval(
@@ -178,6 +179,7 @@ def run_quality_eval(
         snippet_count = cb["snippet_only"]
         total_content = full_text_count + partial_count + snippet_count
         full_text_ratio = round(full_text_count / total_content, 2) if total_content > 0 else 0.0
+        partial_ratio = round(partial_count / total_content, 2) if total_content > 0 else 0.0
 
         # ── Source relevance ratio ─────────────────────────────────
         total_sources = _count_total_sources_from_traces(traces)
@@ -204,7 +206,7 @@ def run_quality_eval(
             t1_count=tier["t1_count"],
             t2_count=tier["t2_count"],
             t2_ratio=tier["t2_ratio"],
-            auditability_score=_score_auditability(citation_total, citation_accuracy, full_text_ratio),
+            auditability_score=_score_auditability(citation_total, citation_accuracy, full_text_ratio, partial_ratio),
             citation_count=citation_total,
             citation_accuracy=citation_accuracy,
             content_basis_full_text_ratio=full_text_ratio,

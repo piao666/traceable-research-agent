@@ -460,7 +460,10 @@ def _infer_content_basis(item: EvidenceItem) -> str:
         return "full_text"
 
     if tool_name == "tavily_search":
-        # tavily_search without web_fetcher = snippet only
+        # tavily_search with include_raw_content=True → partial
+        # tavily_search without raw_content → snippet_only
+        if len(item.snippet) > 200:
+            return "partial"
         return "snippet_only"
 
     if tool_name == "mcp_github_search":
