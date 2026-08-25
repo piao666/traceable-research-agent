@@ -1,16 +1,17 @@
-# 交接文档：P0+P1 评测体系建设（已完成）
+# 交接文档：P0+P1 评测体系建设（已完成）+ P2 优化（已完成）
 
-> 本文档用于跨会话交接。当前会话完成了评测体系的全面建设（P0+P1），
-> 综合分从 4.1 提升到 7.5。剩余优化留给新会话。
+> 本文档用于跨会话交接。当前会话完成了评测体系提交 + P2 四项优化。
+> 综合分 7.5/10（v16），仅剩 Docker 评测环境待完成。
 
 ---
 
 ## 一、项目当前状态
 
-- **分支**：`feature/improvements` @ `ff29467`（已推送 origin）
-- **工作区**：有未提交改动（评测相关文件），`.env` 已修改
+- **分支**：`feature/improvements` @ `7f9921d`（已推送 origin）
+- **工作区**：干净（12 个临时脚本已清理）
 - **P0 综合分**：7.5/10（v16）
 - **P1 全部完成**：多数据集、来源校准、CI 集成、趋势追踪
+- **P2 四项完成**：HTML 清洗、系统综述 Skill 评测、来源相关性评分、子问题分解
 
 ## 二、本会话完成的工作
 
@@ -108,49 +109,33 @@ python scripts/run_quality_eval.py --mode real --dataset all
 
 ## 七、建议下一步（P2 阶段）
 
-| 优先级 | 任务 | 说明 |
-|---|---|---|
-| 高 | 修复 evidence.py HTML 清洗 | 手动在 `_tavily_items` 中 447 行 `raw_content` 后添加 HTML strip |
-| 高 | 系统综述 Skill 评测 | 用 `systematic_review` 跑 academic_literature 类问题 |
-| 中 | 子问题分解 | 在 Skill 中增加 decompose 步骤，像 GPT Researcher 一样 |
-| 中 | 来源相关性评分 | 引入"被 LLM 实际引用的来源比例"指标 |
-| 低 | Docker 评测环境 | 容器内跑 mock 模式验证 CI 闭环 |
-| 低 | 并行搜索优化 | `PARALLEL_EXECUTION_ENABLED=true` 加速多源搜索 |
+| 优先级 | 任务 | 说明 | 状态 |
+|---|---|---|---|
+| 高 | 修复 evidence.py HTML 清洗 | 手动在 `_tavily_items` 中 `raw_content` 后添加 HTML strip | ✅ 已完成（`5d580a0`） |
+| 高 | 系统综述 Skill 评测 | 用 `systematic_review` 跑 academic_literature 类问题 | ✅ 已完成（`5d580a0`） |
+| 中 | 子问题分解 | 在 Skill 中增加 decompose 步骤，像 GPT Researcher 一样 | ✅ 已完成（`7f9921d`） |
+| 中 | 来源相关性评分 | 引入"被 LLM 实际引用的来源比例"指标 | ✅ 已完成（`5fba07a`） |
+| 低 | Docker 评测环境 | 容器内跑 mock 模式验证 CI 闭环 | ⏳ 待完成（Docker 不可用） |
+| 低 | 并行搜索优化 | `PARALLEL_EXECUTION_ENABLED=true` 加速多源搜索 | ✅ 已有功能（配置即可） |
 
 ## 八、重要注意事项
 
 1. **不要提交** `TASK.md`、`CLAUDE.md`、`docs/`、`.env`、`workspace/` 运行产物
-2. `feature/improvements` 分支已推送 origin，但工作区有未提交改动
+2. `feature/improvements` 分支已推送 origin，工作区干净
 3. `HANDOFF.md` 可提交（非 local-only 文件）
-4. 评测脚本在 `scripts/_p1_*.py` 和 `scripts/_apply_p0_fixes_v2.py`，可清理
+4. 临时脚本 `scripts/_*.py` 已清理
 5. 趋势报告在 `workspace/eval_outputs/trend_latest.md`
 6. `.env` 中 `QWEN_API_KEY`、`TAVILY_API_KEY`、`GITHUB_TOKEN` 已配置，切勿提交
 
-## 九、未提交改动清单
+## 九、已提交改动清单（2026-09-02 会话）
 
 ```
- M .github/workflows/ci.yml        # CI 质量评测步骤
- M .env                              # TAVILY_DEFAULT_MAX_RESULTS=10
- M HANDOFF.md                        # 本文件
- M README.md / README_zh.md          # 评测命令更新
- M TASK.md                           # P0+P1 记录
- D requirements-dev.txt              # 已合并到 requirements.txt
- M requirements.txt                  # +pytest
- M scripts/run_eval_regression.py    # 薄封装
- M scripts/run_react_vs_planned_eval.py
- M scripts/smoke_final_project.py
- M tests/test_eval_regression.py
-?? app/eval/quality/                 # L3 模块（新增）
-?? app/eval/regression.py            # 从 scripts/ 移入
-?? app/eval/tests/                   # 评测测试
-?? app/eval/smoke/                   # 评测 smoke
-?? scripts/_apply_p0_fixes_v2.py     # 修复脚本
-?? scripts/_p1_*.py                  # P1 脚本
-?? scripts/_fix_*.py                 # 修复脚本
-?? scripts/_deep_trace.py            # 调试脚本
-?? scripts/_run_p1_1.py
-?? scripts/run_quality_eval.py       # CI 入口
-?? workspace/skills/hybrid_research.json  # 混合 Skill
+c59b048 feat(eval): L3 quality evaluation system, P0+P1 CI integration
+5d580a0 fix(evidence): strip HTML from Tavily raw_content fallback
+5fba07a feat(eval): add source relevance ratio to quality metrics
+7f9921d feat(skills): add sub-question decomposition to Skill pipeline
 ```
+
+P0 最终基准（v16）：综合 7.5/10，相关性 9.0，覆盖度 7.4，事实准确性 61%，来源质量 9.0，可审计性 6.9
 
 (End of file - total 167 lines)
