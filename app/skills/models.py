@@ -7,6 +7,14 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class SkillDecompose(BaseModel):
+    """Sub-question decomposition configuration for a Skill."""
+    enabled: bool = False
+    method: str = "llm"          # "llm" | "rule" | "auto"
+    max_sub_queries: int = 4     # 2-6
+    force: bool = False          # skip broad-task heuristic
+
+
 class SkillParameter(BaseModel):
     type: str = "string"
     required: bool = False
@@ -28,6 +36,7 @@ class SkillDefinition(BaseModel):
     parameters: dict[str, SkillParameter] = Field(default_factory=dict)
     steps: list[SkillStep] = Field(default_factory=list)
     changelog: list[dict[str, Any]] | None = None
+    decompose: SkillDecompose | None = None
 
 
 class SkillMeta(BaseModel):

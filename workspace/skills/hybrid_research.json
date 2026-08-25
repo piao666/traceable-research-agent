@@ -6,6 +6,12 @@
   "changelog": [
     {"version": "1.0", "date": "2026-09-02", "changes": "初始版本：Tavily + arXiv 双源发现 → web_fetcher 抓取 → report_writer 综合"}
   ],
+  "decompose": {
+    "enabled": true,
+    "method": "auto",
+    "max_sub_queries": 4,
+    "force": false
+  },
   "parameters": {
     "query": {"type": "string", "required": true},
     "max_urls": {"type": "integer", "default": 10},

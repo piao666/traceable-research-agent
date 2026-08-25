@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.skills.models import SkillDefinition, SkillStep
+from app.skills.models import SkillDefinition, SkillDecompose, SkillStep
 
 
 def load_skill_from_file(path: Path) -> SkillDefinition | None:
@@ -48,6 +48,17 @@ def load_skill_from_file(path: Path) -> SkillDefinition | None:
             if isinstance(entry, dict) and "version" in entry
         ] or None
 
+    # Parse decompose config
+    decompose = None
+    if isinstance(raw.get("decompose"), dict):
+        dc = raw["decompose"]
+        decompose = SkillDecompose(
+            enabled=bool(dc.get("enabled", False)),
+            method=str(dc.get("method", "auto")),
+            max_sub_queries=int(dc.get("max_sub_queries", 4)),
+            force=bool(dc.get("force", False)),
+        )
+
     return SkillDefinition(
         name=str(raw.get("name") or ""),
         version=str(raw.get("version") or "1.0"),
@@ -56,6 +67,7 @@ def load_skill_from_file(path: Path) -> SkillDefinition | None:
         parameters=parameters,
         steps=steps,
         changelog=changelog,
+        decompose=decompose,
     )
 
 

@@ -845,6 +845,9 @@ def plan_task(
             plan["planner_source"] = "skill_auto" if skill_routing["requested"] == "auto" else "skill"
             plan["llm_provider"] = None
             plan["llm_model"] = None
+            # ── Sub-question decomposition (Skill-level) ──
+            if skill.decompose and skill.decompose.enabled:
+                _decompose_skill_plan(plan, task, skill.decompose)
             return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
         # Fall through to deterministic if skill not found
 
@@ -1612,6 +1615,40 @@ def _skill_to_plan(
         "notes": notes,
         "confirmation": None,
     }
+
+
+def _decompose_skill_plan(
+    plan: dict[str, Any],
+    task: str,
+    decompose_cfg: Any,  # SkillDecompose
+) -> None:
+    """Decompose a Skill plan into sub-queries using LLM or rule-based fallback."""
+    from app.agent.query_decomposer import decompose_task, decompose_task_by_rules
+    from app.llm.providers import create_llm_client
+
+    if plan.get("sub_queries"):
+        return
+
+    n = max(2, min(getattr(decompose_cfg, "max_sub_queries", 4), 6))
+    method = str(getattr(decompose_cfg, "method", "llm") or "llm").lower()
+    force = bool(getattr(decompose_cfg, "force", False))
+
+    sub_queries: list[str]
+    if method == "rule":
+        sub_queries = decompose_task_by_rules(task, n=n)
+    else:
+        try:
+            client = create_llm_client(settings)
+            sub_queries = decompose_task(task, client, n=n, force=force)
+        except Exception:
+            sub_queries = decompose_task_by_rules(task, n=n)
+
+    if len(sub_queries) > 1:
+        plan["sub_queries"] = sub_queries
+        plan["decomposed"] = True
+        plan["notes"].append(
+            f"Decomposed into {len(sub_queries)} sub-queries (method={method})."
+        )
 
 
 # ── Phase 7.4: Plan review support ───────────────────────────────────

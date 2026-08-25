@@ -6,6 +6,12 @@
   "changelog": [
     {"version": "1.0", "date": "2026-08-11", "changes": "初始版本：arXiv + Semantic Scholar + OpenAlex + Crossref 四源检索 + report_writer 去重纳排，含纳入/排除标准声明与 PRISMA 统计"}
   ],
+  "decompose": {
+    "enabled": true,
+    "method": "auto",
+    "max_sub_queries": 4,
+    "force": false
+  },
   "parameters": {
     "query": {"type": "string", "required": true},
     "year_from": {"type": "integer", "default": 2018},
