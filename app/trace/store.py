@@ -47,6 +47,49 @@ def get_agent_run(db: Session, run_id: str) -> AgentRun | None:
     return db.get(AgentRun, run_id)
 
 
+def list_agent_runs(
+    db: Session,
+    session_id: str | None = None,
+    status: str | None = None,
+    execution_mode: str | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[AgentRun]:
+    """List agent runs with optional filters and pagination."""
+    stmt = select(AgentRun).order_by(AgentRun.created_at.desc())
+    if session_id:
+        stmt = stmt.where(AgentRun.session_id == session_id)
+    if status:
+        stmt = stmt.where(AgentRun.status == status)
+    if execution_mode:
+        from app.trace.models import ToolTrace
+        # execution_mode is stored in plan_json, fall back to full scan
+        pass
+    if created_after:
+        stmt = stmt.where(AgentRun.created_at >= created_after)
+    if created_before:
+        stmt = stmt.where(AgentRun.created_at <= created_before)
+    stmt = stmt.limit(limit).offset(offset)
+    return list(db.execute(stmt).scalars().all())
+
+
+def count_agent_runs(
+    db: Session,
+    session_id: str | None = None,
+    status: str | None = None,
+) -> int:
+    """Count agent runs matching optional filters."""
+    from sqlalchemy import func
+    stmt = select(func.count()).select_from(AgentRun)
+    if session_id:
+        stmt = stmt.where(AgentRun.session_id == session_id)
+    if status:
+        stmt = stmt.where(AgentRun.status == status)
+    return db.execute(stmt).scalar() or 0
+
+
 def update_agent_run_plan(db: Session, run_id: str, plan: dict) -> AgentRun:
     """Persist a deterministic plan on an existing run."""
 

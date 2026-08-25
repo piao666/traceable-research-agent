@@ -37,11 +37,15 @@ from app.schemas import (
     PlanReviewResponse,
     PlanReviewStep,
     ProvenanceBundleResponse,
+    TaskCancelRequest,
     TaskCreateRequest,
     TaskCreateResponse,
     TaskConfirmRequest,
     TaskConfirmResponse,
+    TaskListItem,
+    TaskListResponse,
     TaskPlanResponse,
+    TaskRetryRequest,
     TaskRunResponse,
     TaskStatusResponse,
     ToolTraceResponse,
@@ -214,6 +218,17 @@ def _task_run_response(summary: dict) -> TaskRunResponse:
         llm_provider=summary.get("llm_provider"),
         llm_model=summary.get("llm_model"),
     )
+
+
+def _extract_plan_field(plan_json: str | None, field: str) -> str | None:
+    """Extract a field from plan_json without full parse on failure."""
+    if not plan_json:
+        return None
+    try:
+        plan = json.loads(plan_json)
+        return plan.get(field)
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 def _run_summary(run: AgentRun, message: str | None = None) -> dict:
@@ -735,8 +750,14 @@ def approve_plan(
     run_id: str,
     request: PlanApproveRequest,
     db: Session = Depends(get_db),
+    start_async: bool = False,
 ) -> TaskRunResponse:
-    """Approve or reject a plan that is waiting for human review."""
+    """Approve or reject a plan that is waiting for human review.
+
+    When start_async=True, the task is started in the background and the
+    response returns immediately with status 'pending' instead of blocking
+    until completion.
+    """
     run = store.get_agent_run(db, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Task run not found")
@@ -810,6 +831,17 @@ def approve_plan(
 
     # Move to pending and execute
     store.update_agent_run_status(db, run_id, "pending", None)
+    if start_async:
+        from app.agent.dispatcher import run_task_by_mode as _run_task_by_mode
+        import threading
+        def _background_run():
+            with SessionLocal() as bg_db:
+                try:
+                    _run_task_by_mode(bg_db, run_id)
+                except Exception:
+                    pass
+        threading.Thread(target=_background_run, daemon=True).start()
+        return _task_run_response(_run_summary(run, "Task started in background."))
     summary = run_task_by_mode(db, run_id)
     return _task_run_response(summary)
 
@@ -924,4 +956,120 @@ async def download_task_evidence_export(
         path=export_path,
         media_type=export_media_type(result.format),
         filename=export_filename(run_id, result.format),
+    )
+
+
+# ── Task list, cancel, retry ─────────────────────────────────────────
+
+
+@router.get("", response_model=TaskListResponse)
+def list_tasks(
+    session_id: str | None = Query(None),
+    status: str | None = Query(None),
+    execution_mode: str | None = Query(None),
+    created_after: datetime | None = Query(None),
+    created_before: datetime | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+) -> TaskListResponse:
+    """List tasks with optional filters and pagination."""
+    runs = store.list_agent_runs(
+        db,
+        session_id=session_id,
+        status=status,
+        execution_mode=execution_mode,
+        created_after=created_after,
+        created_before=created_before,
+        limit=limit,
+        offset=offset,
+    )
+    total = store.count_agent_runs(db, session_id=session_id, status=status)
+    mode_key = "execution_mode"
+    return TaskListResponse(
+        tasks=[
+            TaskListItem(
+                run_id=r.run_id,
+                task=r.task,
+                status=r.status,
+                report_type=r.report_type,
+                execution_mode=_extract_plan_field(r.plan_json, mode_key) or "planned",
+                total_tool_calls=r.total_tool_calls,
+                estimated_cost=r.estimated_cost,
+                session_id=r.session_id,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+            )
+            for r in runs
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/{run_id}/cancel", response_model=TaskStatusResponse)
+def cancel_task(
+    run_id: str,
+    request: TaskCancelRequest | None = None,
+    db: Session = Depends(get_db),
+) -> TaskStatusResponse:
+    """Cancel a running or pending task."""
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    if run.status not in ("pending", "running", "waiting_human", "waiting_human_plan"):
+        raise HTTPException(status_code=400, detail=f"Cannot cancel task in status '{run.status}'")
+    reason = (request.reason if request else "") or "Cancelled by user"
+    run = store.update_agent_run_status(db, run_id, "failed", reason)
+    from app.trace.logger import record_trace_event
+    record_trace_event(
+        db=db, run_id=run_id, step_no=0,
+        tool_name="task_cancel",
+        status="cancelled",
+        input_data={"reason": reason},
+        output_summary=reason,
+        output_data={"reason": reason, "previous_status": run.status},
+    )
+    return _task_status_response(run)
+
+
+@router.post("/{run_id}/retry", response_model=TaskCreateResponse)
+def retry_task(
+    run_id: str,
+    request: TaskRetryRequest | None = None,
+    db: Session = Depends(get_db),
+) -> TaskCreateResponse:
+    """Retry a failed task, creating a new run with parent_run_id."""
+    original = store.get_agent_run(db, run_id)
+    if original is None:
+        raise HTTPException(status_code=404, detail="Original task run not found")
+    reuse_plan = request.reuse_plan if request else True
+    plan = None
+    if reuse_plan and original.plan_json:
+        try:
+            plan = json.loads(original.plan_json)
+        except json.JSONDecodeError:
+            plan = None
+    new_run = store.create_agent_run(
+        db,
+        task=original.task,
+        report_type=original.report_type,
+        source_mode=original.source_mode,
+        allowed_tools=json.loads(original.allowed_tools_json) if original.allowed_tools_json else None,
+        session_id=original.session_id,
+        run_config_snapshot=original.run_config_snapshot,
+    )
+    if plan:
+        plan["parent_run_id"] = run_id
+        plan["retry_from_failed_step"] = bool(request and request.from_failed_step)
+        store.update_agent_run_plan(db, new_run.run_id, plan)
+    return TaskCreateResponse(
+        run_id=new_run.run_id,
+        status=new_run.status,
+        status_url=f"/api/tasks/{new_run.run_id}",
+        trace_url=f"/api/tasks/{new_run.run_id}/trace",
+        report_url=f"/api/reports/{new_run.run_id}",
+        plan_url=f"/api/tasks/{new_run.run_id}/plan",
+        run_url=f"/api/tasks/{new_run.run_id}/run",
     )

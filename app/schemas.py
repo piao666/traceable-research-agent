@@ -38,6 +38,41 @@ class TaskCreateResponse(BaseModel):
     run_url: str | None = None
 
 
+class TaskListItem(BaseModel):
+    """Lightweight item for task list endpoint."""
+    run_id: str
+    task: str
+    status: str
+    report_type: str
+    execution_mode: str = "planned"
+    total_tool_calls: int = 0
+    estimated_cost: float = 0.0
+    session_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TaskListResponse(BaseModel):
+    """Paginated task list."""
+    tasks: list[TaskListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class TaskCancelRequest(BaseModel):
+    reason: str = ""
+
+
+class TaskRetryRequest(BaseModel):
+    reuse_plan: bool = True
+    from_failed_step: bool = False
+
+
+class SessionUpdateRequest(BaseModel):
+    title: str | None = None
+
+
 class TaskStatusResponse(BaseModel):
     run_id: str
     task: str

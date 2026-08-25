@@ -143,6 +143,16 @@ STREAM_STATUS_CN = {
 
 HIDDEN_REPORT_SECTION_PREFIXES = ("## 6. 证据与工具观察结果",)
 
+FOLDED_REPORT_SECTION_PREFIXES: tuple[str, ...] = (
+    "## 6. 证据与工具观察结果",
+    "## 7. ",
+    "## 8. ",
+    "## 9. ",
+    "## 10. ",
+    "## 11. ",
+    "## 12. ",
+)
+
 def _template_allowed_tools(template: dict[str, Any]) -> list[str] | None:
     tools = template.get("allowed_tools")
     return list(tools) if isinstance(tools, list) else None
@@ -758,8 +768,8 @@ def maybe_auto_refresh() -> None:
     status = (st.session_state.get("last_status") or {}).get("status")
     if status not in ("pending", "running"):
         return
-    delay = int(st.session_state.get("realtime_poll_seconds") or 2)
-    time.sleep(max(delay, 1))
+    # ── Use SSE streaming for real-time updates (replaces polling) ──
+    stream_task_events(run_id)
     refresh_all(show_errors=False)
     st.rerun()
 
@@ -2051,8 +2061,8 @@ def tab_trace() -> None:
 
             # Token breakdown from traces
             if traces:
-                ti = sum(t.token_in or 0 for t in traces)
-                to = sum(t.token_out or 0 for t in traces)
+                ti = sum((t.get("token_in") or 0) for t in traces)
+                to = sum((t.get("token_out") or 0) for t in traces)
                 if ti or to:
                     tc1, tc2 = st.columns(2)
                     tc1.metric("Prompt Tokens", f"{ti:,}")

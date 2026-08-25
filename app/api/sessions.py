@@ -10,6 +10,7 @@ from app.schemas import (
     SessionCreateRequest,
     SessionDetailResponse,
     SessionResponse,
+    SessionUpdateRequest,
 )
 from app.security import require_api_key
 
@@ -103,3 +104,23 @@ async def list_turns_endpoint(
         raise HTTPException(status_code=404, detail="Session not found")
     turns = memory_store.list_chat_turns(db, session_id)
     return [_turn_response(t) for t in turns]
+
+
+@router.patch("/{session_id}", response_model=SessionResponse)
+async def update_session_endpoint(
+    session_id: str,
+    request: SessionUpdateRequest,
+    db: Session = Depends(get_db),
+) -> SessionResponse:
+    """Update session metadata (e.g. title)."""
+    session_obj = memory_store.get_session(db, session_id)
+    if session_obj is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if request.title is not None:
+        session_obj = memory_store.update_session_title(db, session_id, request.title)
+    return SessionResponse(
+        session_id=session_obj.session_id,
+        title=session_obj.title,
+        created_at=session_obj.created_at,
+        updated_at=session_obj.updated_at,
+    )
