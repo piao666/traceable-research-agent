@@ -1,16 +1,21 @@
 """SQLite database setup for Traceable Research Agent."""
 
 from collections.abc import Generator
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 WORKSPACE_DIR = Path("workspace")
-DATABASE_PATH = WORKSPACE_DIR / "traceable_research_agent.sqlite"
+DATABASE_PATH = Path(
+    os.environ.get("TRACE_DATABASE_PATH")
+    or WORKSPACE_DIR / "traceable_research_agent.sqlite"
+)
 DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
 
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(
     DATABASE_URL,

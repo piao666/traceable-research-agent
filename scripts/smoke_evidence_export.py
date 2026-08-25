@@ -15,19 +15,202 @@ from fastapi.testclient import TestClient
 
 from app.agent.executor import run_plan
 from app.config import settings
-from app.database import SessionLocal
+from app.database import SessionLocal, init_db
 from app.main import app
 from app.tools.base import ToolResult
+from app.tools.defaults import register_default_tools
 from app.trace import store
 from app.trace.logger import record_tool_result
-from scripts.smoke_evidence_aggregation import (
-    assert_true,
-    create_run,
-    multi_source_plan,
-    prepare_runtime,
-    test_fallback_trace_bundle,
-    test_remote_failure_bundle,
-)
+from scripts.init_demo_db import init_demo_db
+
+
+def assert_true(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def prepare_runtime() -> None:
+    """Initialize only the runtime features retained by the local-only build."""
+
+    init_db()
+    register_default_tools()
+    init_demo_db()
+
+
+def multi_source_plan() -> dict[str, Any]:
+    """Build a representative plan without the removed RAG subsystem."""
+
+    task = "Export file, SQL, GitHub, and Tavily evidence into an auditable bundle."
+    return {
+        "version": "evidence-export-smoke-v2",
+        "task": task,
+        "source_mode": "mock",
+        "allowed_tools": [
+            "file_reader",
+            "sql_query",
+            "mcp_github_search",
+            "tavily_search",
+            "report_writer",
+        ],
+        "planner_source": "smoke",
+        "execution_mode": "planned",
+        "steps": [
+            {
+                "step_no": 1,
+                "goal": "Read local file evidence.",
+                "tool_name": "file_reader",
+                "arguments": {"path": "demo_research_note.md", "max_chars": 1200},
+                "expected_output": "Local text evidence.",
+                "completion_criteria": "File content is available.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 2,
+                "goal": "Collect read-only database evidence.",
+                "tool_name": "sql_query",
+                "arguments": {"query": "SELECT title FROM documents", "limit": 3},
+                "expected_output": "SQLite rows.",
+                "completion_criteria": "Read-only query returns rows.",
+                "risk_level": "medium",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 3,
+                "goal": "Collect GitHub mock evidence.",
+                "tool_name": "mcp_github_search",
+                "arguments": {"query": "traceable research agent", "mode": "mock", "limit": 2},
+                "expected_output": "GitHub mock results.",
+                "completion_criteria": "Mock GitHub evidence is marked.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 4,
+                "goal": "Collect Tavily mock evidence.",
+                "tool_name": "tavily_search",
+                "arguments": {"query": "traceable research agent", "mode": "mock", "max_results": 2},
+                "expected_output": "Tavily mock results.",
+                "completion_criteria": "Mock Tavily evidence is marked.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+            {
+                "step_no": 5,
+                "goal": "Generate report.",
+                "tool_name": "report_writer",
+                "arguments": {},
+                "expected_output": "Markdown report.",
+                "completion_criteria": "Report includes evidence.",
+                "risk_level": "low",
+                "requires_confirmation": False,
+            },
+        ],
+        "notes": ["Evidence export smoke plan for the no-RAG runtime."],
+    }
+
+
+def create_run(db, plan: dict[str, Any]):
+    run = store.create_agent_run(
+        db,
+        task=plan["task"],
+        report_type="summary",
+        source_mode="mock",
+        allowed_tools=plan["allowed_tools"],
+    )
+    store.update_agent_run_plan(db, run.run_id, plan)
+    return run
+
+
+def _get_evidence(client: TestClient, run_id: str) -> dict[str, Any]:
+    response = client.get(f"/api/tasks/{run_id}/evidence")
+    assert_true(response.status_code == 200, f"evidence endpoint failed: {response.status_code}")
+    return response.json()
+
+
+def test_fallback_trace_bundle(client: TestClient, db) -> str:
+    plan = {
+        "version": "evidence-export-fallback-smoke",
+        "task": "Keep fallback GitHub evidence auditable.",
+        "source_mode": "mock",
+        "allowed_tools": ["mcp_github_search"],
+        "planner_source": "smoke",
+        "execution_mode": "planned",
+        "steps": [],
+        "notes": [],
+    }
+    run = create_run(db, plan)
+    record_tool_result(
+        db,
+        run.run_id,
+        1,
+        "mcp_github_search",
+        {"query": "traceable research agent"},
+        ToolResult(
+            success=True,
+            output={
+                "results": [
+                    {
+                        "full_name": "fallback/example",
+                        "url": "https://github.com/fallback/example",
+                        "description": "Fallback repository fixture.",
+                    }
+                ]
+            },
+            output_summary="mcp_github_search returned fallback mock results.",
+            metadata={
+                "tool_source": "local",
+                "data_source": "fallback",
+                "fallback_used": True,
+                "fallback_reason": "network_error",
+            },
+        ),
+        latency_ms=0,
+    )
+    evidence = _get_evidence(client, run.run_id)
+    assert_true(any(item["is_fallback"] for item in evidence["evidence_items"]), "fallback evidence not marked")
+    return run.run_id
+
+
+def test_remote_failure_bundle(client: TestClient, db) -> str:
+    plan = {
+        "version": "evidence-export-remote-failure-smoke",
+        "task": "Preserve a failed remote MCP call in the evidence export.",
+        "source_mode": "mock",
+        "allowed_tools": ["fake_ea.unstable"],
+        "planner_source": "smoke",
+        "execution_mode": "planned",
+        "steps": [],
+        "notes": [],
+    }
+    run = create_run(db, plan)
+    record_tool_result(
+        db,
+        run.run_id,
+        1,
+        "fake_ea.unstable",
+        {"text": "please fail"},
+        ToolResult(
+            success=False,
+            error_message="fake remote MCP failure",
+            metadata={
+                "tool_source": "mcp_remote",
+                "remote_channel": "readonly",
+                "remote_server": "fake_ea",
+                "remote_tool_name": "unstable",
+                "error_type": "fake_remote_failure",
+            },
+        ),
+        latency_ms=0,
+    )
+    evidence = _get_evidence(client, run.run_id)
+    failed = [
+        item
+        for item in evidence["evidence_items"]
+        if item["tool_name"] == "fake_ea.unstable" and item["unsupported_reason"]
+    ]
+    assert_true(failed, "remote failure evidence missing")
+    return run.run_id
 
 
 def _export(client: TestClient, run_id: str, export_format: str) -> dict[str, Any]:

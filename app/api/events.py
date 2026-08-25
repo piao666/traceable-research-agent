@@ -25,6 +25,25 @@ router = APIRouter(
 )
 
 
+def _seed_cursor_after_event_id(
+    db,
+    run_id: str,
+    cursor: TraceEventCursor,
+    event_id: str | None,
+) -> bool:
+    """Mark traces through an acknowledged SSE trace ID as already seen."""
+
+    if not event_id:
+        return False
+    acknowledged: set[str] = set()
+    for trace in store.list_tool_traces(db, run_id):
+        acknowledged.add(trace.trace_id)
+        if trace.trace_id == event_id:
+            cursor.seen_trace_ids.update(acknowledged)
+            return True
+    return False
+
+
 @router.get("/{run_id}/events")
 async def stream_task_events(
     run_id: str,
@@ -34,6 +53,7 @@ async def stream_task_events(
     max_duration_seconds: float = Query(300.0, ge=1.0, le=3600.0),
     replay_existing: bool = Query(True),
     close_on_terminal: bool = Query(True),
+    after_trace_id: str | None = Query(None),
     db=Depends(get_db),
 ) -> StreamingResponse:
     """Stream run status and trace updates as Server-Sent Events."""
@@ -43,6 +63,17 @@ async def stream_task_events(
 
     async def event_generator():
         cursor = TraceEventCursor()
+        resume_event_id = after_trace_id or request.headers.get("last-event-id")
+        if resume_event_id:
+            # Seed the per-connection cursor through the acknowledged trace.
+            # Unknown/non-trace IDs intentionally fall back to a full replay.
+            with SessionLocal() as cursor_db:
+                _seed_cursor_after_event_id(
+                    cursor_db,
+                    run_id,
+                    cursor,
+                    resume_event_id,
+                )
         started_at = monotonic()
         last_heartbeat_at = 0.0
 

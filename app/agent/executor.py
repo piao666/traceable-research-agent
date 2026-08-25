@@ -215,12 +215,20 @@ def is_executable_tool(tool_name: str) -> bool:
 
     if tool_name == "report_writer":
         return False
-    if tool_name not in EXECUTABLE_TOOLS:
-        return False
     spec = get_tool(tool_name)
+    if spec is None:
+        return False
+    is_remote_mcp = (
+        (spec.metadata or {}).get("tool_source") == "mcp_remote"
+        or "mcp_remote" in spec.tags
+    )
+    # Built-in tools keep an explicit allowlist.  Remote MCP tools are
+    # discovered dynamically, so their registry policy metadata is the
+    # executable boundary instead of a name that cannot be known in advance.
+    if tool_name not in EXECUTABLE_TOOLS and not is_remote_mcp:
+        return False
     return bool(
-        spec
-        and spec.enabled
+        spec.enabled
         and tool_channel(spec) != MCPChannel.WRITE.value
         and is_tool_read_only(spec)
     )
@@ -493,8 +501,8 @@ def run_plan(
         raise ValueError("Task run not found.")
     if run.status == "completed":
         return _message_summary(run, "Run already completed; no tools executed.")
-    if run.status == "failed":
-        return _message_summary(run, "Run is failed and cannot be rerun.")
+    if run.status in ("failed", "cancelled"):
+        return _message_summary(run, f"Run is {run.status} and cannot be executed.")
 
     plan = _parse_plan(run)
     steps = plan.get("steps") or []
@@ -503,8 +511,13 @@ def run_plan(
     refetch_rounds_used = persisted_refetch_rounds(store.list_tool_traces(db, run_id))
 
     try:
-        run = store.update_agent_run_status(db, run_id, "running", None)
+        run = store.mark_agent_run_running_unless_cancelled(db, run_id)
+        if run.status == "cancelled":
+            return _message_summary(run, "Run was cancelled before execution started.")
         for step in steps:
+            if store.is_agent_run_cancelled(db, run_id):
+                cancelled = store.get_fresh_agent_run(db, run_id)
+                return _message_summary(cancelled, "Run cancelled by user.")
             step_no = int(step.get("step_no") or 0)
             tool_name = str(step.get("tool_name") or "")
             arguments = step.get("arguments") or {}
@@ -632,6 +645,10 @@ def run_plan(
                     latency_ms_delta=refetch.latency_ms,
                 )
 
+        if store.is_agent_run_cancelled(db, run_id):
+            cancelled = store.get_fresh_agent_run(db, run_id)
+            return _message_summary(cancelled, "Run cancelled by user.")
+
         traces = store.list_tool_traces(db, run_id)
         run.status = "completed"
         run.error_message = None
@@ -696,6 +713,9 @@ def run_plan(
         )
         traces = store.list_tool_traces(db, run_id)
 
+        if store.is_agent_run_cancelled(db, run_id):
+            cancelled = store.get_fresh_agent_run(db, run_id)
+            return _message_summary(cancelled, "Run cancelled by user.")
         run = store.update_agent_run_status(db, run_id, "completed", None)
 
         # ── Phase 6: Summarize LLM token/cost from traces ─────────────
@@ -726,5 +746,8 @@ def run_plan(
 
         return _summary(run)
     except Exception as exc:
+        if store.is_agent_run_cancelled(db, run_id):
+            cancelled = store.get_fresh_agent_run(db, run_id)
+            return _message_summary(cancelled, "Run cancelled by user.")
         run = store.update_agent_run_status(db, run_id, "failed", str(exc))
         return _summary(run)

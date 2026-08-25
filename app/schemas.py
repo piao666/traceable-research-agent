@@ -213,6 +213,9 @@ class ToolTraceResponse(BaseModel):
     output_summary: str | None = None
     status: str
     latency_ms: int | None = None
+    token_in: int = 0
+    token_out: int = 0
+    estimated_cost: float = 0.0
     error_message: str | None = None
     created_at: datetime
     finished_at: datetime | None = None

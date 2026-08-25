@@ -341,8 +341,8 @@ def run_plan_parallel(
         raise ValueError("Task run not found.")
     if run.status == "completed":
         return _message_summary(run, "Run already completed; no tools executed.")
-    if run.status == "failed":
-        return _message_summary(run, "Run is failed and cannot be rerun in Day37.")
+    if run.status in ("failed", "cancelled"):
+        return _message_summary(run, f"Run is {run.status} and cannot be executed.")
 
     plan = _parse_plan(run)
     steps = plan.get("steps") or []
@@ -355,8 +355,13 @@ def run_plan_parallel(
     visited_urls_lock = Lock()
 
     try:
-        run = store.update_agent_run_status(db, run_id, "running", None)
+        run = store.mark_agent_run_running_unless_cancelled(db, run_id)
+        if run.status == "cancelled":
+            return _message_summary(run, "Run was cancelled before execution started.")
         for group in _plan_groups(steps):
+            if store.is_agent_run_cancelled(db, run_id):
+                cancelled = store.get_fresh_agent_run(db, run_id)
+                return _message_summary(cancelled, "Run cancelled by user.")
             executable_group = [
                 step
                 for step in group
@@ -539,6 +544,10 @@ def run_plan_parallel(
                     latency_ms_delta=sum(item.latency_ms for item in parallel_results),
                 )
 
+        if store.is_agent_run_cancelled(db, run_id):
+            cancelled = store.get_fresh_agent_run(db, run_id)
+            return _message_summary(cancelled, "Run cancelled by user.")
+
         traces = store.list_tool_traces(db, run_id)
         run.status = "completed"
         run.error_message = None
@@ -581,9 +590,15 @@ def run_plan_parallel(
         )
         traces = store.list_tool_traces(db, run_id)
         _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
+        if store.is_agent_run_cancelled(db, run_id):
+            cancelled = store.get_fresh_agent_run(db, run_id)
+            return _message_summary(cancelled, "Run cancelled by user.")
         run = store.update_agent_run_status(db, run_id, "completed", None)
         _after_run_completed(db, run, markdown, step_no=0)
         return _summary(run)
     except Exception as exc:
+        if store.is_agent_run_cancelled(db, run_id):
+            cancelled = store.get_fresh_agent_run(db, run_id)
+            return _message_summary(cancelled, "Run cancelled by user.")
         run = store.update_agent_run_status(db, run_id, "failed", str(exc))
         return _summary(run)

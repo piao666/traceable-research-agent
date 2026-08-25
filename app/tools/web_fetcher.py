@@ -253,6 +253,12 @@ def _get_following_redirects(
     for _ in range(max_redirects + 1):
         response = client.get(current, headers=request_headers or None)
         chain.append(str(response.url))
+        # 304 is a conditional-cache response, not a redirect.  httpx treats
+        # the whole 3xx family as redirects, so handle it before
+        # ``is_redirect`` or the missing Location header is misreported as a
+        # redirect failure.
+        if response.status_code == 304:
+            return response, None, chain
         if not response.is_redirect:
             return response, None, chain
         location = response.headers.get("location")

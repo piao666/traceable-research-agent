@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from time import perf_counter
 
 
@@ -47,38 +48,46 @@ def main() -> None:
     environment["PYTHONIOENCODING"] = "utf-8"
     results: list[dict[str, object]] = []
 
-    for name, command in CHECKS:
-        started = perf_counter()
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            env=environment,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=CHECK_TIMEOUT_SECONDS.get(name, 300),
-            check=False,
-        )
-        duration_ms = round((perf_counter() - started) * 1000, 3)
-        result = {
-            "name": name,
-            "status": "passed" if completed.returncode == 0 else "failed",
-            "return_code": completed.returncode,
-            "duration_ms": duration_ms,
-        }
-        results.append(result)
-        print(json.dumps(result, ensure_ascii=False), flush=True)
-        if completed.returncode != 0:
-            summary = {
-                "final_project_smoke": "failed",
-                "passed_scripts": sum(item["status"] == "passed" for item in results),
-                "failed_scripts": 1,
-                "failed_check": name,
-                "eval": "not_run" if name != "app_eval" else "failed",
+    # Each check receives a fresh database.  This makes the aggregate suite
+    # reproducible and prevents subprocess/uvicorn checks from mutating the
+    # developer's single-instance workspace database.
+    with TemporaryDirectory(prefix="traceable-final-smoke-") as database_dir:
+        for index, (name, command) in enumerate(CHECKS, start=1):
+            check_environment = environment.copy()
+            check_environment["TRACE_DATABASE_PATH"] = str(
+                Path(database_dir) / f"{index:02d}-{name}.sqlite"
+            )
+            started = perf_counter()
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                env=check_environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=CHECK_TIMEOUT_SECONDS.get(name, 300),
+                check=False,
+            )
+            duration_ms = round((perf_counter() - started) * 1000, 3)
+            result = {
+                "name": name,
+                "status": "passed" if completed.returncode == 0 else "failed",
+                "return_code": completed.returncode,
+                "duration_ms": duration_ms,
             }
-            print(json.dumps(summary, ensure_ascii=False, indent=2))
-            raise SystemExit(completed.returncode or 1)
+            results.append(result)
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+            if completed.returncode != 0:
+                summary = {
+                    "final_project_smoke": "failed",
+                    "passed_scripts": sum(item["status"] == "passed" for item in results),
+                    "failed_scripts": 1,
+                    "failed_check": name,
+                    "eval": "not_run" if name != "app_eval" else "failed",
+                }
+                print(json.dumps(summary, ensure_ascii=False, indent=2))
+                raise SystemExit(completed.returncode or 1)
 
     summary = {
         "final_project_smoke": "ok",
