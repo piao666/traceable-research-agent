@@ -963,6 +963,20 @@ def _html_text(value: Any) -> str:
     return html.escape(str(value or ""))
 
 
+def _sanitize_html(value: Any) -> str:
+    """Escape HTML but preserve safe formatting tags (b, i, em, strong, code)."""
+    text = str(value or "")
+    # Strip dangerous tags entirely
+    for tag in ("script", "iframe", "object", "embed", "form", "input", "link", "meta", "style"):
+        text = re.sub(rf"<{tag}\b[^>]*>.*?</{tag}>", "", text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(rf"<{tag}\b[^>]*/?>", "", text, flags=re.IGNORECASE)
+    # Strip event handlers and javascript: URLs
+    text = re.sub(r'\bon\w+\s*=\s*"[^"]*"', "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bon\w+\s*=\s*'[^']*'", "", text, flags=re.IGNORECASE)
+    text = re.sub(r'''href\s*=\s*["']javascript:''', 'href="#', text, flags=re.IGNORECASE)
+    return text
+
+
 def _short_tool_name(tool_name: Any) -> str:
     value = str(tool_name or "—")
     for prefix in ("source_pack.",):
@@ -1513,6 +1527,10 @@ def render_sidebar() -> None:
             if selected:
                 st.session_state.active_session_id = selected["session_id"]
                 st.caption(f"当前会话：{selected.get('title') or '未命名'} ({selected['session_id'][:8]}…)")
+                # NOTE: Streamlit single-page architecture limits session switching
+                # to setting active_session_id for new task creation. Full history
+                # browsing per session requires React frontend (see 前端构建.md).
+                st.caption("💡 切换会话后，新创建的任务将归属于此会话。历史任务浏览请使用侧边栏「任务列表」。")
             if st.button("刷新会话列表", use_container_width=True):
                 st.session_state.sessions_loaded = False
                 st.rerun()
@@ -1788,8 +1806,9 @@ def tab_task() -> None:
     render_status_strip()
 
     plan = st.session_state.get("last_plan")
-    # 图 3 圈出的三列功能看板暂时移除；完整计划、Trace 和报告仍保留在各自 Tab 中查看。
-    if not plan and st.session_state.get("run_id"):
+    if plan and plan.get("steps"):
+        render_plan_preview_panel()
+    elif st.session_state.get("run_id"):
         st.info("计划加载中…点击侧边栏「刷新全部」获取最新状态。")
 
 
@@ -2297,6 +2316,7 @@ def _collapse_key_evidence_blocks(markdown: str) -> str:
 
 
 def render_report_markdown(markdown: str, citation_map: dict[str, Any] | None = None) -> None:
+    markdown = _sanitize_html(markdown)
     cmap = citation_map or {}
     for heading, body in _split_report_markdown(markdown):
         if heading.startswith(HIDDEN_REPORT_SECTION_PREFIXES):

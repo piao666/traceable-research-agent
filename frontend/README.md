@@ -35,6 +35,6 @@ STREAMLIT_API_BASE_URL=http://127.0.0.1:8000
 
 ## Security
 
-- Does not read `.env`.
+- Reads `.env` from the project root when `python-dotenv` is installed (falls back silently).
 - Does not display API keys.
 - Calls FastAPI only.
