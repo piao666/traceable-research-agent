@@ -851,6 +851,20 @@ def plan_task(
             return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
         # Fall through to deterministic if skill not found
 
+    # ── Composed plan (multi-skill combination) ──
+    if skill_routing.get("composed") and skill_routing.get("composed_steps"):
+        plan = _composed_steps_to_plan(
+            skill_routing["composed_steps"],
+            task,
+            allowed_tools,
+            source_mode,
+        )
+        plan["skill_routing"] = skill_routing
+        plan["planner_source"] = "composed"
+        plan["llm_provider"] = None
+        plan["llm_model"] = None
+        return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+
     mode = (planner_mode or settings.llm_planner_mode or "deterministic").lower()
     if mode not in {"deterministic", "llm", "auto"}:
         mode = "deterministic"
@@ -1610,6 +1624,60 @@ def _skill_to_plan(
         "skill_name": skill.name,
         "skill_version": skill.version,
         "scenario_template": skill.name,
+        "allowed_tools": allowed_tools if allowed_tools is not None else default_allowed,
+        "steps": steps,
+        "notes": notes,
+        "confirmation": None,
+    }
+
+
+def _composed_steps_to_plan(
+    composed_steps: list[dict[str, Any]],
+    task: str,
+    allowed_tools: list[str] | None,
+    source_mode: str = "real",
+) -> dict[str, Any]:
+    """Convert composed steps (from multi-skill routing) into a plan dict."""
+    from app.tools.registry import list_tools
+
+    allowed_set = set(allowed_tools) if allowed_tools is not None else None
+    notes: list[str] = ["Plan composed from multiple skills via dynamic routing."]
+    steps: list[dict[str, Any]] = []
+
+    for cs in composed_steps:
+        tool_name = cs.get("tool_name", "")
+        if allowed_set is not None and tool_name not in allowed_set:
+            notes.append(f"Skipped {tool_name}: not in allowed_tools.")
+            continue
+        step = _step_template(tool_name, task)
+        step["step_no"] = cs.get("step_no", len(steps) + 1)
+        step["tool_name"] = tool_name
+        step["goal"] = cs.get("goal", "")
+        step["arguments"] = cs.get("arguments", {})
+        if cs.get("arguments_from"):
+            step["arguments_from"] = cs["arguments_from"]
+        steps.append(step)
+
+    if not steps:
+        notes.append("No executable steps after composition filter.")
+
+    default_allowed = DEFAULT_TOOL_ORDER.copy()
+    for spec in list_tools():
+        if (
+            spec.enabled
+            and "mcp_remote" in spec.tags
+            and tool_channel(spec) == "readonly"
+            and spec.name not in default_allowed
+        ):
+            default_allowed.append(spec.name)
+
+    return {
+        "version": "composed-v1",
+        "task": task,
+        "source_mode": source_mode,
+        "skill_name": None,
+        "skill_version": None,
+        "scenario_template": "composed",
         "allowed_tools": allowed_tools if allowed_tools is not None else default_allowed,
         "steps": steps,
         "notes": notes,

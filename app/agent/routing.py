@@ -70,6 +70,79 @@ EXPLICIT_ACTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# ── Step composition: canonical tool ordering for deduplication ──────
+_CANONICAL_TOOL_ORDER = [
+    "tavily_search", "arxiv_search", "semantic_scholar_search",
+    "openalex_search", "crossref_search", "mcp_github_search",
+    "web_fetcher", "pdf_reader", "file_reader", "sql_query",
+    "memory_search", "reference_verifier", "report_writer",
+]
+
+# Tools that can coexist (different sources) vs tools that deduplicate
+_COMPOSABLE_TOOLS = {
+    "tavily_search", "arxiv_search", "semantic_scholar_search",
+    "openalex_search", "crossref_search", "mcp_github_search",
+    "file_reader", "sql_query", "memory_search",
+}
+
+
+def _compose_steps_from_skills(
+    skill_names: list[str],
+    skill_metas: list[Any],
+    skill_registry: Any,  # get_skill callable
+) -> list[dict[str, Any]]:
+    """Compose steps from multiple skills, deduplicating and ordering."""
+    from collections import OrderedDict
+
+    seen_tools: dict[str, dict[str, Any]] = OrderedDict()
+    all_required_tools: set[str] = set()
+
+    for name in skill_names:
+        skill = skill_registry(name)
+        if skill is None:
+            continue
+        for step in skill.steps:
+            tool_name = step.tool_name
+            if tool_name in _COMPOSABLE_TOOLS:
+                # Composable tools: keep all instances (different sources)
+                key = f"{tool_name}:{name}"
+                if key not in seen_tools:
+                    seen_tools[key] = {
+                        "tool_name": tool_name,
+                        "goal": step.goal or f"来自 Skill '{name}' 的 {tool_name}",
+                        "arguments": dict(step.arguments) if step.arguments else {},
+                        "arguments_from": dict(step.arguments_from) if step.arguments_from else None,
+                    }
+            else:
+                # Non-composable: keep first occurrence
+                if tool_name not in seen_tools:
+                    seen_tools[tool_name] = {
+                        "tool_name": tool_name,
+                        "goal": step.goal or f"来自 Skill '{name}' 的 {tool_name}",
+                        "arguments": dict(step.arguments) if step.arguments else {},
+                        "arguments_from": dict(step.arguments_from) if step.arguments_from else None,
+                    }
+        all_required_tools.update(skill.required_tools)
+
+    # Order by canonical tool order, then by insertion
+    order_map = {t: i for i, t in enumerate(_CANONICAL_TOOL_ORDER)}
+    steps = sorted(
+        seen_tools.values(),
+        key=lambda s: (order_map.get(s["tool_name"], 99), list(seen_tools.keys()).index(
+            next(k for k, v in seen_tools.items() if v is s)
+        )),
+    )
+    # Assign step_no
+    for i, step in enumerate(steps):
+        step["step_no"] = i + 1
+    return steps
+
+
+def _get_skill_registry():
+    """Lazy import to avoid circular dependency."""
+    from app.skills.registry import get_skill
+    return get_skill
+
 
 def _tool_allowed(required_tools: list[str], allowed_tools: list[str] | None) -> bool:
     if allowed_tools is None:
@@ -158,23 +231,49 @@ def select_skill(
     reason = ""
     source = "keyword"
 
-    # Clear keyword winner
+    # Clear keyword winner — but also check if runner-up is meaningful
     if winner and int(winner["score"]) >= 4 and int(winner["score"]) > runner_up_score:
+        if runner_up_score >= 4:
+            # Runner-up also has strong signal — compose both skills
+            strong = [c for c in candidates if int(c["score"]) >= 4]
+            composed = _compose_steps_from_skills(
+                [c["skill_name"] for c in strong],
+                skill_metas,
+                _get_skill_registry(),
+            )
+            if composed:
+                return {
+                    "requested": "auto",
+                    "selected_skill": None,
+                    "composed": True,
+                    "composed_steps": composed,
+                    "composed_from": [c["skill_name"] for c in strong],
+                    "reason": f"命中多个 Skill 领域 ({', '.join(c['skill_name'] for c in strong)})，组合步骤生成综合流程。",
+                    "source": "keyword",
+                    "candidates": candidates[:3],
+                }
         selected = str(winner["skill_name"])
         reason = f"命中 {', '.join(winner['signals'])}，选择预定义研究流程。"
     elif winner and int(winner["score"]) >= 4:
-        # Tie — try LLM to break it
-        tied = [c for c in candidates if int(c["score"]) >= 4]
-        if llm_client:
-            llm_choice = _llm_classify(task, skill_metas, llm_client)
-            if llm_choice and llm_choice in {c["skill_name"] for c in tied}:
-                selected = llm_choice
-                reason = f"关键词得分接近，LLM 选择 {llm_choice}。"
-                source = "llm"
-            else:
-                reason = "多个 Skill 得分接近，交由通用 Planner 动态规划。"
-        else:
-            reason = "多个 Skill 得分接近，交由通用 Planner 动态规划。"
+        # Tie or multiple strong matches — compose steps from all matching skills
+        strong = [c for c in candidates if int(c["score"]) >= 4]
+        composed = _compose_steps_from_skills(
+            [c["skill_name"] for c in strong],
+            skill_metas,
+            _get_skill_registry(),
+        )
+        if composed:
+            return {
+                "requested": "auto",
+                "selected_skill": None,
+                "composed": True,
+                "composed_steps": composed,
+                "composed_from": [c["skill_name"] for c in strong],
+                "reason": f"多个 Skill 命中 ({', '.join(c['skill_name'] for c in strong)})，组合步骤生成综合流程。",
+                "source": "keyword",
+                "candidates": candidates[:3],
+            }
+        reason = "多个 Skill 得分接近，交由通用 Planner 动态规划。"
     else:
         # Low score — try LLM
         if llm_client:
