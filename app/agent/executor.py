@@ -493,6 +493,7 @@ def run_plan(
     run_id: str,
     settings_obj: Settings = _exec_settings,
     report_llm_client: LLMClient | None = None,
+    completion_status: str = "completed",
 ) -> dict[str, Any]:
     """Execute a run plan step by step and generate a Markdown report."""
 
@@ -716,7 +717,7 @@ def run_plan(
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _message_summary(cancelled, "Run cancelled by user.")
-        run = store.update_agent_run_status(db, run_id, "completed", None)
+        run = store.update_agent_run_status(db, run_id, completion_status, None)
 
         # ── Phase 6: Summarize LLM token/cost from traces ─────────────
         try:
@@ -740,17 +741,6 @@ def run_plan(
             pass  # Cost tracking failure must not block run completion
 
         _after_run_completed(db, run, markdown, step_no=0)
-
-        # ── Phase 9: Self-improvement auto-evaluation ──────────────
-        try:
-            from app.improvement.evaluator import auto_evaluate_and_log
-            auto_evaluate_and_log(db, run_id)
-            from app.improvement.weight_updater import maybe_update_weights
-            maybe_update_weights()
-            from app.improvement.few_shot import promote_to_few_shot
-            promote_to_few_shot(run_id)
-        except Exception:
-            pass  # Evaluation failure must not block run completion
 
         # ── Phase 8.1: profile quota shortfall trace ───────────────
         _check_profile_quota(db, run_id, plan, provenance_bundle, traces)

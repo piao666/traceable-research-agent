@@ -174,12 +174,17 @@ def _merge_approved_steps(
 
 def _task_status_response(run: AgentRun) -> TaskStatusResponse:
     plan_meta = _plan_metadata(run)
+    visible_status = run.status
+    if run.status == "completed" and (
+        plan_meta.get("adaptive_gate_pending") or plan_meta.get("deepening_pending")
+    ):
+        visible_status = "running"
     return TaskStatusResponse(
         run_id=run.run_id,
         task=run.task,
         report_type=run.report_type,
         source_mode=run.source_mode,
-        status=run.status,
+        status=visible_status,
         current_step=run.current_step,
         total_steps=run.total_steps,
         report_path=run.report_path,
@@ -199,6 +204,14 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
         planner_source=plan_meta.get("planner_source"),
         llm_provider=plan_meta.get("llm_provider"),
         llm_model=plan_meta.get("llm_model"),
+        skill_routing=plan_meta.get("skill_routing"),
+        adaptive_gate_pending=plan_meta.get("adaptive_gate_pending", False),
+        adaptive_upgrade=plan_meta.get("adaptive_upgrade", False),
+        adaptive_upgrade_reason=plan_meta.get("adaptive_upgrade_reason"),
+        adaptive_upgrade_failed=plan_meta.get("adaptive_upgrade_failed", False),
+        adaptive_phase=plan_meta.get("adaptive_phase"),
+        deepening_pending=plan_meta.get("deepening_pending", False),
+        deepening_phase=plan_meta.get("deepening_phase"),
     )
 
 
@@ -217,6 +230,12 @@ def _task_run_response(summary: dict) -> TaskRunResponse:
         planner_source=summary.get("planner_source"),
         llm_provider=summary.get("llm_provider"),
         llm_model=summary.get("llm_model"),
+        adaptive_upgrade=summary.get("adaptive_upgrade", False),
+        adaptive_upgrade_reason=summary.get("adaptive_upgrade_reason"),
+        adaptive_upgrade_failed=summary.get("adaptive_upgrade_failed", False),
+        adaptive_phase=summary.get("adaptive_phase"),
+        deepening_pending=summary.get("deepening_pending", False),
+        deepening_phase=summary.get("deepening_phase"),
     )
 
 
@@ -257,6 +276,9 @@ def _async_run_response(run: AgentRun, message: str) -> AsyncRunResponse:
         report_url=f"/api/reports/{run.run_id}",
         message=message,
         execution_mode=plan_meta["execution_mode"],
+        adaptive_gate_pending=plan_meta.get("adaptive_gate_pending", False),
+        adaptive_upgrade=plan_meta.get("adaptive_upgrade", False),
+        adaptive_phase=plan_meta.get("adaptive_phase"),
     )
 
 
@@ -280,6 +302,14 @@ def _plan_metadata(run: AgentRun) -> dict:
         "planner_source": plan.get("planner_source"),
         "llm_provider": react_state.get("llm_provider") or plan.get("llm_provider"),
         "llm_model": react_state.get("llm_model") or plan.get("llm_model"),
+        "skill_routing": plan.get("skill_routing"),
+        "adaptive_gate_pending": bool(plan.get("adaptive_gate_pending")),
+        "adaptive_upgrade": bool(plan.get("adaptive_upgrade")),
+        "adaptive_upgrade_reason": plan.get("adaptive_upgrade_reason"),
+        "adaptive_upgrade_failed": bool(plan.get("adaptive_upgrade_failed")),
+        "adaptive_phase": plan.get("adaptive_phase"),
+        "deepening_pending": bool(plan.get("deepening_pending")),
+        "deepening_phase": plan.get("deepening_phase"),
     }
 
 
@@ -745,6 +775,8 @@ async def get_plan_review(
         estimated_cost=float(plan.get("estimated_cost") or 0.0),
         risk_summary=plan.get("risk_summary") or {"low": 0, "medium": 0, "high": 0},
         notes=plan.get("notes") or [],
+        planner_source=plan.get("planner_source"),
+        skill_routing=plan.get("skill_routing"),
     )
 
 

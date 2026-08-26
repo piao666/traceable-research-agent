@@ -56,15 +56,23 @@ def build_incremental_events(
     if run is None:
         return [_base_event(run_id, "done", status="not_found", error_message="Task run not found.")], True
 
+    plan_metadata = _run_plan_metadata(run)
+    visible_status = run.status
+    if run.status == "completed" and (
+        plan_metadata.get("adaptive_gate_pending")
+        or plan_metadata.get("deepening_pending")
+    ):
+        visible_status = "running"
+
     events: list[dict[str, Any]] = []
     is_initial_poll = cursor.last_status is None
-    if cursor.last_status is None or cursor.last_status != run.status:
-        events.append(_run_status_event(run))
-        if run.status == "waiting_human":
+    if cursor.last_status is None or cursor.last_status != visible_status:
+        events.append(_run_status_event(run, visible_status, plan_metadata))
+        if visible_status == "waiting_human":
             events.append(_waiting_human_event(run))
-        elif run.status == "waiting_human_plan":
+        elif visible_status == "waiting_human_plan":
             events.append(_plan_review_event(run))
-        cursor.last_status = run.status
+        cursor.last_status = visible_status
 
     for trace in store.list_tool_traces(db, run_id):
         if trace.trace_id in cursor.seen_trace_ids:
@@ -75,11 +83,11 @@ def build_incremental_events(
         cursor.seen_trace_ids.add(trace.trace_id)
         events.append(_trace_event(trace))
 
-    if run.report_path and not cursor.report_ready_sent:
+    if run.report_path and visible_status == "completed" and not cursor.report_ready_sent:
         events.append(_report_ready_event(run))
         cursor.report_ready_sent = True
 
-    should_close = run.status in TERMINAL_STREAM_STATUSES or run.status in REVIEWABLE_STATUSES
+    should_close = visible_status in TERMINAL_STREAM_STATUSES or visible_status in REVIEWABLE_STATUSES
     if should_close and not cursor.done_sent:
         events.append(_done_event(run))
         cursor.done_sent = True
@@ -123,17 +131,23 @@ def _base_event(
     }
 
 
-def _run_status_event(run: AgentRun) -> dict[str, Any]:
+def _run_status_event(
+    run: AgentRun,
+    visible_status: str | None = None,
+    plan_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    status = visible_status or run.status
     return _base_event(
         run.run_id,
         "run_status",
-        status=run.status,
+        status=status,
         error_message=run.error_message,
         created_at=run.created_at,
-        finished_at=run.updated_at if run.status in TERMINAL_STREAM_STATUSES else None,
+        finished_at=run.updated_at if status in TERMINAL_STREAM_STATUSES else None,
         current_step=run.current_step,
         total_steps=run.total_steps,
         report_path=run.report_path,
+        metadata=plan_metadata,
     )
 
 
@@ -192,6 +206,8 @@ def _plan_review_event(run: AgentRun) -> dict[str, Any]:
             "estimated_cost": plan.get("estimated_cost", 0.0),
             "risk_summary": plan.get("risk_summary", {}),
             "allowed_tools": plan.get("allowed_tools", []),
+            "planner_source": plan.get("planner_source"),
+            "skill_routing": plan.get("skill_routing"),
             "steps": review_steps,
         },
     )
@@ -257,6 +273,27 @@ def _parse_json(value: str | None) -> Any:
         return json.loads(value)
     except (json.JSONDecodeError, TypeError):
         return None
+
+
+def _run_plan_metadata(run: AgentRun) -> dict[str, Any]:
+    plan = _parse_json(run.plan_json)
+    if not isinstance(plan, dict):
+        return {}
+    return {
+        "execution_mode": plan.get("execution_mode") or "planned",
+        "requested_execution_mode": plan.get("requested_execution_mode")
+        or plan.get("execution_mode")
+        or "planned",
+        "planner_source": plan.get("planner_source"),
+        "skill_routing": plan.get("skill_routing"),
+        "adaptive_gate_pending": bool(plan.get("adaptive_gate_pending")),
+        "adaptive_upgrade": bool(plan.get("adaptive_upgrade")),
+        "adaptive_upgrade_reason": plan.get("adaptive_upgrade_reason"),
+        "adaptive_upgrade_failed": bool(plan.get("adaptive_upgrade_failed")),
+        "adaptive_phase": plan.get("adaptive_phase"),
+        "deepening_pending": bool(plan.get("deepening_pending")),
+        "deepening_phase": plan.get("deepening_phase"),
+    }
 
 
 def _extract_metadata(output: Any) -> dict[str, Any]:

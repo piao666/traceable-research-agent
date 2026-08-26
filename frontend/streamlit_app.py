@@ -81,6 +81,9 @@ DEMO_TEMPLATES: dict[str, dict[str, Any]] = {
 EXECUTION_MODE_CN = {
     "planned": "固定计划",
     "react": "ReAct 动态决策",
+    "adaptive": "自适应深化",
+    "planned_parallel": "并行固定计划",
+    "react_deepening": "ReAct 深度研究",
 }
 
 PLANNER_SOURCE_CN = {
@@ -89,6 +92,13 @@ PLANNER_SOURCE_CN = {
     "deterministic_fallback": "规则兜底",
     "skill": "指定研究流程",
     "skill_auto": "自动选择研究流程",
+    "composed": "多 Skill 组合规划",
+}
+
+ADAPTIVE_PHASE_CN = {
+    "planned_execution": "Planned 初步执行",
+    "react_execution": "ReAct 深化执行",
+    "completed": "最终结果已稳定",
 }
 
 MEMORY_KIND_CN = {"preference": "偏好", "interest": "研究兴趣", "fact": "事实"}
@@ -645,6 +655,7 @@ def init_state() -> None:
         "last_evidence_export": None,
         "last_evidence_export_content": None,
         "last_report": None,
+        "last_improvement": None,
         "event_log": [],
         "last_event_id": "",
         "selected_template": list(DEMO_TEMPLATES.keys())[0],
@@ -755,6 +766,10 @@ def refresh_all(show_errors: bool = True) -> None:
         st.session_state.last_report = api_get(f"/api/reports/{run_id}")
     except ApiError as exc:
         if show_errors: st.error(str(exc))
+    try:
+        st.session_state.last_improvement = api_get(f"/api/improvement/runs/{run_id}")
+    except ApiError:
+        st.session_state.last_improvement = None
 
 
 def realtime_events_url() -> str:
@@ -911,6 +926,7 @@ def _sync_template_state() -> None:
         "last_evidence_export": None,
         "last_evidence_export_content": None,
         "last_report": None,
+        "last_improvement": None,
         "event_log": [],
         "last_event_id": "",
     }.items():
@@ -959,6 +975,31 @@ def _memory_content_cn(content: Any) -> str:
 def _planner_source_label(value: str | None) -> str:
     raw = str(value or "—")
     return PLANNER_SOURCE_CN.get(raw, raw)
+
+
+def _adaptive_status(plan: dict[str, Any], status_obj: dict[str, Any]) -> tuple[str, str]:
+    """Return a concise adaptive/deepening label and explanation."""
+    if status_obj.get("deepening_pending") or plan.get("deepening_pending"):
+        return "深度研究中", "初步 ReAct 结果仍在继续补充证据，当前报告不是最终版本。"
+    if status_obj.get("adaptive_gate_pending") or plan.get("adaptive_gate_pending"):
+        return "质量检查中", "Planned 初步结果正在通过质量门，尚未形成最终终态。"
+    if status_obj.get("adaptive_upgrade") or plan.get("adaptive_upgrade"):
+        phase = status_obj.get("adaptive_phase") or plan.get("adaptive_phase")
+        label = ADAPTIVE_PHASE_CN.get(str(phase or ""), "自适应深化")
+        reason = status_obj.get("adaptive_upgrade_reason") or plan.get("adaptive_upgrade_reason")
+        if status_obj.get("adaptive_upgrade_failed") or plan.get("adaptive_upgrade_failed"):
+            return "深化失败，保留初步结果", str(reason or "ReAct 深化失败，已保留可用的 Planned 报告。")
+        return label, str(reason or "质量门触发 ReAct 深化，最终报告已使用更完整证据重新生成。")
+    return "标准执行", "本次运行未触发额外深化。"
+
+
+def _skill_composition_label(plan: dict[str, Any]) -> str:
+    routing = plan.get("skill_routing") if isinstance(plan.get("skill_routing"), dict) else {}
+    composed_from = routing.get("composed_from") if isinstance(routing, dict) else None
+    if isinstance(composed_from, list) and composed_from:
+        return " + ".join(str(name) for name in composed_from)
+    selected = routing.get("selected_skill") if isinstance(routing, dict) else None
+    return str(selected or "自动规划")
 
 
 def _remote_failures(traces: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1047,11 +1088,13 @@ def render_workflow_strip() -> None:
     plan = st.session_state.get("last_plan") or {}
     traces = st.session_state.get("last_trace") or []
     report = st.session_state.get("last_report") or {}
+    status_obj = st.session_state.get("last_status") or {}
+    final_report = bool(report.get("exists") and status_obj.get("status") == "completed")
     steps = [
         ("1", "任务描述", "输入研究问题或资料来源", True),
         ("2", "执行计划", "生成可执行研究计划", bool(plan)),
         ("3", "执行追踪", "实时查看执行与证据链", bool(traces)),
-        ("4", "研究报告", "生成结构化研究报告", bool(report.get("exists"))),
+        ("4", "研究报告", "生成结构化研究报告", final_report),
     ]
     html_steps = []
     for index, title, caption, done in steps:
@@ -1082,11 +1125,16 @@ def render_status_strip() -> None:
     report = st.session_state.get("last_report") or {}
     mcp_label, mcp_value, mcp_note = _mcp_status_snapshot()
     planner_source = _planner_source_label(plan.get("planner_source") or status_obj.get("planner_source"))
-    report_value = "已生成" if report.get("exists") else "待生成"
+    adaptive_label, adaptive_note = _adaptive_status(plan, status_obj)
+    report_value = (
+        "已生成"
+        if report.get("exists") and status_obj.get("status") == "completed"
+        else "生成中" if report.get("exists") else "待生成"
+    )
     items = [
         (mcp_label, mcp_value, mcp_note),
         ("Planner", planner_source if planner_source != "—" else "就绪", "可生成执行计划"),
-        ("Trace", f"{len(traces)} 条", _run_status_label(status_obj)),
+        ("执行阶段", adaptive_label, adaptive_note),
         ("研究报告", report_value, "Markdown / Word / PDF"),
     ]
     item_html = "".join(
@@ -1158,6 +1206,9 @@ def render_plan_preview_panel() -> None:
         """).strip(),
         unsafe_allow_html=True,
     )
+    routing = plan.get("skill_routing") if isinstance(plan.get("skill_routing"), dict) else {}
+    if routing.get("composed"):
+        st.caption(f"组合来源：{_skill_composition_label(plan)}。步骤已按工具顺序合并并去重。")
 
 
 def render_trace_preview_panel() -> None:
@@ -1826,6 +1877,11 @@ def tab_task() -> None:
         elif cur == "waiting_human_plan":
             _render_plan_review_panel()
 
+        plan_obj = st.session_state.get("last_plan") or {}
+        adaptive_label, adaptive_note = _adaptive_status(plan_obj, status_obj)
+        if adaptive_label != "标准执行":
+            st.info(f"**{adaptive_label}** · {adaptive_note}")
+
     render_status_strip()
 
     plan = st.session_state.get("last_plan")
@@ -2037,6 +2093,12 @@ def tab_trace() -> None:
                 f"最新工具={latest.get('tool_name')} | 状态={latest_status} | "
                 f"完成时间={latest.get('finished_at')}"
             )
+        adaptive_label, adaptive_note = _adaptive_status(
+            st.session_state.get("last_plan") or {},
+            status_obj,
+        )
+        if adaptive_label != "标准执行":
+            st.info(f"{adaptive_label}：{adaptive_note}")
 
     if not traces:
         st.info("暂无 Trace，请先创建并执行任务。")
@@ -2089,6 +2151,11 @@ def tab_trace() -> None:
         mc1.metric("规划器来源", _planner_source_label(plan_source))
         mc2.metric("执行模式",   _execution_mode_label(exec_mode))
         mc3.metric("总延迟",     f"{status_obj.get('total_latency_ms', '—')} ms")
+        plan_obj = st.session_state.get("last_plan") or {}
+        if (plan_obj.get("skill_routing") or {}).get("composed"):
+            st.caption(f"多 Skill 组合：{_skill_composition_label(plan_obj)}")
+        if status_obj.get("adaptive_upgrade_reason"):
+            st.caption(f"深化原因：{status_obj.get('adaptive_upgrade_reason')}")
         if status_obj.get("llm_provider"):
             mc1.metric("LLM 提供商", status_obj.get("llm_provider"))
             mc2.metric("LLM 模型",   status_obj.get("llm_model", "—"))
@@ -2356,6 +2423,25 @@ def render_report_markdown(markdown: str, citation_map: dict[str, Any] | None = 
 
 
 # ── Tab 3：研究报告 ───────────────────────────────────────────────
+def _render_run_quality_card(quality: dict[str, Any] | None) -> None:
+    if not quality:
+        st.caption("最终质量评分尚未生成；运行完成后刷新即可查看。")
+        return
+    st.markdown("#### 最终质量评分")
+    cols = st.columns(5)
+    cols[0].metric("综合", f"{quality.get('overall_score', 0):.1f}")
+    cols[1].metric("相关性", f"{quality.get('relevance_score', 0):.1f}")
+    cols[2].metric("事实准确", f"{quality.get('factual_accuracy', 0) * 10:.1f}")
+    cols[3].metric("来源质量", f"{quality.get('source_quality_score', 0):.1f}")
+    cols[4].metric("可审计性", f"{quality.get('auditability_score', 0):.1f}")
+    st.caption(
+        f"覆盖度 {quality.get('coverage_score', 0):.1f} · "
+        f"引用 {quality.get('citation_count', 0)} 条 · "
+        f"来源层级 T0/T1/T2={quality.get('tier_t0', 0)}/"
+        f"{quality.get('tier_t1', 0)}/{quality.get('tier_t2', 0)}"
+    )
+
+
 def tab_report() -> None:
     st.markdown("#### 📝 Markdown 研究报告")
 
@@ -2368,12 +2454,24 @@ def tab_report() -> None:
         st.warning(report.get("message") or "报告文件尚未生成。")
         return
 
+    status_obj = st.session_state.get("last_status") or {}
+    plan = st.session_state.get("last_plan") or {}
+    if status_obj.get("status") != "completed" and (
+        status_obj.get("adaptive_gate_pending")
+        or status_obj.get("adaptive_upgrade")
+        or status_obj.get("deepening_pending")
+        or plan.get("adaptive_gate_pending")
+        or plan.get("deepening_pending")
+    ):
+        label, note = _adaptive_status(plan, status_obj)
+        st.info(f"**{label}** · {note}")
+        st.caption("初步报告已落盘，但最终报告会在深化结束后覆盖更新。")
+        return
+
     md = report.get("markdown") or ""
     run_id = st.session_state.get("run_id", "")
 
     # 报告存在：展示状态摘要
-    status_obj = st.session_state.get("last_status") or {}
-    plan = st.session_state.get("last_plan") or {}
     react_state = plan.get("react_state") if isinstance(plan.get("react_state"), dict) else {}
     exec_mode = status_obj.get("execution_mode", plan.get("execution_mode", "planned"))
     requested_mode = status_obj.get(
@@ -2388,6 +2486,8 @@ def tab_report() -> None:
     col2.metric("请求执行模式", _execution_mode_label(requested_mode))
     col3.metric("降级状态", degradation_label)
     st.caption(degradation_note)
+
+    _render_run_quality_card(st.session_state.get("last_improvement"))
 
     render_evidence_summary()
 
@@ -2435,6 +2535,84 @@ def tab_report() -> None:
             column.caption(str(exc))
 
 
+# ── Tab 4：质量改进 ───────────────────────────────────────────────
+def tab_improvement() -> None:
+    st.markdown("#### 📈 质量与本地改进")
+    st.markdown(
+        '<p class="section-tip">评分、路由权重和 Few-shot 示例均保存在当前部署的本地 workspace 中。</p>',
+        unsafe_allow_html=True,
+    )
+    days = st.selectbox("统计窗口", [7, 30, 90, 365], index=1, format_func=lambda value: f"近 {value} 天")
+    try:
+        state = api_get("/api/improvement/state", timeout=5)
+        stats = api_get(f"/api/improvement/stats?days={days}", timeout=5)
+        trend = api_get(f"/api/improvement/trend?days={days}", timeout=5)
+        categories = api_get(f"/api/improvement/by-category?days={days}", timeout=5)
+        strategies = api_get(f"/api/improvement/by-strategy?days={days}", timeout=5)
+        regressions = api_get(f"/api/improvement/regressions?days={days}", timeout=5)
+    except ApiError as exc:
+        st.warning(str(exc))
+        return
+
+    total = int(stats.get("total_runs") or 0)
+    routing = state.get("routing") or {}
+    few_shot = state.get("few_shot") or {}
+    cols = st.columns(4)
+    cols[0].metric("已评估运行", total)
+    cols[1].metric("平均综合分", f"{stats.get('avg_overall', 0):.1f}")
+    cols[2].metric("路由权重", "已生效" if routing.get("active") else "冷启动")
+    cols[3].metric("Few-shot", f"{few_shot.get('count', 0)}/{few_shot.get('max_total', 20)}")
+
+    if total == 0:
+        st.info("暂无最终运行评分。完成一次研究任务后，这里会开始积累本地质量数据。")
+        return
+
+    direction_label = {
+        "improving": "改善中",
+        "declining": "下降",
+        "stable": "稳定",
+        "insufficient_data": "数据不足",
+    }.get(str(trend.get("direction")), str(trend.get("direction") or "数据不足"))
+    st.caption(
+        f"趋势：{direction_label} · 最新 {stats.get('latest_score', 0):.1f} · "
+        f"最高 {stats.get('best_score', 0):.1f} · 最低 {stats.get('worst_score', 0):.1f}"
+    )
+
+    daily = trend.get("trend") or []
+    if daily:
+        st.markdown("**每日趋势**")
+        st.dataframe(daily, use_container_width=True, hide_index=True)
+
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**按问题类别**")
+        category_rows = categories.get("categories") or []
+        if category_rows:
+            st.dataframe(category_rows, use_container_width=True, hide_index=True)
+        else:
+            st.caption("当前窗口暂无类别数据。")
+    with right:
+        st.markdown("**按执行策略**")
+        strategy_rows = strategies.get("strategies") or []
+        if strategy_rows:
+            st.dataframe(strategy_rows, use_container_width=True, hide_index=True)
+        else:
+            st.caption("当前窗口暂无策略数据。")
+
+    regression_rows = regressions.get("regressions") or []
+    if regression_rows:
+        st.warning("检测到近期质量下降的执行策略。")
+        st.dataframe(regression_rows, use_container_width=True, hide_index=True)
+    else:
+        st.success("当前窗口未检测到具有足够样本的策略退化。")
+
+    st.caption(
+        f"路由覆盖 {routing.get('category_count', 0)} 个类别 / "
+        f"{routing.get('strategy_count', 0)} 个策略；"
+        f"路由权重每累计 10 条新评分更新一次。"
+    )
+
+
 # ── 主入口 ────────────────────────────────────────────────────────
 def main() -> None:
     st.set_page_config(
@@ -2449,10 +2627,11 @@ def main() -> None:
     render_page_header()
     render_workflow_strip()
 
-    tab1, tab2, tab3 = st.tabs(["任务与规划", "执行追踪", "研究报告"])
+    tab1, tab2, tab3, tab4 = st.tabs(["任务与规划", "执行追踪", "研究报告", "质量改进"])
     with tab1:  tab_task()
     with tab2:  tab_trace()
     with tab3:  tab_report()
+    with tab4:  tab_improvement()
     maybe_auto_refresh()
 
 

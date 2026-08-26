@@ -160,6 +160,14 @@ need them. When `AUTH_ENABLED=true`, send the configured key in the
 | `GET /api/reports/{run_id}` | Fetch the Markdown report. |
 | `GET /api/tools` | List registered tool metadata. |
 | `GET /api/skills` | List installed task skills. |
+| `GET /api/improvement/stats` | Read final-run quality statistics for a real date window. |
+| `GET /api/improvement/runs/{run_id}` | Read the five-dimensional final quality evaluation for one run. |
+| `GET /api/improvement/state` | Inspect local routing-weight and Few-shot cold-start state. |
+
+Plans and task status responses expose multi-skill composition and adaptive
+Planned-to-ReAct metadata. During an adaptive quality gate or deep-research
+round, realtime clients keep the run open and receive `report_ready` only when
+the final report is stable.
 
 The OpenAPI interface at `/docs` is the complete, versioned request and
 response reference.

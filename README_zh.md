@@ -153,6 +153,13 @@ Bearer 凭据。
 | `GET /api/reports/{run_id}` | 获取 Markdown 报告。 |
 | `GET /api/tools` | 列出已注册工具元数据。 |
 | `GET /api/skills` | 列出已安装的任务 Skill。 |
+| `GET /api/improvement/stats` | 按真实日期窗口查询最终运行质量统计。 |
+| `GET /api/improvement/runs/{run_id}` | 查询单次运行的五维最终质量评分。 |
+| `GET /api/improvement/state` | 查询本地路由权重和 Few-shot 冷启动状态。 |
+
+计划与任务状态响应会公开多 Skill 组合及 Planned→ReAct 自适应深化元数据。
+在质量门或深度研究仍未结束时，实时连接不会提前关闭；只有最终报告稳定后
+才会发送 `report_ready`。
 
 `/docs` 提供完整的 OpenAPI 请求和响应参考。
 

@@ -169,6 +169,10 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
         execution_mode = plan.get("execution_mode") or "planned"
         if plan.get("adaptive_upgrade"):
             execution_mode = "adaptive"
+        elif plan.get("deepening_total_rounds") or plan.get("deepening_phase"):
+            execution_mode = "react_deepening"
+        elif plan.get("parallel_execution"):
+            execution_mode = "planned_parallel"
     except Exception:
         pass
 
