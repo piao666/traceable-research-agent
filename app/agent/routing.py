@@ -138,17 +138,42 @@ def _compose_steps_from_skills(
     return steps
 
 
-def _get_skill_registry():
-    """Lazy import to avoid circular dependency."""
-    from app.skills.registry import get_skill
-    return get_skill
-
-
 def _tool_allowed(required_tools: list[str], allowed_tools: list[str] | None) -> bool:
     if allowed_tools is None:
         return True
     allowed = set(allowed_tools)
     return all(name in allowed for name in required_tools)
+
+
+def _load_improvement_weights() -> dict[str, dict[str, float]]:
+    """Load routing weights from improvement module. Returns {} if unavailable."""
+    try:
+        from app.improvement.weight_updater import load_routing_weights
+        return load_routing_weights()
+    except Exception:
+        return {}
+
+
+def _classify_task_category(task: str) -> str:
+    """Map a task to a question category using keyword signals."""
+    task_lower = task.lower()
+    scores: dict[str, int] = {}
+    for skill_name, signals in SKILL_SIGNALS.items():
+        for keyword, weight in signals:
+            if keyword.lower() in task_lower:
+                scores[skill_name] = scores.get(skill_name, 0) + weight
+    if not scores:
+        return "general"
+    best = max(scores, key=lambda k: scores[k])
+    category_map = {
+        "systematic_review": "academic_literature",
+        "local_audit": "local_audit",
+        "technical_docs_research": "technical_docs",
+        "deep_web_research": "deep_research",
+        "quick_search": "quick_fact",
+        "hybrid_research": "technical_comparison",
+    }
+    return category_map.get(best, "general")
 
 
 def _keyword_score(task_lower: str, skill_metas: list[Any], allowed_tools: list[str] | None) -> list[dict[str, Any]]:
@@ -171,6 +196,15 @@ def _keyword_score(task_lower: str, skill_metas: list[Any], allowed_tools: list[
             score += 4
             signals.append("明确来源与动作")
         candidates.append({"skill_name": name, "score": score, "signals": signals})
+    # ── Apply improvement weights (Phase 2 self-improving) ──
+    weights = _load_improvement_weights()
+    category = _classify_task_category(task_lower)
+    cat_weights = weights.get(category, {})
+    if cat_weights:
+        for c in candidates:
+            w = cat_weights.get(c["skill_name"], 0.5)
+            c["score"] = int(c["score"] * max(w, 0.1))
+            c["weight"] = round(w, 2)
     candidates.sort(key=lambda item: (-int(item["score"]), str(item["skill_name"])))
     return candidates
 
