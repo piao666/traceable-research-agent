@@ -86,6 +86,16 @@ def build_planner_messages(
         "'工具将通过真实 API 访问外部数据' and NOT mention mock or simulation. "
         "If source_mode is 'mock', the notes should say '工具使用本地离线数据（mock模式）'."    )
     system += scenario_guidance
+    # ── Phase 9: Few-shot injection ──
+    try:
+        from app.improvement.few_shot import load_few_shot_examples, format_few_shot_for_prompt
+        from app.improvement.evaluator import _classify_question
+        category = _classify_question(task)
+        examples = load_few_shot_examples(category=category, max_examples=2)
+        if examples:
+            system += "\n\n" + format_few_shot_for_prompt(examples)
+    except Exception:
+        pass
     user = {
         "task": task,
         "source_mode": source_mode,

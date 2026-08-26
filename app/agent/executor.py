@@ -747,6 +747,8 @@ def run_plan(
             auto_evaluate_and_log(db, run_id)
             from app.improvement.weight_updater import maybe_update_weights
             maybe_update_weights()
+            from app.improvement.few_shot import promote_to_few_shot
+            promote_to_few_shot(run_id)
         except Exception:
             pass  # Evaluation failure must not block run completion
 

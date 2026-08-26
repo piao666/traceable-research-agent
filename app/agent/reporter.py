@@ -780,11 +780,28 @@ def _llm_synthesize_answer(
                 "and do not select one side as a definitive fact."
             ),
         ),
+    ]
+    # ── Phase 9: Few-shot injection ──
+    try:
+        from app.improvement.few_shot import load_few_shot_examples, format_few_shot_for_prompt
+        from app.improvement.evaluator import _classify_question
+        category = _classify_question(task)
+        examples = load_few_shot_examples(category=category, max_examples=1)
+        if examples:
+            messages.append(
+                LLMMessage(
+                    role="system",
+                    content=format_few_shot_for_prompt(examples),
+                )
+            )
+    except Exception:
+        pass
+    messages.append(
         LLMMessage(
             role="user",
             content=_SYNTHESIS_USER_TMPL.format(task=task, evidence=evidence),
         ),
-    ]
+    )
     try:
         response = llm_client.complete(messages)
         if usage_callback is not None and response.usage is not None:
