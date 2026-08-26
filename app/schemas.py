@@ -98,6 +98,14 @@ class TaskStatusResponse(BaseModel):
     planner_source: str | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
+    skill_routing: dict[str, Any] | None = None
+    adaptive_gate_pending: bool = False
+    adaptive_upgrade: bool = False
+    adaptive_upgrade_reason: str | None = None
+    adaptive_upgrade_failed: bool = False
+    adaptive_phase: str | None = None
+    deepening_pending: bool = False
+    deepening_phase: str | None = None
 
 
 class PlanStepResponse(BaseModel):
@@ -128,6 +136,18 @@ class TaskPlanResponse(BaseModel):
     execution_mode: str | None = None
     requested_execution_mode: str | None = None
     react_state: dict[str, Any] | None = None
+    skill_routing: dict[str, Any] | None = None
+    adaptive_gate_pending: bool = False
+    adaptive_upgrade: bool = False
+    adaptive_upgrade_reason: str | None = None
+    adaptive_upgrade_failed: bool = False
+    adaptive_upgrade_error: str | None = None
+    adaptive_phase: str | None = None
+    deepening_pending: bool = False
+    deepening_phase: str | None = None
+    deepening_total_rounds: int = 0
+    deepening_learnings: list[str] = Field(default_factory=list)
+    deepening_sub_run_ids: list[str] = Field(default_factory=list)
 
 
 class TaskRunResponse(BaseModel):
@@ -144,6 +164,12 @@ class TaskRunResponse(BaseModel):
     planner_source: str | None = None
     llm_provider: str | None = None
     llm_model: str | None = None
+    adaptive_upgrade: bool = False
+    adaptive_upgrade_reason: str | None = None
+    adaptive_upgrade_failed: bool = False
+    adaptive_phase: str | None = None
+    deepening_pending: bool = False
+    deepening_phase: str | None = None
 
 
 class AsyncRunResponse(BaseModel):
@@ -154,6 +180,9 @@ class AsyncRunResponse(BaseModel):
     report_url: str
     message: str
     execution_mode: str = "planned"
+    adaptive_gate_pending: bool = False
+    adaptive_upgrade: bool = False
+    adaptive_phase: str | None = None
 
 
 class TaskConfirmRequest(BaseModel):
@@ -196,6 +225,8 @@ class PlanReviewResponse(BaseModel):
     estimated_cost: float = 0.0
     risk_summary: dict[str, int] = Field(default_factory=lambda: {"low": 0, "medium": 0, "high": 0})
     notes: list[str] = Field(default_factory=list)
+    planner_source: str | None = None
+    skill_routing: dict[str, Any] | None = None
 
 
 class PlanApproveRequest(BaseModel):

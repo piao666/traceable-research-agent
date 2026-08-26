@@ -54,6 +54,9 @@ def main() -> None:
         "/download?format=",
         "/confirm",
         "/mcp/refresh",
+        "/api/improvement/state",
+        "/api/improvement/stats?days=",
+        "/api/improvement/runs/",
     ]
     missing_paths = [path for path in required_paths if path not in source]
     assert_true(not missing_paths, f"missing API paths: {missing_paths}")
@@ -198,6 +201,8 @@ def main() -> None:
     assert_true("Exa 负责发现候选来源" in source, "MCP role explanation for Exa/Firecrawl missing")
     assert_true("Context7 adapter 已预留" in source, "Context7 reserved-state explanation missing")
     assert_true("降级状态" in source and "部分降级" in source, "degradation summary should be user-facing")
+    assert_true("质量改进" in source and "最终质量评分" in source, "local improvement UI missing")
+    assert_true("多 Skill 组合" in source and "质量检查中" in source, "adaptive/composed UI missing")
     assert_true("任务状态" in source and "当前步骤" in source and "Trace 条数" in source, "trace metrics should be localized")
     assert_true("证据聚合" in source, "evidence aggregation title should be localized")
     assert_true("证据导出" in source, "evidence export title should be localized")

@@ -333,6 +333,7 @@ def run_plan_parallel(
     db: Session,
     run_id: str,
     settings_obj: Settings = settings,
+    completion_status: str = "completed",
 ) -> dict[str, Any]:
     """Execute independent planned tool steps in bounded parallel groups."""
 
@@ -593,7 +594,7 @@ def run_plan_parallel(
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _message_summary(cancelled, "Run cancelled by user.")
-        run = store.update_agent_run_status(db, run_id, "completed", None)
+        run = store.update_agent_run_status(db, run_id, completion_status, None)
         _after_run_completed(db, run, markdown, step_no=0)
         return _summary(run)
     except Exception as exc:

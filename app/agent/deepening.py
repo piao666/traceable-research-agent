@@ -40,6 +40,17 @@ Schema:
 {{"learnings": ["string", ...], "follow_up_queries": ["string", ...], "is_comprehensive": false}}"""
 
 
+def _finish_deepening_phase(db: Session, run_id: str, phase: str) -> None:
+    """Clear the pending marker when deepening reaches a terminal boundary."""
+    run = store.get_fresh_agent_run(db, run_id)
+    if run is None:
+        return
+    plan = json.loads(run.plan_json or "{}")
+    plan["deepening_pending"] = False
+    plan["deepening_phase"] = phase
+    store.replace_agent_run_plan(db, run_id, plan)
+
+
 def _build_deepening_messages(
     task: str,
     observations: list[dict[str, Any]],
@@ -223,18 +234,32 @@ def run_deepening(
     current_task = run.task
 
     # Round 0: initial ReAct run
+    initial_plan = json.loads(run.plan_json or "{}")
+    initial_plan["deepening_pending"] = True
+    initial_plan["deepening_phase"] = "initial_react"
+    store.replace_agent_run_plan(db, run_id, initial_plan)
     initial_result = run_react_task(db, run_id, settings_obj, client)
     run = store.get_agent_run(db, run_id)
     if run is None:
         return initial_result
     if run.status == "cancelled":
+        _finish_deepening_phase(db, run_id, "cancelled")
+        return initial_result
+    if run.status != "completed":
+        if run.status == "failed":
+            _finish_deepening_phase(db, run_id, "failed")
         return initial_result
     # The initial ReAct pass produces an intermediate report.  Keep the
     # parent visibly running while deepening rounds are still active so the
     # cancellation endpoint remains effective.
     run = store.mark_agent_run_running_unless_cancelled(db, run_id)
     if run.status == "cancelled":
+        _finish_deepening_phase(db, run_id, "cancelled")
         return initial_result
+    active_plan = json.loads(run.plan_json or "{}")
+    active_plan["deepening_pending"] = True
+    active_plan["deepening_phase"] = "deepening"
+    store.replace_agent_run_plan(db, run_id, active_plan)
 
     # Collect initial observations
     traces = store.list_tool_traces(db, run_id)
@@ -253,6 +278,7 @@ def run_deepening(
     for round_num in range(1, max_depth + 1):
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
+            _finish_deepening_phase(db, run_id, "cancelled")
             return {
                 **initial_result,
                 "status": cancelled.status,
@@ -316,6 +342,7 @@ def run_deepening(
     if run is None:
         raise ValueError("Task run not found.")
     if run.status == "cancelled":
+        _finish_deepening_phase(db, run_id, "cancelled")
         return {
             **initial_result,
             "status": run.status,
@@ -381,8 +408,13 @@ def run_deepening(
         save_report(run_id, markdown)
 
     if store.is_agent_run_cancelled(db, run_id):
+        _finish_deepening_phase(db, run_id, "cancelled")
         run = store.get_fresh_agent_run(db, run_id)
     else:
+        final_plan = json.loads(run.plan_json or "{}")
+        final_plan["deepening_pending"] = False
+        final_plan["deepening_phase"] = "completed"
+        store.replace_agent_run_plan(db, run_id, final_plan)
         run = store.update_agent_run_status(db, run_id, "completed", None)
 
     cancelled = run.status == "cancelled"

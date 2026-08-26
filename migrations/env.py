@@ -9,6 +9,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.database import Base
 from app.evidence import models as evidence_models  # noqa: F401
+from app.improvement import models as improvement_models  # noqa: F401
 from app.memory import models as memory_models  # noqa: F401
 from app.trace import models  # noqa: F401
 
