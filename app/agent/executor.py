@@ -741,6 +741,13 @@ def run_plan(
 
         _after_run_completed(db, run, markdown, step_no=0)
 
+        # ── Phase 9: Self-improvement auto-evaluation ──────────────
+        try:
+            from app.improvement.evaluator import auto_evaluate_and_log
+            auto_evaluate_and_log(db, run_id)
+        except Exception:
+            pass  # Evaluation failure must not block run completion
+
         # ── Phase 8.1: profile quota shortfall trace ───────────────
         _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
 

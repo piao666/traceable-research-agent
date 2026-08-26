@@ -40,6 +40,9 @@ P3_TABLES = {
     "chat_turns",
     "user_memories",
 }
+P4_TABLES = {
+    "improvement_logs",
+}
 
 
 def bootstrap_revision_for_tables(
@@ -90,6 +93,8 @@ def bootstrap_revision_for_tables(
                     "citation_accuracy",
                 }
                 if citation_columns.issubset(agent_run_cols):
+                    if "improvement_logs" in inspector.get_table_names():
+                        return _required_stamp(current_revision, "0009_improvement_log")
                     return _required_stamp(current_revision, "0008_citation_validation_metrics")
                 return _required_stamp(current_revision, "0007_single_instance_memory")
             return _required_stamp(current_revision, "0006_content_basis")
@@ -110,6 +115,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0006_content_basis": 6,
         "0007_single_instance_memory": 7,
         "0008_citation_validation_metrics": 8,
+        "0009_improvement_log": 9,
     }
     if current_revision is None:
         return schema_revision

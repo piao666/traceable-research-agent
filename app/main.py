@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from app.api import events, memory, reports, sessions, skills, tasks, tools
+from app.improvement import api as improvement_api
 from app.config import settings
 from app.database import init_db
 from app.mcp import server as mcp_server
@@ -75,4 +76,5 @@ app.include_router(reports.router, prefix=settings.api_prefix)
 app.include_router(sessions.router, prefix=settings.api_prefix)
 app.include_router(memory.router, prefix=settings.api_prefix)
 app.include_router(skills.router, prefix=settings.api_prefix)
+app.include_router(improvement_api.router, prefix=settings.api_prefix)
 app.include_router(mcp_server.router)
