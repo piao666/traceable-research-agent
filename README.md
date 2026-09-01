@@ -91,6 +91,7 @@ Docker applies schema migrations and initializes the local demo database when
 the API container starts. Wait until the API is healthy, then open:
 
 - Streamlit: <http://localhost:8501>
+- React web (D01–D04): <http://localhost:5173>
 - FastAPI documentation: <http://localhost:8000/docs>
 - Health check: <http://localhost:8000/health>
 
@@ -197,7 +198,8 @@ app/evidence/  provenance, citation, and conflict reasoning
 app/memory/    single-instance sessions and optional memory
 app/skills/    reusable task definitions and validation
 app/mcp/       optional read-only MCP integration
-frontend/      Streamlit interface
+frontend/      Legacy Streamlit interface
+web/           React, TypeScript, and Vite interface
 migrations/    Alembic schema history
 scripts/       migration, demo, smoke, and evaluation commands
 workspace/     local databases, reports, artifacts, and skills

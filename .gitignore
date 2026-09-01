@@ -52,6 +52,9 @@ output/
 # Build artifacts
 dist/
 build/
+node_modules/
+web/openapi.json
+*.tsbuildinfo
 *.egg-info/
 
 # Local project docs (not committed to git)
