@@ -8,10 +8,16 @@ import py_compile
 import re
 import socket
 import subprocess
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from scripts.requirements_manifest import read_pinned_requirements
+
 FRONTEND_APP = ROOT / "frontend" / "streamlit_app.py"
 FRONTEND_README = ROOT / "frontend" / "README.md"
 REQUIREMENTS = ROOT / "requirements.txt"
@@ -35,7 +41,7 @@ def main() -> None:
     assert_true(REQUIREMENTS.exists(), "requirements.txt missing")
     assert_true(START_SCRIPT.exists(), "start_traceable_demo.bat missing")
 
-    requirements = REQUIREMENTS.read_text(encoding="utf-8").lower()
+    requirements = read_pinned_requirements(REQUIREMENTS)
     assert_true("streamlit" in requirements, "streamlit missing from requirements.txt")
     assert_true("requests" in requirements, "requests missing from requirements.txt")
 

@@ -1,0 +1,2 @@
+# Test tooling only; never installed in production Docker targets.
+pytest==9.1.1

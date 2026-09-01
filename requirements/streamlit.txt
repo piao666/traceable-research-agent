@@ -1,0 +1,2 @@
+# Optional legacy UI, installed on top of the API dependencies.
+streamlit==1.60.0

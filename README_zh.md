@@ -81,10 +81,44 @@ Copy-Item .env.example .env
 docker compose up --build -d
 ```
 
+若只使用 React 前端，执行 `docker compose up --build -d api web`。
+`api` 镜像只安装 `requirements/api.txt`，不下载 Streamlit、PyArrow、Pandas、
+NumPy、PyDeck 或 pytest。可选的 `streamlit` 镜像再安装
+`requirements/streamlit.txt`；旧的 `light` Docker target 仍保留两套运行依赖。
+本地开发仍可执行 `pip install -r requirements.txt`，其中也包含
+`requirements/dev.txt` 的测试依赖。
+
+### 依赖下载中断后的恢复
+
+Docker 会先将容器内 pip 固定到 **26.2.1**，再安装应用依赖：连接尝试 5 次，
+不完整下载恢复尝试 10 次，socket 超时 120 秒。BuildKit 缓存 pip 下载文件，
+缓存不进入最终镜像；保留下载哈希校验与 TLS 验证。
+配置依据：[pip 下载参数](https://pip.pypa.io/en/stable/cli/pip/)、
+[Docker 缓存挂载](https://docs.docker.com/build/cache/optimize/#use-cache-mounts)。
+此次保留了直接依赖的精确版本，但尚不是完整的传递依赖锁文件。
+
+同步修复提交后，在仓库或预览 worktree 根目录执行以下 PowerShell 命令。
+每一步成功后才继续下一步，只重建失败的 API 镜像：
+
+```powershell
+docker compose --progress plain build api
+if ($LASTEXITCODE -ne 0) { throw "API 构建失败，请停止并检查下载错误。" }
+docker compose up -d --no-build api web
+if ($LASTEXITCODE -ne 0) { throw "启动失败，请检查 docker compose logs api。" }
+docker compose ps
+```
+
+上述恢复命令要求同一个 Compose 项目已有构建成功的 web 镜像；全新环境使用
+`docker compose up --build -d api web`。不要加 `--no-cache`、清空全部 Docker
+缓存、关闭哈希校验，或将失败下载的哈希填回配置。如果仍失败，应检查 Docker
+Desktop 的代理与包下载链路；增大超时不能修复异常代理。
+升级 Windows 本机 pip 不会升级 Docker 镜像中的 pip。
+
 API 容器启动时会自动执行数据库迁移并初始化本地演示数据库。API healthy 后，
 可以访问：
 
 - Streamlit：<http://localhost:8501>
+- React web（D01–D04）：<http://localhost:5173>
 - FastAPI 文档：<http://localhost:8000/docs>
 - 健康检查：<http://localhost:8000/health>
 

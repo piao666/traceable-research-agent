@@ -87,6 +87,42 @@ Copy-Item .env.example .env
 docker compose up --build -d
 ```
 
+For the React frontend only, use `docker compose up --build -d api web`.
+The `api` image installs only `requirements/api.txt`; it does not download
+Streamlit, PyArrow, Pandas, NumPy, PyDeck or pytest. The optional `streamlit`
+image adds `requirements/streamlit.txt`. The legacy `light` Docker target is
+still available with both runtimes. `pip install -r requirements.txt` remains
+the full local development setup, including `requirements/dev.txt`.
+
+### Recovering from interrupted dependency downloads
+
+Docker bootstraps pip **26.2.1** before installing application dependencies,
+with 5 connection attempts, 10 incomplete-download recovery attempts and a
+120-second socket timeout. BuildKit caches pip downloads outside the final
+image; downloaded artifact hashes and TLS verification remain enabled.
+These settings follow the [pip download options](https://pip.pypa.io/en/stable/cli/pip/)
+and [Docker cache-mount guidance](https://docs.docker.com/build/cache/optimize/#use-cache-mounts).
+Direct dependencies are pinned; this split is not a complete transitive lockfile.
+
+After updating to the repair commit, rebuild only the failed API image from
+the repository/worktree root. Run each step only if the preceding one succeeds:
+
+```powershell
+docker compose --progress plain build api
+if ($LASTEXITCODE -ne 0) { throw "API build failed; stop and inspect the download error." }
+docker compose up -d --no-build api web
+if ($LASTEXITCODE -ne 0) { throw "Startup failed; inspect docker compose logs api." }
+docker compose ps
+```
+
+This recovery command assumes the web image already built successfully in
+the same Compose project. For a fresh checkout, use
+`docker compose up --build -d api web`. Do not use `--no-cache`, clear all
+Docker caches, disable hash verification or replace an expected hash with the
+hash of a failed download. If it still fails, check Docker Desktop's proxy and
+package-download connectivity; longer timeouts cannot repair a broken proxy.
+Upgrading Windows-host pip does not upgrade pip inside the Docker image.
+
 Docker applies schema migrations and initializes the local demo database when
 the API container starts. Wait until the API is healthy, then open:
 

@@ -1,0 +1,14 @@
+# FastAPI, migrations, research tools and report export; no UI/test packages.
+alembic==1.18.5
+beautifulsoup4==4.13.4
+fastapi==0.139.2
+httpx==0.28.1
+pydantic==2.13.4
+python-docx==1.2.0
+python-dotenv==1.2.2
+reportlab==5.0.0
+requests==2.34.2
+sqlalchemy==2.0.51
+PyMuPDF==1.25.5
+sqlglot==30.13.0
+uvicorn[standard]==0.51.0
