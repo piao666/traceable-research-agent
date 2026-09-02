@@ -12,6 +12,25 @@ from app.trace.models import AgentRun, ToolTrace
 
 MOCK_SOURCES = {"mock"}
 FALLBACK_SOURCES = {"fallback"}
+RESEARCH_TOOLS = {
+    "file_reader", "sql_query", "pdf_reader", "mcp_github_search", "tavily_search",
+    "web_fetcher", "arxiv_search", "semantic_scholar_search", "openalex_search", "crossref_search",
+}
+
+
+def is_research_record(record: dict[str, Any]) -> bool:
+    return record.get("tool_name") in RESEARCH_TOOLS or _is_remote_mcp_record(record)
+
+
+def is_eligible_evidence(item: EvidenceItem) -> bool:
+    """Audit output and failed/empty results are never research sources."""
+    return bool(
+        item.status == "success" and not item.unsupported_reason and item.snippet.strip()
+        and (item.tool_name in RESEARCH_TOOLS or item.metadata.get("tool_source") == "mcp_remote")
+        and item.source_ref
+        and (item.tool_name not in {"web_fetcher", "tavily_search"}
+             or str(item.source_ref).startswith(("http://", "https://")))
+    )
 
 
 def _strip_html(html: str) -> str:
@@ -133,17 +152,19 @@ def build_evidence_bundle(
 ) -> EvidenceBundle:
     """Build grouped evidence and a lightweight claim map for a run."""
 
-    records = _evidence_records(observations, traces)
+    records = [record for record in _evidence_records(observations, traces) if is_research_record(record)]
     items: list[EvidenceItem] = []
     for record in records:
         if record["tool_name"] == "report_writer":
             continue
         extracted = _items_from_record(run.run_id, record, len(items))
-        items.extend(extracted)
+        items.extend(item for item in extracted if is_eligible_evidence(item))
 
     groups = _group_items(items)
     claims, unsupported = _claim_maps(run, plan, items, records)
     warnings = _warnings(items)
+    if not items or any(not record["success"] for record in records):
+        warnings.append("工具失败或未返回有效研究材料；诊断与审批等内部事件仅保留在 Trace，不计入来源或引用。")
     return EvidenceBundle(
         run_id=run.run_id,
         task=run.task,
@@ -242,15 +263,25 @@ def _evidence_records(
     observations: list[dict[str, Any]], traces: list[ToolTrace]
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    observed_keys: set[tuple[Any, str]] = set()
-    trace_by_key = {(trace.step_no, trace.tool_name): trace for trace in traces}
+    observed_ids: set[str] = set()
+    trace_by_id = {trace.trace_id: trace for trace in traces}
     for observation in observations:
         tool_name = str(observation.get("tool_name") or observation.get("action") or "unknown")
         key = (observation.get("step_no"), tool_name)
-        persisted_trace = trace_by_key.get(key)
-        observed_keys.add(key)
+        persisted_trace = trace_by_id.get(observation.get("trace_id")) or next(
+            (trace for trace in traces if (trace.step_no, trace.tool_name) == key
+             and trace.trace_id not in observed_ids), None,
+        )
+        if persisted_trace:
+            observed_ids.add(persisted_trace.trace_id)
         output = observation.get("output") if isinstance(observation.get("output"), dict) else {}
         metadata = _observation_metadata(observation)
+        success = bool(observation.get("success"))
+        if persisted_trace:
+            # A transient/stale observation must not override the persisted result.
+            output = _trace_output(persisted_trace)
+            metadata = output.get("metadata") if isinstance(output.get("metadata"), dict) else {}
+            success = persisted_trace.status == "success"
         records.append(
             {
                 "trace_id": observation.get("trace_id") or (
@@ -258,8 +289,8 @@ def _evidence_records(
                 ),
                 "step_no": observation.get("step_no"),
                 "tool_name": tool_name,
-                "status": "success" if bool(observation.get("success")) else "failed",
-                "success": bool(observation.get("success")),
+                "status": persisted_trace.status if persisted_trace else ("success" if success else "failed"),
+                "success": success,
                 "output": output,
                 "metadata": metadata,
                 "summary": observation.get("output_summary") or observation.get("observation_summary"),
@@ -268,8 +299,7 @@ def _evidence_records(
         )
 
     for trace in traces:
-        key = (trace.step_no, trace.tool_name)
-        if key in observed_keys:
+        if trace.trace_id in observed_ids:
             continue
         output = _trace_output(trace)
         metadata = output.get("metadata") if isinstance(output.get("metadata"), dict) else {}
@@ -294,18 +324,8 @@ def _items_from_record(
     record: dict[str, Any],
     existing_count: int,
 ) -> list[EvidenceItem]:
-    if not record.get("success"):
-        return [
-            _make_item(
-                run_id,
-                record,
-                existing_count + 1,
-                title=f"{record['tool_name']} did not produce supported evidence",
-                snippet=str(record.get("error_message") or record.get("summary") or "Tool failed.")[:600],
-                source_ref=None,
-                unsupported_reason=str(record.get("error_message") or "tool_failed"),
-            )
-        ]
+    if not record.get("success") or not is_research_record(record):
+        return []
 
     tool_name = str(record["tool_name"])
     output = record.get("output") if isinstance(record.get("output"), dict) else {}
@@ -317,6 +337,10 @@ def _items_from_record(
         return _github_items(run_id, record, existing_count)
     if tool_name == "tavily_search":
         return _tavily_items(run_id, record, existing_count)
+    if tool_name == "web_fetcher":
+        return _web_page_items(run_id, record, existing_count)
+    if tool_name == "pdf_reader":
+        return _pdf_page_items(run_id, record, existing_count)
     if _is_remote_mcp_record(record):
         return _remote_mcp_items(run_id, record, existing_count)
     if tool_name in ("arxiv_search", "semantic_scholar_search",
@@ -338,6 +362,45 @@ def _items_from_record(
             ]
         return []
     return _generic_items(run_id, record, existing_count)
+
+
+def _web_page_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
+    items: list[EvidenceItem] = []
+    for page in record["output"].get("pages") or []:
+        if not isinstance(page, dict) or page.get("error"):
+            continue
+        content = str(page.get("content") or "").strip()
+        url = str(page.get("url") or "")
+        if not content or not url.startswith(("https://", "http://")):
+            continue
+        item = _make_item(run_id, record, existing_count + len(items) + 1,
+                          title=str(page.get("title") or url), snippet=content,
+                          source_ref=url, source_type="web")
+        item.metadata.update({key: page[key] for key in (
+            "content_basis", "extraction_method", "extraction_confidence", "content_hash",
+            "source_cluster_id", "hostname", "source_tier", "truncated",
+        ) if key in page})
+        item.metadata.setdefault("content_basis", "partial")
+        items.append(item)
+    return items
+
+
+def _pdf_page_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
+    items: list[EvidenceItem] = []
+    for document in record["output"].get("documents") or []:
+        if not isinstance(document, dict) or document.get("error"):
+            continue
+        for page in document.get("pages") or []:
+            if not isinstance(page, dict) or page.get("error") or not str(page.get("text") or "").strip():
+                continue
+            item = _make_item(run_id, record, existing_count + len(items) + 1,
+                title=str(document.get("title") or document.get("path") or "PDF"), snippet=page["text"],
+                source_ref=document.get("path"), source_type="pdf")
+            item.metadata.update({"page_number": page.get("page_number"),
+                                  "extraction_method": page.get("extraction_method"),
+                                  "content_basis": document.get("content_basis", "partial")})
+            items.append(item)
+    return items
 
 
 def _file_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
@@ -436,19 +499,7 @@ def _github_items(run_id: str, record: dict[str, Any], existing_count: int) -> l
 def _tavily_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
     output = record["output"]
     items: list[EvidenceItem] = []
-    answer = str(output.get("answer") or "").strip()
-    if answer:
-        items.append(
-            _make_item(
-                run_id,
-                record,
-                existing_count + 1,
-                title="Tavily synthesized answer",
-                snippet=answer[:700],
-                source_ref="tavily_answer",
-                source_type=_source_type(record),
-            )
-        )
+    # Provider-generated answers are not independently attributable source evidence.
     results = [item for item in (output.get("results") or []) if isinstance(item, dict)]
     for result in results[:8]:
         title = str(result.get("title") or "Tavily result")
@@ -462,18 +513,7 @@ def _tavily_items(run_id: str, record: dict[str, Any], existing_count: int) -> l
         # Strip HTML from raw_content fallback (Tavily raw_content is HTML)
         if not result.get("clean_content") and not result.get("content") and result.get("raw_content"):
             content = _strip_html(content)
-        # When content is too short, compose a richer snippet from title + URL + score
-        if len(content) < 50:
-            parts = [title]
-            if url:
-                parts.append("URL: " + url)
-            score = result.get("score")
-            if score is not None:
-                parts.append("Relevance: " + str(round(float(score), 2)))
-            if content:
-                parts.append(content)
-            content = " | ".join(parts)
-        if not content:
+        if not content or not url.startswith(("http://", "https://")):
             continue
         item = _make_item(
             run_id,
@@ -486,6 +526,12 @@ def _tavily_items(run_id: str, record: dict[str, Any], existing_count: int) -> l
         )
         if result.get("score") is not None:
             item.metadata["score"] = result.get("score")
+        item.metadata.update({key: result[key] for key in (
+            "source_cluster_id", "hostname", "source_tier", "source_class",
+        ) if key in result})
+        item.metadata["content_basis"] = (
+            "partial" if result.get("raw_content") and not result.get("content") else "snippet_only"
+        )
         items.append(item)
     if not items:
         items.append(
@@ -580,7 +626,7 @@ def _remote_text_from_item(item: dict[str, Any]) -> str:
         value = item.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    return json.dumps(item, ensure_ascii=False, default=str)[:900]
+    return ""
 
 
 def _remote_url_from_item(item: dict[str, Any]) -> str:
@@ -630,7 +676,7 @@ def _remote_mcp_items(run_id: str, record: dict[str, Any], existing_count: int) 
     if items:
         return items
 
-    content = _remote_text_from_item(output) if output else str(record.get("summary") or "").strip()
+    content = _remote_text_from_item(output)
     if not content:
         return []
     url = _remote_url_from_item(output)
@@ -744,8 +790,7 @@ def _academic_items(run_id: str, record: dict[str, Any], existing_count: int) ->
 
 def _generic_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
     output = record.get("output") if isinstance(record.get("output"), dict) else {}
-    summary = str(record.get("summary") or "").strip()
-    snippet = summary or json.dumps(output, ensure_ascii=False, default=str)[:700]
+    snippet = str(output.get("content") or output.get("text") or "").strip()
     if not snippet:
         return []
     return [
@@ -755,7 +800,7 @@ def _generic_items(run_id: str, record: dict[str, Any], existing_count: int) -> 
             existing_count + 1,
             title=f"{record['tool_name']} evidence",
             snippet=snippet[:700],
-            source_ref=str(record["tool_name"]),
+            source_ref=str(output.get("path") or output.get("url") or record["tool_name"]),
             source_type=_source_type(record),
         )
     ]
@@ -876,7 +921,7 @@ def _claim_maps(
                     notes=_claim_notes(step_items),
                 )
             )
-        elif unsupported_ids:
+        elif tool_name in RESEARCH_TOOLS or any(record.get("tool_name") == tool_name for record in records):
             unsupported.append(
                 ClaimEvidenceMap(
                     claim_id=f"U{len(unsupported) + 1:03d}",

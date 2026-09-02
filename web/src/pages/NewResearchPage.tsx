@@ -1,7 +1,10 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
 import { Button, OptionCard, PageHeader, Panel, StatusChip } from "../components/primitives";
+import { useResource } from "../hooks/useResource";
+import { ResourceState } from "../components/ResourceState";
+import { readDraft, saveDraft, removeDraft } from "../lib/draft";
 
 type TemplateKey = "standard" | "deep_web_research" | "local_audit";
 type ExecutionMode = "planned" | "react";
@@ -13,20 +16,35 @@ const templateOptions: Array<{ key: TemplateKey; title: string; description: str
 ];
 
 export function NewResearchPage() {
+  const [params] = useSearchParams();
+  const sessionId = params.get("session_id") || "";
+  return <NewResearchForm key={sessionId} sessionId={sessionId} />;
+}
+
+function NewResearchForm({ sessionId }: { sessionId: string }) {
   const navigate = useNavigate();
-  const [task, setTask] = useState(() => sessionStorage.getItem("tra:new-task") ?? "");
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const draftKey = sessionId ? `tra:new-task:${sessionId}` : "tra:new-task";
+  const session = useResource(useCallback((signal: AbortSignal) => sessionId ? api.session(sessionId, signal) : Promise.resolve(null), [sessionId]));
+  const [task, setTask] = useState(() => readDraft(draftKey));
+  const [draftSaved, setDraftSaved] = useState(true);
+  const [invalid, setInvalid] = useState(false);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [template, setTemplate] = useState<TemplateKey>("deep_web_research");
   const [mode, setMode] = useState<ExecutionMode>("planned");
   const [reportType, setReportType] = useState("detailed_report");
   const [retrievalProfile, setRetrievalProfile] = useState("generic");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-
-  useEffect(() => { sessionStorage.setItem("tra:new-task", task); }, [task]);
+  const capabilityResource = useResource(api.capabilities);
+  const capabilities = capabilityResource.data;
+  useEffect(() => { setDraftSaved(saveDraft(draftKey, task)); }, [task, draftKey]);
 
   async function submit() {
+    if (submitting || (sessionId && !session.data)) return;
     const value = task.trim();
-    if (!value) { setError("请输入研究问题或目标。"); return; }
+    if (!value) { setInvalid(true); setError("请输入研究问题或目标。"); inputRef.current?.focus(); return; }
     setSubmitting(true); setError("");
     try {
       const result = await api.createTask({
@@ -38,9 +56,10 @@ export function NewResearchPage() {
         skill_name: template === "local_audit" ? "local_audit" : undefined,
         require_plan_approval: true,
         retrieval_profile: retrievalProfile,
+        session_id: sessionId || undefined,
       });
-      sessionStorage.removeItem("tra:new-task");
-      navigate(`/runs/${result.run_id}/plan`);
+      removeDraft(draftKey);
+      if (mounted.current) navigate(`/runs/${result.run_id}/plan`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "创建研究任务失败");
     } finally { setSubmitting(false); }
@@ -48,11 +67,13 @@ export function NewResearchPage() {
 
   return (
     <div className="page" data-figma-screen="32:45">
-      <PageHeader title="新建研究" subtitle="定义问题、选择执行策略，并在工具运行前审阅计划" action={<span className="draft-chip">草稿自动保留</span>} />
+      <PageHeader title="新建研究" subtitle="定义问题、选择执行策略，并在工具运行前审阅计划" action={<span className="draft-chip">{draftSaved ? "草稿自动保留" : "草稿未保存"}</span>} />
+      {!draftSaved && <p className="warning-banner" role="status">浏览器存储不可用，草稿无法自动保留；离开页面前请自行复制研究问题。</p>}
+      {sessionId && <Panel title="关联会话"><ResourceState resource={session} />{session.data && <p>本次研究属于 <Link to={`/sessions/${encodeURIComponent(sessionId)}`}>{session.data.title || "未命名会话"}</Link>。请在问题中写明后续研究所需背景；会话关联不代表自动注入全部历史正文。</p>}<Link to="/research/new">改为独立研究（保留本会话草稿）</Link></Panel>}
       <div className="form-layout">
         <div className="stack">
           <Panel className="form-section">
-            <label className="field" htmlFor="research-task"><span className="field-label">研究问题或目标</span><textarea id="research-task" className="textarea" value={task} onChange={(event) => setTask(event.target.value)} placeholder="例如：比较主流 Agent 评测框架，并给出适合本项目的可追溯评测方案。" /><span className="field-help">支持多行输入；草稿仅保存在当前浏览器会话</span></label>
+            <label className="field" htmlFor="research-task"><span className="field-label">研究问题或目标</span><textarea id="research-task" ref={inputRef} aria-invalid={invalid} aria-describedby={invalid ? "research-error research-help" : "research-help"} className="textarea" value={task} onChange={(event) => { setTask(event.target.value); setInvalid(false); }} placeholder="例如：比较主流 Agent 评测框架，并给出适合本项目的可追溯评测方案。" /><span id="research-help" className="field-help">支持多行输入；草稿仅保存在当前浏览器会话</span></label>
           </Panel>
           <Panel className="form-section">
             <h2 className="form-section-title">场景模板</h2>
@@ -82,9 +103,19 @@ export function NewResearchPage() {
             <div className="summary-row"><span>模式</span><strong>{mode === "planned" ? "Planned" : "ReAct"}</strong></div>
             <div className="summary-row"><span>报告</span><strong>{reportType === "summary" ? "研究摘要" : "详细报告"}</strong></div>
             <div className="summary-row"><span>审批</span><strong>必需</strong></div>
+            <div className="summary-callout" aria-live="polite">
+              {!capabilities ? <><ResourceState resource={capabilityResource} />{capabilityResource.error && <p>暂时无法读取配置状态；创建计划后将再次检查，检查通过前不会执行。</p>}</> : <>
+                <p>深度 Web 是计划模板；ReAct 是动态决策模式；多轮深化由部署端 DEEP_RESEARCH_ENABLED 控制，三者并不等同。</p>
+                <p>多轮深化：{capabilities.deep_research_enabled ? "已启用（仅 ReAct）" : "未启用"}；报告：{capabilities.report_generation_mode === "llm" ? "LLM 综合" : "本地规则生成"}。</p>
+                {capabilities.offline_mode && <p>当前为离线演示，不会执行真实联网研究。</p>}
+                {!capabilities.offline_mode && template !== "local_audit" && !capabilities.tavily_configured && <p>尚未配置 TAVILY_API_KEY。仍可创建计划；若计划需要 Tavily，执行将被阻止。</p>}
+                {mode === "react" && (!capabilities.react_enabled || !capabilities.react_configured) && <p>ReAct 尚未就绪：请检查 REACT_ENABLED 和所选模型的 API Key。</p>}
+                <p>这里只检查配置是否存在，不代表外部服务已连通。</p>
+              </>}
+            </div>
             <div className="summary-callout">本界面不收集账号或密钥。任务、计划和报告通过本地 FastAPI 保存在 SQLite 与 workspace。</div>
-            {error && <div className="error-banner" role="alert">{error}</div>}
-            <Button loading={submitting} onClick={submit}>{submitting ? "正在生成计划" : "创建并审阅计划"}</Button>
+            {error && <div id="research-error" className="error-banner" role="alert">{error}</div>}
+            <Button loading={submitting} disabled={!!sessionId && !session.data} onClick={submit}>{submitting ? "正在生成计划" : "创建并审阅计划"}</Button>
           </div>
         </Panel>
       </div>

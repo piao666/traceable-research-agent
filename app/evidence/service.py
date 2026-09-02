@@ -12,7 +12,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agent.evidence import ClaimEvidenceMap, EvidenceBundle, EvidenceItem, build_evidence_bundle
+from app.agent.evidence import ClaimEvidenceMap, EvidenceBundle, EvidenceItem, build_evidence_bundle, is_eligible_evidence
 from app.config import Settings, settings as _svc_settings
 from app.evidence import EVIDENCE_SCHEMA_VERSION
 from app.evidence.artifact_store import ArtifactStore
@@ -48,7 +48,8 @@ def materialize_execution_provenance(
 ) -> dict[str, Any] | None:
     if settings.evidence_pipeline_version != "v2":
         return None
-    bundle = build_evidence_bundle(run, plan, observations, traces)
+    # Persisted trace order keeps evidence IDs stable across resume/adaptive passes.
+    bundle = build_evidence_bundle(run, plan, [] if traces else observations, traces)
     payload = materialize_provenance_bundle(
         db,
         run,
@@ -78,9 +79,16 @@ def materialize_provenance_bundle(
     extractor_version: str,
     passage_max_chars: int = 4000,
 ) -> dict[str, Any]:
+    eligible = [item for item in bundle.evidence_items if is_eligible_evidence(item)]
+    fingerprint = hashlib.sha256(json.dumps(
+        [item.to_dict() for item in eligible], sort_keys=True, ensure_ascii=False, default=str,
+    ).encode()).hexdigest()[:16]
+    revision = f"{extractor_version[:40]}:{fingerprint}"
     existing = db.get(EvidencePipelineRun, run.run_id)
     if existing is not None and existing.status == "complete":
-        return get_provenance_bundle(db, run.run_id)
+        if existing.extractor_version == revision or run.status in {"completed", "failed", "cancelled"}:
+            return get_provenance_bundle(db, run.run_id)
+    extractor_version = revision
 
     trace_by_id = {trace.trace_id: trace for trace in traces}
     assertion_by_evidence_id: dict[str, EvidenceAssertion] = {}
@@ -106,7 +114,7 @@ def materialize_provenance_bundle(
         pipeline.status = "building"
         db.add(pipeline)
 
-        for ordinal, item in enumerate(bundle.evidence_items, 1):
+        for ordinal, item in enumerate(eligible, 1):
             trace = trace_by_id.get(item.trace_id or "")
             document, snapshot, passage, assertion = _materialize_item(
                 run,
@@ -124,13 +132,19 @@ def materialize_provenance_bundle(
             passage_by_evidence_id[item.evidence_id] = passage
             assertion_by_evidence_id[item.evidence_id] = assertion
 
-        db.add_all(documents_by_id.values())
+        def add_new(rows, key):
+            # Append-only revisions: never overwrite a previous source/claim/citation.
+            for row in rows:
+                if db.get(type(row), getattr(row, key)) is None:
+                    db.add(row)
+
+        add_new(documents_by_id.values(), "document_id")
         db.flush()
-        db.add_all(snapshots_by_id.values())
+        add_new(snapshots_by_id.values(), "snapshot_id")
         db.flush()
-        db.add_all(pending_passages)
+        add_new(pending_passages, "passage_id")
         db.flush()
-        db.add_all(pending_assertions)
+        add_new(pending_assertions, "assertion_id")
         db.flush()
 
         all_claims = [*bundle.claims, *bundle.unsupported_claims]
@@ -174,12 +188,12 @@ def materialize_provenance_bundle(
                     )
                 )
 
-        db.add_all(pending_claims)
+        add_new(pending_claims, "claim_id")
         db.flush()
-        db.add_all(pending_report_claims)
-        db.add_all(pending_edges)
+        add_new(pending_report_claims, "report_claim_id")
+        add_new(pending_edges, "edge_id")
         db.flush()
-        db.add_all(pending_citations)
+        add_new(pending_citations, "citation_id")
         pipeline.status = "complete"
         pipeline.updated_at = datetime.now(timezone.utc)
         db.commit()
@@ -210,14 +224,30 @@ def get_provenance_bundle(
     ) if snapshot_ids else []
     passage_ids = [item.passage_id for item in passages]
     assertions = list(
-        db.scalars(select(EvidenceAssertion).where(EvidenceAssertion.passage_id.in_(passage_ids)))
+        db.scalars(select(EvidenceAssertion).where(
+            EvidenceAssertion.passage_id.in_(passage_ids),
+            EvidenceAssertion.extractor_version == pipeline.extractor_version,
+        ))
     ) if passage_ids else []
-    claims = list(db.scalars(select(ResearchClaim).where(ResearchClaim.run_id == run_id)))
+    # Old revisions remain stored but must not inflate current sources or metrics.
+    active_passages = {item.passage_id for item in assertions}
+    passages = [item for item in passages if item.passage_id in active_passages]
+    active_snapshots = {item.snapshot_id for item in passages}
+    snapshots = [item for item in snapshots if item.snapshot_id in active_snapshots]
+    active_documents = {item.document_id for item in snapshots}
+    documents = [item for item in documents if item.document_id in active_documents]
+    passage_ids = [item.passage_id for item in passages]
+    snapshot_ids = [item.snapshot_id for item in snapshots]
+    claims = list(db.scalars(select(ResearchClaim).where(
+        ResearchClaim.run_id == run_id, ResearchClaim.extractor_version == pipeline.extractor_version,
+    )))
     claim_ids = [item.claim_id for item in claims]
     edges = list(
         db.scalars(select(ClaimEvidenceEdge).where(ClaimEvidenceEdge.claim_id.in_(claim_ids)))
     ) if claim_ids else []
-    report_claims = list(db.scalars(select(ReportClaim).where(ReportClaim.run_id == run_id)))
+    report_claims = list(db.scalars(select(ReportClaim).where(
+        ReportClaim.run_id == run_id, ReportClaim.claim_id.in_(claim_ids),
+    )))
     report_claim_ids = [item.report_claim_id for item in report_claims]
     citations = list(
         db.scalars(select(Citation).where(Citation.report_claim_id.in_(report_claim_ids)))
@@ -227,7 +257,7 @@ def get_provenance_bundle(
         sum(1 for claim in report_claims if any(c.report_claim_id == claim.report_claim_id for c in citations))
         / len(report_claims)
         if report_claims
-        else 1.0
+        else 0.0
     )
     snapshot_ids_set = set(snapshot_ids)
     passage_ids_set = set(passage_ids)
@@ -253,6 +283,8 @@ def get_provenance_bundle(
         "report_claims": [_report_claim_dict(item) for item in report_claims],
         "citations": [_citation_dict(item) for item in citations],
         "integrity": {
+            "citation_evaluated": bool(citations),
+            "requires_review": any(not _json_load(doc.metadata_json).get("research_eligible") for doc in documents),
             "citation_count": len(citations),
             "report_claim_count": len(report_claims),
             "citation_coverage": round(citation_coverage, 6),
@@ -288,22 +320,24 @@ def _materialize_item(
     passage_max_chars: int,
 ) -> tuple[SourceDocument, SourceSnapshot, EvidencePassage, EvidenceAssertion]:
     canonical_uri = canonical_source_uri(item)
-    document_id = _stable_id("doc", run.run_id, canonical_uri, item.title)
+    document_id = _stable_id("doc", run.run_id, canonical_uri)
     snapshot_content = trace.output_json if trace and trace.output_json else item.snippet
     artifact = artifact_store.put_text(snapshot_content or "")
     snapshot_id = _stable_id("snap", document_id, artifact.content_hash)
     passage_text = item.snippet[:passage_max_chars]
     passage_hash = hashlib.sha256(passage_text.encode("utf-8")).hexdigest()
     passage_id = _stable_id("pass", snapshot_id, item.evidence_id, passage_hash)
-    assertion_id = _stable_id("assert", passage_id, passage_hash)
+    assertion_id = _stable_id("assert", passage_id, passage_hash, extractor_version)
     trace_input = _json_object(trace.input_json if trace else None)
     scalar = _extract_scalar(passage_text)
 
     metadata_doc = {
+        "research_eligible": is_eligible_evidence(item),
         "v1_evidence_id": item.evidence_id,
         "tool_name": item.tool_name,
         "is_mock": item.is_mock,
         "is_fallback": item.is_fallback,
+        **{key: item.metadata[key] for key in ("source_cluster_id", "hostname") if key in item.metadata},
     }
     # ── Phase 8.1: tier classification ──────────────────────────
     try:
@@ -383,7 +417,7 @@ def _research_claim(
     subject, predicate, object_text = _claim_parts(claim_map.claim)
     scalar = _extract_scalar(claim_map.claim)
     return ResearchClaim(
-        claim_id=_stable_id("claim", run_id, str(ordinal), claim_map.claim),
+        claim_id=_stable_id("claim", run_id, str(ordinal), claim_map.claim, extractor_version),
         run_id=run_id,
         claim_text=claim_map.claim,
         normalized_subject=subject,
@@ -453,18 +487,17 @@ def _infer_content_basis(item: EvidenceItem) -> str:
         cb = item.metadata.get("content_basis")
         if cb in ("full_text", "partial", "snippet_only"):
             return cb
-        # Default for web_fetcher results
-        return "full_text"
+        return "partial"
 
+    if tool_name == "pdf_reader":
+        return str(item.metadata.get("content_basis") or "partial")
     if tool_name in ("file_reader", "sql_query"):
         return "full_text"
 
     if tool_name == "tavily_search":
         # tavily_search with include_raw_content=True → partial
         # tavily_search without raw_content → snippet_only
-        if len(item.snippet) > 200:
-            return "partial"
-        return "snippet_only"
+        return "partial" if item.metadata.get("content_basis") == "partial" else "snippet_only"
 
     if tool_name == "mcp_github_search":
         return "snippet_only"

@@ -145,7 +145,9 @@ class PlanApprovalTests(Phase7DatabaseTestCase):
             completed = store.update_agent_run_status(db, run_id, "completed")
             return tasks._run_summary(completed, "completed in test")
 
-        with patch("app.api.tasks.run_task_by_mode", side_effect=fake_run):
+        from app.config import Settings
+        with (patch("app.api.tasks.run_task_by_mode", side_effect=fake_run),
+              patch("app.api.tasks.settings", Settings(tavily_api_key="test-only"))):
             response = tasks.approve_plan(
                 run.run_id,
                 PlanApproveRequest(approved=True, modified_steps=modified),
@@ -257,7 +259,7 @@ class CitationValidationTests(Phase7DatabaseTestCase):
         self.assertEqual(result.token_in, 12)
         self.assertEqual(result.details[0].judgment_source, "llm")
 
-    def test_no_citations_skips_validation_section(self) -> None:
+    def test_no_citations_reports_not_evaluated(self) -> None:
         from app.evidence.citation_validator import (
             render_citation_validation_section,
             validate_citations,
@@ -265,7 +267,7 @@ class CitationValidationTests(Phase7DatabaseTestCase):
 
         result = validate_citations("No references.", self._bundle())
         self.assertEqual(result.total, 0)
-        self.assertEqual(render_citation_validation_section(result), [])
+        self.assertIn("不可评估", "\n".join(render_citation_validation_section(result)))
 
     def test_metrics_and_trace_are_persisted_from_rendered_result(self) -> None:
         from app.agent.executor import _persist_citation_validation

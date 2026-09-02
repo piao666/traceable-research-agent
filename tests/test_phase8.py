@@ -249,8 +249,9 @@ class PdfReaderSafetyTests(unittest.TestCase):
             self.assertIsNone(self._validate_url(bad), f"Should reject {bad}")
 
     def test_validate_url_accepts_public(self):
-        self.assertIsNotNone(self._validate_url("https://example.com/file.pdf"))
-        self.assertIsNotNone(self._validate_url("https://arxiv.org/pdf/2301.00001.pdf"))
+        with patch("app.tools.ssrf.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+            self.assertIsNotNone(self._validate_url("https://example.com/file.pdf"))
+            self.assertIsNotNone(self._validate_url("https://arxiv.org/pdf/2301.00001.pdf"))
 
     def test_check_pdf_magic_valid(self):
         self.assertTrue(self._check_pdf_magic(b"%PDF-1.4\n..."))
@@ -319,15 +320,22 @@ class PdfReaderIntegrationTests(unittest.TestCase):
         self.assertEqual(result.output["failed_documents"], 1)
 
     def test_mixed_valid_and_invalid_paths(self):
-        result = self.pdf_read({"paths": [
-            "https://example.com/valid.pdf",
-            "http://127.0.0.1/bad.pdf",
-            "",
-        ]})
+        import httpx
+        client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200,
+            request=request, content=_make_minimal_pdf(pages=1), headers={"content-type": "application/pdf"})))
+        with patch("app.tools.pdf_reader.httpx.Client", return_value=client), patch(
+            "app.tools.ssrf.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]
+        ):
+            result = self.pdf_read({"paths": [
+                "https://example.com/valid.pdf",
+                "http://127.0.0.1/bad.pdf",
+                "",
+            ]})
         self.assertTrue(result.success)
         self.assertEqual(result.output["total_documents"], 3)
         # At least the private IP and empty string should fail
-        self.assertGreaterEqual(result.output["failed_documents"], 2)
+        self.assertEqual(result.output["failed_documents"], 2)
+        self.assertEqual(result.output["extracted_documents"], 1)
 
 
 if __name__ == "__main__":

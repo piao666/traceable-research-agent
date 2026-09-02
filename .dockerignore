@@ -1,4 +1,17 @@
 .git
+TASK.md
+CLAUDE.md
+docs
+**/*.sqlite
+**/*.sqlite-wal
+**/*.sqlite-shm
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/openapi.json
 .venv
 .venv-*
 venv

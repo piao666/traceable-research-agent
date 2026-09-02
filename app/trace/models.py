@@ -37,7 +37,7 @@ class AgentRun(Base):
     citation_supported: Mapped[int] = mapped_column(Integer, default=0)
     citation_weakly_supported: Mapped[int] = mapped_column(Integer, default=0)
     citation_unsupported: Mapped[int] = mapped_column(Integer, default=0)
-    citation_accuracy: Mapped[float] = mapped_column(Float, default=1.0)
+    citation_accuracy: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

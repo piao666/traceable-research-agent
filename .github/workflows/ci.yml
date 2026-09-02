@@ -39,7 +39,10 @@ jobs:
         run: python -m compileall app scripts frontend migrations tests
 
       - name: Run offline unit contracts
-        run: python -m pytest tests
+        run: python scripts/run_offline_tests.py --runner pytest
+
+      - name: Live isolated API and persistence smoke
+        run: python scripts/smoke_research_integrity.py
 
 
       - name: Run quality evaluation (mock)
@@ -60,3 +63,35 @@ jobs:
           python scripts/smoke_mcp_server.py
           python scripts/smoke_streamlit_frontend.py
           python scripts/smoke_provenance_v2.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned frontend and API dependencies
+        run: |
+          npm ci --prefix web --no-audit --no-fund
+          python -m pip install --upgrade pip==26.2.1
+          python -m pip install -r requirements/api.txt
+      - name: Verify generated OpenAPI types
+        working-directory: web
+        run: |
+          npm run generate:api
+          git diff --exit-code -- src/api/schema.d.ts
+      - name: Frontend gates
+        working-directory: web
+        run: |
+          npm run typecheck
+          npm run lint
+          npm test
+          npm run build
+          node qa/smoke.mjs

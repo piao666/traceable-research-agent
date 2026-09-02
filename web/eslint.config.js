@@ -8,6 +8,7 @@ export default tseslint.config(
   { ignores: ["dist", "src/api/schema.d.ts"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  { files: ["qa/**/*.mjs"], languageOptions: { globals: globals.node } },
   {
     files: ["**/*.{ts,tsx}"],
     languageOptions: { globals: globals.browser },

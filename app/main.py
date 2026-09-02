@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.api import events, memory, reports, sessions, skills, tasks, tools
+from app.api import events, memory, reports, runtime, sessions, skills, tasks, tools
 from app.improvement import api as improvement_api
 from app.config import settings
 from app.database import init_db
@@ -72,6 +72,7 @@ async def health() -> HealthResponse:
 app.include_router(tasks.router, prefix=settings.api_prefix)
 app.include_router(events.router, prefix=settings.api_prefix)
 app.include_router(tools.router, prefix=settings.api_prefix)
+app.include_router(runtime.router, prefix=settings.api_prefix)
 app.include_router(reports.router, prefix=settings.api_prefix)
 app.include_router(sessions.router, prefix=settings.api_prefix)
 app.include_router(memory.router, prefix=settings.api_prefix)

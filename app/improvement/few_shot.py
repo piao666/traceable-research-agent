@@ -17,6 +17,7 @@ from typing import Any
 
 from app.database import SessionLocal
 from app.improvement.models import ImprovementLog
+from app.agent.outcome import trusted_run_ids, INTEGRITY_VERSION
 from app.trace import store as trace_store
 
 logger = logging.getLogger(__name__)
@@ -36,12 +37,14 @@ def _load_library() -> dict[str, Any]:
     if not LIBRARY_PATH.is_file():
         return {"examples": []}
     try:
-        return json.loads(LIBRARY_PATH.read_text(encoding="utf-8"))
+        data = json.loads(LIBRARY_PATH.read_text(encoding="utf-8"))
+        return data if data.get("integrity_version") == INTEGRITY_VERSION else {"examples": []}
     except (json.JSONDecodeError, OSError):
         return {"examples": []}
 
 
 def _save_library(data: dict[str, Any]) -> None:
+    data["integrity_version"] = INTEGRITY_VERSION
     LIBRARY_PATH.parent.mkdir(parents=True, exist_ok=True)
     LIBRARY_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -49,6 +52,8 @@ def _save_library(data: dict[str, Any]) -> None:
 def promote_to_few_shot(run_id: str) -> bool:
     """Promote a run to the few-shot library if it meets quality thresholds."""
     with SessionLocal() as db:
+        if run_id not in set(db.scalars(trusted_run_ids())):
+            return False
         log = db.get(ImprovementLog, run_id)
         if log is None:
             return False

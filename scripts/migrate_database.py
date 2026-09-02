@@ -94,6 +94,8 @@ def bootstrap_revision_for_tables(
                 }
                 if citation_columns.issubset(agent_run_cols):
                     if "improvement_logs" in inspector.get_table_names():
+                        if "memory_audit_events" in inspector.get_table_names():
+                            return _required_stamp(current_revision, "0010_memory_audit")
                         return _required_stamp(current_revision, "0009_improvement_log")
                     return _required_stamp(current_revision, "0008_citation_validation_metrics")
                 return _required_stamp(current_revision, "0007_single_instance_memory")
@@ -116,6 +118,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0007_single_instance_memory": 7,
         "0008_citation_validation_metrics": 8,
         "0009_improvement_log": 9,
+        "0010_memory_audit": 10,
     }
     if current_revision is None:
         return schema_revision

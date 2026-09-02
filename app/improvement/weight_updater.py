@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 
 from app.database import SessionLocal
 from app.improvement.models import ImprovementLog
+from app.agent.outcome import trusted_run_ids, INTEGRITY_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ def update_routing_weights() -> dict:
                     func.avg(ImprovementLog.overall_score).label("avg_score"),
                     func.max(ImprovementLog.created_at).label("last_run"),
                 )
+                .where(ImprovementLog.run_id.in_(trusted_run_ids()))
                 .group_by(
                     ImprovementLog.question_category,
                     ImprovementLog.skill_composition,
@@ -77,7 +79,8 @@ def update_routing_weights() -> dict:
 
         # Time decay: weight drops as last run ages
         if row.last_run:
-            days_ago = (datetime.now(timezone.utc) - row.last_run).days
+            last_run = row.last_run if row.last_run.tzinfo else row.last_run.replace(tzinfo=timezone.utc)
+            days_ago = (datetime.now(timezone.utc) - last_run).days
             decay = max(0.3, 1.0 - days_ago / _DECAY_DAYS)
         else:
             decay = 1.0
@@ -89,6 +92,7 @@ def update_routing_weights() -> dict:
 
     total_runs = _count_total_runs()
     payload = {
+        "integrity_version": INTEGRITY_VERSION,
         "version": 1,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "total_runs": total_runs,
@@ -108,6 +112,7 @@ def _count_total_runs() -> int:
     with SessionLocal() as db:
         result = db.execute(
             select(func.count()).select_from(ImprovementLog)
+            .where(ImprovementLog.run_id.in_(trusted_run_ids()))
         ).scalar()
         return int(result) if result else 0
 
@@ -118,6 +123,8 @@ def load_routing_weights() -> dict:
         return {}
     try:
         data = json.loads(WEIGHTS_PATH.read_text(encoding="utf-8"))
+        if data.get("integrity_version") != INTEGRITY_VERSION:
+            return {}
         return data.get("weights", {})
     except (json.JSONDecodeError, OSError):
         return {}
@@ -131,7 +138,7 @@ def maybe_update_weights(force: bool = False) -> bool:
     count = _count_total_runs()
     try:
         data = json.loads(WEIGHTS_PATH.read_text(encoding="utf-8")) if WEIGHTS_PATH.is_file() else {}
-        last_count = data.get("total_runs", 0)
+        last_count = data.get("total_runs", 0) if data.get("integrity_version") == INTEGRITY_VERSION else 0
     except Exception:
         last_count = 0
     if count - last_count >= 10:  # trigger every 10 new runs

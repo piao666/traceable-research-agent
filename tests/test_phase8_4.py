@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 import unittest
+from unittest.mock import patch
 
 from app.evidence.reference_verifier import (
     ReferenceVerifier,
@@ -92,6 +93,11 @@ class AuthorMatchingTests(unittest.TestCase):
 class ReferenceVerifierBasicTests(unittest.TestCase):
     def setUp(self):
         self.verifier = ReferenceVerifier(timeout=5, cache_dir=None)
+        # Identifier routing is a unit contract, not a live bibliography lookup.
+        for name in ("_check_crossref_doi", "_check_openalex_doi", "_check_arxiv_id", "_check_semantic_scholar_title"):
+            mocked = patch(f"app.evidence.reference_verifier.{name}", return_value=("unresolved", {}, "fixture_not_found"))
+            mocked.start()
+            self.addCleanup(mocked.stop)
 
     def test_empty_reference_list(self):
         report = self.verifier.verify([])

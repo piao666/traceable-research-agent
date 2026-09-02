@@ -20,7 +20,7 @@ def canonical_source_uri(item: EvidenceItem) -> str:
         return canonicalize_url(source_ref)
     if item.source_type == "sql":
         return f"sql://{item.run_id}/{item.trace_id or item.evidence_id}"
-    if item.source_type == "file":
+    if item.source_type in {"file", "pdf"}:
         return f"file://{source_ref.replace(chr(92), '/')}"
     if "github" in item.source_type:
         return f"github://{_safe_component(source_ref or item.evidence_id)}"

@@ -22,7 +22,7 @@ SKILLS_DIR = Path("workspace/skills")
 @router.get("", response_model=SkillListResponse)
 async def get_skills() -> SkillListResponse:
     """Return metadata for all installed Skills."""
-    return SkillListResponse(skills=list_skills())
+    return SkillListResponse(skills=[skill.model_dump() for skill in list_skills()])
 
 
 @router.get("/{name}", response_model=SkillDetailResponse)

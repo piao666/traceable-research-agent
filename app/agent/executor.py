@@ -6,10 +6,13 @@ import json
 import logging
 from time import perf_counter
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
 from app.agent.file_access_policy import file_reader_execution_arguments
+from app.agent.preflight import enforce_execution_readiness
+from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, load_observations, report_subject, result_integrity, skip_dependency
 from app.agent.report_generation import resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
 from app.agent.source_governance import (
@@ -258,6 +261,7 @@ def _summary(run: AgentRun) -> dict[str, Any]:
     if not isinstance(react_state, dict):
         react_state = {}
     return {
+        **result_integrity(run),
         "run_id": run.run_id,
         "status": run.status,
         "current_step": run.current_step,
@@ -384,9 +388,11 @@ def _check_profile_quota(
     if not provenance_bundle:
         return
 
-    documents = provenance_bundle.get("source_documents") or []
-    if not documents:
-        return
+    documents = [doc for doc in provenance_bundle.get("source_documents") or []
+                 if (doc.get("metadata") or {}).get("research_eligible")
+                 and not (doc.get("metadata") or {}).get("is_mock")
+                 and not (doc.get("metadata") or {}).get("is_fallback")]
+    documents = list({doc.get("canonical_uri"): doc for doc in documents}.values())
 
     try:
         from app.evidence.policy import T0, T1, T2
@@ -410,17 +416,21 @@ def _check_profile_quota(
             hostname = str(
                 metadata.get("hostname")
                 or metadata.get("source_hostname")
-                or metadata.get("canonical_uri")
+                or urlsplit(str(doc.get("canonical_uri") or "")).hostname
                 or ""
             ).strip().lower()
             if hostname:
                 domain_counts[hostname] = domain_counts.get(hostname, 0) + 1
+                if not cluster:
+                    cluster_ids.add(hostname)
+            elif not cluster:
+                cluster_ids.add(str(doc.get("canonical_uri") or doc.get("document_id")))
 
         total = len(documents)
         t0 = tier_counts[T0]
         t1 = tier_counts[T1]
         t2 = tier_counts[T2]
-        independent = len(cluster_ids) or total
+        independent = len(cluster_ids)
 
         min_t0 = int(profile_constraints.get("min_t0_sources", 1))
         min_independent = int(profile_constraints.get("min_independent_sources", 2))
@@ -470,12 +480,17 @@ def _check_profile_quota(
             or domain_overages
         )
         if has_shortfall:
+            outcome = plan.get("research_outcome") or {}
+            warning = "Source quota requirements were not met; see source_quota_check in Trace."
+            outcome["warnings"] = list(dict.fromkeys([*(outcome.get("warnings") or []), warning]))
+            plan["research_outcome"] = outcome
+            store.replace_agent_run_plan(db, run_id, plan)
             record_trace_event(
                 db=db,
                 run_id=run_id,
                 step_no=max((trace.step_no for trace in traces), default=0) + 1,
                 tool_name="source_quota_check",
-                status="success",
+                status="warning",
                 input_data={"profile_constraints": profile_constraints},
                 output_summary=(
                     f"Source quota shortfall: T0={t0}/{min_t0}, "
@@ -504,10 +519,15 @@ def run_plan(
         return _message_summary(run, "Run already completed; no tools executed.")
     if run.status in ("failed", "cancelled"):
         return _message_summary(run, f"Run is {run.status} and cannot be executed.")
+    if run.status in {"waiting_human", "waiting_human_plan"}:
+        return _message_summary(run, "Run is waiting for human approval.")
 
     plan = _parse_plan(run)
+    if not enforce_execution_readiness(db, run_id, plan, settings_obj,
+                                      llm_available=bool(report_llm_client and report_llm_client.is_available())):
+        return _summary(store.get_fresh_agent_run(db, run_id))
     steps = plan.get("steps") or []
-    observations: list[dict[str, Any]] = []
+    observations = load_observations(store.list_tool_traces(db, run_id))
     resume_after_step = run.current_step
     refetch_rounds_used = persisted_refetch_rounds(store.list_tool_traces(db, run_id))
 
@@ -559,6 +579,9 @@ def run_plan(
 
             # Resolve arguments_from references from previous step outputs
             if step.get("arguments_from"):
+                if dependency_missing(step, observations):
+                    observations.append(skip_dependency(db, run_id, step))
+                    continue
                 arguments = _resolve_arguments_from(step, observations)
 
             arguments = prepare_tool_arguments(
@@ -651,8 +674,8 @@ def run_plan(
             return _message_summary(cancelled, "Run cancelled by user.")
 
         traces = store.list_tool_traces(db, run_id)
-        run.status = "completed"
-        run.error_message = None
+        if not enforce_research_outcome(db, run, plan, observations, traces, settings_obj):
+            return _summary(store.get_fresh_agent_run(db, run_id))
         provenance_bundle = materialize_execution_provenance(
             db,
             run,
@@ -661,12 +684,13 @@ def run_plan(
             traces,
             settings_obj,
         )
+        _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
         _llm = resolve_report_llm_client(settings_obj, report_llm_client)
         report_llm_responses: list[Any] = []
         citation_validation_reports: list[Any] = []
         reference_verification_reports: list[Any] = []
         markdown = generate_markdown_report(
-            run,
+            report_subject(run),
             plan,
             observations,
             traces,
@@ -742,13 +766,11 @@ def run_plan(
 
         _after_run_completed(db, run, markdown, step_no=0)
 
-        # ── Phase 8.1: profile quota shortfall trace ───────────────
-        _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
-
         return _summary(run)
     except Exception as exc:
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _message_summary(cancelled, "Run cancelled by user.")
-        run = store.update_agent_run_status(db, run_id, "failed", str(exc))
+        db.rollback()
+        run = fail_execution(db, run_id, exc)
         return _summary(run)

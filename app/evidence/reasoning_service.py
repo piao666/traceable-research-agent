@@ -17,6 +17,7 @@ from app.evidence.models import (
     ClaimResolution,
     EvidenceAssertion,
     EvidencePassage,
+    EvidencePipelineRun,
     EvidenceReasoningRun,
     EvidenceReliabilityScore,
     ResearchClaim,
@@ -45,7 +46,9 @@ def materialize_reasoning(
     policy_hash = hashlib.sha256(
         policy_bytes + b"\0" + REASONING_ENGINE_VERSION.encode("utf-8")
     ).hexdigest()
-    reasoning_run_id = _stable_id("reason", run_id, policy.version, policy_hash)
+    pipeline = db.get(EvidencePipelineRun, run_id)
+    revision = pipeline.extractor_version if pipeline else "legacy"
+    reasoning_run_id = _stable_id("reason", run_id, policy.version, policy_hash, revision)
     existing = db.get(EvidenceReasoningRun, reasoning_run_id)
     if existing is not None and existing.status == "complete":
         return get_reasoning_bundle(db, run_id, reasoning_run_id=reasoning_run_id)
@@ -73,10 +76,17 @@ def materialize_reasoning(
     assertions = list(
         db.scalars(
             select(EvidenceAssertion).where(EvidenceAssertion.passage_id.in_(passage_by_id))
+            .where(EvidenceAssertion.extractor_version == revision)
         )
     ) if passage_by_id else []
     assertion_by_id = {item.assertion_id: item for item in assertions}
-    claims = list(db.scalars(select(ResearchClaim).where(ResearchClaim.run_id == run_id)))
+    active_passages = {item.passage_id for item in assertions}
+    passages = [item for item in passages if item.passage_id in active_passages]
+    passage_by_id = {item.passage_id: item for item in passages}
+    claim_query = select(ResearchClaim).where(ResearchClaim.run_id == run_id)
+    if pipeline is not None:
+        claim_query = claim_query.where(ResearchClaim.extractor_version == revision)
+    claims = list(db.scalars(claim_query))
     claim_by_id = {item.claim_id: item for item in claims}
     edges = list(
         db.scalars(select(ClaimEvidenceEdge).where(ClaimEvidenceEdge.claim_id.in_(claim_by_id)))

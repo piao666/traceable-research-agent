@@ -6,6 +6,7 @@ import hashlib
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import httpx
@@ -22,6 +23,9 @@ URL = "https://example.com/research"
 
 class WebFetcherCacheTests(unittest.TestCase):
     def setUp(self) -> None:
+        dns = patch("app.tools.ssrf.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))])
+        dns.start()
+        self.addCleanup(dns.stop)
         self.temp_dir = tempfile.TemporaryDirectory()
         self.cache = FetchCache(self.temp_dir.name, default_ttl=60)
         self.settings = Settings(

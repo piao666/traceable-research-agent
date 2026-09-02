@@ -12,29 +12,37 @@ DB_PATH = WORKSPACE / "demo.sqlite"
 
 
 def init_demo_db(db_path: Path = DB_PATH) -> Path:
-    """Create and seed the demo SQLite database."""
+    """Seed a new demo database; never overwrite an existing deployment file."""
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    if db_path.exists():
+        if not db_path.is_file():
+            raise ValueError("Demo database path is not a regular file")
+        return db_path
     with sqlite3.connect(db_path) as conn:
-        conn.executescript(
+        conn.execute("BEGIN IMMEDIATE")
+        # Concurrent starters must not reseed a database created by the other.
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1").fetchone():
+            return db_path
+        conn.execute(
             """
-            DROP TABLE IF EXISTS documents;
-            DROP TABLE IF EXISTS metrics;
-
             CREATE TABLE documents (
                 id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
                 source TEXT NOT NULL,
                 category TEXT NOT NULL,
                 created_at TEXT NOT NULL
-            );
-
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE metrics (
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL,
                 value REAL NOT NULL,
                 unit TEXT NOT NULL
-            );
+            )
             """
         )
         conn.executemany(
@@ -71,4 +79,4 @@ def init_demo_db(db_path: Path = DB_PATH) -> Path:
 
 if __name__ == "__main__":
     path = init_demo_db()
-    print(f"Demo SQLite database initialized at {path}")
+    print(f"Demo SQLite database available at {path} (existing files preserved)")

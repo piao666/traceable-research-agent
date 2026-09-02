@@ -76,6 +76,12 @@ class ImprovementFrontendContractTests(unittest.TestCase):
 
     def test_days_filter_is_real_and_empty_stats_shape_is_stable(self) -> None:
         now = datetime.now(timezone.utc)
+        from app.agent.outcome import INTEGRITY_VERSION
+        for run_id in ("recent", "old"):
+            self.db.add(trace_models.AgentRun(run_id=run_id, task="verified fixture", report_type="summary",
+                source_mode="real", status="completed", plan_json=json.dumps({"research_outcome": {
+                    "version": INTEGRITY_VERSION, "status": "passed", "effective_evidence_count": 1}})))
+        self.db.flush()
         self.db.add_all(
             [
                 ImprovementLog(
@@ -206,7 +212,7 @@ class ImprovementFrontendContractTests(unittest.TestCase):
             result = run_task_by_mode(
                 self.db,
                 run.run_id,
-                Settings(react_enabled=True, parallel_execution_enabled=False),
+                Settings(react_enabled=True, parallel_execution_enabled=False, qwen_api_key="test-only"),
             )
 
         self.assertEqual(seen_completion_statuses, ["running"])
@@ -265,7 +271,7 @@ class ImprovementFrontendContractTests(unittest.TestCase):
             result = run_task_by_mode(
                 self.db,
                 run.run_id,
-                Settings(react_enabled=True, parallel_execution_enabled=False),
+                Settings(react_enabled=True, parallel_execution_enabled=False, qwen_api_key="test-only"),
             )
 
         self.assertEqual(len(finalized_plans), 1)
@@ -311,7 +317,7 @@ class ImprovementFrontendContractTests(unittest.TestCase):
             result = run_task_by_mode(
                 self.db,
                 run.run_id,
-                Settings(react_enabled=True, deep_research_enabled=False),
+                Settings(react_enabled=True, deep_research_enabled=False, qwen_api_key="test-only"),
             )
 
         final_plan = json.loads(store.get_fresh_agent_run(self.db, run.run_id).plan_json)
@@ -344,7 +350,7 @@ class ImprovementFrontendContractTests(unittest.TestCase):
             result = run_task_by_mode(
                 self.db,
                 run.run_id,
-                Settings(react_enabled=True, parallel_execution_enabled=False),
+                Settings(react_enabled=True, parallel_execution_enabled=False, qwen_api_key="test-only"),
             )
 
         final_plan = json.loads(store.get_fresh_agent_run(self.db, run.run_id).plan_json)

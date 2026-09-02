@@ -15,19 +15,29 @@ from app.tools.ssrf import is_blocked_host
 
 class WebFetcherTests(unittest.TestCase):
     def setUp(self):
+        dns = patch("app.tools.ssrf.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))])
+        dns.start()
+        self.addCleanup(dns.stop)
         from app.tools.web_fetcher import web_fetch
-
-        self.fetch = web_fetch
+        import httpx
+        from app.config import Settings
+        # Unit tests use a local transport, never the live Internet or host proxy.
+        client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, request=request, headers={"content-type": "text/html"},
+            text="<html><title>Fixture</title><article>" + "Research source content. " * 150 + "</article></html>",
+        )))
+        self.addCleanup(client.close)
+        config = Settings(web_fetcher_cache_enabled=False, web_fetcher_trafilatura_enabled=False)
+        self.fetch = lambda arguments: web_fetch(arguments, client=client, settings_obj=config)
 
     def test_rejects_missing_urls(self):
         result = self.fetch({})
-        # web_fetcher treats missing urls as empty list → returns success with 0 pages
-        self.assertTrue(result.success)
+        self.assertFalse(result.success)
         self.assertEqual(result.output["total_count"], 0)
 
     def test_rejects_non_http_scheme(self):
         result = self.fetch({"urls": ["ftp://example.com/file"]})
-        self.assertTrue(result.success)
+        self.assertFalse(result.success)
         self.assertEqual(result.output["fetched_count"], 0)
         self.assertEqual(result.output["failed_count"], 1)
         # The page entry should have an error
@@ -36,7 +46,7 @@ class WebFetcherTests(unittest.TestCase):
     def test_rejects_private_ip(self):
         for bad_url in ("http://127.0.0.1/admin", "http://10.0.0.5/secret", "http://192.168.1.1/"):
             result = self.fetch({"urls": [bad_url]})
-            self.assertTrue(result.success)
+            self.assertFalse(result.success)
             self.assertEqual(result.output["fetched_count"], 0,
                              f"Should reject {bad_url}")
             self.assertIn("error", result.output["pages"][0])
@@ -49,7 +59,7 @@ class WebFetcherTests(unittest.TestCase):
 
     def test_empty_url_list(self):
         result = self.fetch({"urls": []})
-        self.assertTrue(result.success)
+        self.assertFalse(result.success)
         self.assertEqual(result.output["total_count"], 0)
 
     def test_mixed_valid_invalid_urls(self):
@@ -348,7 +358,8 @@ class SsrfModuleTests(unittest.TestCase):
         self.assertTrue(is_blocked_host("0177"))
 
     def test_accepts_public_hostname(self):
-        self.assertFalse(is_blocked_host("example.com"))
+        with patch("app.tools.ssrf.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+            self.assertFalse(is_blocked_host("example.com"))
 
     def test_accepts_public_ip(self):
         self.assertFalse(is_blocked_host("93.184.216.34"))

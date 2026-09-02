@@ -344,7 +344,8 @@ def web_fetch(
 
     if not validated:
         return ToolResult(
-            success=True,
+            success=False,
+            error_message="No valid URLs to fetch.",
             output={
                 "pages": pages,
                 "fetched_count": 0,
@@ -353,6 +354,7 @@ def web_fetch(
             },
             output_summary=f"web_fetcher processed 0 URLs (all {len(pages)} rejected: validation failed).",
             metadata={
+                "error_type": "empty_input" if not urls_raw else "invalid_args",
                 "tool_name": "web_fetcher",
                 "fetcher_backend": "httpx_beautifulsoup",
                 "read_only": True,
@@ -563,11 +565,12 @@ def web_fetch(
                     page_entry["content_hash"] = content_hash
             pages.append(page_entry)
 
-    fetched_count = sum(1 for p in pages if not p.get("error"))
+    fetched_count = sum(1 for p in pages if not p.get("error") and str(p.get("content") or "").strip())
     failed_count = len(pages) - fetched_count
 
     return ToolResult(
-        success=True,
+        success=fetched_count > 0,
+        error_message=None if fetched_count else "No usable page content was fetched.",
         output={
             "pages": pages,
             "fetched_count": fetched_count,
@@ -581,6 +584,7 @@ def web_fetch(
             f"snippet_only={sum(1 for p in pages if p.get('content_basis') == 'snippet_only')})"
         ),
         metadata={
+            **({"error_type": "empty_result"} if not fetched_count else {}),
             "tool_name": "web_fetcher",
             "fetcher_backend": "httpx_multi_level",
             "read_only": True,

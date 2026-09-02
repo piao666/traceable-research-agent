@@ -22,6 +22,8 @@ from app.agent.file_access_policy import (
     confirmation_details_for_path,
 )
 from app.agent.planner import plan_task, plan_task_for_review
+from app.agent.preflight import check_plan_readiness
+from app.agent.outcome import fail_execution, result_integrity
 from app.agent.plan_guardrails import normalize_plan_arguments
 from app.agent.state import WAITING_HUMAN_PLAN
 from app.config import settings
@@ -45,6 +47,7 @@ from app.schemas import (
     TaskListItem,
     TaskListResponse,
     TaskPlanResponse,
+    TaskPreflightResponse,
     TaskRetryRequest,
     TaskRunResponse,
     TaskStatusResponse,
@@ -59,6 +62,23 @@ router = APIRouter(
     tags=["tasks"],
     dependencies=[Depends(require_api_key)],
 )
+
+
+def _assert_plan_ready(plan: dict[str, Any]) -> None:
+    readiness = check_plan_readiness(plan, settings)
+    if not readiness["ready"]:
+        raise HTTPException(status_code=409, detail={
+            "code": "configuration_not_ready", "message": " ".join(
+                issue["message"] for issue in readiness["blockers"]), "preflight": readiness,
+        })
+
+
+@router.get("/{run_id}/preflight", response_model=TaskPreflightResponse)
+def get_task_preflight(run_id: str, db: Session = Depends(get_db)) -> TaskPreflightResponse:
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    return TaskPreflightResponse(**check_plan_readiness(_parse_run_plan(run), settings))
 
 
 def _record_memory_recall_trace(
@@ -180,6 +200,7 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
     ):
         visible_status = "running"
     return TaskStatusResponse(
+        **result_integrity(run),
         run_id=run.run_id,
         task=run.task,
         report_type=run.report_type,
@@ -196,7 +217,7 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
         citation_supported=run.citation_supported,
         citation_weakly_supported=run.citation_weakly_supported,
         citation_unsupported=run.citation_unsupported,
-        citation_accuracy=run.citation_accuracy,
+        citation_accuracy=run.citation_accuracy if result_integrity(run)["citation_evaluated"] else 0.0,
         created_at=run.created_at,
         updated_at=run.updated_at,
         execution_mode=plan_meta["execution_mode"],
@@ -217,6 +238,7 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
 
 def _task_run_response(summary: dict) -> TaskRunResponse:
     return TaskRunResponse(
+        **{key: summary[key] for key in ("research_outcome", "requires_review", "citation_evaluated", "quality_warnings") if key in summary},
         run_id=summary["run_id"],
         status=summary["status"],
         current_step=summary["current_step"],
@@ -253,6 +275,7 @@ def _extract_plan_field(plan_json: str | None, field: str) -> str | None:
 def _run_summary(run: AgentRun, message: str | None = None) -> dict:
     plan_meta = _plan_metadata(run)
     return {
+        **result_integrity(run),
         "run_id": run.run_id,
         "status": run.status,
         "current_step": run.current_step,
@@ -269,6 +292,7 @@ def _run_summary(run: AgentRun, message: str | None = None) -> dict:
 def _async_run_response(run: AgentRun, message: str) -> AsyncRunResponse:
     plan_meta = _plan_metadata(run)
     return AsyncRunResponse(
+        **result_integrity(run),
         run_id=run.run_id,
         status=run.status,
         status_url=f"/api/tasks/{run.run_id}",
@@ -321,7 +345,8 @@ def _run_task_in_background(run_id: str) -> None:
             run_task_by_mode(db, run_id)
         except Exception as exc:
             try:
-                store.update_agent_run_status(db, run_id, "failed", str(exc))
+                db.rollback()
+                fail_execution(db, run_id, exc)
             except Exception:
                 db.rollback()
 
@@ -418,6 +443,9 @@ def create_task(
 ) -> TaskCreateResponse:
     """Accept a task, create a pending run, and persist a deterministic plan."""
 
+    from app.memory import store as memory_store
+    if task_request.session_id and memory_store.get_session(db, task_request.session_id) is None:
+        raise HTTPException(status_code=404, detail="Session not found")
     safe_config = settings.get_safe_runtime_config_summary()
     run_config_snapshot = json.dumps(
         safe_config,
@@ -433,6 +461,8 @@ def create_task(
         session_id=task_request.session_id,
         run_config_snapshot=run_config_snapshot,
     )
+    if task_request.session_id:
+        memory_store.create_chat_turn(db, task_request.session_id, "user", task_request.task, run.run_id)
 
     # ── Phase 7.4: Plan approval mode ────────────────────────────────
     if task_request.require_plan_approval:
@@ -446,6 +476,7 @@ def create_task(
             retrieval_profile=task_request.retrieval_profile,
         )
         plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
+        plan["requires_plan_approval"] = True
         plan.setdefault("execution_mode", settings.execution_mode)
         memory_recall_trace = plan.pop("memory_recall_trace", None)
         run = store.update_agent_run_plan(db, run.run_id, plan)
@@ -551,6 +582,9 @@ def run_task(
     if run.status in ("failed", "cancelled"):
         raise HTTPException(status_code=409, detail=f"{run.status.title()} runs cannot be rerun directly")
 
+    _assert_plan_ready(_parse_run_plan(run))
+    if not store.claim_pending_agent_run(db, run_id):
+        raise HTTPException(status_code=409, detail="Task run is already running")
     summary = run_task_by_mode(db, run_id)
     return _task_run_response(summary)
 
@@ -588,6 +622,7 @@ async def run_task_async(
     if run.status in ("failed", "cancelled"):
         raise HTTPException(status_code=409, detail=f"{run.status.title()} runs cannot be rerun directly")
 
+    _assert_plan_ready(_parse_run_plan(run))
     if not store.claim_pending_agent_run(db, run_id):
         db.expire_all()
         current = store.get_agent_run(db, run_id)
@@ -609,6 +644,8 @@ def confirm_task(
     run_id: str,
     request: TaskConfirmRequest,
     db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = None,
+    start_async: bool = Query(False),
 ) -> TaskConfirmResponse:
     """Confirm or reject a run waiting for human approval."""
 
@@ -653,6 +690,10 @@ def confirm_task(
                     required_confirmation_details = details
                 break
 
+    if request.approved and request.resume:
+        _assert_plan_ready(plan)
+    if not store.claim_pending_agent_run(db, run_id, expected_status="waiting_human"):
+        raise HTTPException(status_code=409, detail="Confirmation was already consumed or task was cancelled")
     plan["confirmation"] = {
         "required_step_no": required_step_no,
         "required_tool_name": required_tool_name,
@@ -709,7 +750,16 @@ def confirm_task(
             run_result=None,
         )
 
-    store.update_agent_run_status(db, run_id, "pending", None)
+    if start_async is True and background_tasks is not None:
+        background_tasks.add_task(_run_task_in_background, run_id)
+        return TaskConfirmResponse(
+            run_id=run_id, status=run.status, approved=True,
+            comment=request.comment, resumed=True,
+            message="Human confirmation recorded; execution scheduled in background.",
+            run_result=None,
+        )
+
+    # The confirmation already owns the run; do not reopen a pending claim window.
     summary = run_task_by_mode(db, run_id)
     run_result = _task_run_response(summary)
     return TaskConfirmResponse(
@@ -765,6 +815,7 @@ async def get_plan_review(
         ))
 
     return PlanReviewResponse(
+        preflight=TaskPreflightResponse(**check_plan_readiness(plan, settings)),
         run_id=run.run_id,
         task=run.task,
         status=run.status,
@@ -791,7 +842,7 @@ def approve_plan(
     """Approve or reject a plan that is waiting for human review.
 
     When start_async=True, the task is started in the background and the
-    response returns immediately with status 'pending' instead of blocking
+    response returns immediately with status 'running' instead of blocking
     until completion.
     """
     run = store.get_agent_run(db, run_id)
@@ -812,6 +863,8 @@ def approve_plan(
 
     if not request.approved:
         # ── Rejected: mark as failed ────────────────────────────────
+        if not store.claim_pending_agent_run(db, run_id, expected_status="waiting_human_plan"):
+            raise HTTPException(status_code=409, detail="Plan approval was already consumed or task was cancelled")
         run = store.update_agent_run_status(
             db, run_id, "failed",
             f"Plan rejected by human: {request.comment or 'No comment'}",
@@ -829,6 +882,15 @@ def approve_plan(
         return _task_run_response(
             _run_summary(run, f"Plan rejected: {request.comment or 'No comment'}")
         )
+
+    # Validate the final edited plan before recording approval or starting work.
+    candidate = dict(plan)
+    if request.modified_steps is not None:
+        candidate["steps"] = _merge_approved_steps(list(plan.get("steps") or []), request.modified_steps)
+        candidate = normalize_plan_arguments(candidate, run.task, run.source_mode)
+    _assert_plan_ready(candidate)
+    if not store.claim_pending_agent_run(db, run_id, expected_status="waiting_human_plan"):
+        raise HTTPException(status_code=409, detail="Plan approval was already consumed or task was cancelled")
 
     # ── Approved: apply modified arguments and re-run guardrails ─────
     if request.modified_steps is not None:
@@ -865,8 +927,7 @@ def approve_plan(
         },
     )
 
-    # Move to pending and execute
-    store.update_agent_run_status(db, run_id, "pending", None)
+    # Approval atomically claimed this run; do not create a second pending window.
     if start_async:
         # Reuse the same failure-aware background wrapper as ``run_async``.
         # It owns a fresh SQLAlchemy session and persists unexpected failures
@@ -941,6 +1002,7 @@ async def get_task_provenance(
             run_id,
             reasoning_run_id=reasoning["reasoning"]["reasoning_run_id"],
         )
+    payload["integrity"].update(result_integrity(run))
     return ProvenanceBundleResponse(**payload)
 
 
@@ -1002,6 +1064,7 @@ def list_tasks(
     created_before: datetime | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    q: str | None = Query(None, max_length=500),
     db: Session = Depends(get_db),
 ) -> TaskListResponse:
     """List tasks with optional filters and pagination."""
@@ -1014,6 +1077,7 @@ def list_tasks(
         created_before=created_before,
         limit=limit,
         offset=offset,
+        q=q,
     )
     total = store.count_agent_runs(
         db,
@@ -1022,14 +1086,16 @@ def list_tasks(
         execution_mode=execution_mode,
         created_after=created_after,
         created_before=created_before,
+        q=q,
     )
     mode_key = "execution_mode"
     return TaskListResponse(
         tasks=[
             TaskListItem(
+                **result_integrity(r),
                 run_id=r.run_id,
                 task=r.task,
-                status=r.status,
+                status=_task_status_response(r).status,
                 report_type=r.report_type,
                 execution_mode=_extract_plan_field(r.plan_json, mode_key) or "planned",
                 total_tool_calls=r.total_tool_calls,
@@ -1124,6 +1190,10 @@ def retry_task(
     # partially consumed ReAct state from the original run.
     plan.pop("confirmation", None)
     plan.pop("react_state", None)
+    for key in list(plan):
+        if key.startswith(("adaptive_", "deepening_")) or key in {"research_outcome", "preflight", "evidence_revision"}:
+            plan.pop(key, None)
+    plan["execution_mode"] = plan.get("requested_execution_mode") or "planned"
     plan["parent_run_id"] = run_id
     plan["notes"] = list(plan.get("notes") or []) + [
         f"Full retry of failed or cancelled run {run_id}."
@@ -1135,9 +1205,14 @@ def retry_task(
         source_mode=original.source_mode,
         allowed_tools=allowed_tools,
         session_id=original.session_id,
-        run_config_snapshot=original.run_config_snapshot,
+        run_config_snapshot=json.dumps(settings.get_safe_runtime_config_summary(), ensure_ascii=False, sort_keys=True),
     )
     store.update_agent_run_plan(db, new_run.run_id, plan)
+    _persist_plan_config_snapshot(db, new_run.run_id, settings.get_safe_runtime_config_summary(), plan)
+    if plan.get("requires_plan_approval") or any(
+        trace.tool_name == "plan_approval" for trace in store.list_tool_traces(db, run_id)
+    ):
+        store.update_agent_run_status(db, new_run.run_id, WAITING_HUMAN_PLAN, None)
     return TaskCreateResponse(
         run_id=new_run.run_id,
         status=new_run.status,

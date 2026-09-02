@@ -1,7 +1,7 @@
 """Pydantic schemas for the API surface."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,49 @@ class TaskCreateRequest(BaseModel):
     retrieval_profile: str | None = None  # Phase 8.1: source tier retrieval profile
 
 
+class RuntimeCapabilitiesResponse(BaseModel):
+    offline_mode: bool
+    tavily_configured: bool
+    llm_provider: str
+    llm_configured: bool
+    react_provider: str
+    react_configured: bool
+    react_enabled: bool
+    deep_research_enabled: bool
+    report_generation_mode: str
+    connectivity_verified: bool = False
+
+
+class RuntimeCheck(BaseModel):
+    name: str
+    status: Literal["ok", "error"]
+    message: str
+
+
+class RuntimeDiagnosticsResponse(BaseModel):
+    checked_at: datetime
+    checks: list[RuntimeCheck]
+    capabilities: RuntimeCapabilitiesResponse
+    execution_mode: str
+    memory_llm_extraction_enabled: bool
+    mcp_enabled: bool
+    mcp_configured: bool
+
+
+class PreflightIssue(BaseModel):
+    code: str
+    capability: str
+    environment_variable: str
+    message: str
+
+
+class TaskPreflightResponse(BaseModel):
+    ready: bool
+    blockers: list[PreflightIssue]
+    warnings: list[str]
+    capabilities: RuntimeCapabilitiesResponse
+
+
 class TaskCreateResponse(BaseModel):
     run_id: str
     status: str
@@ -38,7 +81,14 @@ class TaskCreateResponse(BaseModel):
     run_url: str | None = None
 
 
-class TaskListItem(BaseModel):
+class ResearchIntegrityResponse(BaseModel):
+    research_outcome: dict[str, Any] | None = None
+    requires_review: bool = False
+    citation_evaluated: bool = False
+    quality_warnings: list[str] = Field(default_factory=list)
+
+
+class TaskListItem(ResearchIntegrityResponse):
     """Lightweight item for task list endpoint."""
     run_id: str
     task: str
@@ -73,7 +123,7 @@ class SessionUpdateRequest(BaseModel):
     title: str | None = None
 
 
-class TaskStatusResponse(BaseModel):
+class TaskStatusResponse(ResearchIntegrityResponse):
     run_id: str
     task: str
     report_type: str
@@ -90,7 +140,7 @@ class TaskStatusResponse(BaseModel):
     citation_supported: int = 0
     citation_weakly_supported: int = 0
     citation_unsupported: int = 0
-    citation_accuracy: float = 1.0
+    citation_accuracy: float = 0.0
     created_at: datetime
     updated_at: datetime
     execution_mode: str = "planned"
@@ -150,7 +200,7 @@ class TaskPlanResponse(BaseModel):
     deepening_sub_run_ids: list[str] = Field(default_factory=list)
 
 
-class TaskRunResponse(BaseModel):
+class TaskRunResponse(ResearchIntegrityResponse):
     run_id: str
     status: str
     current_step: int
@@ -172,7 +222,7 @@ class TaskRunResponse(BaseModel):
     deepening_phase: str | None = None
 
 
-class AsyncRunResponse(BaseModel):
+class AsyncRunResponse(ResearchIntegrityResponse):
     run_id: str
     status: str
     status_url: str
@@ -227,6 +277,7 @@ class PlanReviewResponse(BaseModel):
     notes: list[str] = Field(default_factory=list)
     planner_source: str | None = None
     skill_routing: dict[str, Any] | None = None
+    preflight: TaskPreflightResponse | None = None
 
 
 class PlanApproveRequest(BaseModel):
@@ -369,11 +420,12 @@ class ToolExecuteResponse(BaseModel):
     metadata: dict[str, Any]
 
 
-class ReportResponse(BaseModel):
+class ReportResponse(ResearchIntegrityResponse):
     run_id: str
     markdown: str
     report_path: str | None = None
     exists: bool = False
+    availability: Literal["available", "not_generated", "missing", "blocked"] = "not_generated"
     message: str | None = None
 
 
@@ -435,10 +487,40 @@ class MemoryConfirmRequest(BaseModel):
     approved: bool
 
 
+class MemoryDeleteResponse(BaseModel):
+    memory_id: str
+    deleted: bool
+    message: str
+
+
+class MemoryClearResponse(BaseModel):
+    deleted: bool
+    count: int
+    message: str
+
+
+class MemoryAuditResponse(BaseModel):
+    event_id: str
+    action: str
+    memory_id: str | None
+    affected_count: int
+    created_at: datetime
+
+
 # ── Skill schemas ─────────────────────────────────────────────────────
 
+class SkillSummary(BaseModel):
+    name: str
+    version: str
+    description: str
+    required_tools: list[str]
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    error: str | None = None
+
+
 class SkillListResponse(BaseModel):
-    skills: list[Any]
+    skills: list[SkillSummary]
 
 
 class SkillDetailResponse(BaseModel):

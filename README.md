@@ -12,6 +12,141 @@ and produces an evidence-backed Markdown report.
 
 ## Why Traceable Research Agent
 
+### Research integrity (R0–R3)
+
+Tool success is not research completion. Missing required configuration blocks
+execution without discarding a draft. `GET /api/runtime/capabilities` discloses
+configuration presence (never secrets); `GET /api/tasks/{run_id}/preflight`
+checks the actual plan. Neither endpoint verifies external connectivity.
+
+- Local file/SQL plans need no search or model keys unless LLM mode is requested.
+- Empty upstream results skip dependent fetches. Zero usable evidence or a failed
+  required fetch/step fails the run before report generation. Partial results
+  retain explicit warnings; an explicitly selected LLM report cannot silently
+  become a rule-based report when synthesis fails.
+- Errors, approvals, memory-recall messages and model finish summaries remain in
+  Trace but are not sources. Search snippets and fetched page text are distinct.
+  Citation checks evaluate answer text, not the citation index; no citations means
+  not evaluated, never 100%. Citation IDs are never repaired by numeric proximity.
+- Failed/cancelled runs can be fully retried as a new Run with current configuration
+  and fresh approvals. Cancellation cannot be overwritten by late completion.
+- Old reports and traces are retained and labelled for review. Legacy quality
+  records are excluded from trusted trends/routing; active evidence revisions are
+  append-only. No automatic database purge or historical rewrite is performed.
+
+The **Deep Web template**, **ReAct execution mode**, and deployment-level
+`DEEP_RESEARCH_ENABLED` switch are separate. The switch only adds rounds to
+ReAct. Follow-up learning notes are not supported conclusions: inspect their
+linked sub-runs. D01–D11 now have API-connected pages. R6 shared-state,
+responsive and keyboard/focus changes are implemented locally; browser visual
+and current Figma reconciliation checks remain unverified. R7 regression and
+deployment preparation is recorded in [release validation](RELEASE_VALIDATION.md);
+Docker/Streamlit runtime, full pytest and visual/provider acceptance remain open.
+
+### Shared UI states and accessibility (R6)
+
+Unknown/loading metrics show `—`, not zero. Task and health requests fail
+independently and offer retry. Plan review supports recovery, rejects approval
+without explicit ready preflight, synchronizes conflicting Run state, distinguishes
+pending approval/rejection and ignores late responses after leaving a Run.
+Denied browser storage no longer crashes draft creation or promises a saved draft.
+
+Shared native modals label their purpose, manage initial/return focus and guard
+busy operations. Navigation has a skip link, route titles and focus restoration;
+status tabs support arrows/Home/End. Evidence/Trace links focus the exact target
+without stealing focus on refresh. Tables and scrollable payloads are keyboard
+reachable; external links announce a new window. Long text, narrow-screen task
+cards, wrapping actions, reduced motion and text-token contrast are addressed.
+
+Run offline frontend checks under `web/`: `npm run typecheck`, `npm run lint`,
+`npm test`, `npm run build`. `node qa/smoke.mjs` checks the isolated fixture server;
+`npm run dev -- --config qa/vite.config.ts` exposes `/qa/viewport.html` for manual
+desktop/390px checks. This QA server disables the API proxy, forces a same-origin
+fixture API and rejects all writes; it is not shipped in the production build.
+See [QA instructions](web/qa/README.md) and [design mapping limits](web/README.md).
+Mock DOM tests do not verify rendered layout, native focus trapping, screen-reader
+behavior or complete accessibility conformance. These checks and real-provider
+acceptance remain separate gates; final user acceptance stays after R6–R7.
+
+### Local modules (R5 / D08–D11)
+
+- `/sessions`: create/rename sessions, inspect persisted turns and paginated
+  linked Runs. Follow-up research carries `session_id`, uses a separate browser
+  draft and still requires plan approval. Unknown sessions are rejected before
+  Run creation. Session grouping does not inject the entire conversation into
+  the planner: include needed background in the next research question.
+- `/memory`: pending/active/expired/superseded filters, provenance links and
+  explicit confirmation for activate/reject/delete. Rejection permanently deletes
+  a pending item; clearing all statuses requires typing the confirmation phrase.
+  Source sessions/Runs/reports remain intact. Effective expiry is interpreted
+  without rewriting historical rows; expired items are excluded from recall.
+- Migration `0010_memory_audit` adds a content-free audit table. Confirm/reject/
+  delete/clear and their audit event are transactional; failed audit writes roll
+  back the action. `GET /api/memory/audit` returns recent events, not research
+  evidence. There is no fabricated audit backfill for past deletions.
+- `/capabilities`: registered tools, risk/confirmation/schema details and Skill
+  definitions/dependencies. Configuration presence is distinct from runtime
+  success; remote MCP is optional. No tool-execute or browser key-edit controls.
+- `/system`: `GET /api/runtime/diagnostics` checks actual DB reads/module tables
+  and workspace directory permissions without external requests or write probes.
+  Quality windows, daily trends and per-Run details use existing integrity gates.
+  Empty quality is not evaluable; heuristic scores are not factual accuracy.
+
+R5 offline checks: `python -m unittest tests.test_r5_modules tests.test_memory`
+and `python scripts/smoke_research_integrity.py`. The smoke uses a disposable
+SQLite DB, verifies session/memory/audit persistence across API restart and
+never contacts providers. Startup applies the new migration to the deployment
+DB only when you deploy; back up persisted data before deploying migrations.
+Code and mocked tests do not replace browser, container or real-provider acceptance.
+
+### Research workspace (R4 / D05–D07)
+
+- `/runs/{id}` shows persisted status, plan, Trace payloads/failures, timing and
+  recorded cost estimates. Explicit confirmation controls start, cancellation,
+  human approval/rejection and full retry; retry creates a new Run without
+  automatically starting it. Plan approval opens the corresponding workspace.
+- `/runs/{id}/evidence` shows source snippets/content basis and the exact
+  citation → claim → passage → source/Trace association. Missing/ambiguous IDs
+  remain unresolved. Export downloads grouped sources/passages as JSON.
+- `/runs/{id}/report` reads/downloads Markdown, links exact citation IDs to the
+  evidence page and distinguishes not-generated, missing and blocked reports.
+  The bounded safe reader supports headings, lists, tables, code and HTTP(S)
+  links; it does not execute HTML or load remote images. Download the original
+  for unsupported Markdown formatting. A resolved link is not fact verification.
+- Live runs use resumable SSE plus 5-second HTTP reconciliation; waiting-human
+  runs poll without repeated SSE reconnects, terminal runs close the stream.
+  Nginx disables event buffering. List filtering/search/pagination is server-side
+  (`status=waiting` covers both approval states, `q` searches task text/Run ID).
+  SQLite timestamps without offsets are displayed as UTC converted to local time.
+- `POST /api/tasks/{id}/confirm?start_async=true` schedules confirmed execution;
+  the default synchronous contract remains compatible. Report JSON adds
+  `availability`: `available`, `not_generated`, `missing`, or `blocked`.
+
+Offline R4 checks: `python -m unittest tests.test_r4_workflow` and, under `web/`,
+`npm run typecheck`, `npm run lint`, `npm test`, `npm run build`. These are not
+real-provider or browser visual acceptance. Follow the remaining release gates
+before final user-side deployment/API-key acceptance; never infer completion from Markdown
+or a `completed` status alone.
+
+After editing `.env` in the actual deployment directory, recreate the API service
+with `docker compose up -d --force-recreate api`, then recheck the plan. No image
+rebuild is needed for key-only changes. Do not send keys through the browser UI.
+
+Offline regression commands (from the repository root):
+
+```bash
+python -m unittest tests.test_research_integrity -v
+python scripts/smoke_research_integrity.py
+python scripts/run_offline_tests.py --runner pytest
+```
+
+The smoke script copies code/bundled fixtures into a disposable repository and
+uses a temporary database and localhost API. It checks missing-key blocking,
+local file/SQL report generation and restart persistence of reports, Trace,
+sessions, memory and audit. External socket requests are blocked. Real provider
+connectivity, live research quality, and Docker startup require separate acceptance
+after deployment keys are configured.
+
 - **Inspectable execution**: persist the task plan, run state, progress, tool
   inputs and outputs, errors, latency, and cost estimates in SQLite.
 - **Read-only by default**: local files, SQL, web, source-control, academic,
@@ -123,11 +258,15 @@ hash of a failed download. If it still fails, check Docker Desktop's proxy and
 package-download connectivity; longer timeouts cannot repair a broken proxy.
 Upgrading Windows-host pip does not upgrade pip inside the Docker image.
 
-Docker applies schema migrations and initializes the local demo database when
-the API container starts. Wait until the API is healthy, then open:
+Docker applies schema migrations and seeds the local demo database only if it is
+absent when the API container starts. Existing demo files are preserved, including
+unknown/corrupt files that require manual inspection; they are never reset.
+Set `DOCKER_INIT_DEMO_DATA=false` to disable seeding. Back up the stopped
+deployment workspace before upgrading; see [release validation](RELEASE_VALIDATION.md).
+Wait until the API is healthy, then open:
 
 - Streamlit: <http://localhost:8501>
-- React web (D01–D04): <http://localhost:5173>
+- React web (D01–D11): <http://localhost:5173>
 - FastAPI documentation: <http://localhost:8000/docs>
 - Health check: <http://localhost:8000/health>
 
@@ -256,20 +395,19 @@ workspace/     local databases, reports, artifacts, and skills
 
 ## Quality Checks
 
-The current registry exposes **12 read-only tools**. The latest local closure
-passed **338 tests and 17 subtests**, plus **80/80 deterministic evaluation
-cases** with no hard failures or network skips. The checks cover source
-governance, cache behavior, PDF extraction, reference verification, academic
-retrievers, API contracts, and the existing execution paths.
+The current registry exposes **12 read-only tools**. Earlier phase counts are not
+acceptance of the R0–R7 repairs. The R7 offline run discovered 479 unittest entries:
+467 passed and 12 failed to import pytest/Streamlit dependencies, with zero
+blocked external attempts after fixture fixes. This is **not a full pytest pass**.
+Frontend: 93 tests, typecheck, lint and build passed; isolated QA middleware:
+52 checks passed. See [release validation](RELEASE_VALIDATION.md) for limits.
 
 Run the same core checks locally:
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall -q app scripts frontend migrations tests
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe scripts\smoke_final_project.py
-.\.venv\Scripts\python.exe -m app.eval.regression
-.\.venv\Scripts\python.exe scripts\skill_smoke.py --all
+.\.venv\Scripts\python.exe scripts\run_offline_tests.py --runner pytest
+.\.venv\Scripts\python.exe scripts\smoke_research_integrity.py
 docker compose config --quiet
 ```
 
@@ -278,7 +416,8 @@ docker compose config --quiet
 - [x] Traceable planned and optional ReAct execution
 - [x] Evidence provenance, citation validation, and human plan approval
 - [x] Source-tier governance, cached extraction, PDF evidence, and academic verification
-- [x] Docker deployment with persistent local runtime data
+- [x] Docker deployment configuration and local runtime persistence implementation
+- [ ] R0–R7 real Docker build/restart, Streamlit and browser acceptance
 - [ ] Add a repository license before public redistribution
 - [ ] Expand operational observability for long-running self-hosted instances
 

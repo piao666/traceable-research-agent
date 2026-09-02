@@ -49,7 +49,7 @@ class CitationValidationReport:
     @property
     def accuracy(self) -> float:
         if self.total == 0:
-            return 1.0
+            return 0.0
         return round(self.supported / self.total, 4)
 
     @property
@@ -65,6 +65,7 @@ class CitationValidationReport:
             "weakly_supported": self.weakly_supported,
             "unsupported": self.unsupported,
             "accuracy": self.accuracy,
+            "evaluated": self.total > 0,
             "weak_rate": self.weak_rate,
             "llm_used": self.llm_used,
             "llm_provider": self.llm_provider,
@@ -343,7 +344,7 @@ def validate_citations(
 def render_citation_validation_section(report: CitationValidationReport) -> list[str]:
     """Render the citation validation section as Markdown lines."""
     if report.total == 0:
-        return []
+        return ["## 11. 引用校验", "", "不可评估：最终回答中没有可校验的引用。", ""]
 
     lines = [
         "## 11. 引用校验",

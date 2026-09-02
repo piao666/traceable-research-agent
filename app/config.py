@@ -82,7 +82,7 @@ class Settings(BaseModel):
     llm_max_retries: int = 1
     llm_strict_json: bool = True
     evidence_pipeline_version: str = "v2"
-    evidence_extractor_version: str = "v2-rule-1"
+    evidence_extractor_version: str = "v2-rule-2"
     evidence_artifact_root: str = "workspace/artifacts"
     evidence_passage_max_chars: int = 4000
     evidence_reasoning_enabled: bool = True
@@ -185,10 +185,7 @@ class Settings(BaseModel):
                 raise ValueError("REPORT_GENERATION_MODE=llm conflicts with OFFLINE_MODE=true")
             if self.llm_provider == "deterministic":
                 raise ValueError("REPORT_GENERATION_MODE=llm requires a remote LLM provider")
-            if not self.get_llm_api_key(self.llm_provider):
-                raise ValueError(
-                    f"REPORT_GENERATION_MODE=llm requires {self.llm_provider.upper()} API credentials"
-                )
+            # Credential presence is a per-plan preflight concern, not a startup failure.
         if self.offline_mode and self.llm_planner_enabled and self.llm_planner_mode != "deterministic":
             raise ValueError("Offline mode requires deterministic LLM planner mode")
         if self.offline_mode and self.execution_mode == "react" and self.react_llm_provider != "deterministic":
@@ -391,9 +388,9 @@ class Settings(BaseModel):
                 "EVIDENCE_PIPELINE_VERSION", "v2"
             ),
             evidence_extractor_version=os.getenv(
-                "EVIDENCE_EXTRACTOR_VERSION", "v2-rule-1"
+                "EVIDENCE_EXTRACTOR_VERSION", "v2-rule-2"
             ).strip()
-            or "v2-rule-1",
+            or "v2-rule-2",
             evidence_artifact_root=os.getenv(
                 "EVIDENCE_ARTIFACT_ROOT", "workspace/artifacts"
             ).strip()

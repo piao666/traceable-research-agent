@@ -46,9 +46,12 @@ class ReportModeTests(unittest.TestCase):
         )
         self.assertIsNone(resolve_report_llm_client(settings, ExplodingLLMClient()))
 
-    def test_llm_mode_requires_provider_credentials(self) -> None:
-        with self.assertRaises(ValidationError):
-            Settings(report_generation_mode="llm", llm_provider="qwen")
+    def test_llm_mode_requires_credentials_at_execution_not_startup(self) -> None:
+        from app.agent.preflight import check_plan_readiness
+        settings = Settings(report_generation_mode="llm", llm_provider="qwen", qwen_api_key=None)
+        result = check_plan_readiness({"steps": []}, settings)
+        self.assertFalse(result["ready"])
+        self.assertEqual(result["blockers"][0]["capability"], "report_synthesis")
 
     def test_invalid_report_mode_fails_validation(self) -> None:
         with self.assertRaises(ValidationError):

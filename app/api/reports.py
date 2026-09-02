@@ -14,6 +14,7 @@ from app.agent.report_exporter import (
     resolve_report_path,
 )
 from app.database import get_db
+from app.agent.outcome import report_block_reason, result_integrity
 from app.schemas import ReportResponse
 from app.security import require_api_key
 from app.trace import store
@@ -53,25 +54,36 @@ async def get_report(
     if run is None:
         raise HTTPException(status_code=404, detail="Task run not found")
 
+    blocker = report_block_reason(run)
+    if blocker:
+        return ReportResponse(**result_integrity(run), run_id=run_id, markdown="",
+                              report_path=None, exists=False, availability="blocked", message=blocker)
+
     if run.report_path:
-        report_path = Path(run.report_path)
-        if not report_path.is_absolute():
-            report_path = ROOT / report_path
+        try:
+            report_path = resolve_report_path(run.report_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail="Recorded report path is outside the allowed workspace.") from exc
         if report_path.exists() and report_path.is_file():
             return ReportResponse(
+                **result_integrity(run),
                 run_id=run_id,
                 markdown=report_path.read_text(encoding="utf-8"),
                 report_path=run.report_path,
                 exists=True,
+                availability="available",
                 message=None,
             )
 
-    message = "Report has not been generated yet. Run POST /api/tasks/{run_id}/run first."
+    missing = bool(run.report_path)
+    message = "Report path is recorded but the file is missing." if missing else "Report has not been generated yet."
     return ReportResponse(
+        **result_integrity(run),
         run_id=run_id,
-        markdown=message,
+        markdown="",
         report_path=None,
         exists=False,
+        availability="missing" if missing else "not_generated",
         message=message,
     )
 
@@ -87,6 +99,9 @@ async def download_report(
     run = store.get_agent_run(db, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Task run not found")
+    blocker = report_block_reason(run)
+    if blocker:
+        raise HTTPException(status_code=409, detail=blocker)
     _report_path, markdown = _resolve_existing_report(run_id, run.report_path)
     try:
         result = export_report(run_id, markdown, format)

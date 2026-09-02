@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.improvement.few_shot import LIBRARY_PATH, _MAX_PER_CATEGORY, _MAX_TOTAL
 from app.improvement.models import ImprovementLog
+from app.agent.outcome import trusted_run_ids
 from app.improvement.schemas import (
     ImprovementCategoryResponse,
     ImprovementRegressionResponse,
@@ -54,7 +55,7 @@ def improvement_stats(
     rows = (
         db.execute(
             select(ImprovementLog)
-            .where(ImprovementLog.created_at >= _cutoff(days))
+            .where(ImprovementLog.created_at >= _cutoff(days), ImprovementLog.run_id.in_(trusted_run_ids()))
             .order_by(ImprovementLog.created_at.desc())
         )
         .scalars()
@@ -99,7 +100,7 @@ def improvement_by_category(
             func.avg(ImprovementLog.source_quality_score).label("avg_source"),
             func.avg(ImprovementLog.auditability_score).label("avg_audit"),
         )
-        .where(ImprovementLog.created_at >= _cutoff(days))
+        .where(ImprovementLog.created_at >= _cutoff(days), ImprovementLog.run_id.in_(trusted_run_ids()))
         .group_by(ImprovementLog.question_category)
         .order_by(func.avg(ImprovementLog.overall_score).desc())
     ).all()
@@ -131,7 +132,7 @@ def improvement_by_strategy(
             func.count().label("cnt"),
             func.avg(ImprovementLog.overall_score).label("avg_overall"),
         )
-        .where(ImprovementLog.created_at >= _cutoff(days))
+        .where(ImprovementLog.created_at >= _cutoff(days), ImprovementLog.run_id.in_(trusted_run_ids()))
         .group_by(ImprovementLog.skill_composition, ImprovementLog.execution_mode)
         .order_by(func.avg(ImprovementLog.overall_score).desc())
     ).all()
@@ -157,7 +158,7 @@ def improvement_trend(
     rows = (
         db.execute(
             select(ImprovementLog)
-            .where(ImprovementLog.created_at >= _cutoff(days))
+            .where(ImprovementLog.created_at >= _cutoff(days), ImprovementLog.run_id.in_(trusted_run_ids()))
             .order_by(ImprovementLog.created_at.asc())
         )
         .scalars()
@@ -204,7 +205,7 @@ def improvement_regressions(
             func.count().label("cnt"),
             func.avg(ImprovementLog.overall_score).label("avg_score"),
         )
-        .where(ImprovementLog.created_at >= cutoff)
+        .where(ImprovementLog.created_at >= cutoff, ImprovementLog.run_id.in_(trusted_run_ids()))
         .group_by(ImprovementLog.skill_composition, ImprovementLog.execution_mode)
         .having(func.count() >= 6)
     ).all()
@@ -216,6 +217,7 @@ def improvement_regressions(
                 select(ImprovementLog.overall_score)
                 .where(
                     ImprovementLog.created_at >= cutoff,
+                    ImprovementLog.run_id.in_(trusted_run_ids()),
                     ImprovementLog.skill_composition == row.skill_composition,
                     ImprovementLog.execution_mode == row.execution_mode,
                 )
@@ -251,6 +253,9 @@ def improvement_run(run_id: str, db: Session = Depends(get_db)) -> ImprovementRu
     if row is None:
         raise HTTPException(status_code=404, detail="Improvement evaluation not found")
     return ImprovementRunResponse(
+        requires_review=db.scalar(select(ImprovementLog.run_id).where(
+            ImprovementLog.run_id == run_id, ImprovementLog.run_id.in_(trusted_run_ids()),
+        )) is None,
         run_id=row.run_id,
         category=row.question_category,
         skill_composition=row.skill_composition,
@@ -272,14 +277,17 @@ def improvement_run(run_id: str, db: Session = Depends(get_db)) -> ImprovementRu
 @router.get("/state", response_model=ImprovementStateResponse)
 def improvement_state(db: Session = Depends(get_db)) -> ImprovementStateResponse:
     """Return local routing and Few-shot cold-start diagnostics."""
-    total = db.execute(select(func.count()).select_from(ImprovementLog)).scalar() or 0
+    total = db.execute(select(func.count()).select_from(ImprovementLog).where(ImprovementLog.run_id.in_(trusted_run_ids()))).scalar() or 0
     latest = (
-        db.execute(select(ImprovementLog).order_by(ImprovementLog.created_at.desc()).limit(1))
+        db.execute(select(ImprovementLog).where(ImprovementLog.run_id.in_(trusted_run_ids())).order_by(ImprovementLog.created_at.desc()).limit(1))
         .scalars()
         .first()
     )
 
     weights_payload = _read_json(WEIGHTS_PATH)
+    from app.agent.outcome import INTEGRITY_VERSION
+    if weights_payload.get("integrity_version") != INTEGRITY_VERSION:
+        weights_payload = {}
     weights = weights_payload.get("weights") if isinstance(weights_payload.get("weights"), dict) else {}
     strategy_count = sum(len(value) for value in weights.values() if isinstance(value, dict))
 

@@ -83,12 +83,14 @@ class DeepeningResponseParsingTests(unittest.TestCase):
     def test_empty_string(self):
         result = self._parse("")
         self.assertEqual(result["learnings"], [])
-        self.assertTrue(result["is_comprehensive"])
+        self.assertFalse(result["is_comprehensive"])
+        self.assertEqual(result["error"], "invalid_deepening_response")
 
     def test_invalid_json(self):
         result = self._parse("not valid json at all")
         self.assertEqual(result["learnings"], [])
-        self.assertTrue(result["is_comprehensive"])
+        self.assertFalse(result["is_comprehensive"])
+        self.assertEqual(result["error"], "invalid_deepening_response")
 
     def test_missing_keys(self):
         result = self._parse("{}")

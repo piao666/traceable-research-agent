@@ -121,6 +121,7 @@ async def update_session_endpoint(
     return SessionResponse(
         session_id=session_obj.session_id,
         title=session_obj.title,
+        turn_count=memory_store.count_turns_for_session(db, session_id),
         created_at=session_obj.created_at,
         updated_at=session_obj.updated_at,
     )

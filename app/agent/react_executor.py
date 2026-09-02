@@ -22,6 +22,8 @@ from app.agent.executor import (
     run_plan,
 )
 from app.agent.report_generation import resolve_report_llm_client
+from app.agent.preflight import enforce_execution_readiness
+from app.agent.outcome import enforce_research_outcome, report_subject
 from app.agent.react_prompt import build_react_messages
 from app.agent.react_schema import (
     ReActDecision,
@@ -324,8 +326,8 @@ def _complete_report(
         raise ValueError("Task run not found.")
     observations = list(state.get("observation_history") or [])
     traces = store.list_tool_traces(db, run_id)
-    run.status = "completed"
-    run.error_message = None
+    if not enforce_research_outcome(db, run, plan, observations, traces, settings_obj):
+        return _summary(store.get_fresh_agent_run(db, run_id), plan)
     provenance_bundle = materialize_execution_provenance(
         db,
         run,
@@ -334,11 +336,12 @@ def _complete_report(
         traces,
         settings_obj,
     )
+    _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
     _llm = resolve_report_llm_client(settings_obj, llm_client)
     citation_validation_reports: list[Any] = []
     reference_verification_reports: list[Any] = []
     markdown = generate_markdown_report(
-        run,
+        report_subject(run),
         plan,
         observations,
         traces,
@@ -364,7 +367,6 @@ def _complete_report(
         traces,
     )
     traces = store.list_tool_traces(db, run_id)
-    _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
     if store.is_agent_run_cancelled(db, run_id):
         cancelled = store.get_fresh_agent_run(db, run_id)
         return _summary(cancelled, plan, "Run cancelled by user.")
@@ -400,8 +402,10 @@ def _fallback_to_plan(
 ) -> dict:
     state["fallback_used"] = True
     state["finish_reason"] = "react_fallback_to_planned"
-    plan["requested_execution_mode"] = "react"
+    plan.setdefault("requested_execution_mode", "react")
     plan["execution_mode"] = "planned"
+    if plan.get("adaptive_upgrade"):
+        plan["adaptive_upgrade_failed"] = True
     plan["react_state"] = state
     plan.setdefault("notes", []).append(f"ReAct fallback: {reason}")
     _persist_plan(db, run_id, plan)
@@ -443,8 +447,11 @@ def run_react_task(
         return _summary(run, plan, "Run already completed; no tools executed.")
     if run.status in ("failed", "cancelled"):
         return _summary(run, plan, f"Run is {run.status} and cannot be executed.")
-    if run.status == "waiting_human":
+    if run.status in {"waiting_human", "waiting_human_plan"}:
         return _summary(run, plan, "Run is waiting for human confirmation.")
+    if not enforce_execution_readiness(db, run_id, plan, settings,
+                                      llm_available=bool(llm_client and llm_client.is_available())):
+        return _summary(store.get_fresh_agent_run(db, run_id), plan)
 
     allowed_tools = _allowed_tools(run, plan)
     available_specs = [spec for spec in list_tools() if spec.enabled]
@@ -466,7 +473,7 @@ def run_react_task(
     )
     state["llm_provider"] = provider
     state["llm_model"] = model
-    plan["requested_execution_mode"] = "react"
+    plan.setdefault("requested_execution_mode", "react")
     plan["execution_mode"] = "react"
     plan["react_state"] = state
     run.total_steps = settings.react_max_steps
@@ -794,6 +801,10 @@ def run_react_task(
             else governed_args
         )
         started = perf_counter()
+        # Dynamic decisions must also respect runtime configuration, not only the initial plan.
+        if not enforce_execution_readiness(db, run_id, plan, settings,
+                                          llm_available=client.is_available(), decision_tool=decision.action):
+            return _summary(store.get_fresh_agent_run(db, run_id), plan)
         result = execute_tool(decision.action, execution_args)
         latency_ms = int((perf_counter() - started) * 1000)
         result = govern_tool_result(decision.action, result, plan, settings)

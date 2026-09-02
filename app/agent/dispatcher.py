@@ -13,6 +13,8 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.agent.executor import run_plan
+from app.agent.preflight import enforce_execution_readiness
+from app.agent.outcome import fail_execution, result_integrity
 from app.config import Settings, settings
 from app.llm.base import LLMClient
 
@@ -63,6 +65,7 @@ def _refresh_result(db: Session, run_id: str, result: dict) -> dict:
         return refreshed
     refreshed.update(
         {
+            **result_integrity(run),
             "status": run.status,
             "current_step": run.current_step,
             "total_steps": run.total_steps,
@@ -124,6 +127,14 @@ def run_task_by_mode(
             plan_mode = None
 
     effective_mode = plan_mode or "planned"
+    if run is not None and run.status in {"failed", "cancelled", "completed", "waiting_human", "waiting_human_plan"}:
+        from app.agent.executor import _summary
+        return _refresh_result(db, run_id, _summary(run))
+    if run is not None and run.status not in {"failed", "cancelled", "completed", "waiting_human", "waiting_human_plan"}:
+        if not enforce_execution_readiness(db, run_id, plan, settings_obj,
+                                          llm_available=bool(llm_client and llm_client.is_available())):
+            from app.agent.executor import _summary
+            return _refresh_result(db, run_id, _summary(_store.get_fresh_agent_run(db, run_id)))
     if effective_mode == "react" and not settings_obj.react_enabled:
         if run is not None:
             plan["requested_execution_mode"] = "react"
@@ -161,9 +172,13 @@ def run_task_by_mode(
         except Exception as exc:
             successful = any(trace.status == "success" for trace in _store.list_tool_traces(db, run_id))
             if not settings_obj.react_fallback_to_planned or successful or run is None:
-                raise
+                db.rollback()
+                failed = fail_execution(db, run_id, exc)
+                from app.agent.executor import _summary
+                return _finalize_result(db, run_id, _summary(failed))
             plan["requested_execution_mode"] = adaptive_requested_mode or "react"
             plan["execution_mode"] = "planned"
+            plan["react_state"] = {**(plan.get("react_state") or {}), "fallback_used": True}
             routing = dict(plan.get("execution_routing") or {})
             routing.update({"selected": "planned", "fallback": f"ReAct 启动失败，降级为固定计划：{type(exc).__name__}"})
             plan["execution_routing"] = routing
@@ -184,7 +199,9 @@ def run_task_by_mode(
                     _store.replace_agent_run_plan(db, run_id, fallback_plan)
             return _finalize_result(db, run_id, result)
 
-    adaptive_candidate = effective_mode == "planned" and settings_obj.react_enabled
+    adaptive_candidate = bool(effective_mode == "planned" and settings_obj.react_enabled
+                              and (llm_client is not None or settings_obj.get_llm_api_key(
+                                  settings_obj.react_llm_provider or settings_obj.llm_provider)))
     if run is not None:
         plan["parallel_execution"] = bool(
             effective_mode == "planned" and settings_obj.parallel_execution_enabled
@@ -203,6 +220,7 @@ def run_task_by_mode(
             run_id,
             settings_obj,
             completion_status=completion_status,
+            report_llm_client=llm_client,
         )
     else:
         result = run_plan(
@@ -210,6 +228,7 @@ def run_task_by_mode(
             run_id,
             settings_obj=settings_obj,
             completion_status=completion_status,
+            report_llm_client=llm_client,
         )
 
     current = _store.get_fresh_agent_run(db, run_id)
@@ -264,10 +283,16 @@ def run_task_by_mode(
             failed_plan["adaptive_upgrade_reason"] = upgrade_reason
             failed_plan["adaptive_upgrade_error"] = type(exc).__name__
             _store.replace_agent_run_plan(db, run_id, failed_plan)
-            _store.update_agent_run_status(db, run_id, "completed", None)
+            from app.trace.logger import record_trace_event
+            record_trace_event(db, run_id, 0, "adaptive_upgrade", "failed", {},
+                               "Optional ReAct upgrade failed; rechecking the planned result.",
+                               {"error_type": type(exc).__name__})
+            result = run_plan(db, run_id, settings_obj=settings_obj, report_llm_client=llm_client)
             return _finalize_result(db, run_id, result)
 
     final_run = _store.get_fresh_agent_run(db, run_id)
+    if final_run is not None and final_run.status in {"failed", "cancelled"}:
+        return _finalize_result(db, run_id, result)
     final_plan = json.loads(final_run.plan_json or "{}") if final_run else dict(plan)
     final_plan["adaptive_gate_pending"] = False
     final_plan["adaptive_phase"] = "completed"

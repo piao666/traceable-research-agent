@@ -6,10 +6,10 @@ Aligns with app/trace/store.py style: plain functions taking db: Session.
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update, func
 from sqlalchemy.orm import Session
 
-from app.memory.models import ChatTurn, ConversationSession, UserMemory
+from app.memory.models import ChatTurn, ConversationSession, UserMemory, MemoryAuditEvent
 
 
 # ── ConversationSession ──────────────────────────────────────────────
@@ -41,7 +41,7 @@ def list_sessions(
 ) -> list[ConversationSession]:
     """Return all local sessions, newest first."""
 
-    stmt = select(ConversationSession).order_by(ConversationSession.created_at.desc())
+    stmt = select(ConversationSession).order_by(ConversationSession.updated_at.desc(), ConversationSession.session_id)
     return list(db.scalars(stmt).all())
 
 
@@ -81,6 +81,8 @@ def create_chat_turn(
         run_id=run_id,
     )
     db.add(turn)
+    db.execute(update(ConversationSession).where(ConversationSession.session_id == session_id)
+               .values(updated_at=datetime.now(timezone.utc)))
     db.commit()
     db.refresh(turn)
     return turn
@@ -144,10 +146,45 @@ def list_user_memories(
     """Return local memories, optionally filtered by status."""
 
     stmt = select(UserMemory)
-    if status is not None:
-        stmt = stmt.where(UserMemory.status == status)
     stmt = stmt.order_by(UserMemory.created_at.desc())
-    return list(db.scalars(stmt).all())
+    memories = list(db.scalars(stmt).all())
+    return [m for m in memories if status is None or effective_memory_status(m) == status]
+
+
+def effective_memory_status(memory: UserMemory) -> str:
+    """Read-only expiry interpretation; do not rewrite historical records on GET."""
+    until = memory.valid_until
+    if until and memory.status in {"active", "pending"}:
+        until = until.replace(tzinfo=timezone.utc) if until.tzinfo is None else until.astimezone(timezone.utc)
+        if until <= datetime.now(timezone.utc):
+            return "expired"
+    return memory.status
+
+
+def _audit(db: Session, action: str, memory_id: str | None, count: int) -> None:
+    db.add(MemoryAuditEvent(event_id=uuid4().hex, action=action,
+                           memory_id=memory_id, affected_count=count))
+
+
+def decide_pending_memory(db: Session, memory_id: str, approved: bool) -> bool:
+    """Atomic pending-state claim and audit; expired memories cannot be activated."""
+    now = datetime.now(timezone.utc)
+    predicate = (UserMemory.memory_id == memory_id, UserMemory.status == "pending",
+                 (UserMemory.valid_until.is_(None) | (UserMemory.valid_until > now)))
+    statement = (update(UserMemory).where(*predicate).values(status="active", updated_at=now)
+                 if approved else delete(UserMemory).where(*predicate))
+    try:
+        result = db.execute(statement.execution_options(synchronize_session=False))
+        if result.rowcount != 1:
+            db.rollback()
+            return False
+        _audit(db, "confirm" if approved else "reject", memory_id, 1)
+        db.commit()
+        db.expire_all()
+        return True
+    except Exception:
+        db.rollback()
+        raise
 
 
 def update_memory_status(
@@ -179,8 +216,15 @@ def delete_user_memory(db: Session, memory_id: str) -> None:
     memory = db.get(UserMemory, memory_id)
     if memory is None:
         raise ValueError("Memory not found")
-    db.delete(memory)
-    db.commit()
+    try:
+        result = db.execute(delete(UserMemory).where(UserMemory.memory_id == memory_id))
+        if result.rowcount != 1:
+            raise ValueError("Memory not found")
+        _audit(db, "delete", memory_id, 1)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 def delete_all_user_memories(
@@ -189,9 +233,14 @@ def delete_all_user_memories(
     """Delete all local memories. Returns count."""
 
     stmt = delete(UserMemory)
-    result = db.execute(stmt)
-    db.commit()
-    return result.rowcount
+    try:
+        result = db.execute(stmt)
+        _audit(db, "clear", None, result.rowcount)
+        db.commit()
+        return result.rowcount
+    except Exception:
+        db.rollback()
+        raise
 
 
 def expire_memories(db: Session) -> int:
@@ -218,5 +267,5 @@ def expire_memories(db: Session) -> int:
 def count_turns_for_session(db: Session, session_id: str) -> int:
     """Return the number of chat turns in a session."""
 
-    stmt = select(ChatTurn).where(ChatTurn.session_id == session_id)
-    return len(list(db.scalars(stmt).all()))
+    stmt = select(func.count()).select_from(ChatTurn).where(ChatTurn.session_id == session_id)
+    return db.scalar(stmt) or 0

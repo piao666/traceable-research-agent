@@ -11,6 +11,7 @@ import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
+from app.agent.outcome import trusted_run_ids
 
 from app.database import SessionLocal
 from app.improvement.models import ImprovementLog
@@ -129,6 +130,8 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
     run = trace_store.get_agent_run(db, run_id)
     if run is None or run.status != "completed":
         return None
+    if run_id not in set(db.scalars(trusted_run_ids())):
+        return None
 
     # Check if already logged (idempotent)
     existing = db.get(ImprovementLog, run_id)
@@ -141,8 +144,21 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
     verified = getattr(run, "citation_supported", 0) or 0
     unsupported = getattr(run, "citation_unsupported", 0) or 0
 
-    tiers = _extract_tiers(traces)
-    cb = _extract_content_basis(traces)
+    # Use the same eligible, de-duplicated sources/passages as the report, not audit summaries.
+    from app.evidence.service import get_provenance_bundle
+    try:
+        provenance = get_provenance_bundle(db, run_id)
+    except ValueError:
+        provenance = {}
+    documents = [doc for doc in provenance.get("source_documents", [])
+                 if (doc.get("metadata") or {}).get("research_eligible")
+                 and not (doc.get("metadata") or {}).get("is_mock")
+                 and not (doc.get("metadata") or {}).get("is_fallback")]
+    documents = list({doc["canonical_uri"]: doc for doc in documents}.values())
+    tiers = {tier: sum((doc.get("metadata") or {}).get("source_tier") == tier for doc in documents)
+             for tier in ("T0", "T1", "T2")}
+    cb = {basis: sum(p.get("content_basis") == basis for p in provenance.get("passages", []))
+          for basis in ("full_text", "partial", "snippet_only")}
     total_content = cb["full_text"] + cb["partial"] + cb["snippet_only"]
     full_text_ratio = round(cb["full_text"] / total_content, 2) if total_content > 0 else 0.0
 

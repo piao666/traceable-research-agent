@@ -192,7 +192,9 @@ class ApiRegressionTests(unittest.TestCase):
             _run_task_in_background(run.run_id)
         failed = store.get_fresh_agent_run(self.db, run.run_id)
         self.assertEqual(failed.status, "failed")
-        self.assertEqual(failed.error_message, "forced failure")
+        self.assertIn("execution_failed", failed.error_message)
+        self.assertTrue(any(trace.tool_name == "execution_failure" and trace.status == "failed"
+                            for trace in store.list_tool_traces(self.db, run.run_id)))
 
     def test_trace_api_exposes_token_and_cost_metrics(self) -> None:
         run = self._create_run()

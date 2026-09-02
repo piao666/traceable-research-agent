@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.trace.models import AgentRun, ToolTrace
@@ -59,6 +59,23 @@ def is_agent_run_cancelled(db: Session, run_id: str) -> bool:
     return run is not None and run.status == "cancelled"
 
 
+def _filter_run_listing(stmt, status: str | None, q: str | None):
+    # Match the API-visible status, including ongoing adaptive/deepening stages.
+    plan = case((func.json_valid(AgentRun.plan_json) == 1, AgentRun.plan_json), else_="{}")
+    visible_status = case((and_(AgentRun.status == "completed", or_(
+        func.json_extract(plan, "$.adaptive_gate_pending") == 1,
+        func.json_extract(plan, "$.deepening_pending") == 1,
+    )), "running"), else_=AgentRun.status)
+    if isinstance(status, str) and status:
+        stmt = stmt.where(visible_status.in_(["waiting_human", "waiting_human_plan"])
+                          if status == "waiting" else visible_status == status)
+    if isinstance(q, str) and q.strip():
+        needle = q.strip().lower()
+        stmt = stmt.where(or_(func.lower(AgentRun.task).contains(needle, autoescape=True),
+                              func.lower(AgentRun.run_id).contains(needle, autoescape=True)))
+    return stmt
+
+
 def list_agent_runs(
     db: Session,
     session_id: str | None = None,
@@ -68,13 +85,12 @@ def list_agent_runs(
     created_before: datetime | None = None,
     limit: int = 50,
     offset: int = 0,
+    q: str | None = None,
 ) -> list[AgentRun]:
     """List agent runs with optional filters and pagination."""
-    stmt = select(AgentRun).order_by(AgentRun.created_at.desc())
+    stmt = _filter_run_listing(select(AgentRun), status, q).order_by(AgentRun.created_at.desc(), AgentRun.run_id.desc())
     if session_id:
         stmt = stmt.where(AgentRun.session_id == session_id)
-    if status:
-        stmt = stmt.where(AgentRun.status == status)
     if execution_mode:
         stmt = stmt.where(
             func.coalesce(
@@ -98,13 +114,12 @@ def count_agent_runs(
     execution_mode: str | None = None,
     created_after: datetime | None = None,
     created_before: datetime | None = None,
+    q: str | None = None,
 ) -> int:
     """Count agent runs matching optional filters."""
-    stmt = select(func.count()).select_from(AgentRun)
+    stmt = _filter_run_listing(select(func.count()).select_from(AgentRun), status, q)
     if session_id:
         stmt = stmt.where(AgentRun.session_id == session_id)
-    if status:
-        stmt = stmt.where(AgentRun.status == status)
     if execution_mode:
         stmt = stmt.where(
             func.coalesce(
@@ -168,20 +183,22 @@ def update_agent_run_status(
     run = db.get(AgentRun, run_id)
     if run is None:
         raise ValueError("Task run not found")
-    run.status = status
-    run.error_message = error_message
-    run.updated_at = datetime.now(timezone.utc)
+    statement = update(AgentRun).where(AgentRun.run_id == run_id)
+    if status != "cancelled":
+        statement = statement.where(AgentRun.status != "cancelled")
+    db.execute(statement.values(status=status, error_message=error_message,
+                                updated_at=datetime.now(timezone.utc)))
     db.commit()
     db.refresh(run)
     return run
 
 
-def claim_pending_agent_run(db: Session, run_id: str) -> bool:
+def claim_pending_agent_run(db: Session, run_id: str, expected_status: str = "pending") -> bool:
     """Atomically move a pending run to running for background execution."""
 
     result = db.execute(
         update(AgentRun)
-        .where(AgentRun.run_id == run_id, AgentRun.status == "pending")
+        .where(AgentRun.run_id == run_id, AgentRun.status == expected_status)
         .values(
             status="running",
             error_message=None,

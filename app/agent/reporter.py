@@ -18,7 +18,10 @@ from dataclasses import dataclass, field
 
 from app.trace.models import AgentRun, ToolTrace
 from app.agent.context_compressor import compress_evidence, has_useful_evidence
-from app.agent.evidence import build_evidence_bundle, render_evidence_markdown
+from app.agent.evidence import (
+    _items_from_record, build_evidence_bundle, is_eligible_evidence,
+    is_research_record, render_evidence_markdown,
+)
 from app.security.redaction import redact_text
 
 
@@ -632,9 +635,10 @@ def _github_final_answer(record: dict[str, Any], task: str) -> list[str] | None:
 
 def _tavily_final_answer(record: dict[str, Any], task: str) -> list[str] | None:
     output = record["output"]
-    results = [item for item in (output.get("results") or []) if isinstance(item, dict)]
-    answer = str(output.get("answer") or "").strip()
-    if not answer and not results:
+    results = [item for item in (output.get("results") or []) if isinstance(item, dict)
+               and str(item.get("url") or "").startswith(("https://", "http://"))
+               and str(item.get("clean_content") or item.get("content") or item.get("raw_content") or "").strip()]
+    if not results:
         return None
     source = str(record["metadata"].get("data_source") or "unknown")
     intro = {
@@ -643,8 +647,6 @@ def _tavily_final_answer(record: dict[str, Any], task: str) -> list[str] | None:
         "fallback": "以下是 Tavily API 请求失败后使用降级数据整理的资料：",
     }.get(source, "以下是根据本次 Tavily 工具证据整理的资料：")
     lines = [intro, ""]
-    if answer:
-        lines.extend([f"**综合回答：** {answer}", ""])
     requested_limit = _requested_result_count(task, 5)
     for index, item in enumerate(results[:requested_limit], 1):
         title = item.get("title") or "未命名来源"
@@ -675,8 +677,6 @@ def _learning_route_final_answer(records: list[dict[str, Any]]) -> list[str]:
         if record["tool_name"] == "file_reader":
             snippets.append(str(output.get("content") or "").strip())
         else:
-            if output.get("answer"):
-                snippets.append(str(output["answer"]).strip())
             snippets.extend(str(item.get("clean_content") or item.get("content") or "").strip() for item in output.get("results") or [] if isinstance(item, dict))
     snippets = [snippet.replace("\n", " ")[:500] for snippet in snippets if snippet]
     learning_terms = (
@@ -808,14 +808,8 @@ def _llm_synthesize_answer(
             usage_callback(response)
         if response.success and response.content:
             content = response.content.strip()
-            if provenance_bundle:
-                repaired = _repair_synthesis_citations(content, provenance_bundle)
-                if repaired != content:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        "LLM synthesis contained invalid citations; repaired automatically."
-                    )
-                content = repaired
+            if provenance_bundle and not _valid_synthesis_citations(content, provenance_bundle):
+                return None
             return content
     except Exception as exc:
         import logging
@@ -868,60 +862,20 @@ def _valid_synthesis_citations(content: str, bundle: dict[str, Any]) -> bool:
         for item in bundle.get("citations") or []
         if item.get("citation_label")
     }
-    if not available:
-        return True
     used = set(re.findall(r"CIT-\d{3}-\d{2}", content))
     return bool(used) and used.issubset(available)
 
 
 def _repair_synthesis_citations(content: str, bundle: dict[str, Any]) -> str:
-    """Replace invalid CIT references in LLM output with valid ones.
-
-    When the LLM generates citations that don't exist in the provenance
-    bundle, this function maps each invalid reference to the closest
-    available citation (by numeric proximity) instead of rejecting the
-    entire output.
-    """
-    available = sorted(
+    """Mark invalid references as unsupported; never invent a source mapping."""
+    available = {
         str(item.get("citation_label"))
         for item in bundle.get("citations") or []
         if item.get("citation_label")
-    )
-    if not available:
-        # No citations available at all — strip all CIT references
-        return re.sub(r"\s*\[?CIT-\d{3}-\d{2}\]?", "", content)
-
-    found = list(re.finditer(r"\[?(CIT-\d{3}-\d{2})\]?", content))
-    if not found:
-        return content
-
-    # Build a mapping from invalid → nearest valid citation
-    invalid_to_valid: dict[str, str] = {}
-    for match in found:
-        label = match.group(1)
-        if label in available:
-            continue
-        # Find the closest valid citation by numeric distance
-        def _num_key(cit: str) -> int:
-            parts = cit.replace("CIT-", "").split("-")
-            return int(parts[0]) * 100 + int(parts[1]) if len(parts) == 2 else 0
-
-        target = _num_key(label)
-        closest = min(available, key=lambda c: abs(_num_key(c) - target))
-        invalid_to_valid[label] = closest
-
-    if not invalid_to_valid:
-        return content
-
-    # Replace invalid citations
-    repaired = content
-    for invalid_label, valid_label in invalid_to_valid.items():
-        repaired = re.sub(
-            r"\[?" + re.escape(invalid_label) + r"\]?",
-            f"[{valid_label}]",
-            repaired,
-        )
-    return repaired
+    }
+    return re.sub(r"\[?(CIT-\d{3}-\d{2})\]?",
+                  lambda match: match.group(0) if match.group(1) in available else "[引用无效，待核验]",
+                  content)
 
 
 def _render_provenance_markdown(bundle: dict[str, Any] | None) -> list[str]:
@@ -973,7 +927,11 @@ def _render_tier_distribution(
     """Phase 8.1: Render source tier distribution and quota analysis."""
     if not bundle:
         return []
-    documents = bundle.get("source_documents") or []
+    documents = [doc for doc in bundle.get("source_documents") or []
+                 if (doc.get("metadata") or {}).get("research_eligible")
+                 and not (doc.get("metadata") or {}).get("is_mock")
+                 and not (doc.get("metadata") or {}).get("is_fallback")]
+    documents = list({doc.get("canonical_uri"): doc for doc in documents}.values())
     if not documents:
         return []
 
@@ -1264,7 +1222,7 @@ def _render_final_answer(
 ) -> list[str]:
     """Build a user-facing answer strictly from successful tool evidence."""
 
-    records = _evidence_records(observations, traces)
+    records = [record for record in _evidence_records(observations, traces) if is_research_record(record)]
     successful = [record for record in records if record["success"]]
     requested_limit = _requested_result_count(task, 5)
 
@@ -1311,11 +1269,9 @@ def _render_final_answer(
         answer = None
 
     if not answer:
-        summaries = [
-            str(record["summary"]).strip()
-            for record in successful
-            if record.get("summary")
-        ]
+        summaries = [f"{item.title}：{item.snippet}（来源：{item.source_ref}）"
+                     for record in successful for item in _items_from_record("report", record, 0)
+                     if is_eligible_evidence(item)]
         if summaries:
             answer = ["以下是根据本次成功工具结果整理的内容：", ""]
             answer.extend(
@@ -1551,6 +1507,10 @@ def generate_markdown_report(
         f"* 降级说明: {degradation_note}",
         "",
     ]
+    outcome = plan.get("research_outcome") or {}
+    if outcome.get("warnings"):
+        lines.extend(["### 本次研究限制", "", *[f"* {warning}" for warning in outcome["warnings"]], ""])
+    lines.extend(["* 生成方式：" + ("LLM 综合" if llm_client else "本地规则报告，非 LLM 综合"), ""])
 
     # ── Phase A: LLM synthesis if available, else template ──────────────────
     _llm_answer: str | None = None
@@ -1562,6 +1522,8 @@ def generate_markdown_report(
             provenance_bundle,
             usage_callback,
         )
+        if not _llm_answer and plan.get("research_outcome"):
+            raise ValueError("report_synthesis_failed: LLM returned no usable, correctly cited report; retry after checking provider and evidence.")
         if _llm_answer:
             _llm_answer = _repair_tool_only_sources(
                 _llm_answer,
@@ -1776,7 +1738,8 @@ def generate_markdown_report(
                         from app.llm.providers import create_llm_client
 
                         validation_llm_client = create_llm_client(_reporter_settings)
-                report_text = "\n".join(lines)
+                # Validate actual answer claims, not the citation index quoting sources.
+                report_text = "\n".join(_final_answer_lines)
                 citation_validation_report = validate_citations(
                     report_text,
                     provenance_bundle,

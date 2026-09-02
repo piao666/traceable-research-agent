@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.trace import store
 from app.trace.models import AgentRun, ToolTrace
+from app.agent.outcome import report_block_reason, result_integrity
 
 
 TERMINAL_STREAM_STATUSES = {"completed", "failed", "cancelled", "waiting_human"}
@@ -22,6 +23,7 @@ class TraceEventCursor:
     """Small in-memory cursor for one SSE connection."""
 
     seen_trace_ids: set[str] = field(default_factory=set)
+    trace_versions: dict[str, tuple] = field(default_factory=dict)
     last_status: str | None = None
     report_ready_sent: bool = False
     done_sent: bool = False
@@ -75,15 +77,18 @@ def build_incremental_events(
         cursor.last_status = visible_status
 
     for trace in store.list_tool_traces(db, run_id):
-        if trace.trace_id in cursor.seen_trace_ids:
+        version = (trace.status, _iso(trace.finished_at), trace.output_summary, trace.error_message)
+        if trace.trace_id in cursor.seen_trace_ids and cursor.trace_versions.get(trace.trace_id) == version:
             continue
         if not replay_existing and is_initial_poll:
             cursor.seen_trace_ids.add(trace.trace_id)
+            cursor.trace_versions[trace.trace_id] = version
             continue
         cursor.seen_trace_ids.add(trace.trace_id)
+        cursor.trace_versions[trace.trace_id] = version
         events.append(_trace_event(trace))
 
-    if run.report_path and visible_status == "completed" and not cursor.report_ready_sent:
+    if run.report_path and visible_status == "completed" and not cursor.report_ready_sent and not report_block_reason(run):
         events.append(_report_ready_event(run))
         cursor.report_ready_sent = True
 
@@ -147,7 +152,7 @@ def _run_status_event(
         current_step=run.current_step,
         total_steps=run.total_steps,
         report_path=run.report_path,
-        metadata=plan_metadata,
+        metadata={**(plan_metadata or {}), **result_integrity(run)},
     )
 
 

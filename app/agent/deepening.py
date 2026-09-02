@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.agent.react_executor import run_react_task
 from app.agent.executor import _persist_citation_validation, _persist_reference_verification
+from app.agent.outcome import enforce_research_outcome, report_subject
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings as _settings
 from app.evidence.service import materialize_execution_provenance
@@ -97,15 +98,16 @@ def _parse_deepening_response(content: str) -> dict[str, Any]:
             if match:
                 text = match.group(1).strip()
         parsed = json.loads(text)
-        if not isinstance(parsed, dict):
-            return {"learnings": [], "follow_up_queries": [], "is_comprehensive": True}
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("learnings", []), list) or not isinstance(parsed.get("follow_up_queries", []), list):
+            raise ValueError("invalid deepening shape")
         return {
             "learnings": [str(l) for l in parsed.get("learnings") or [] if l],
             "follow_up_queries": [str(q) for q in parsed.get("follow_up_queries") or [] if q],
-            "is_comprehensive": bool(parsed.get("is_comprehensive")),
+            "is_comprehensive": parsed.get("is_comprehensive") is True,
         }
-    except (json.JSONDecodeError, TypeError, AttributeError):
-        return {"learnings": [], "follow_up_queries": [], "is_comprehensive": True}
+    except (ValueError, TypeError, AttributeError):
+        return {"learnings": [], "follow_up_queries": [], "is_comprehensive": False,
+                "error": "invalid_deepening_response"}
 
 
 def _record_deepening_round_trace(
@@ -181,8 +183,15 @@ def _run_single_round(
 
         try:
             result = run_react_task(db, sub_run_id, settings_obj, llm_client)
-        except Exception:
+        except Exception as exc:
+            record_trace_event(db, sub_run_id, 0, "deepening_execution", "failed", {},
+                               "Follow-up execution failed.", {"error_type": type(exc).__name__})
+            store.update_agent_run_status(db, sub_run_id, "failed", "Follow-up execution failed; inspect Trace.")
             result = {"status": "failed", "run_id": sub_run_id}
+
+        record_trace_event(db, parent_run_id, 0, "deepening_subrun",
+                           "success" if result.get("status") == "completed" else "warning", {},
+                           "Follow-up run result.", {"sub_run_id": sub_run_id, "status": result.get("status")})
 
         # Collect observations from the sub-run
         sub_run = store.get_agent_run(db, sub_run_id)
@@ -218,6 +227,9 @@ def run_deepening(
     run = store.get_agent_run(db, run_id)
     if run is None:
         raise ValueError("Task run not found.")
+    if run.status in {"completed", "failed", "cancelled", "waiting_human", "waiting_human_plan"}:
+        from app.agent.executor import _summary
+        return _summary(run)
 
     client = llm_client or create_llm_client(settings_obj)
 
@@ -231,6 +243,7 @@ def run_deepening(
     all_learnings: list[str] = []
     all_observations: list[dict[str, Any]] = []
     all_sub_run_ids: list[str] = []
+    deepening_warnings: list[str] = []
     current_task = run.task
 
     # Round 0: initial ReAct run
@@ -289,16 +302,24 @@ def run_deepening(
         messages = _build_deepening_messages(
             current_task, all_observations, all_learnings, breadth,
         )
-        response = client.complete(messages, temperature=0.0, max_tokens=1200)
+        try:
+            response = client.complete(messages, temperature=0.0, max_tokens=1200)
+        except Exception:
+            response = None
 
-        if not response.success or not response.content:
-            # LLM call failed → stop deepening
-            _record_deepening_round_trace(
-                db, run_id, round_num, [], [], True, [],
-            )
+        if response is None or not response.success or not response.content:
+            message = "Deepening synthesis failed; research completeness was not established."
+            deepening_warnings.append(message)
+            record_trace_event(db, run_id, round_num, "deepening_round", "failed", {}, message,
+                               {"error_type": "llm_failed", "is_comprehensive": False})
             break
 
         deepening = _parse_deepening_response(response.content)
+        if deepening.get("error"):
+            message = "Invalid deepening response; research completeness was not established."
+            deepening_warnings.append(message)
+            record_trace_event(db, run_id, round_num, "deepening_round", "failed", {}, message, deepening)
+            break
         learnings = deepening.get("learnings") or []
         follow_ups = deepening.get("follow_up_queries") or []
         is_comprehensive = bool(deepening.get("is_comprehensive"))
@@ -316,6 +337,7 @@ def run_deepening(
             db, run_id, current_task, follow_ups[:breadth], settings_obj, client,
         )
         all_observations.extend(round_obs)
+        deepening_warnings.append("Follow-up learnings are exploratory notes; only cited parent-run passages support the final report. See linked sub-runs for their evidence.")
 
         sub_ids = [
             obs.get("metadata", {}).get("sub_run_id", "")
@@ -335,6 +357,12 @@ def run_deepening(
         plan["deepening_learnings"] = all_learnings
         plan["deepening_sub_run_ids"] = all_sub_run_ids
         plan["deepening_total_rounds"] = min(round_num, max_depth) if 'round_num' in dir() else 0
+        subrun_events = [t for t in store.list_tool_traces(db, run_id) if t.tool_name == "deepening_subrun"]
+        if any(t.status != "success" for t in subrun_events):
+            deepening_warnings.append("Some follow-up runs did not complete; deepening is limited.")
+        plan["deepening_sub_run_ids"] = list(dict.fromkeys(
+            [*all_sub_run_ids, *[json.loads(t.output_json or "{}").get("sub_run_id") for t in subrun_events]]))
+        plan["deepening_warnings"] = list(dict.fromkeys(deepening_warnings))
         store.replace_agent_run_plan(db, run_id, plan)
 
     # Regenerate the final report with all accumulated evidence
@@ -353,6 +381,11 @@ def run_deepening(
     all_traces = store.list_tool_traces(db, run_id)
     plan = json.loads(run.plan_json) if run.plan_json else {}
 
+    parent_observations = [obs for obs in all_observations if not obs.get("metadata", {}).get("sub_run_id")]
+    if not enforce_research_outcome(db, run, plan, parent_observations, all_traces, settings_obj):
+        from app.agent.executor import _summary
+        return _summary(store.get_fresh_agent_run(db, run_id))
+
     provenance_bundle = materialize_execution_provenance(
         db, run, plan,
         [
@@ -368,7 +401,7 @@ def run_deepening(
     citation_validation_reports: list[Any] = []
     reference_verification_reports: list[Any] = []
     markdown = generate_markdown_report(
-        run, plan,
+        report_subject(run), plan,
         [
             obs for obs in all_observations
             if not obs.get("metadata", {}).get("sub_run_id")
@@ -400,7 +433,7 @@ def run_deepening(
         deepening_section = "\n\n## 10. 研究深化过程\n\n"
         deepening_section += f"* 深化轮数: {plan.get('deepening_total_rounds', 0)}\n"
         deepening_section += f"* 累计学习: {len(all_learnings)} 条\n\n"
-        deepening_section += "### 各轮学习\n\n"
+        deepening_section += "### 各轮待核验学习笔记（非已支持结论）\n\n"
         for i, learning in enumerate(all_learnings, 1):
             deepening_section += f"{i}. {learning}\n"
         deepening_section += "\n"

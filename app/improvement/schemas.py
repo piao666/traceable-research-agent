@@ -74,6 +74,8 @@ class ImprovementRegressionResponse(BaseModel):
 
 
 class ImprovementRunResponse(BaseModel):
+    requires_review: bool = False
+    evaluation_method: str = "rule_heuristic"
     run_id: str
     category: str | None = None
     skill_composition: str | None = None

@@ -11,6 +11,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 export function Button({ children, loading = false, variant = "primary", disabled, ...props }: ButtonProps) {
   return (
     <button
+      type="button"
       className={`button button-${variant}`}
       disabled={disabled || loading}
       aria-busy={loading}
@@ -55,17 +56,25 @@ export function Panel({ title, children, className = "" }: { title?: string; chi
 export function TableRow({ primary, status, meta, time, action }: { primary: ReactNode; status: ReactNode; meta: ReactNode; time: ReactNode; action?: ReactNode }) {
   return (
     <div className="table-row" role="row" data-figma-node="26:3">
-      <div className="table-primary" role="cell">{primary}</div>
-      <div role="cell">{status}</div>
-      <div role="cell">{meta}</div>
-      <div role="cell">{time}{action && <> · <span className="table-row-action">{action}</span></>}</div>
+      <div className="table-primary" role="cell" data-label="任务">{primary}</div>
+      <div role="cell" data-label="状态">{status}</div>
+      <div role="cell" data-label="模式 / 工具">{meta}</div>
+      <div role="cell" data-label="更新时间 / 操作">{time}{action && <> · <span className="table-row-action">{action}</span></>}</div>
     </div>
   );
 }
 
 /** Figma Tab — component set 25:13. */
-export function Tab({ selected, children, onClick }: { selected: boolean; children: ReactNode; onClick: () => void }) {
-  return <button type="button" role="tab" aria-selected={selected} className="tab" onClick={onClick} data-figma-node="25:13">{children}</button>;
+export function Tab({ selected, children, onClick, id, controls }: { selected: boolean; children: ReactNode; onClick: () => void; id?: string; controls?: string }) {
+  return <button type="button" id={id} role="tab" aria-controls={controls} tabIndex={selected ? 0 : -1} aria-selected={selected} className="tab" onClick={onClick} data-figma-node="25:13" onKeyDown={(event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    const tabs = [...(event.currentTarget.closest('[role="tablist"]')?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])];
+    if (!tabs.length) return;
+    event.preventDefault();
+    const index = tabs.indexOf(event.currentTarget);
+    const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    tabs[next].focus(); tabs[next].click();
+  }}>{children}</button>;
 }
 
 /** Figma OptionCard — component set 44:32. */

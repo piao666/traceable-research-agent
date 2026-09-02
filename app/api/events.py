@@ -38,6 +38,12 @@ def _seed_cursor_after_event_id(
     acknowledged: set[str] = set()
     for trace in store.list_tool_traces(db, run_id):
         acknowledged.add(trace.trace_id)
+        # Finished rows are immutable. Replay unfinished rows after reconnect so
+        # an acknowledged trace_created can still become trace_finished.
+        if trace.finished_at:
+            cursor.trace_versions[trace.trace_id] = (
+                trace.status, trace.finished_at.isoformat(), trace.output_summary, trace.error_message,
+            )
         if trace.trace_id == event_id:
             cursor.seen_trace_ids.update(acknowledged)
             return True

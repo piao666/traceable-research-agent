@@ -39,6 +39,8 @@ from app.agent.source_governance import (
 )
 from app.config import Settings, settings
 from app.evidence.service import materialize_execution_provenance
+from app.agent.preflight import enforce_execution_readiness
+from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, load_observations, report_subject, skip_dependency
 from app.mcp.policy import is_parallel_safe_tool
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool, get_tool
@@ -334,6 +336,7 @@ def run_plan_parallel(
     run_id: str,
     settings_obj: Settings = settings,
     completion_status: str = "completed",
+    report_llm_client=None,
 ) -> dict[str, Any]:
     """Execute independent planned tool steps in bounded parallel groups."""
 
@@ -344,10 +347,15 @@ def run_plan_parallel(
         return _message_summary(run, "Run already completed; no tools executed.")
     if run.status in ("failed", "cancelled"):
         return _message_summary(run, f"Run is {run.status} and cannot be executed.")
+    if run.status in {"waiting_human", "waiting_human_plan"}:
+        return _message_summary(run, "Run is waiting for human approval.")
 
     plan = _parse_plan(run)
+    if not enforce_execution_readiness(db, run_id, plan, settings_obj,
+                                      llm_available=bool(report_llm_client and report_llm_client.is_available())):
+        return _summary(store.get_fresh_agent_run(db, run_id))
     steps = plan.get("steps") or []
-    observations: list[dict[str, Any]] = []
+    observations = load_observations(store.list_tool_traces(db, run_id))
     resume_after_step = run.current_step
     refetch_rounds_used = persisted_refetch_rounds(store.list_tool_traces(db, run_id))
 
@@ -407,6 +415,10 @@ def run_plan_parallel(
                     record_tool_result(db, run_id, step_no, tool_name, arguments, result, 0)
                     observations.append(_failed_observation(step, result))
                     run = store.update_agent_run_progress(db, run_id, step_no, total_tool_calls_delta=1)
+                    continue
+
+                if dependency_missing(step, observations):
+                    observations.append(skip_dependency(db, run_id, step))
                     continue
 
                 # Resolve arguments_from references
@@ -550,8 +562,8 @@ def run_plan_parallel(
             return _message_summary(cancelled, "Run cancelled by user.")
 
         traces = store.list_tool_traces(db, run_id)
-        run.status = "completed"
-        run.error_message = None
+        if not enforce_research_outcome(db, run, plan, observations, traces, settings_obj):
+            return _summary(store.get_fresh_agent_run(db, run_id))
         provenance_bundle = materialize_execution_provenance(
             db,
             run,
@@ -560,11 +572,12 @@ def run_plan_parallel(
             traces,
             settings_obj,
         )
-        llm_client = resolve_report_llm_client(settings_obj)
+        _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
+        llm_client = resolve_report_llm_client(settings_obj, report_llm_client)
         citation_validation_reports: list[Any] = []
         reference_verification_reports: list[Any] = []
         markdown = generate_markdown_report(
-            run,
+            report_subject(run),
             plan,
             observations,
             traces,
@@ -590,7 +603,6 @@ def run_plan_parallel(
             traces,
         )
         traces = store.list_tool_traces(db, run_id)
-        _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _message_summary(cancelled, "Run cancelled by user.")
@@ -601,5 +613,6 @@ def run_plan_parallel(
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _message_summary(cancelled, "Run cancelled by user.")
-        run = store.update_agent_run_status(db, run_id, "failed", str(exc))
+        db.rollback()
+        run = fail_execution(db, run_id, exc)
         return _summary(run)

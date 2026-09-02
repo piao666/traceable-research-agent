@@ -32,6 +32,8 @@ def truncate(db: Session) -> None:
 
 class MemoryTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Other suites may register additional models after module collection.
+        Base.metadata.create_all(engine)
         self.db = SessionLocal()
         truncate(self.db)
 

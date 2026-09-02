@@ -24,6 +24,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tasks/{run_id}/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Task Preflight */
+        get: operations["get_task_preflight_api_tasks__run_id__preflight_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tasks": {
         parameters: {
             query?: never;
@@ -182,7 +199,7 @@ export interface paths {
          * @description Approve or reject a plan that is waiting for human review.
          *
          *     When start_async=True, the task is started in the background and the
-         *     response returns immediately with status 'pending' instead of blocking
+         *     response returns immediately with status 'running' instead of blocking
          *     until completion.
          */
         post: operations["approve_plan_api_tasks__run_id__approve_plan_post"];
@@ -432,6 +449,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runtime/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Runtime Capabilities */
+        get: operations["get_runtime_capabilities_api_runtime_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runtime/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Runtime Diagnostics
+         * @description Local checks only. Never contact providers or disclose paths/credentials.
+         */
+        get: operations["runtime_diagnostics_api_runtime_diagnostics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/reports/{run_id}": {
         parameters: {
             query?: never;
@@ -564,6 +618,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/memory/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Memory Audit */
+        get: operations["memory_audit_api_memory_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/memory/{memory_id}/confirm": {
         parameters: {
             query?: never;
@@ -596,7 +667,7 @@ export interface paths {
         post?: never;
         /**
          * Delete Memory
-         * @description Delete a single memory and write a trace event for audit.
+         * @description Delete a single memory and retain a content-free audit event.
          */
         delete: operations["delete_memory_api_memory__memory_id__delete"];
         options?: never;
@@ -910,6 +981,22 @@ export interface components {
     schemas: {
         /** AsyncRunResponse */
         AsyncRunResponse: {
+            /** Research Outcome */
+            research_outcome?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Requires Review
+             * @default false
+             */
+            requires_review: boolean;
+            /**
+             * Citation Evaluated
+             * @default false
+             */
+            citation_evaluated: boolean;
+            /** Quality Warnings */
+            quality_warnings?: string[];
             /** Run Id */
             run_id: string;
             /** Status */
@@ -1182,6 +1269,16 @@ export interface components {
         };
         /** ImprovementRunResponse */
         ImprovementRunResponse: {
+            /**
+             * Requires Review
+             * @default false
+             */
+            requires_review: boolean;
+            /**
+             * Evaluation Method
+             * @default rule_heuristic
+             */
+            evaluation_method: string;
             /** Run Id */
             run_id: string;
             /** Category */
@@ -1443,10 +1540,44 @@ export interface components {
              */
             step_no: number;
         };
+        /** MemoryAuditResponse */
+        MemoryAuditResponse: {
+            /** Event Id */
+            event_id: string;
+            /** Action */
+            action: string;
+            /** Memory Id */
+            memory_id: string | null;
+            /** Affected Count */
+            affected_count: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** MemoryClearResponse */
+        MemoryClearResponse: {
+            /** Deleted */
+            deleted: boolean;
+            /** Count */
+            count: number;
+            /** Message */
+            message: string;
+        };
         /** MemoryConfirmRequest */
         MemoryConfirmRequest: {
             /** Approved */
             approved: boolean;
+        };
+        /** MemoryDeleteResponse */
+        MemoryDeleteResponse: {
+            /** Memory Id */
+            memory_id: string;
+            /** Deleted */
+            deleted: boolean;
+            /** Message */
+            message: string;
         };
         /** MemoryListResponse */
         MemoryListResponse: {
@@ -1512,6 +1643,7 @@ export interface components {
             skill_routing?: {
                 [key: string]: unknown;
             } | null;
+            preflight?: components["schemas"]["TaskPreflightResponse"] | null;
         };
         /** PlanReviewStep */
         PlanReviewStep: {
@@ -1565,6 +1697,17 @@ export interface components {
             confirmation_details?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /** PreflightIssue */
+        PreflightIssue: {
+            /** Code */
+            code: string;
+            /** Capability */
+            capability: string;
+            /** Environment Variable */
+            environment_variable: string;
+            /** Message */
+            message: string;
         };
         /** ProvenanceBundleResponse */
         ProvenanceBundleResponse: {
@@ -1627,6 +1770,22 @@ export interface components {
         };
         /** ReportResponse */
         ReportResponse: {
+            /** Research Outcome */
+            research_outcome?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Requires Review
+             * @default false
+             */
+            requires_review: boolean;
+            /**
+             * Citation Evaluated
+             * @default false
+             */
+            citation_evaluated: boolean;
+            /** Quality Warnings */
+            quality_warnings?: string[];
             /** Run Id */
             run_id: string;
             /** Markdown */
@@ -1638,6 +1797,12 @@ export interface components {
              * @default false
              */
             exists: boolean;
+            /**
+             * Availability
+             * @default not_generated
+             * @enum {string}
+             */
+            availability: "available" | "not_generated" | "missing" | "blocked";
             /** Message */
             message?: string | null;
         };
@@ -1665,6 +1830,63 @@ export interface components {
              * @default 0
              */
             strategy_count: number;
+        };
+        /** RuntimeCapabilitiesResponse */
+        RuntimeCapabilitiesResponse: {
+            /** Offline Mode */
+            offline_mode: boolean;
+            /** Tavily Configured */
+            tavily_configured: boolean;
+            /** Llm Provider */
+            llm_provider: string;
+            /** Llm Configured */
+            llm_configured: boolean;
+            /** React Provider */
+            react_provider: string;
+            /** React Configured */
+            react_configured: boolean;
+            /** React Enabled */
+            react_enabled: boolean;
+            /** Deep Research Enabled */
+            deep_research_enabled: boolean;
+            /** Report Generation Mode */
+            report_generation_mode: string;
+            /**
+             * Connectivity Verified
+             * @default false
+             */
+            connectivity_verified: boolean;
+        };
+        /** RuntimeCheck */
+        RuntimeCheck: {
+            /** Name */
+            name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "error";
+            /** Message */
+            message: string;
+        };
+        /** RuntimeDiagnosticsResponse */
+        RuntimeDiagnosticsResponse: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Checks */
+            checks: components["schemas"]["RuntimeCheck"][];
+            capabilities: components["schemas"]["RuntimeCapabilitiesResponse"];
+            /** Execution Mode */
+            execution_mode: string;
+            /** Memory Llm Extraction Enabled */
+            memory_llm_extraction_enabled: boolean;
+            /** Mcp Enabled */
+            mcp_enabled: boolean;
+            /** Mcp Configured */
+            mcp_configured: boolean;
         };
         /** SessionCreateRequest */
         SessionCreateRequest: {
@@ -1739,7 +1961,7 @@ export interface components {
         /** SkillListResponse */
         SkillListResponse: {
             /** Skills */
-            skills: unknown[];
+            skills: components["schemas"]["SkillSummary"][];
         };
         /** SkillReloadResponse */
         SkillReloadResponse: {
@@ -1747,6 +1969,25 @@ export interface components {
             status: string;
             /** Count */
             count: number;
+        };
+        /** SkillSummary */
+        SkillSummary: {
+            /** Name */
+            name: string;
+            /** Version */
+            version: string;
+            /** Description */
+            description: string;
+            /** Required Tools */
+            required_tools: string[];
+            /** Parameters */
+            parameters?: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
+            /** Error */
+            error?: string | null;
         };
         /** TaskCancelRequest */
         TaskCancelRequest: {
@@ -1840,6 +2081,22 @@ export interface components {
          * @description Lightweight item for task list endpoint.
          */
         TaskListItem: {
+            /** Research Outcome */
+            research_outcome?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Requires Review
+             * @default false
+             */
+            requires_review: boolean;
+            /**
+             * Citation Evaluated
+             * @default false
+             */
+            citation_evaluated: boolean;
+            /** Quality Warnings */
+            quality_warnings?: string[];
             /** Run Id */
             run_id: string;
             /** Task */
@@ -1966,6 +2223,16 @@ export interface components {
             /** Deepening Sub Run Ids */
             deepening_sub_run_ids?: string[];
         };
+        /** TaskPreflightResponse */
+        TaskPreflightResponse: {
+            /** Ready */
+            ready: boolean;
+            /** Blockers */
+            blockers: components["schemas"]["PreflightIssue"][];
+            /** Warnings */
+            warnings: string[];
+            capabilities: components["schemas"]["RuntimeCapabilitiesResponse"];
+        };
         /** TaskRetryRequest */
         TaskRetryRequest: {
             /**
@@ -1981,6 +2248,22 @@ export interface components {
         };
         /** TaskRunResponse */
         TaskRunResponse: {
+            /** Research Outcome */
+            research_outcome?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Requires Review
+             * @default false
+             */
+            requires_review: boolean;
+            /**
+             * Citation Evaluated
+             * @default false
+             */
+            citation_evaluated: boolean;
+            /** Quality Warnings */
+            quality_warnings?: string[];
             /** Run Id */
             run_id: string;
             /** Status */
@@ -2034,6 +2317,22 @@ export interface components {
         };
         /** TaskStatusResponse */
         TaskStatusResponse: {
+            /** Research Outcome */
+            research_outcome?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Requires Review
+             * @default false
+             */
+            requires_review: boolean;
+            /**
+             * Citation Evaluated
+             * @default false
+             */
+            citation_evaluated: boolean;
+            /** Quality Warnings */
+            quality_warnings?: string[];
             /** Run Id */
             run_id: string;
             /** Task */
@@ -2080,7 +2379,7 @@ export interface components {
             citation_unsupported: number;
             /**
              * Citation Accuracy
-             * @default 1
+             * @default 0
              */
             citation_accuracy: number;
             /**
@@ -2324,6 +2623,37 @@ export interface operations {
             };
         };
     };
+    get_task_preflight_api_tasks__run_id__preflight_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskPreflightResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_tasks_api_tasks_get: {
         parameters: {
             query?: {
@@ -2334,6 +2664,7 @@ export interface operations {
                 created_before?: string | null;
                 limit?: number;
                 offset?: number;
+                q?: string | null;
             };
             header?: never;
             path?: never;
@@ -2520,7 +2851,9 @@ export interface operations {
     };
     confirm_task_api_tasks__run_id__confirm_post: {
         parameters: {
-            query?: never;
+            query?: {
+                start_async?: boolean;
+            };
             header?: never;
             path: {
                 run_id: string;
@@ -3007,6 +3340,46 @@ export interface operations {
             };
         };
     };
+    get_runtime_capabilities_api_runtime_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeCapabilitiesResponse"];
+                };
+            };
+        };
+    };
+    runtime_diagnostics_api_runtime_diagnostics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeDiagnosticsResponse"];
+                };
+            };
+        };
+    };
     get_report_api_reports__run_id__get: {
         parameters: {
             query?: never;
@@ -3267,9 +3640,38 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["MemoryClearResponse"];
+                };
+            };
+        };
+    };
+    memory_audit_api_memory_audit_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryAuditResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3326,9 +3728,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["MemoryDeleteResponse"];
                 };
             };
             /** @description Validation Error */
