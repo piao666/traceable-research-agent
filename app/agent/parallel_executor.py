@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
@@ -41,6 +42,8 @@ from app.config import Settings, settings
 from app.evidence.service import materialize_execution_provenance
 from app.agent.preflight import enforce_execution_readiness
 from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, load_observations, report_subject, skip_dependency
+from app.agent.execution_policy import execute_with_policy
+from app.agent.budget import budgeted_execution, reserve_tool, BudgetExceeded
 from app.mcp.policy import is_parallel_safe_tool
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool, get_tool
@@ -179,6 +182,7 @@ def _execute_step(
     visited_urls: set[str] | None = None,
     visited_urls_lock: Lock | None = None,
     settings_obj: Settings = settings,
+    budget_reserved: bool = False,
 ) -> _StepResult:
     tool_name = str(step.get("tool_name") or "")
     arguments = step.get("arguments") or {}
@@ -214,7 +218,9 @@ def _execute_step(
     )
     started_at = _utc_iso()
     started = perf_counter()
-    result = execute_tool(tool_name, execution_arguments)
+    policy_plan = plan if plan is not None else {"steps": [step]}
+    result = execute_with_policy(tool_name, execution_arguments, policy_plan, settings_obj, execute_tool,
+                                 budget_reserved=budget_reserved)
     latency_ms = int((perf_counter() - started) * 1000)
     result = govern_tool_result(tool_name, result, plan or {}, settings_obj)
     finished_at = _utc_iso()
@@ -234,14 +240,21 @@ def _run_parallel_group(
     executor = ThreadPoolExecutor(max_workers=max_workers)
     futures: dict[Future[_StepResult], tuple[dict[str, Any], int, str]] = {}
     group_started_at = _utc_iso()
+    results: list[_StepResult] = []
     try:
         for index, step in enumerate(group, 1):
+            try:
+                reserve_tool(str(step.get("tool_name")))
+            except BudgetExceeded as exc:
+                results.append(_StepResult(step, ToolResult(success=False, error_message=str(exc),
+                    metadata={"error_type": "budget_exhausted", "executed": False}), 0,
+                    group_started_at, _utc_iso(), index))
+                continue
             futures[executor.submit(
-                _execute_step, step, index, plan, visited_urls, visited_urls_lock, settings_obj
+                copy_context().run, _execute_step, step, index, plan, visited_urls, visited_urls_lock, settings_obj, True
             )] = (step, index, group_started_at)
 
         done, pending = wait(set(futures), timeout=settings_obj.parallel_timeout_seconds)
-        results: list[_StepResult] = []
         for future in done:
             step, worker_id, fallback_started_at = futures[future]
             try:
@@ -331,6 +344,7 @@ def _observation(step: dict[str, Any], result: ToolResult) -> dict[str, Any]:
     }
 
 
+@budgeted_execution
 def run_plan_parallel(
     db: Session,
     run_id: str,
@@ -447,13 +461,13 @@ def run_plan_parallel(
                     db,
                     run_id,
                     step_no,
-                    total_tool_calls_delta=1,
+                    total_tool_calls_delta=0 if step_result.result.metadata.get("executed") is False else 1,
                     latency_ms_delta=step_result.latency_ms,
                 )
 
                 def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
                     refetch_started = perf_counter()
-                    refetch_result = execute_tool(name, refetch_args)
+                    refetch_result = execute_with_policy(name, refetch_args, plan, settings_obj, execute_tool)
                     return refetch_result, int((perf_counter() - refetch_started) * 1000)
 
                 refetches = execute_targeted_refetches(
@@ -485,7 +499,7 @@ def run_plan_parallel(
                         db,
                         run_id,
                         step_no,
-                        total_tool_calls_delta=1,
+                        total_tool_calls_delta=0 if refetch.result.metadata.get("executed") is False else 1,
                         latency_ms_delta=refetch.latency_ms,
                     )
                 continue
@@ -512,7 +526,7 @@ def run_plan_parallel(
                 observations.append(observation)
                 def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
                     refetch_started = perf_counter()
-                    refetch_result = execute_tool(name, refetch_args)
+                    refetch_result = execute_with_policy(name, refetch_args, plan, settings_obj, execute_tool)
                     return refetch_result, int((perf_counter() - refetch_started) * 1000)
 
                 refetches = execute_targeted_refetches(
@@ -544,7 +558,7 @@ def run_plan_parallel(
                         db,
                         run_id,
                         step_no,
-                        total_tool_calls_delta=1,
+                        total_tool_calls_delta=0 if refetch.result.metadata.get("executed") is False else 1,
                         latency_ms_delta=refetch.latency_ms,
                     )
             if parallel_results:
@@ -553,7 +567,7 @@ def run_plan_parallel(
                     db,
                     run_id,
                     max_step,
-                    total_tool_calls_delta=len(parallel_results),
+                    total_tool_calls_delta=sum(item.result.metadata.get("executed") is not False for item in parallel_results),
                     latency_ms_delta=sum(item.latency_ms for item in parallel_results),
                 )
 

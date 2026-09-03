@@ -171,8 +171,84 @@ class PlanStepResponse(BaseModel):
     confirmation_details: dict[str, Any] | None = None
 
 
+class ExecutionBudgetLimits(BaseModel):
+    max_tool_calls: int
+    max_llm_calls: int
+    max_tokens: int
+    max_seconds: int
+    max_estimated_cost: float
+    tool_cost_estimate: float | None = None
+    llm_cost_per_million_tokens: float | None = None
+
+
+class ExecutionBudgetResponse(BaseModel):
+    version: str
+    root_run_id: str
+    limits: ExecutionBudgetLimits
+    tool_calls: int
+    llm_calls: int
+    accounted_tokens: int
+    estimated_cost: float
+    cost_currency: str
+    cost_evaluable: bool
+    deadline: float
+    stop_reason: str | None = None
+
+
+class RecoveryToolResponse(BaseModel):
+    name: str
+    status: str
+    reason: str | None = None
+    attempts: int | None = None
+    remaining_attempts: int | None = None
+    blocked_input_count: int = 0
+    retry_at: float | None = None
+
+
+class SourceCandidateResponse(BaseModel):
+    source_id: str
+    url: str
+    title: str
+    snippet: str
+    fetch_status: str
+    content_basis: str
+    trace_ids: list[str]
+    run_ids: list[str]
+    tools: list[str]
+    fetch_attempts: int
+
+
+class SourceGapsResponse(BaseModel):
+    pending_fetch: int
+    failed_fetch: int
+    fetched: int
+    full_text_missing: int
+    no_sources: bool
+
+
+class SourceContextResponse(BaseModel):
+    version: str
+    sources: list[SourceCandidateResponse]
+    omitted_count: int
+    gaps: SourceGapsResponse
+    untrusted_content: bool
+
+
+class ExecutionInsightsResponse(BaseModel):
+    version: str
+    sampled_at: float
+    source_mode: str
+    allowed_tools: list[str]
+    recovery_recorded: bool
+    tools: list[RecoveryToolResponse]
+    source_context: SourceContextResponse
+
+
 class TaskPlanResponse(BaseModel):
     run_id: str
+    execution_budget: ExecutionBudgetResponse | None = None
+    execution_insights: ExecutionInsightsResponse | None = None
+    evidence_mapping_version: str | None = None
     version: str
     task: str
     source_mode: str
@@ -271,6 +347,7 @@ class PlanReviewResponse(BaseModel):
     execution_mode: str
     steps: list[PlanReviewStep]
     allowed_tools: list[str]
+    source_mode: str | None = None
     estimated_total_tokens: int = 0
     estimated_cost: float = 0.0
     risk_summary: dict[str, int] = Field(default_factory=lambda: {"low": 0, "medium": 0, "high": 0})

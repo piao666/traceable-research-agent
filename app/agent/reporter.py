@@ -21,6 +21,7 @@ from app.agent.context_compressor import compress_evidence, has_useful_evidence
 from app.agent.evidence import (
     _items_from_record, build_evidence_bundle, is_eligible_evidence,
     is_research_record, render_evidence_markdown,
+    _evidence_records as canonical_evidence_records,
 )
 from app.security.redaction import redact_text
 
@@ -547,44 +548,8 @@ def _parallel_metadata_lines(metadata: dict[str, Any]) -> list[str]:
 def _evidence_records(
     observations: list[dict[str, Any]], traces: list[ToolTrace]
 ) -> list[dict[str, Any]]:
-    """Return tool evidence, preferring live observations over persisted trace JSON."""
-
-    records: list[dict[str, Any]] = []
-    observed_keys: set[tuple[Any, str]] = set()
-    for observation in observations:
-        tool_name = str(observation.get("tool_name") or observation.get("action") or "unknown")
-        key = (observation.get("step_no"), tool_name)
-        observed_keys.add(key)
-        records.append(
-            {
-                "step_no": observation.get("step_no"),
-                "tool_name": tool_name,
-                "success": bool(observation.get("success")),
-                "output": observation.get("output") if isinstance(observation.get("output"), dict) else {},
-                "metadata": _observation_metadata(observation),
-                "summary": observation.get("output_summary") or observation.get("observation_summary"),
-                "error_message": observation.get("error_message"),
-            }
-        )
-
-    for trace in traces:
-        key = (trace.step_no, trace.tool_name)
-        if key in observed_keys:
-            continue
-        output = _trace_output(trace)
-        metadata = output.get("metadata") if isinstance(output.get("metadata"), dict) else {}
-        records.append(
-            {
-                "step_no": trace.step_no,
-                "tool_name": trace.tool_name,
-                "success": trace.status == "success",
-                "output": output,
-                "metadata": metadata,
-                "summary": trace.output_summary,
-                "error_message": trace.error_message,
-            }
-        )
-    return records
+    """Use the same authoritative identity/order as the evidence API."""
+    return canonical_evidence_records(observations, traces)
 
 
 def _github_final_answer(record: dict[str, Any], task: str) -> list[str] | None:

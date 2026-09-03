@@ -1,6 +1,7 @@
 import { defineConfig, mergeConfig } from "vite";
 import base from "../vite.config";
 import { evidenceFixture, graphFixture, planFixture, taskFixture, traceFixture } from "../src/test/r4Fixtures";
+import { r8PlanFixture } from "../src/test/r8Fixtures";
 
 // QA-only middleware: no proxy, real data, provider calls or mutation execution.
 const time = "2026-09-02T01:00:00Z";
@@ -19,7 +20,10 @@ export default mergeConfig(base, defineConfig({
       if (!url.pathname.startsWith("/api/") && url.pathname !== "/health") return next();
       const scenario = new URL(request.headers.referer || "http://localhost").searchParams.get("qa") || "populated";
       const empty = scenario === "empty";
-      const task = { ...taskFixture, task: long, status: scenario === "waiting" ? "waiting_human" : "completed", requires_review: false, quality_warnings: ["仅用于界面走查的固定测试数据，不是真实研究。"] };
+      const r8 = ["recovery", "budget", "legacy"].includes(scenario);
+      const plan = r8 && scenario !== "legacy" ? structuredClone(r8PlanFixture) : planFixture;
+      if (scenario === "budget" && plan.execution_budget) plan.execution_budget.stop_reason = "tool_calls";
+      const task = { ...taskFixture, task: long, execution_mode: r8 ? "react" : "planned", status: scenario === "waiting" ? "waiting_human" : scenario === "budget" ? "failed" : "completed", requires_review: scenario === "legacy", quality_warnings: ["仅用于界面走查的固定测试数据，不是真实研究。"] };
       let data: unknown;
       let status = 200;
       if (request.method !== "GET") { status = 409; data = { detail: "QA 环境不执行任何写入或研究。" }; }
@@ -31,12 +35,12 @@ export default mergeConfig(base, defineConfig({
       else if (url.pathname === "/api/tasks") data = { tasks: empty ? [] : [task, { ...task, run_id: "legacy", status: "failed" }], total: empty ? 0 : 2, limit: 20, offset: 0 };
       else if (url.pathname.endsWith("/review")) data = { ...planFixture, task: long, status: "waiting_human_plan", execution_mode: "planned", estimated_total_tokens: 0, estimated_cost: 0, preflight };
       else if (url.pathname.endsWith("/preflight")) data = preflight;
-      else if (url.pathname.endsWith("/plan")) data = { ...planFixture, task: long };
+      else if (url.pathname.endsWith("/plan")) data = { ...plan, task: long };
       else if (url.pathname.endsWith("/trace")) data = empty ? [] : [{ ...traceFixture, output_summary: long }];
-      else if (url.pathname.endsWith("/evidence/v2")) data = empty ? { ...graphFixture, citations: [] } : graphFixture;
+      else if (url.pathname.endsWith("/evidence/v2")) data = empty ? { ...graphFixture, citations: [] } : r8 ? { ...graphFixture, report_claims: graphFixture.report_claims.map(claim => ({ ...claim, origin: "source_excerpt" })) } : graphFixture;
       else if (url.pathname.endsWith("/evidence")) data = empty ? { ...evidenceFixture, total_evidence_items: 0, evidence_items: [] } : { ...evidenceFixture, evidence_items: evidenceFixture.evidence_items.map(item => ({ ...item, title: long, snippet: long })) };
       else if (url.pathname.startsWith("/api/tasks/")) data = task;
-      else if (url.pathname.startsWith("/api/reports/")) data = { run_id: "fixture", exists: !empty, availability: empty ? "not_generated" : "available", requires_review: false, citation_evaluated: false, markdown: `# 测试报告\n\n仅用于界面走查 [CIT-001-01]\n\n${long}\n\n| 来源 | 说明 |\n| --- | --- |\n| ${long} | 固定测试样本 |` };
+      else if (url.pathname.startsWith("/api/reports/")) data = { run_id: "fixture", exists: !empty && scenario !== "budget", availability: scenario === "budget" ? "blocked" : empty ? "not_generated" : "available", requires_review: scenario === "legacy", citation_evaluated: false, markdown: empty || scenario === "budget" ? "" : `# 测试报告\n\n仅用于界面走查 [CIT-001-01]\n\n${long}\n\n| 来源 | 说明 |\n| --- | --- |\n| ${long} | 固定测试样本 |` };
       else if (url.pathname === "/api/sessions") data = empty ? [] : [session];
       else if (url.pathname.startsWith("/api/sessions/")) data = { ...session, turns: empty ? [] : [{ turn_id: "turn-fixture", session_id: session.session_id, role: "user", content: long, run_id: "fixture", created_at: time }] };
       else if (url.pathname === "/api/memory/audit") data = empty ? [] : [{ event_id: "event-fixture", action: "confirm", memory_id: long, affected_count: 1, created_at: time }];

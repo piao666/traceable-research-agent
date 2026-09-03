@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>R6 隔离布局走查</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>R6–R8 隔离布局走查</title>
 <style>body{margin:0;padding:12px;font:14px system-ui;background:#dde4ec}header{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}select,button{font:inherit;padding:8px}iframe{border:1px solid #8899aa;display:block;height:820px;background:white}output{display:block;padding:8px;white-space:pre-wrap}</style></head>
-<body><header><strong>R6 隔离测试 · 固定样本 · 禁止写入与研究</strong>
+<body><header><strong>R6–R8 隔离测试 · 固定样本 · 禁止写入与研究</strong>
 <label>宽度<select id="width"><option>1280</option><option>1024</option><option>768</option><option>390</option><option>320</option></select></label>
 <label>页面<select id="route"><option value="/">D01 概览</option><option value="/runs">D02 任务</option><option value="/research/new">D03 新建</option><option value="/runs/fixture/plan">D04 审批</option><option value="/runs/fixture">D05 工作台</option><option value="/runs/fixture/evidence">D06 证据</option><option value="/runs/fixture/report">D07 报告</option><option value="/sessions">D08 会话列表</option><option value="/sessions/session-fixture">D08 会话详情</option><option value="/memory">D09 记忆</option><option value="/capabilities">D10 能力</option><option value="/system">D11 系统</option></select></label>
-<label>场景<select id="scenario"><option value="populated">长文本数据</option><option value="empty">空结果</option><option value="error">接口失败</option><option value="slow">延迟加载</option><option value="waiting">等待人工</option></select></label>
+<label>场景<select id="scenario"><option value="populated">长文本数据</option><option value="empty">空结果</option><option value="error">接口失败</option><option value="slow">延迟加载</option><option value="waiting">等待人工</option><option value="recovery">R8 GitHub 失败后继续</option><option value="budget">R8 总预算耗尽</option><option value="legacy">R8 旧结果待复核</option></select></label>
 <button id="inspect">检查布局</button></header><output id="result" aria-live="polite"></output><iframe id="app" title="应用测试视口" style="width:1280px"></iframe>
 <script type="module">
 const frame = document.querySelector('#app');

@@ -31,6 +31,16 @@ try {
   assert.equal((await empty.json()).total, 0); checks++;
   const waiting = await fetch(origin + "/api/tasks/fixture", { headers: { Referer: `${origin}/?qa=waiting` } });
   assert.equal((await waiting.json()).status, "waiting_human"); checks++;
+  const scenarioGet = async (path, scenario) => (await fetch(origin + path, { headers: { Referer: `${origin}/?qa=${scenario}` } })).json();
+  const recovery = await scenarioGet("/api/tasks/fixture/plan", "recovery");
+  assert.equal(recovery.execution_insights.tools[0].status, "disabled"); checks++;
+  assert.equal(recovery.execution_insights.source_context.gaps.fetched, 1); checks++;
+  assert.equal(recovery.execution_budget.cost_currency, "CNY"); checks++;
+  const budget = await scenarioGet("/api/tasks/fixture/plan", "budget");
+  assert.equal(budget.execution_budget.stop_reason, "tool_calls"); checks++;
+  assert.equal((await scenarioGet("/api/tasks/fixture", "budget")).status, "failed"); checks++;
+  assert.equal((await scenarioGet("/api/reports/fixture", "budget")).exists, false); checks++;
+  assert.equal((await scenarioGet("/api/tasks/fixture", "legacy")).requires_review, true); checks++;
   assert.equal((await fetch(origin + "/api/unmapped-fixture")).status, 404); checks++;
   const preview = await fetch(origin + "/qa/viewport.html");
   assert.equal(preview.status, 200); assert.match(await preview.text(), /390/); checks++;

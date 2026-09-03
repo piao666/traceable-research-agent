@@ -41,6 +41,9 @@ def main() -> None:
             "AUTH_ENABLED": "false", "OFFLINE_MODE": "false", "REPORT_GENERATION_MODE": "deterministic",
             "LLM_PLANNER_ENABLED": "false", "EXECUTION_MODE": "planned", "REACT_ENABLED": "false",
             "DEEP_RESEARCH_ENABLED": "false", "TAVILY_API_KEY": "", "QWEN_API_KEY": "",
+            "RESEARCH_MAX_TOOL_CALLS": "40", "RESEARCH_MAX_LLM_CALLS": "40", "RESEARCH_MAX_TOKENS": "100000",
+            "RESEARCH_MAX_SECONDS": "900", "RESEARCH_MAX_ESTIMATED_COST": "0",
+            "RESEARCH_TOOL_COST_ESTIMATE": "", "RESEARCH_LLM_COST_PER_MILLION_TOKENS": "",
             "OPENAI_API_KEY": "", "MEMORY_LLM_EXTRACTION_ENABLED": "false",
             "DEEPSEEK_API_KEY": "", "GITHUB_TOKEN": "", "MCP_REMOTE_REGISTRY_ENABLED": "false",
             "MCP_REMOTE_SERVERS": "", "MCP_CHANNEL_READONLY_SERVERS": "",
@@ -113,10 +116,27 @@ def main() -> None:
             assert status == 409 and blocked["detail"]["code"] == "configuration_not_ready"
             _, state = request(f"/api/tasks/{run_id}")
             assert state["status"] == "waiting_human_plan" and state["total_tool_calls"] == 0
+            _, draft_plan = request(f"/api/tasks/{run_id}/plan")
+            assert draft_plan["execution_budget"] is None
+            assert draft_plan["execution_insights"]["source_context"]["gaps"]["no_sources"]
+            assert draft_plan["execution_insights"]["source_mode"] == "real"
             _, evidence = request(f"/api/tasks/{run_id}/evidence")
             assert evidence["total_evidence_items"] == 0
             _, report = request(f"/api/reports/{run_id}")
             assert not report["exists"]
+            # Explicit restrictions survive HTTP creation and approval. Missing
+            # template capability is a blocker, not a silent permission grant.
+            status, restricted = request("/api/tasks", {"task": "Compare frameworks",
+                "source_mode": "real", "execution_mode_override": "planned", "skill_name": "none",
+                "scenario_template_key": "deep_web_research", "require_plan_approval": True,
+                "allowed_tools": ["tavily_search", "report_writer"]})
+            assert status == 200, restricted
+            restricted_id = restricted["run_id"]
+            _, restrictions = request(f"/api/tasks/{restricted_id}/preflight")
+            assert any(b["code"] == "disallowed_tool" and b["capability"] == "web_fetcher"
+                       for b in restrictions["blockers"]), restrictions
+            assert request(f"/api/tasks/{restricted_id}/approve-plan", {"approved": True})[0] == 409
+            assert request(f"/api/tasks/{restricted_id}")[1]["total_tool_calls"] == 0
             _, detail = request(f"/api/sessions/{session_id}")
             assert len(detail["turns"]) == 1 and detail["turns"][0]["run_id"] == run_id
             _, renamed = request(f"/api/sessions/{session_id}", {"title": "R5 renamed"}, "PATCH")
@@ -145,10 +165,22 @@ def main() -> None:
             assert local_report["exists"] and local_report["availability"] == "available"
             assert local_report["markdown"].strip()
             report_text = local_report["markdown"]
+            _, local_plan = request(f"/api/tasks/{local_id}/plan")
+            budget = local_plan["execution_budget"]
+            assert budget["root_run_id"] == local_id and budget["tool_calls"] >= 2, budget
+            assert local_plan["evidence_mapping_version"] == "trace-source-v2"
+            insights = local_plan["execution_insights"]
+            assert insights["version"] == "execution-insights-v1"
+            assert insights["recovery_recorded"] is False
+            assert insights["source_context"]["sources"] == []  # SQL/file evidence is not a Web queue.
+            assert set(insights["allowed_tools"]) == {"file_reader", "sql_query", "report_writer"}
             trace_count = len(traces)
             # The same terminal run must not execute tools twice.
             request(f"/api/tasks/{local_id}/run", {})
             assert len(request(f"/api/tasks/{local_id}/trace")[1]) == trace_count
+            _, restarted_plan = request(f"/api/tasks/{local_id}/plan")
+            assert restarted_plan["execution_budget"] == budget
+            assert restarted_plan["execution_insights"]["source_context"] == insights["source_context"]
         finally:
             stop(process)
         # Restart against the disposable DB to verify draft persistence.
@@ -168,12 +200,18 @@ def main() -> None:
             assert request(f"/api/tasks/{local_id}")[1]["status"] == "completed"
             assert request(f"/api/reports/{local_id}")[1]["markdown"] == report_text
             assert len(request(f"/api/tasks/{local_id}/trace")[1]) == trace_count
+            _, after_restart = request(f"/api/tasks/{local_id}/plan")
+            assert after_restart["execution_budget"] == budget
+            assert after_restart["execution_insights"]["source_context"] == insights["source_context"]
+            assert after_restart["execution_insights"]["allowed_tools"] == insights["allowed_tools"]
         finally:
             stop(process)
-    print(json.dumps({"live_api": "passed", "missing_key_approval": "blocked",
+    print(json.dumps({"live_api": "passed", "missing_key_approval": "blocked", "r8_permission_conflict": "blocked",
         "draft_restart_persistence": "passed", "effective_evidence_count": 0,
         "r5_session_memory_audit_restart": "passed", "r5_modules": "passed",
         "local_file_sql_report_restart": "passed",
+        "r8_budget_restart": "passed",
+        "r8_execution_insights_restart": "passed",
         "external_api_calls": 0}))
 
 

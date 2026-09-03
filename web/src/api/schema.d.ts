@@ -1172,6 +1172,63 @@ export interface components {
             /** Unsupported Reason */
             unsupported_reason?: string | null;
         };
+        /** ExecutionBudgetLimits */
+        ExecutionBudgetLimits: {
+            /** Max Tool Calls */
+            max_tool_calls: number;
+            /** Max Llm Calls */
+            max_llm_calls: number;
+            /** Max Tokens */
+            max_tokens: number;
+            /** Max Seconds */
+            max_seconds: number;
+            /** Max Estimated Cost */
+            max_estimated_cost: number;
+            /** Tool Cost Estimate */
+            tool_cost_estimate?: number | null;
+            /** Llm Cost Per Million Tokens */
+            llm_cost_per_million_tokens?: number | null;
+        };
+        /** ExecutionBudgetResponse */
+        ExecutionBudgetResponse: {
+            /** Version */
+            version: string;
+            /** Root Run Id */
+            root_run_id: string;
+            limits: components["schemas"]["ExecutionBudgetLimits"];
+            /** Tool Calls */
+            tool_calls: number;
+            /** Llm Calls */
+            llm_calls: number;
+            /** Accounted Tokens */
+            accounted_tokens: number;
+            /** Estimated Cost */
+            estimated_cost: number;
+            /** Cost Currency */
+            cost_currency: string;
+            /** Cost Evaluable */
+            cost_evaluable: boolean;
+            /** Deadline */
+            deadline: number;
+            /** Stop Reason */
+            stop_reason?: string | null;
+        };
+        /** ExecutionInsightsResponse */
+        ExecutionInsightsResponse: {
+            /** Version */
+            version: string;
+            /** Sampled At */
+            sampled_at: number;
+            /** Source Mode */
+            source_mode: string;
+            /** Allowed Tools */
+            allowed_tools: string[];
+            /** Recovery Recorded */
+            recovery_recorded: boolean;
+            /** Tools */
+            tools: components["schemas"]["RecoveryToolResponse"][];
+            source_context: components["schemas"]["SourceContextResponse"];
+        };
         /** FewShotStateResponse */
         FewShotStateResponse: {
             /**
@@ -1621,6 +1678,8 @@ export interface components {
             steps: components["schemas"]["PlanReviewStep"][];
             /** Allowed Tools */
             allowed_tools: string[];
+            /** Source Mode */
+            source_mode?: string | null;
             /**
              * Estimated Total Tokens
              * @default 0
@@ -1767,6 +1826,26 @@ export interface components {
             resolutions?: {
                 [key: string]: unknown;
             }[];
+        };
+        /** RecoveryToolResponse */
+        RecoveryToolResponse: {
+            /** Name */
+            name: string;
+            /** Status */
+            status: string;
+            /** Reason */
+            reason?: string | null;
+            /** Attempts */
+            attempts?: number | null;
+            /** Remaining Attempts */
+            remaining_attempts?: number | null;
+            /**
+             * Blocked Input Count
+             * @default 0
+             */
+            blocked_input_count: number;
+            /** Retry At */
+            retry_at?: number | null;
         };
         /** ReportResponse */
         ReportResponse: {
@@ -1989,6 +2068,54 @@ export interface components {
             /** Error */
             error?: string | null;
         };
+        /** SourceCandidateResponse */
+        SourceCandidateResponse: {
+            /** Source Id */
+            source_id: string;
+            /** Url */
+            url: string;
+            /** Title */
+            title: string;
+            /** Snippet */
+            snippet: string;
+            /** Fetch Status */
+            fetch_status: string;
+            /** Content Basis */
+            content_basis: string;
+            /** Trace Ids */
+            trace_ids: string[];
+            /** Run Ids */
+            run_ids: string[];
+            /** Tools */
+            tools: string[];
+            /** Fetch Attempts */
+            fetch_attempts: number;
+        };
+        /** SourceContextResponse */
+        SourceContextResponse: {
+            /** Version */
+            version: string;
+            /** Sources */
+            sources: components["schemas"]["SourceCandidateResponse"][];
+            /** Omitted Count */
+            omitted_count: number;
+            gaps: components["schemas"]["SourceGapsResponse"];
+            /** Untrusted Content */
+            untrusted_content: boolean;
+        };
+        /** SourceGapsResponse */
+        SourceGapsResponse: {
+            /** Pending Fetch */
+            pending_fetch: number;
+            /** Failed Fetch */
+            failed_fetch: number;
+            /** Fetched */
+            fetched: number;
+            /** Full Text Missing */
+            full_text_missing: number;
+            /** No Sources */
+            no_sources: boolean;
+        };
         /** TaskCancelRequest */
         TaskCancelRequest: {
             /**
@@ -2151,6 +2278,10 @@ export interface components {
         TaskPlanResponse: {
             /** Run Id */
             run_id: string;
+            execution_budget?: components["schemas"]["ExecutionBudgetResponse"] | null;
+            execution_insights?: components["schemas"]["ExecutionInsightsResponse"] | null;
+            /** Evidence Mapping Version */
+            evidence_mapping_version?: string | null;
             /** Version */
             version: string;
             /** Task */

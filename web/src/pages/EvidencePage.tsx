@@ -42,11 +42,13 @@ export function EvidencePage() {
       {!targets.size && !data.loading && <p className="empty-state">没有可展示的引用关系，不能评估引用支持情况。</p>}
       <div className="stack">{[...targets.values()].map((target) => <article className={`evidence-card${selected === target.label ? " selected-evidence" : ""}`} id={`citation-${target.label}`} tabIndex={-1} key={target.label}>
         <div className="section-heading"><h3>{target.label}</h3><StatusChip tone={target.resolved ? "neutral" : "danger"}>{target.resolved ? "关联可解析" : "关联不完整"}</StatusChip></div>
-        <p><strong>结论：</strong>{target.claim || "结论记录缺失"}</p>
+        <p><strong>{target.origin === "source_excerpt" ? "来源摘录：" : "结论："}</strong>{target.claim || "结论记录缺失"}</p>
+        {target.origin === "source_excerpt" && <p>此条为来源摘录，不是对计划目标或综合结论的独立事实核查。</p>}
         <blockquote>{target.text || "原始片段缺失，不能视作支持证据"}</blockquote>
         <p>{target.basis} · 关系：{target.relation || "未标注"}</p>
         <SourceLink url={target.url} title={target.source} /><p className="source-uri">{target.url}</p>
         <p className="source-uri">Passage：{target.passageId}</p>
+        <p className="source-uri">Snapshot：{target.snapshotId || "未记录"} · Trace：{target.traceId || "未记录"}</p>
         {target.traceId && <Link className="source-link" to={`/runs/${runId}?trace=${encodeURIComponent(target.traceId)}`}>查看来源 Trace</Link>}
       </article>)}</div>
     </Panel>

@@ -75,7 +75,15 @@ component tests stub dialog methods and cannot verify native focus containment.
 Code Connect remains unpublished; the earlier account-seat limitation has not
 been revalidated in this batch. No new Figma nodes/templates are fabricated.
 
-## R6 verification
+R8.6 adds `ResearchPolicyNote` on creation/approval/workbench and
+`ExecutionInsights` on the workbench using the existing Panel/StatusChip styles.
+Evidence/report labels distinguish `source_excerpt` from verified conclusions and
+expose exact snapshot/Trace identities. These are code-side additions without new
+Figma node claims. Typed plan insights derive from persisted state, never execute
+tools or edit budgets. API failure, legacy absence, cooldown, per-tool limits and
+total-budget stops have distinct explanations; costs are CNY estimates, not bills.
+
+## R6–R8 verification
 
 ```bash
 npm run typecheck

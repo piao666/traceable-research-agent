@@ -138,17 +138,22 @@ def enforce_research_outcome(db, run, plan, observations, traces, settings) -> b
 def result_integrity(run) -> dict[str, Any]:
     """Read-only legacy classification; never rewrite old tasks or metrics."""
     try:
-        outcome = json.loads(run.plan_json or "{}").get("research_outcome") or {}
+        plan = json.loads(run.plan_json or "{}")
+        outcome = plan.get("research_outcome") or {}
     except (ValueError, TypeError, AttributeError):
+        plan = {}
         outcome = {}
     legacy = run.status == "completed" and outcome.get("version") != INTEGRITY_VERSION
+    mapping_review = bool(run.status == "completed" and plan.get("execution_mode") == "react"
+                          and plan.get("steps") and plan.get("evidence_mapping_version") != "trace-source-v2")
+    legacy = legacy or mapping_review
     warnings = list(outcome.get("warnings") or [])
     if outcome.get("status") == "failed" and outcome.get("message"):
         warnings.append(outcome["message"])
     return {"research_outcome": outcome or None, "requires_review": legacy,
             "citation_evaluated": bool(run.citation_total and not legacy and run.status == "completed"
                                        and outcome.get("status") == "passed"),
-            "quality_warnings": (["Historical result predates research-integrity checks; re-run before relying on its quality metrics."]
+            "quality_warnings": (["Historical result predates current integrity or trace-to-source mapping checks; re-run before relying on its quality metrics."]
                                  if legacy else warnings)}
 
 
@@ -181,7 +186,11 @@ def fail_execution(db: Session, run_id: str, exc: Exception):
     except (TypeError, ValueError):
         plan = {}
     code = "report_synthesis_failed" if str(exc).startswith("report_synthesis_failed:") else "execution_failed"
+    if type(exc).__name__ == "BudgetExceeded":
+        code = "budget_exhausted"
     message = f"{code}: {type(exc).__name__}. Inspect Trace and retry the full run."
+    if code == "budget_exhausted":
+        message = f"budget_exhausted: {exc.reason}. Existing evidence and Trace are retained; no new operations are admitted."
     plan["research_outcome"] = {**(plan.get("research_outcome") or {}),
         "version": INTEGRITY_VERSION, "status": "failed", "error_code": code, "message": message}
     plan["adaptive_gate_pending"] = False
@@ -202,4 +211,7 @@ def trusted_run_ids():
         func.json_extract(safe_plan, "$.research_outcome.version") == INTEGRITY_VERSION,
         func.json_extract(safe_plan, "$.research_outcome.status") == "passed",
         func.json_extract(safe_plan, "$.research_outcome.effective_evidence_count") > 0,
+        ~((func.coalesce(func.json_extract(safe_plan, "$.execution_mode"), "planned") == "react")
+          & (func.coalesce(func.json_array_length(safe_plan, "$.steps"), 0) > 0)
+          & (func.coalesce(func.json_extract(safe_plan, "$.evidence_mapping_version"), "legacy") != "trace-source-v2")),
     )

@@ -174,11 +174,12 @@ def create_llm_client(
             reason=f"{provider_config['api_key_env_name']} is not configured",
         )
 
-    return OpenAICompatibleLLMClient(
+    from app.agent.budget import budget_client
+    return budget_client(OpenAICompatibleLLMClient(
         provider=selected,
         model=model or provider_config["model"],
         base_url=provider_config["base_url"],
         api_key=api_key,
         timeout_seconds=settings.llm_timeout_seconds,
         max_retries=settings.llm_max_retries,
-    )
+    ))

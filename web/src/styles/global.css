@@ -443,3 +443,8 @@ html { scroll-padding-top: 100px; scroll-padding-bottom: 100px; }
   .selected-evidence, .option-card.selected, .nav-item.active { outline: 2px solid Highlight; }
   .button:disabled { opacity: 1; color: GrayText; }
 }
+.r8-insights { min-width: 0; }
+.r8-insights p, .r8-insights li, .r8-insights summary, .r8-insights dd { overflow-wrap: anywhere; }
+.r8-tool-list { padding-inline-start: 1.25rem; }
+.r8-tool-list > li { margin-block: 1rem; }
+.r8-insights summary { cursor: pointer; padding-block: .6rem; min-height: 44px; }

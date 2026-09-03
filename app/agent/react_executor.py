@@ -22,7 +22,11 @@ from app.agent.executor import (
     run_plan,
 )
 from app.agent.report_generation import resolve_report_llm_client
-from app.agent.preflight import enforce_execution_readiness
+from app.agent.preflight import enforce_execution_readiness, check_plan_readiness
+from app.agent.execution_policy import execute_with_policy, policy_failure
+from app.agent.tool_recovery import observe_result, recovery_context, unavailable_reason
+from app.agent.source_context import build_source_context, prompt_source_context
+from app.agent.budget import budgeted_execution, budget_client
 from app.agent.outcome import enforce_research_outcome, report_subject
 from app.agent.react_prompt import build_react_messages
 from app.agent.react_schema import (
@@ -31,6 +35,7 @@ from app.agent.react_schema import (
     ReActStepObservation,
     extract_json_object,
     is_finish_action,
+    normalize_action,
     validate_react_decision,
 )
 from app.agent.reporter import generate_markdown_report, save_report
@@ -250,8 +255,10 @@ def _append_observation(
     error_message: str | None,
     metadata: dict[str, Any],
     output: Any | None = None,
+    trace_id: str | None = None,
 ) -> None:
     observation = ReActStepObservation(
+        trace_id=trace_id,
         step_no=step_no,
         thought=decision.thought,
         action=decision.action,
@@ -316,6 +323,7 @@ def _complete_report(
         cancelled = store.get_fresh_agent_run(db, run_id)
         return _summary(cancelled, plan, "Run cancelled by user.")
     state["finish_reason"] = finish_reason
+    state["source_context"] = build_source_context(store.list_tool_traces(db, run_id))
     state["completed_with_limitation"] = limitation
     state["pending_confirmation"] = None
     plan["react_state"] = state
@@ -431,6 +439,7 @@ def _fallback_to_plan(
     return run_plan(db, run_id, settings_obj=settings_obj)
 
 
+@budgeted_execution
 def run_react_task(
     db: Session,
     run_id: str,
@@ -456,11 +465,11 @@ def run_react_task(
     allowed_tools = _allowed_tools(run, plan)
     available_specs = [spec for spec in list_tools() if spec.enabled]
     available_names = [spec.name for spec in available_specs]
-    client = llm_client or create_llm_client(
+    client = budget_client(llm_client or create_llm_client(
         settings,
         settings.react_llm_provider,
         settings.react_llm_model,
-    )
+    ))
     description = client.describe()
     provider = str(description.get("provider") or settings.react_llm_provider)
     model = description.get("model") or settings.react_llm_model
@@ -498,6 +507,24 @@ def run_react_task(
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _summary(cancelled, plan, "Run cancelled by user.")
+        state["source_context"] = build_source_context(store.list_tool_traces(db, run_id))
+        _persist_plan(db, run_id, plan)
+        active_tools = []
+        for name in allowed_tools:
+            if unavailable_reason(state, name, settings.react_same_tool_max_calls):
+                continue
+            readiness = check_plan_readiness({**plan, "steps": [{"tool_name": name}], "required_tools": []},
+                                            settings, llm_available=client.is_available())
+            if readiness["ready"]:
+                active_tools.append(name)
+            else:
+                state.setdefault("tool_recovery", {})[name] = {"status": "disabled", "reason": "capability_unavailable"}
+                record_trace_event(db, run_id, step_no, "tool_recovery", "warning", {"tool_name": name},
+                    "Optional tool unavailable; continue with other permitted capabilities.",
+                    {"tool_name": name, "reason": "capability_unavailable", "executed": False,
+                     "blockers": readiness["blockers"]})
+        if not active_tools:
+            return _complete_report(db, run_id, plan, state, "no_available_tools", settings, client, limitation=True)
         if pending_decision is not None and step_no == pending_step_no:
             decision = pending_decision
             pending_decision = None
@@ -512,10 +539,12 @@ def run_react_task(
             messages = build_react_messages(
                 run.task,
                 run_id,
-                allowed_tools,
+                active_tools,
                 available_specs,
                 _prompt_history(state),
                 str(plan.get("scenario_template") or "standard"),
+                recovery_context(state, allowed_tools, settings.react_same_tool_max_calls, run.source_mode),
+                prompt_source_context(state["source_context"]),
             )
             response = client.complete(messages, temperature=0.0, max_tokens=800)
 
@@ -527,12 +556,23 @@ def run_react_task(
                 state["_llm_token_out"] += response.usage.completion_tokens
 
             raw = extract_json_object(response.content or "") if response.success else None
+            candidate = normalize_action(str((raw or {}).get("action", "")))
+            if candidate in allowed_tools and candidate not in active_tools:
+                reason = f"Tool '{candidate}' is unavailable for this run; choose another permitted tool."
+                record_trace_event(db, run_id, step_no, "react_decision", "rejected", {"action": candidate},
+                    reason, {"metadata": {"error_type": "tool_unavailable", "executed": False}}, error_message=reason)
+                state.setdefault("observation_history", []).append({"step_no": step_no, "action": candidate,
+                    "success": False, "observation_summary": reason, "error_message": reason})
+                plan["react_state"] = state
+                _persist_plan(db, run_id, plan)
+                store.update_agent_run_progress(db, run_id, step_no)
+                continue
             try:
                 if raw is None:
                     raise ReActDecisionError(
                         _safe_error(response.error_message or "LLM output was not valid JSON.")
                     )
-                decision = validate_react_decision(raw, allowed_tools, available_names)
+                decision = validate_react_decision(raw, active_tools, available_names)
             except ReActDecisionError as exc:
                 reason = _safe_error(str(exc))
                 state["invalid_decisions"] = int(state.get("invalid_decisions") or 0) + 1
@@ -665,17 +705,18 @@ def run_react_task(
 
         counts = state.setdefault("tool_call_counts", {})
         count = int(counts.get(decision.action) or 0) + 1
-        if count > settings.react_same_tool_max_calls:
+        blocked = unavailable_reason(state, decision.action, settings.react_same_tool_max_calls, decision.args)
+        if blocked or decision.action not in active_tools:
             reason = (
-                f"same_tool_max_calls reached for {decision.action}: "
-                f"limit={settings.react_same_tool_max_calls}."
+                f"Tool '{decision.action}' cannot execute this request ({blocked or 'unavailable'}); choose another input or tool."
             )
             metadata = _react_metadata(
                 decision,
                 reason,
                 count,
                 state,
-                error_type="tool_call_limit",
+                error_type=blocked or "tool_unavailable",
+                executed=False,
             )
             record_trace_event(
                 db,
@@ -690,7 +731,9 @@ def run_react_task(
             )
             _append_observation(state, step_no, decision, reason, False, reason, metadata)
             store.update_agent_run_progress(db, run_id, step_no)
-            return _complete_report(db, run_id, plan, state, reason, settings, client, limitation=True)
+            plan["react_state"] = state
+            _persist_plan(db, run_id, plan)
+            continue
 
         file_confirmation_details = _file_reader_confirmation_details(plan, decision)
         if file_confirmation_details is not None:
@@ -759,7 +802,6 @@ def run_react_task(
             run = store.update_agent_run_status(db, run_id, "waiting_human", reason)
             return _summary(run, plan, reason)
 
-        counts[decision.action] = count
         if decision.action == "report_writer":
             summary = "Report writer action accepted; structured Reporter generated the final report."
             metadata = _react_metadata(decision, summary, count, state)
@@ -805,8 +847,9 @@ def run_react_task(
         if not enforce_execution_readiness(db, run_id, plan, settings,
                                           llm_available=client.is_available(), decision_tool=decision.action):
             return _summary(store.get_fresh_agent_run(db, run_id), plan)
-        result = execute_tool(decision.action, execution_args)
+        result = execute_with_policy(decision.action, execution_args, plan, settings, execute_tool)
         latency_ms = int((perf_counter() - started) * 1000)
+        recovered = observe_result(state, decision.action, decision.args, result, settings.react_same_tool_max_calls)
         result = govern_tool_result(decision.action, result, plan, settings)
         observation_summary = _observation_summary(decision.action, result)
         metadata = _react_metadata(decision, observation_summary, count, state)
@@ -818,7 +861,7 @@ def run_react_task(
             error_message=result.error_message,
             metadata=metadata,
         )
-        record_tool_result(
+        trace = record_tool_result(
             db,
             run_id,
             step_no,
@@ -836,14 +879,19 @@ def run_react_task(
             result.error_message,
             metadata,
             output=result.output,
+            trace_id=trace.trace_id,
         )
+        if not result.success or recovered.get("status") in {"disabled", "exhausted"}:
+            record_trace_event(db, run_id, step_no, "tool_recovery", "warning", {"tool_name": decision.action},
+                f"Tool recovery: {decision.action} {recovered.get('reason')}; other permitted tools remain available.",
+                {"tool_name": decision.action, **recovered})
         plan["react_state"] = state
         _persist_plan(db, run_id, plan)
         store.update_agent_run_progress(
             db,
             run_id,
             step_no,
-            total_tool_calls_delta=1,
+            total_tool_calls_delta=0 if result.metadata.get("executed") is False else 1,
             latency_ms_delta=latency_ms,
         )
 
@@ -851,7 +899,11 @@ def run_react_task(
 
         def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
             refetch_started = perf_counter()
-            refetch_result = execute_tool(name, refetch_args)
+            blocked = unavailable_reason(state, name, settings.react_same_tool_max_calls, refetch_args)
+            if blocked:
+                return policy_failure("tool_unavailable", "Refetch skipped: tool unavailable."), 0
+            refetch_result = execute_with_policy(name, refetch_args, plan, settings, execute_tool)
+            observe_result(state, name, refetch_args, refetch_result, settings.react_same_tool_max_calls)
             return refetch_result, int((perf_counter() - refetch_started) * 1000)
 
         refetches = execute_targeted_refetches(
@@ -861,7 +913,8 @@ def run_react_task(
             plan,
             settings,
             execute=_execute_refetch,
-            max_rounds=settings.max_refetch_rounds - refetch_rounds_used,
+            max_rounds=min(settings.max_refetch_rounds - refetch_rounds_used,
+                           max(0, settings.react_same_tool_max_calls - int(counts.get(decision.action, 0)))),
             starting_round=refetch_rounds_used,
         )
         for refetch in refetches:
@@ -881,7 +934,7 @@ def run_react_task(
                 error_message=refetch.result.error_message,
                 metadata=refetch_metadata,
             )
-            record_tool_result(
+            trace = record_tool_result(
                 db,
                 run_id,
                 step_no,
@@ -894,18 +947,19 @@ def run_react_task(
             _append_observation(
                 state,
                 step_no,
-                decision,
+                decision.model_copy(update={"args": refetch.arguments}),
                 refetch_summary,
                 refetch.result.success,
                 refetch.result.error_message,
                 refetch_metadata,
                 output=refetch.result.output,
+                trace_id=trace.trace_id,
             )
             store.update_agent_run_progress(
                 db,
                 run_id,
                 step_no,
-                total_tool_calls_delta=1,
+                total_tool_calls_delta=0 if refetch.result.metadata.get("executed") is False else 1,
                 latency_ms_delta=refetch.latency_ms,
             )
         if refetches:

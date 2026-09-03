@@ -5,6 +5,7 @@ import { Button, OptionCard, PageHeader, Panel, StatusChip } from "../components
 import { useResource } from "../hooks/useResource";
 import { ResourceState } from "../components/ResourceState";
 import { readDraft, saveDraft, removeDraft } from "../lib/draft";
+import { ResearchPolicyNote } from "../components/ResearchPolicyNote";
 
 type TemplateKey = "standard" | "deep_web_research" | "local_audit";
 type ExecutionMode = "planned" | "react";
@@ -86,6 +87,7 @@ function NewResearchForm({ sessionId }: { sessionId: string }) {
               <OptionCard title="ReAct" description="执行中动态决策" selected={mode === "react"} onClick={() => setMode("react")} />
             </div>
             <p className="field-help">✓ 执行前需要计划审批（推荐）</p>
+            <ResearchPolicyNote sourceMode={template === "local_audit" ? "mock" : "real"} executionMode={mode} />
           </Panel>
           <Panel className="form-section">
             <h2 className="form-section-title">高级设置</h2>
@@ -107,7 +109,7 @@ function NewResearchForm({ sessionId }: { sessionId: string }) {
               {!capabilities ? <><ResourceState resource={capabilityResource} />{capabilityResource.error && <p>暂时无法读取配置状态；创建计划后将再次检查，检查通过前不会执行。</p>}</> : <>
                 <p>深度 Web 是计划模板；ReAct 是动态决策模式；多轮深化由部署端 DEEP_RESEARCH_ENABLED 控制，三者并不等同。</p>
                 <p>多轮深化：{capabilities.deep_research_enabled ? "已启用（仅 ReAct）" : "未启用"}；报告：{capabilities.report_generation_mode === "llm" ? "LLM 综合" : "本地规则生成"}。</p>
-                {capabilities.offline_mode && <p>当前为离线演示，不会执行真实联网研究。</p>}
+                {capabilities.offline_mode && <p>部署处于离线模式，真实 Web 研究将被阻止，不会自动切换成模拟研究。</p>}
                 {!capabilities.offline_mode && template !== "local_audit" && !capabilities.tavily_configured && <p>尚未配置 TAVILY_API_KEY。仍可创建计划；若计划需要 Tavily，执行将被阻止。</p>}
                 {mode === "react" && (!capabilities.react_enabled || !capabilities.react_configured) && <p>ReAct 尚未就绪：请检查 REACT_ENABLED 和所选模型的 API Key。</p>}
                 <p>这里只检查配置是否存在，不代表外部服务已连通。</p>

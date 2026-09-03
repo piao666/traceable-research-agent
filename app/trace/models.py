@@ -86,3 +86,17 @@ class ToolTrace(Base):
     sub_query: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
 
     run: Mapped[AgentRun] = relationship(back_populates="traces")
+
+
+class RunBudget(Base):
+    """Atomic execution ledger; child rows point to a shared root budget."""
+    __tablename__ = "run_budgets"
+    run_id: Mapped[str] = mapped_column(String, ForeignKey("agent_runs.run_id"), primary_key=True)
+    root_run_id: Mapped[str] = mapped_column(String, ForeignKey("agent_runs.run_id"), nullable=False)
+    limits_json: Mapped[str] = mapped_column(Text, nullable=False)
+    deadline: Mapped[float] = mapped_column(Float, nullable=False)
+    tool_calls: Mapped[int] = mapped_column(Integer, default=0)
+    llm_calls: Mapped[int] = mapped_column(Integer, default=0)
+    reserved_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    estimated_cost: Mapped[float] = mapped_column(Float, default=0)
+    stop_reason: Mapped[str | None] = mapped_column(String, nullable=True)

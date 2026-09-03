@@ -207,5 +207,6 @@ class R5MigrationTests(unittest.TestCase):
             self.assertIn("memory_audit_events", inspect(engine).get_table_names())
             with Session(engine) as db:
                 self.assertEqual(db.get(UserMemory, id_).content, "preserve")
-                self.assertEqual(db.scalar(text("SELECT version_num FROM alembic_version")), "0010_memory_audit")
+                self.assertEqual(db.scalar(text("SELECT version_num FROM alembic_version")), "0011_run_budgets")
+                self.assertIn("run_budgets", inspect(engine).get_table_names())
             engine.dispose()

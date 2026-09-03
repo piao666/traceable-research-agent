@@ -152,7 +152,8 @@ def build_evidence_bundle(
 ) -> EvidenceBundle:
     """Build grouped evidence and a lightweight claim map for a run."""
 
-    records = [record for record in _evidence_records(observations, traces) if is_research_record(record)]
+    records = [record for record in _evidence_records(observations, traces)
+               if is_research_record(record) and record.get("run_id", run.run_id) == run.run_id]
     items: list[EvidenceItem] = []
     for record in records:
         if record["tool_name"] == "report_writer":
@@ -263,33 +264,21 @@ def _evidence_records(
     observations: list[dict[str, Any]], traces: list[ToolTrace]
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    observed_ids: set[str] = set()
-    trace_by_id = {trace.trace_id: trace for trace in traces}
-    for observation in observations:
+    # Once traces exist they alone define identity and order. Matching by
+    # (step, tool) is ambiguous for refetches and cross-run/deepening records.
+    for observation in ([] if traces else observations):
         tool_name = str(observation.get("tool_name") or observation.get("action") or "unknown")
-        key = (observation.get("step_no"), tool_name)
-        persisted_trace = trace_by_id.get(observation.get("trace_id")) or next(
-            (trace for trace in traces if (trace.step_no, trace.tool_name) == key
-             and trace.trace_id not in observed_ids), None,
-        )
-        if persisted_trace:
-            observed_ids.add(persisted_trace.trace_id)
         output = observation.get("output") if isinstance(observation.get("output"), dict) else {}
         metadata = _observation_metadata(observation)
         success = bool(observation.get("success"))
-        if persisted_trace:
-            # A transient/stale observation must not override the persisted result.
-            output = _trace_output(persisted_trace)
-            metadata = output.get("metadata") if isinstance(output.get("metadata"), dict) else {}
-            success = persisted_trace.status == "success"
         records.append(
             {
-                "trace_id": observation.get("trace_id") or (
-                    persisted_trace.trace_id if persisted_trace else None
-                ),
+                **({"run_id": observation.get("run_id") or metadata.get("sub_run_id")}
+                   if observation.get("run_id") or metadata.get("sub_run_id") else {}),
+                "trace_id": observation.get("trace_id"),
                 "step_no": observation.get("step_no"),
                 "tool_name": tool_name,
-                "status": persisted_trace.status if persisted_trace else ("success" if success else "failed"),
+                "status": "success" if success else "failed",
                 "success": success,
                 "output": output,
                 "metadata": metadata,
@@ -298,14 +287,17 @@ def _evidence_records(
             }
         )
 
+    observed_ids = set()
     for trace in traces:
         if trace.trace_id in observed_ids:
             continue
+        observed_ids.add(trace.trace_id)
         output = _trace_output(trace)
         metadata = output.get("metadata") if isinstance(output.get("metadata"), dict) else {}
         records.append(
             {
                 "trace_id": trace.trace_id,
+                "run_id": trace.run_id,
                 "step_no": trace.step_no,
                 "tool_name": trace.tool_name,
                 "status": trace.status,
@@ -900,13 +892,26 @@ def _claim_maps(
 ) -> tuple[list[ClaimEvidenceMap], list[ClaimEvidenceMap]]:
     claims: list[ClaimEvidenceMap] = []
     unsupported: list[ClaimEvidenceMap] = []
-    by_step: dict[int | None, list[EvidenceItem]] = {}
+    if plan.get("evidence_mapping_version") == "trace-source-v2":
+        # A plan goal is an intention, not an observed fact. Extractive claims
+        # quote one actual passage and cite exactly that passage's identity.
+        for item in items:
+            claims.append(ClaimEvidenceMap(claim_id=f"C{len(claims) + 1:03d}", claim=item.snippet,
+                evidence_ids=[item.evidence_id], support_level="supported",
+                notes=f"source_excerpt; run={item.run_id}; trace={item.trace_id}; tool={item.tool_name}. Source text, not independent fact verification."))
+        for record in records:
+            if not record.get("success"):
+                unsupported.append(ClaimEvidenceMap(claim_id=f"U{len(unsupported) + 1:03d}",
+                    claim=f"{record.get('tool_name')} 未取得有效材料。", evidence_ids=[], support_level="unsupported",
+                    notes=str(record.get("error_message") or "tool_failed")))
+        return claims, unsupported
+    by_step: dict[tuple[int | None, str], list[EvidenceItem]] = {}
     for item in items:
-        by_step.setdefault(item.step_no, []).append(item)
+        by_step.setdefault((item.step_no, item.tool_name), []).append(item)
 
     for step in plan.get("steps") or []:
         step_no = step.get("step_no")
-        step_items = by_step.get(step_no, [])
+        step_items = by_step.get((step_no, step.get("tool_name")), [])
         evidence_ids = [item.evidence_id for item in step_items if not item.unsupported_reason]
         unsupported_ids = [item.evidence_id for item in step_items if item.unsupported_reason]
         tool_name = str(step.get("tool_name") or "unknown")
@@ -935,7 +940,7 @@ def _claim_maps(
     unclaimed_items = [
         item
         for item in items
-        if item.step_no not in {step.get("step_no") for step in plan.get("steps") or []}
+        if (item.step_no, item.tool_name) not in {(step.get("step_no"), step.get("tool_name")) for step in plan.get("steps") or []}
         and not item.unsupported_reason
     ]
     if unclaimed_items:
@@ -950,7 +955,7 @@ def _claim_maps(
 
     failed_records = [
         record for record in records
-        if not record.get("success") and not by_step.get(record.get("step_no"))
+        if not record.get("success") and not by_step.get((record.get("step_no"), record.get("tool_name")))
     ]
     for record in failed_records:
         unsupported.append(

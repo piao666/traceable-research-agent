@@ -81,7 +81,9 @@ def materialize_provenance_bundle(
 ) -> dict[str, Any]:
     eligible = [item for item in bundle.evidence_items if is_eligible_evidence(item)]
     fingerprint = hashlib.sha256(json.dumps(
-        [item.to_dict() for item in eligible], sort_keys=True, ensure_ascii=False, default=str,
+        {"items": [item.to_dict() for item in eligible],
+         "claims": [item.to_dict() for item in [*bundle.claims, *bundle.unsupported_claims]]},
+        sort_keys=True, ensure_ascii=False, default=str,
     ).encode()).hexdigest()[:16]
     revision = f"{extractor_version[:40]}:{fingerprint}"
     existing = db.get(EvidencePipelineRun, run.run_id)
@@ -157,7 +159,7 @@ def materialize_provenance_bundle(
                 claim_text=claim.claim_text,
                 section="Evidence-backed claims",
                 ordinal=ordinal,
-                origin="plan_claim",
+                origin="source_excerpt" if str(claim_map.notes or "").startswith("source_excerpt;") else "plan_claim",
             )
             pending_claims.append(claim)
             pending_report_claims.append(report_claim)
@@ -269,6 +271,9 @@ def get_provenance_bundle(
         run_id,
         reasoning_run_id=reasoning_run_id,
     )
+    from app.agent.outcome import result_integrity
+    current_run = db.get(AgentRun, run_id)
+    mapping_review = bool(current_run and result_integrity(current_run)["requires_review"])
     return {
         "run_id": run_id,
         "schema_version": pipeline.schema_version,
@@ -284,7 +289,7 @@ def get_provenance_bundle(
         "citations": [_citation_dict(item) for item in citations],
         "integrity": {
             "citation_evaluated": bool(citations),
-            "requires_review": any(not _json_load(doc.metadata_json).get("research_eligible") for doc in documents),
+            "requires_review": mapping_review or any(not _json_load(doc.metadata_json).get("research_eligible") for doc in documents),
             "citation_count": len(citations),
             "report_claim_count": len(report_claims),
             "citation_coverage": round(citation_coverage, 6),
@@ -323,7 +328,7 @@ def _materialize_item(
     document_id = _stable_id("doc", run.run_id, canonical_uri)
     snapshot_content = trace.output_json if trace and trace.output_json else item.snippet
     artifact = artifact_store.put_text(snapshot_content or "")
-    snapshot_id = _stable_id("snap", document_id, artifact.content_hash)
+    snapshot_id = _stable_id("snap", document_id, item.trace_id or "observation", artifact.content_hash)
     passage_text = item.snippet[:passage_max_chars]
     passage_hash = hashlib.sha256(passage_text.encode("utf-8")).hexdigest()
     passage_id = _stable_id("pass", snapshot_id, item.evidence_id, passage_hash)

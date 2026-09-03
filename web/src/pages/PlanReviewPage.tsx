@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ApiError, api, statusLabel, statusTone, type PlanReviewResponse } from "../api/client";
 import { Button, PageHeader, Panel, StatusChip, TimelineRow } from "../components/primitives";
 import { ErrorState, LoadingState } from "../components/Feedback";
+import { ResearchPolicyNote } from "../components/ResearchPolicyNote";
 
 type ApprovalState = "awaiting" | "submitting" | "error" | "approved" | "rejected";
 
@@ -113,11 +114,12 @@ function PlanReview({ runId }: { runId: string }) {
             <div><div className="risk-label">低风险</div><div className="risk-value">{riskSummary.low ?? 0} 步</div></div>
             <div><div className="risk-label">中风险</div><div className="risk-value">{riskSummary.medium ?? 0} 步</div></div>
             <div><div className="risk-label">高风险</div><div className="risk-value">{riskSummary.high ?? 0} 步 · 运行时仍需确认</div></div>
-            <div><div className="risk-label">允许工具</div><div className="risk-value">{plan.allowed_tools.join("、") || "由本地注册表决定"}</div></div>
+            <div><div className="risk-label">允许工具</div><div className="risk-value">{plan.allowed_tools.join("、") || "空名单：不允许执行任何工具"}</div></div>
             <div><div className="risk-label">计划备注</div><div className="risk-value">{notes.join("；") || "无额外备注"}</div></div>
           </div>
         </Panel>
       </div>
+      <ResearchPolicyNote sourceMode={plan.source_mode} executionMode={plan.execution_mode} />
       <section className="panel approval-bar" data-figma-node="40:29" aria-live="polite">
         <div className={`approval-message${error ? " approval-error" : ""}`}>{error || (plan.status !== "waiting_human_plan" ? `当前状态：${statusLabel(plan.status)}，此页面只读。` : approvalState === "approved" ? "计划已批准，正在进入工作台" : approvalState === "rejected" ? "计划已拒绝，Run 将保留审计记录" : "研究计划等待确认 · 批准后异步启动并进入工作台")}</div>
         {approvalState === "error" && <Button variant="secondary" onClick={() => setRevision((value) => value + 1)}>重新读取计划</Button>}

@@ -31,7 +31,7 @@ def create_agent_run(
         report_type=report_type,
         source_mode=source_mode,
         status="pending",
-        allowed_tools_json=json.dumps(allowed_tools) if allowed_tools else None,
+        allowed_tools_json=json.dumps(allowed_tools) if allowed_tools is not None else None,
         session_id=session_id,
         run_config_snapshot=run_config_snapshot,
     )

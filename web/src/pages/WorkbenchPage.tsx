@@ -3,6 +3,8 @@ import { formatTimestamp, statusLabel, statusTone } from "../api/client";
 import { useRunContext } from "../hooks/useRunContext";
 import { MetricCard, Panel, StatusChip } from "../components/primitives";
 import { useFocusTarget } from "../hooks/useFocusTarget";
+import { ExecutionInsights } from "../components/ExecutionInsights";
+import { ResearchPolicyNote } from "../components/ResearchPolicyNote";
 
 export function WorkbenchPage() {
   const { task, plan, traces, detailErrors } = useRunContext();
@@ -16,8 +18,10 @@ export function WorkbenchPage() {
       <MetricCard label="计划进度" value={`${task.current_step} / ${task.total_steps}`} note="步骤进度不代表研究已通过验收" />
       <MetricCard label="工具调用" value={task.total_tool_calls} note="调用次数不等于有效来源数" />
       <MetricCard label="累计调用耗时" value={`${(task.total_latency_ms / 1000).toFixed(2)} s`} note="累计调用时长，并非总墙钟耗时" />
-      <MetricCard label="记录的估算费用" value={task.estimated_cost > 0 ? `$${task.estimated_cost.toFixed(4)}` : "未记录 / 0"} note="非账单金额；零值不保证没有费用" />
+      <MetricCard label="原调用估值记录" value={task.estimated_cost > 0 ? task.estimated_cost.toFixed(4) : "未记录 / 0"} note="旧调用估值口径；非共享预算或账单金额" />
     </section>
+    <ResearchPolicyNote sourceMode={task.source_mode} executionMode={task.execution_mode} />
+    <ExecutionInsights plan={plan} />
     <div className="workbench-columns">
       <Panel title="执行计划">
         {!plan ? <p>计划暂不可读，请刷新重试。</p> : <>
@@ -47,7 +51,7 @@ export function WorkbenchPage() {
         <summary><span><strong>{trace.tool_name}</strong> · 步骤 {trace.step_no}<small>{formatTimestamp(trace.created_at)} · {trace.latency_ms == null ? "耗时未记录" : `${trace.latency_ms} ms`}</small></span><StatusChip tone={statusTone(trace.status === "success" ? "completed" : trace.status)}>{({ success: "调用成功", skipped: "未执行", approved: "已批准", rejected: "已拒绝" } as Record<string, string>)[trace.status] || statusLabel(trace.status)}</StatusChip></summary>
         {trace.error_message && <p className="error-banner">{trace.error_message}</p>}
         <p>{trace.output_summary || "无输出摘要"}</p><p>Trace ID：{trace.trace_id}</p>
-        <p>Token：输入 {trace.token_in ?? 0} / 输出 {trace.token_out ?? 0}；估算费用：${(trace.estimated_cost ?? 0).toFixed(4)}</p>
+        <p>Token：输入 {trace.token_in ?? 0} / 输出 {trace.token_out ?? 0}；原调用估值记录：{(trace.estimated_cost ?? 0).toFixed(4)}（非共享预算记账）</p>
         <h3>输入摘要</h3><pre className="json-block" tabIndex={0}>{trace.input_summary || "未记录"}</pre>
         <h3>持久化输出</h3><pre className="json-block" tabIndex={0}>{trace.output == null ? "未记录" : JSON.stringify(trace.output, null, 2)}</pre>
         {trace.metadata && <><h3>执行元数据</h3><pre className="json-block" tabIndex={0}>{JSON.stringify(trace.metadata, null, 2)}</pre></>}

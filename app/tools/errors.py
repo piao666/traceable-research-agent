@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from enum import Enum
+import re
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from app.security.redaction import redact_sensitive_data, redact_text
@@ -23,6 +26,36 @@ class ToolErrorCategory(str, Enum):
     UNKNOWN = "unknown"
 
 
+def http_error_metadata(status: int, headers) -> dict[str, Any]:
+    """Keep only non-secret response control fields; distinguish permission and quota."""
+    headers = headers or {}
+    limited = status == 429 or (status == 403 and (
+        headers.get("X-RateLimit-Remaining") == "0" or headers.get("Retry-After") is not None))
+    category = ("rate_limited" if limited else "auth_error" if status == 401
+                else "forbidden" if status == 403 else "not_found" if status == 404 else "api_error")
+    result = {"http_status": status, "error_type": category, "rate_limited": limited}
+    retry = headers.get("Retry-After")
+    if retry is not None:
+        try:
+            seconds = float(retry)
+        except (TypeError, ValueError):
+            try:
+                when = parsedate_to_datetime(str(retry))
+                seconds = (when - datetime.now(timezone.utc)).total_seconds()
+            except (ValueError, TypeError, OverflowError):
+                seconds = 0
+        result["retry_after_seconds"] = max(0, min(seconds, 3600))
+    return result
+
+
+def transport_retry_limit(arguments: dict, configured: int) -> int:
+    try:
+        requested = int(arguments.get("_max_transport_retries", configured))
+    except (TypeError, ValueError):
+        requested = configured
+    return max(0, min(configured, requested, 5))
+
+
 def classify_tool_error(error_type: object, error_message: object = None) -> ToolErrorCategory:
     normalized = str(error_type or "").strip().lower()
     text = f"{normalized} {error_message or ''}".lower()
@@ -33,7 +66,7 @@ def classify_tool_error(error_type: object, error_message: object = None) -> Too
         return ToolErrorCategory.TIMEOUT
     if normalized in {"missing_api_key", "auth_error", "unauthorized", "forbidden"} or any(
         term in text for term in ("authentication", "unauthorized", "invalid credential")
-    ):
+    ) or re.search(r"\bhttp\s+401\b", text):
         return ToolErrorCategory.AUTH_ERROR
     if normalized in {
         "invalid_response",
@@ -50,6 +83,7 @@ def classify_tool_error(error_type: object, error_message: object = None) -> Too
         "readonly_policy_rejected",
         "approval_mismatch",
         "disallowed_tool",
+        "source_mode_violation",
     }:
         return ToolErrorCategory.POLICY_ERROR
     if normalized in {"not_found", "db_not_found", "index_missing", "missing_report_file"}:

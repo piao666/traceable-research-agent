@@ -39,6 +39,15 @@ def web_plan() -> dict:
 
 class ResearchIntegrityTests(unittest.TestCase):
     def setUp(self):
+        # Production startup registers tools. Keep direct executor tests equally
+        # initialized and independent of which other test modules ran first.
+        from app.tools import registry
+        from app.tools.defaults import register_default_tools
+        for mapping in (registry._tool_specs, registry._tool_handlers):
+            guard = patch.dict(mapping, clear=True)
+            guard.start()
+            self.addCleanup(guard.stop)
+        register_default_tools()
         self.engine = create_engine("sqlite://")
         Base.metadata.create_all(self.engine)
         self.db = Session(self.engine)

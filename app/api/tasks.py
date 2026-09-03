@@ -23,6 +23,7 @@ from app.agent.file_access_policy import (
 )
 from app.agent.planner import plan_task, plan_task_for_review
 from app.agent.preflight import check_plan_readiness
+from app.agent.execution_policy import bind_run_policy
 from app.agent.outcome import fail_execution, result_integrity
 from app.agent.plan_guardrails import normalize_plan_arguments
 from app.agent.state import WAITING_HUMAN_PLAN
@@ -64,7 +65,9 @@ router = APIRouter(
 )
 
 
-def _assert_plan_ready(plan: dict[str, Any]) -> None:
+def _assert_plan_ready(plan: dict[str, Any], run: AgentRun | None = None) -> None:
+    if run is not None:
+        bind_run_policy(run, plan)
     readiness = check_plan_readiness(plan, settings)
     if not readiness["ready"]:
         raise HTTPException(status_code=409, detail={
@@ -78,7 +81,7 @@ def get_task_preflight(run_id: str, db: Session = Depends(get_db)) -> TaskPrefli
     run = store.get_agent_run(db, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Task run not found")
-    return TaskPreflightResponse(**check_plan_readiness(_parse_run_plan(run), settings))
+    return TaskPreflightResponse(**check_plan_readiness(bind_run_policy(run, _parse_run_plan(run)), settings))
 
 
 def _record_memory_recall_trace(
@@ -550,6 +553,11 @@ async def get_task_plan(
         plan = json.loads(run.plan_json)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="Task run plan is invalid") from exc
+    from app.agent.budget import budget_snapshot
+    from app.agent.execution_view import execution_insights
+    plan = bind_run_policy(run, plan)
+    plan["execution_budget"] = budget_snapshot(db, run_id)
+    plan["execution_insights"] = execution_insights(run, plan, store.list_tool_traces(db, run_id))
     return TaskPlanResponse(run_id=run.run_id, **plan)
 
 
@@ -582,7 +590,7 @@ def run_task(
     if run.status in ("failed", "cancelled"):
         raise HTTPException(status_code=409, detail=f"{run.status.title()} runs cannot be rerun directly")
 
-    _assert_plan_ready(_parse_run_plan(run))
+    _assert_plan_ready(_parse_run_plan(run), run)
     if not store.claim_pending_agent_run(db, run_id):
         raise HTTPException(status_code=409, detail="Task run is already running")
     summary = run_task_by_mode(db, run_id)
@@ -622,7 +630,7 @@ async def run_task_async(
     if run.status in ("failed", "cancelled"):
         raise HTTPException(status_code=409, detail=f"{run.status.title()} runs cannot be rerun directly")
 
-    _assert_plan_ready(_parse_run_plan(run))
+    _assert_plan_ready(_parse_run_plan(run), run)
     if not store.claim_pending_agent_run(db, run_id):
         db.expire_all()
         current = store.get_agent_run(db, run_id)
@@ -691,7 +699,7 @@ def confirm_task(
                 break
 
     if request.approved and request.resume:
-        _assert_plan_ready(plan)
+        _assert_plan_ready(plan, run)
     if not store.claim_pending_agent_run(db, run_id, expected_status="waiting_human"):
         raise HTTPException(status_code=409, detail="Confirmation was already consumed or task was cancelled")
     plan["confirmation"] = {
@@ -815,9 +823,10 @@ async def get_plan_review(
         ))
 
     return PlanReviewResponse(
-        preflight=TaskPreflightResponse(**check_plan_readiness(plan, settings)),
+        preflight=TaskPreflightResponse(**check_plan_readiness(bind_run_policy(run, plan), settings)),
         run_id=run.run_id,
         task=run.task,
+        source_mode=run.source_mode,
         status=run.status,
         execution_mode=plan.get("execution_mode") or "planned",
         steps=review_steps,
@@ -888,7 +897,8 @@ def approve_plan(
     if request.modified_steps is not None:
         candidate["steps"] = _merge_approved_steps(list(plan.get("steps") or []), request.modified_steps)
         candidate = normalize_plan_arguments(candidate, run.task, run.source_mode)
-    _assert_plan_ready(candidate)
+    _assert_plan_ready(candidate, run)
+    bind_run_policy(run, plan)
     if not store.claim_pending_agent_run(db, run_id, expected_status="waiting_human_plan"):
         raise HTTPException(status_code=409, detail="Plan approval was already consumed or task was cancelled")
 
@@ -1190,6 +1200,7 @@ def retry_task(
     # partially consumed ReAct state from the original run.
     plan.pop("confirmation", None)
     plan.pop("react_state", None)
+    plan.pop("execution_budget", None)
     for key in list(plan):
         if key.startswith(("adaptive_", "deepening_")) or key in {"research_outcome", "preflight", "evidence_revision"}:
             plan.pop(key, None)

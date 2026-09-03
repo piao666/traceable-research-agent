@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from app.config import settings
 from app.agent.plan_guardrails import normalize_plan_arguments
+from app.agent.execution_policy import default_skill_tools
 from app.agent.routing import select_execution_mode, select_skill
 from app.llm.planner_client import call_llm_for_plan
 from app.llm.providers import create_llm_client
@@ -1245,6 +1246,12 @@ def _ensure_research_template_steps(
     if not (deep_research or technical_docs):
         return
 
+    if "deep_web_research" in marker:
+        # Filtering forbidden steps must not silently downgrade an explicit
+        # full-page research template into a search-snippet-only task.
+        plan["required_tools"] = list(dict.fromkeys([
+            *(plan.get("required_tools") or []), "tavily_search", "web_fetcher",
+        ]))
     allowed_set = set(allowed_tools) if allowed_tools is not None else None
     existing_steps = [step for step in plan.get("steps") or [] if isinstance(step, dict)]
     report_steps = [step for step in existing_steps if step.get("tool_name") == "report_writer"]
@@ -1607,15 +1614,7 @@ def _skill_to_plan(
     if not steps:
         notes.append("No executable steps: all tools blocked by allowed_tools.")
 
-    default_allowed = DEFAULT_TOOL_ORDER.copy()
-    for spec in list_tools():
-        if (
-            spec.enabled
-            and "mcp_remote" in spec.tags
-            and tool_channel(spec) == "readonly"
-            and spec.name not in default_allowed
-        ):
-            default_allowed.append(spec.name)
+    default_allowed = default_skill_tools(steps, skill.name)
 
     return {
         "version": "skill-v1",
@@ -1623,6 +1622,7 @@ def _skill_to_plan(
         "source_mode": source_mode,
         "skill_name": skill.name,
         "skill_version": skill.version,
+        "required_tools": list(skill.required_tools),
         "scenario_template": skill.name,
         "allowed_tools": allowed_tools if allowed_tools is not None else default_allowed,
         "steps": steps,
@@ -1661,15 +1661,8 @@ def _composed_steps_to_plan(
     if not steps:
         notes.append("No executable steps after composition filter.")
 
-    default_allowed = DEFAULT_TOOL_ORDER.copy()
-    for spec in list_tools():
-        if (
-            spec.enabled
-            and "mcp_remote" in spec.tags
-            and tool_channel(spec) == "readonly"
-            and spec.name not in default_allowed
-        ):
-            default_allowed.append(spec.name)
+    default_allowed = default_skill_tools(steps, "deep_web_research" if any(
+        s.get("tool_name") == "web_fetcher" for s in steps) else "composed")
 
     return {
         "version": "composed-v1",
@@ -1678,6 +1671,7 @@ def _composed_steps_to_plan(
         "skill_name": None,
         "skill_version": None,
         "scenario_template": "composed",
+        "required_tools": list(dict.fromkeys(s["tool_name"] for s in composed_steps if s.get("required") is not False)),
         "allowed_tools": allowed_tools if allowed_tools is not None else default_allowed,
         "steps": steps,
         "notes": notes,

@@ -1,4 +1,4 @@
-# R6 isolated UI checks
+# R6–R8 isolated UI checks
 
 These are fixed, explicitly labelled samples, not research results or deployment
 diagnostics. They require no API keys, backend process or historical database.
@@ -19,6 +19,11 @@ failed scenario does not make it succeed: switch back to populated to simulate
 recovery. Mutations intentionally return an error; successful actions are covered
 by component/API tests instead. A served HTML page is not a rendered layout check.
 
+R8 adds `recovery` (GitHub disabled, other sources fetched), `budget` (failed Run,
+shared-budget stop, blocked final report) and `legacy` (review notice, absent old
+budget) scenarios. Use workbench, evidence and report routes to inspect them.
+Recovery/budget fixtures use generated API types; they are not live task results.
+
 ## Isolation guarantees
 
 - The QA config explicitly removes inherited API proxies and forces
@@ -28,7 +33,7 @@ by component/API tests instead. A served HTML page is not a rendered layout chec
 - No SQLite, provider credentials or remote search/model requests are used.
 - The normal production build uses `vite.config.ts`, not this config. QA files
   outside `public/` are not production entry points. Do not deploy the QA server.
-- The smoke script starts/closes its own localhost server and checks 52 routes/
+- The smoke script starts/closes its own localhost server and checks 59 routes/
   methods/scenarios/isolation assertions; it does not drive a browser.
 - Keep existing browser drafts safe by using this separate origin/port. No claim
   is made that QA samples match the full OpenAPI schema or external results.
@@ -53,6 +58,11 @@ by component/API tests instead. A served HTML page is not a rendered layout chec
    navigation and access to the final controls without obscuration. An iframe
    width is not a physical mobile/touch device test.
 8. Compare against accessible current Figma nodes before claiming design fidelity.
+9. In R8 scenarios, distinguish tool-local disable/cooldown/input restrictions
+   from a root-budget stop; unknown costs must not show as free. Check parent links,
+   long source titles/URLs, candidate → Trace links and excerpt-origin labels.
+   On a deployed test Run verify snapshot refresh and cancellation; this fixture
+   server never performs those mutations or real external recovery.
 
 ## Evidence boundary
 
@@ -61,5 +71,5 @@ The current environment's supported browser blocks this local preview with
 no desktop/390px screenshot or layout measurement is supplied. Text-token
 contrast tests check 11 configured color pairs numerically, not all rendered
 combinations or disabled/focus/control contrast. DOM tests test state/focus logic
-with dialog shims, not a real browser or screen reader. Carry these gaps into R7;
+with dialog shims, not a real browser or screen reader. Carry these gaps into release acceptance;
 do not equate them with final provider or user acceptance.

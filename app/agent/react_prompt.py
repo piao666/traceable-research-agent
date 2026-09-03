@@ -37,6 +37,8 @@ def build_react_messages(
     available_tool_specs: list[ToolSpec],
     observation_history: list[dict[str, Any]],
     scenario_template: str | None = None,
+    recovery_context: dict[str, Any] | None = None,
+    research_context: dict[str, Any] | None = None,
 ) -> list[LLMMessage]:
     """Build a JSON-only next-action prompt without requesting hidden reasoning."""
 
@@ -46,18 +48,18 @@ def build_react_messages(
     scenario_guidance = ""
     if scenario in {"deep_web_research", "technical_docs_research"}:
         scenario_guidance = (
-            " For this research scenario, if allowed_tools contains remote MCP tools "
-            "(tool_source=mcp_remote), call at least one of them before finish so the "
-            "answer has auditable external source-pack evidence."
+            " GitHub and remote MCP are optional sources, not mandatory stops in deep Web research. "
+            "Use permitted search and page-reading tools to collect auditable source text from "
+            "official sites, papers and technical documentation. If one source fails, choose "
+            "another available tool or source; never switch real research to mock data."
         )
     system = (
         "You are a traceable research agent. "
-        f"CRITICAL: You MUST select your action ONLY from this exact list: [{tools_str}]. "
-        "Choosing ANY other tool name (e.g. tavily_search, web_search, browser) is a fatal "
-        "error and will abort the task. If none of the allowed tools can answer the question, "
-        "use action=finish immediately and put your best answer in args.summary. "
-        "For general knowledge questions (e.g. 'what is X'), prefer action=finish with a "
-        "direct answer rather than forcing an inappropriate tool call. "
+        f"CRITICAL: Select a tool ONLY from this exact list: [{tools_str}], or action=finish. "
+        "Execution constraints describe disabled, cooling-down or exhausted tools. "
+        "Do not repeat unavailable tools or rejected inputs; choose another permitted route. "
+        "If no feasible route remains, finish with an explicit limitation summary. "
+        "Finishing does not bypass evidence requirements or guarantee a completed research report. "
         "The thought field must contain only a short decision rationale. "
         "Output one strict JSON object only, no Markdown. Required schema: "
         '{"thought":"short rationale","action":"MUST be from allowed list or finish",'
@@ -72,8 +74,11 @@ def build_react_messages(
         "run_id": run_id,
         "scenario_template": scenario,
         "allowed_tools": allowed_tools,
-        "available_tools": [_tool_description(spec) for spec in available_tool_specs],
+        "available_tools": [_tool_description(spec) for spec in available_tool_specs
+                            if spec.enabled and spec.name in allowed_tools],
         "observation_history": observation_history,
+        "execution_constraints": recovery_context or {},
+        "research_context": research_context or {},
         "safety_boundaries": [
             "Only allowed and enabled registered tools may be selected.",
             "SQL is limited to a single SELECT/WITH statement.",

@@ -43,6 +43,87 @@ and current Figma reconciliation checks remain unverified. R7 regression and
 deployment preparation is recorded in [release validation](RELEASE_VALIDATION.md);
 Docker/Streamlit runtime, full pytest and visual/provider acceptance remain open.
 
+### Execution constraints and recovery (R8.0–R8.2)
+
+Skill permissions include their required tools by default. Explicit restrictions,
+including an empty list, remain authoritative; a required capability filtered out
+of a deep Web plan blocks approval rather than silently weakening the plan.
+Real runs reject mock/offline/fallback arguments and demonstrative outputs in
+planned, parallel, ReAct and targeted-refetch execution. Demonstration runs
+remain explicitly separate. Deepening children inherit their parent's permissions.
+
+ReAct treats GitHub and remote MCP as optional sources for general deep Web
+research. Authentication failures disable the affected provider for that Run;
+rate limits/transient provider errors cool it down, while a failed page or bad
+input blocks that input rather than the entire reader. Available alternatives
+remain selectable after another tool reaches its call limit. Recovery is recorded
+in Trace and persisted for resume; a full retry starts with fresh recovery state.
+ReAct owns GitHub/Tavily retries to prevent nested transport retries exceeding
+the existing same-tool cap. Rejected selections still consume the bounded step
+budget. Completion still requires usable evidence; recovery never relaxes it.
+
+R8.0–R8.2 itself needs no new settings or migration. R8.3–R8.5 below adds a
+budget ledger. Synthetic tests do not demonstrate live-model autonomy or
+external-provider availability; see the [validation ledger](RELEASE_VALIDATION.md).
+
+### Source context, shared budgets and exact provenance (R8.3–R8.5)
+
+ReAct rebuilds a bounded source queue from persisted traces, not the last few
+summary strings. It retains URLs, titles, excerpts, source/Trace identities,
+fetch status, content basis and remaining fetch gaps. Up to 64 sources are kept;
+the prompt exposes 12 with domain diversity and unread sources prioritized.
+Credential-bearing URLs and demonstration results are excluded. Source text is
+untrusted data, never permission to execute instructions. Deepening prompts also
+retain source URLs and originating Run/Trace identities.
+
+Migration `0011_run_budgets` adds an atomic ledger shared by a root Run and its
+deepening children. Defaults: 40 tool invocations, 40 LLM calls, 100,000 accounted
+tokens and 900 wall-clock seconds. Resume preserves counters; full retry gets a
+new ledger. Limits are checked before new operations, including parallel tool
+admission and report LLM calls. Budget exhaustion fails explicitly while keeping
+existing evidence/Trace; it cannot expose an intermediate report as final.
+`GET /api/tasks/{run_id}/plan` exposes the current shared `execution_budget`.
+
+The optional estimated-cost cap is in CNY and disabled by default. A nonzero cap
+requires deployment-provided conservative tool/token price estimates; unknown
+prices block external calls. Missing token usage retains the conservative input
+bytes/output-token reservation. This is not an exact tokenizer or billing cap.
+Time limits stop new work; in-flight calls retain transport timeouts. Tool counts
+are invocations, not every URL/HTTP request within a reader. Draft planning,
+independent tool API calls and separate post-run memory extraction are outside
+the execution ledger. See `.env.example` for `RESEARCH_*` settings.
+
+New runs use `trace-source-v2`: plan goals are not treated as observed facts.
+Extractive claims cite their actual source passages; report rendering and the
+evidence API use the same authoritative Trace order. Identical repeated outputs
+retain distinct Trace snapshots. Child evidence cannot be relabelled as parent
+evidence; child learnings stay exploratory with linked sub-runs. Old reports and
+evidence revisions remain intact; susceptible legacy ReAct mappings are flagged
+for review and excluded from trusted quality trends.
+
+### Execution explanations and integration checks (R8.6)
+
+The workbench now displays the typed, read-only `execution_insights` and
+`execution_budget` plan fields: allowed tools, per-tool recovery/cooldown/input
+restrictions, root/child shared counters, optional CNY cost estimates, stop reasons
+and the bounded candidate-source queue with exact Trace links. Reading these
+fields does not invoke providers, create a budget for an old Run or rewrite history.
+Missing API data is not shown as zero sources or unlimited budget. A tool becoming
+selectable is not a connectivity check or a promise to retry it.
+
+Creation and approval explain that GitHub is optional, real research cannot switch
+to mock, explicit empty tool permissions forbid execution, and Planned does not
+promise ReAct-style rerouting. Source queues are candidates, not verified evidence;
+evidence/report pages identify source excerpts separately from verified conclusions
+and expose snapshot/Trace identities. No browser-based budget/key editing is added.
+
+Offline integration covers GitHub 401 → non-GitHub source URL → fetch → actual
+saved Markdown with resolvable provenance → typed page contract. DOM tests cover
+page refresh, budget/permission limits, cancellation, and report → evidence → Trace
+navigation. External providers/model decisions remain fixtures. Full pytest,
+container/runtime, browser/390px and live-provider acceptance are still separate,
+unpassed gates; see [release validation](RELEASE_VALIDATION.md).
+
 ### Shared UI states and accessibility (R6)
 
 Unknown/loading metrics show `—`, not zero. Task and health requests fail

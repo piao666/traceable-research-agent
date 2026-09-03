@@ -9,6 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from app.config import Settings, settings
+from app.tools.errors import http_error_metadata, transport_retry_limit
 from app.tools.base import ToolResult
 from app.tools.web_content_cleaner import clean_tavily_result
 
@@ -146,10 +147,11 @@ def tavily_search(
     )
     call = opener or urlopen
     wait = sleeper or time.sleep
-    max_retries = max(0, min(active.tavily_max_retries, 5))
+    max_retries = transport_retry_limit(arguments, active.tavily_max_retries)
     error_type = "api_error"
     error_message = "Tavily API request failed."
     for attempt in range(max_retries + 1):
+        response_controls = {}
         retryable = False
         try:
             with call(request, timeout=max(1, active.tavily_timeout_seconds)) as response:
@@ -180,9 +182,10 @@ def tavily_search(
                 ),
             )
         except HTTPError as exc:
-            error_type = "rate_limited" if exc.code in {403, 429} else "api_error"
             error_message = f"Tavily API request failed with HTTP {exc.code}."
-            retryable = exc.code in {403, 429} or exc.code >= 500
+            response_controls = http_error_metadata(exc.code, exc.headers)
+            error_type = response_controls["error_type"]
+            retryable = response_controls["rate_limited"] or exc.code >= 500
         except (URLError, TimeoutError, OSError) as exc:
             error_type = "network_error"
             error_message = f"Tavily API network error: {type(exc).__name__}."
@@ -192,8 +195,9 @@ def tavily_search(
             error_message = f"Tavily API returned an invalid response: {type(exc).__name__}."
             retryable = True
 
-        if retryable and attempt < max_retries:
-            wait(0.5 * (2**attempt))
+        delay = max(0.5 * (2**attempt), response_controls.get("retry_after_seconds", 0))
+        if retryable and attempt < max_retries and delay <= 5:
+            wait(delay)
             continue
         break
 
@@ -210,6 +214,8 @@ def tavily_search(
                 retry_count=attempt,
                 fallback_used=True,
                 original_error_type=error_type,
+                http_status=response_controls.get("http_status"),
+                retry_after_seconds=response_controls.get("retry_after_seconds"),
                 fallback_reason=error_message,
             ),
         )
@@ -221,6 +227,8 @@ def tavily_search(
             data_source="tavily_api",
             retry_count=attempt,
             error_type=error_type,
+            http_status=response_controls.get("http_status"),
+            retry_after_seconds=response_controls.get("retry_after_seconds"),
         ),
     )
 

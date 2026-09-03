@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 from app.agent.file_access_policy import file_reader_execution_arguments
 from app.agent.preflight import enforce_execution_readiness
 from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, load_observations, report_subject, result_integrity, skip_dependency
+from app.agent.execution_policy import execute_with_policy
+from app.agent.budget import budgeted_execution
 from app.agent.report_generation import resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
 from app.agent.source_governance import (
@@ -503,6 +505,7 @@ def _check_profile_quota(
         logging.getLogger(__name__).warning("Source quota check failed: %s", exc)
 
 
+@budgeted_execution
 def run_plan(
     db: Session,
     run_id: str,
@@ -596,7 +599,7 @@ def run_plan(
                 else arguments
             )
             started = perf_counter()
-            result = execute_tool(tool_name, execution_arguments)
+            result = execute_with_policy(tool_name, execution_arguments, plan, settings_obj, execute_tool)
             latency_ms = int((perf_counter() - started) * 1000)
             result = govern_tool_result(tool_name, result, plan, settings_obj)
             trace = record_tool_result(
@@ -618,13 +621,13 @@ def run_plan(
                 db,
                 run_id,
                 step_no,
-                total_tool_calls_delta=1,
+                total_tool_calls_delta=0 if result.metadata.get("executed") is False else 1,
                 latency_ms_delta=latency_ms,
             )
 
             def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
                 refetch_started = perf_counter()
-                refetch_result = execute_tool(name, refetch_args)
+                refetch_result = execute_with_policy(name, refetch_args, plan, settings_obj, execute_tool)
                 return refetch_result, int((perf_counter() - refetch_started) * 1000)
 
             refetches = execute_targeted_refetches(
@@ -665,7 +668,7 @@ def run_plan(
                     db,
                     run_id,
                     step_no,
-                    total_tool_calls_delta=1,
+                    total_tool_calls_delta=0 if refetch.result.metadata.get("executed") is False else 1,
                     latency_ms_delta=refetch.latency_ms,
                 )
 

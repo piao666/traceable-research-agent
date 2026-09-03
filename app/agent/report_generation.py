@@ -15,4 +15,5 @@ def resolve_report_llm_client(
 
     if settings.report_generation_mode != "llm":
         return None
-    return candidate or create_llm_client(settings)
+    from app.agent.budget import budget_client
+    return budget_client(candidate or create_llm_client(settings))

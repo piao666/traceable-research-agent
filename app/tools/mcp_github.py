@@ -12,6 +12,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.config import Settings, settings
+from app.tools.errors import http_error_metadata, transport_retry_limit
 from app.mcp.readonly import is_http_method_allowed, readonly_policy_metadata
 from app.tools.base import ToolResult
 from app.tools.github_cache import get_cache_key, get_cached_result, put_cached_result
@@ -176,6 +177,7 @@ def _request_public_api(
     max_retries = max(0, min(settings_obj.github_public_api_max_retries, 5))
     request = Request(url, headers=headers, method=method)
     for attempt in range(max_retries + 1):
+        response_controls = {}
         retryable = False
         error_type = "api_error"
         rate_limited = False
@@ -217,8 +219,9 @@ def _request_public_api(
                 ]
             return results, {"retry_count": attempt, "rate_limited": False}
         except HTTPError as exc:
-            rate_limited = exc.code in {403, 429}
-            error_type = "rate_limited" if rate_limited else "api_error"
+            response_controls = http_error_metadata(exc.code, exc.headers)
+            rate_limited = response_controls["rate_limited"]
+            error_type = response_controls["error_type"]
             error_message = f"GitHub public API request failed with HTTP {exc.code}."
             retryable = rate_limited or exc.code >= 500
         except (URLError, TimeoutError, OSError) as exc:
@@ -234,10 +237,12 @@ def _request_public_api(
             error_message = f"GitHub public API read failed: {type(exc).__name__}."
             retryable = True
 
-        if retryable and attempt < max_retries:
-            sleeper(0.5 * (2**attempt))
+        delay = max(0.5 * (2**attempt), response_controls.get("retry_after_seconds", 0))
+        if retryable and attempt < max_retries and delay <= 5:
+            sleeper(delay)
             continue
         return None, {
+            **response_controls,
             "error_type": error_type,
             "error_message": error_message,
             "rate_limited": rate_limited,
@@ -356,7 +361,8 @@ def github_search(
         normalized_query,
         repo,
         limit,
-        active_settings,
+        active_settings.model_copy(update={"github_public_api_max_retries": transport_retry_limit(
+            arguments, active_settings.github_public_api_max_retries)}),
         opener or urlopen,
         sleeper or time.sleep,
         search_type,
@@ -422,6 +428,8 @@ def github_search(
                 retry_count=request_metadata["retry_count"],
                 rate_limited=request_metadata["rate_limited"],
                 original_error_type=request_metadata["error_type"],
+                http_status=request_metadata.get("http_status"),
+                retry_after_seconds=request_metadata.get("retry_after_seconds"),
                 fallback_reason=request_metadata["error_message"],
                 cache_error=cache_error,
                 search_type=search_type,
@@ -440,6 +448,8 @@ def github_search(
             repo=repo,
             retry_count=request_metadata["retry_count"],
             error_type=request_metadata["error_type"],
+            http_status=request_metadata.get("http_status"),
+            retry_after_seconds=request_metadata.get("retry_after_seconds"),
             rate_limited=request_metadata["rate_limited"],
             cache_error=cache_error,
             search_type=search_type,

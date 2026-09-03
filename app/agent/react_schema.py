@@ -20,6 +20,7 @@ class ReActDecision(BaseModel):
 
 
 class ReActStepObservation(BaseModel):
+    trace_id: str | None = None
     step_no: int
     thought: str
     action: str

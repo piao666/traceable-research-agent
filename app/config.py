@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from dotenv import load_dotenv
 
 
@@ -90,6 +90,13 @@ class Settings(BaseModel):
     deep_research_enabled: bool = False
     deep_research_max_depth: int = 2
     deep_research_breadth: int = 3
+    research_max_tool_calls: int = Field(default=40, ge=1)
+    research_max_llm_calls: int = Field(default=40, ge=1)
+    research_max_tokens: int = Field(default=100000, ge=1)
+    research_max_seconds: int = Field(default=900, ge=1)
+    research_max_estimated_cost: float = Field(default=0, ge=0, allow_inf_nan=False)
+    research_tool_cost_estimate: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    research_llm_cost_per_million_tokens: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     memory_llm_extraction_enabled: bool = False
     semantic_scholar_api_key: str | None = None
     citation_validation_enabled: bool = True   # Phase 7.5
@@ -254,6 +261,13 @@ class Settings(BaseModel):
         """Build settings from environment without exposing secret values."""
 
         return cls(
+            research_max_tool_calls=_env_int("RESEARCH_MAX_TOOL_CALLS", 40),
+            research_max_llm_calls=_env_int("RESEARCH_MAX_LLM_CALLS", 40),
+            research_max_tokens=_env_int("RESEARCH_MAX_TOKENS", 100000),
+            research_max_seconds=_env_int("RESEARCH_MAX_SECONDS", 900),
+            research_max_estimated_cost=os.getenv("RESEARCH_MAX_ESTIMATED_COST", "0"),
+            research_tool_cost_estimate=_env_optional("RESEARCH_TOOL_COST_ESTIMATE"),
+            research_llm_cost_per_million_tokens=_env_optional("RESEARCH_LLM_COST_PER_MILLION_TOKENS"),
             service_name=os.getenv("SERVICE_NAME", "traceable-research-agent"),
             phase=os.getenv("APP_PHASE", "traceable-research-agent"),
             api_prefix=os.getenv("API_PREFIX", "/api"),
@@ -517,6 +531,7 @@ class Settings(BaseModel):
         """Return startup-relevant settings without credential values."""
 
         return {
+            "research_budget": {name: value for name, value in self.model_dump().items() if name.startswith("research_")},
             "service_name": self.service_name,
             "phase": self.phase,
             "offline_mode": self.offline_mode,
