@@ -2,19 +2,21 @@
 
 ## R9 后仓库一致性修复：最新记录
 
-基于已发布的 `feature/improvements@91b55e5`，本轮修复交接／发布文档、README
-验证数字、功能分支 CI、MCP Skill 契约与参数传递、SQL 描述，以及 DOCX／XLSX
-读取能力。`LICENSE` 按要求不处理。本轮修复以 `feature/improvements` 最新提交
-和对应 CI 为准；下方结果是提交前本地验证，不用本节覆盖 R9 的已发布历史。
+基于 R9 的 `feature/improvements@91b55e5`，仓库一致性修复已形成
+`9160a6a`，其功能分支 CI 同步修复为 `adc76a9`。本轮覆盖交接／发布文档、
+README 验证数字、功能分支 CI、MCP Skill 契约与参数传递、SQL 描述，以及
+DOCX／XLSX 读取能力。`LICENSE` 按要求不处理。移动中的最终状态以
+`feature/improvements` HEAD 和对应 CI 为准；下方不覆盖 R9 的已发布历史。
 
 | 项目 | 状态 |
 |---|---|
-| 文档与 CI | 已修改；`feature/improvements` push 已纳入 CI 触发分支 |
+| 文档与 CI | 已同步；`feature/improvements` push 已纳入触发分支，首次运行暴露的 OpenAPI 快照遗漏和 R4 测试环境泄漏已修复 |
 | `skill_runner` 元数据与参数 | 非只读／非无副作用契约、参数传递和无效参数拒绝均通过回归与 MCP smoke |
 | SQL 描述 | 已与现有 `sqlglot` 实现对齐 |
 | DOCX／XLSX | 有界只读解析回归通过；PDF 明确路由到 `pdf_reader`；API 清单新增固定版本 `openpyxl` |
 | 完整离线 pytest | 收集 601 项：599 通过、2 条件跳过、0 失败、0 外部网络尝试；有 7 条第三方弃用警告 |
-| 其他验证 | Python 编译、16 项定向回归、MCP server/client smoke、研究完整性 smoke 通过；Docker、真实浏览器、真实外部服务未运行 |
+| 前端门禁 | OpenAPI 类型同步、类型检查、Lint、110 项测试、生产构建和 59 项 QA 检查通过 |
+| 其他验证 | Python 编译、16 项定向回归、研究完整性、质量评估、Docker 配置、Planner、MCP server/client、Streamlit 与 Provenance smoke 通过；Docker 实际启动、真实浏览器、真实外部服务未运行 |
 
 ## R9 目标达成与恢复修复：最新记录
 

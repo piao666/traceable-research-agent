@@ -1,13 +1,16 @@
-# 交接文档：R9 后仓库一致性修复已完成
+# 交接文档：R9 后仓库一致性修复已发布
 
-> 本文档用于跨会话交接。它以远端已发布版本为基线，并把尚未提交的修复与已发布内容明确分开。
+> 本文档用于跨会话交接。移动中的发布状态以远端 `feature/improvements` HEAD
+> 及其对应 GitHub Actions 结果为准，避免把旧提交号误写成当前分支 HEAD。
 
 ## 一、当前状态
 
 - **分支**：`feature/improvements`
-- **已发布基线**：`91b55e5bf6ac776f3d42d9e46ec2763435d71708`
-- **当前阶段**：R9 后的仓库一致性与工具契约修复已完成
-- **发布状态**：R9 基线已推送；本轮修复以 `feature/improvements` 最新提交和对应 CI 为准
+- **R9 基线**：`91b55e5bf6ac776f3d42d9e46ec2763435d71708`
+- **一致性修复提交**：`9160a6a5db9dd6c56366fff4c2bf1bd843268ca5`
+- **CI 稳定性修复提交**：`adc76a9983e732803bd635be9e526b2553c2b953`
+- **当前阶段**：R9 后的仓库一致性、工具契约与功能分支 CI 修复已完成
+- **发布状态**：上述修复已进入 `feature/improvements` 发布序列；最终状态以分支 HEAD 和对应 CI 为准
 - **项目边界**：单实例、本地优先；不内置多租户、RAG 或向量数据库
 
 ## 二、已发布能力（截至 R9）
@@ -19,15 +22,15 @@
 - FastAPI、React/Vite 与 Streamlit 界面，以及 Docker 配置和本地持久化。
 - R9 增加研究目标检查、数据口径约束、来源 ID 复用、重复抓取抑制和旧结果完整性标记。
 
-最近三次已发布提交：
+本轮关键提交（文档提交本身以分支 HEAD 为准）：
 
 ```text
+adc76a9 2026-09-07 test: stabilize feature branch CI gates
+9160a6a 2026-09-07 fix: align repository contracts and file support
 91b55e5 2026-09-07 fix: enforce research goals and bounded recovery
-6858dda 2026-09-03 fix: bound research recovery and preserve traceable evidence
-5e188cd 2026-09-02 fix: complete trustworthy research workflows and frontend modules
 ```
 
-## 三、本轮本地修复
+## 三、本轮已发布修复
 
 当前修复范围不含 `LICENSE`：
 
@@ -48,19 +51,21 @@ R9 已发布验证记录：
 - 前端 110 项测试、类型检查、Lint 和生产构建通过。
 - 隔离页面／路由检查 59 项通过。
 
-本轮本地修复验证：
+本轮修复验证：
 
 - Python `compileall` 通过。
 - 定向修复与依赖契约 16 项通过；新增修复测试 9 项通过。
 - 完整离线 pytest 收集 601 项：599 通过、2 条件跳过、0 失败、0 外部网络尝试；有 7 条第三方弃用警告。
 - MCP server smoke、MCP client smoke、研究完整性 smoke 通过。
+- 前端 OpenAPI 类型同步、类型检查、Lint、110 项测试、生产构建和 59 项 QA 检查通过。
+- 首次功能分支 CI 确实触发，并暴露 OpenAPI 快照遗漏和 R4 测试环境泄漏；两项均已修复并完成本地等价门禁。
 - MCP client 的旧固定数据已与 R9 质量门禁对齐：有来源正文的远端响应通过，无可用证据的 planned／ReAct 运行失败且保留失败 Trace。
-- 未运行 Docker 实际构建／启动、前端测试、真实浏览器或真实外部服务。本轮没有前端源码改动；前端 110 项是 R9 已发布基线，不是本轮重跑结果。
+- 未运行 Docker 实际构建／启动、真实浏览器或真实外部服务。
 
 ## 五、下一步与未验证项
 
-- 最终 `git diff --check`、`git status` 和待提交文件核对已通过；实际提交前应再次确认不包含 `TASK.md`、`.env`、数据库或运行产物。
-- 观察新启用的功能分支 CI；CI 通过后再由部署环境拉取，当前不要自动修改部署目录。
+- 发布前后的 `git diff --check`、`git status` 和文件范围均需保持干净；不得包含 `TASK.md`、`.env`、数据库或运行产物。
+- 功能分支 CI 必须保持通过；出现失败时先处理失败门禁，再由部署环境拉取，当前不要自动修改部署目录。
 - Docker 实际构建／启动、真实浏览器与真实外部模型／搜索仍需在具备条件的环境验收。
 - `LICENSE` 按用户要求暂不处理。
 
