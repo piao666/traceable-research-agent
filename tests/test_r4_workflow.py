@@ -52,7 +52,11 @@ class R4WorkflowTests(unittest.TestCase):
 
     def test_async_confirmation_claims_once_and_schedules_without_sync_execution(self):
         store.update_agent_run_status(self.db, self.run.run_id, "waiting_human")
-        with patch.object(tasks, "_run_task_in_background") as background, patch.object(tasks, "run_task_by_mode") as execute:
+        with (
+            patch.object(tasks, "_assert_plan_ready") as assert_ready,
+            patch.object(tasks, "_run_task_in_background") as background,
+            patch.object(tasks, "run_task_by_mode") as execute,
+        ):
             response = self.client.post(self.endpoint("/confirm?start_async=true"), json={"approved": True})
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(response.json()["status"], "running")
@@ -61,6 +65,7 @@ class R4WorkflowTests(unittest.TestCase):
             execute.assert_not_called()
             duplicate = self.client.post(self.endpoint("/confirm?start_async=true"), json={"approved": True})
             self.assertIn(duplicate.status_code, (400, 409))
+            assert_ready.assert_called_once()
             background.assert_called_once()
 
     def test_async_confirmation_rechecks_missing_configuration_before_claim(self):

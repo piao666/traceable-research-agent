@@ -924,7 +924,7 @@ export interface paths {
         };
         /**
          * List Mcp Tools
-         * @description List read-only MCP tools discoverable by external clients.
+         * @description List source readers and explicitly marked local workflows.
          */
         get: operations["list_mcp_tools_mcp_tools_get"];
         put?: never;
@@ -946,7 +946,7 @@ export interface paths {
         put?: never;
         /**
          * Call Mcp Tool
-         * @description Call one exposed read-only MCP tool.
+         * @description Call one exposed MCP source reader or local workflow.
          */
         post: operations["call_mcp_tool_mcp_tools_call_post"];
         delete?: never;
