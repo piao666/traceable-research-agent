@@ -28,7 +28,8 @@ def register_default_tools() -> None:
         ToolSpec(
             name="file_reader",
             description=(
-                "Read allowed local files under configured FILE_READER_ALLOWED_ROOTS. "
+                "Read TXT, Markdown, CSV, JSON, Python, log, DOCX, and XLSX files under "
+                "configured FILE_READER_ALLOWED_ROOTS. PDF input is handled by pdf_reader. "
                 "Paths outside allowed roots require per-file HITL approval during agent runs."
             ),
             input_schema={"path": "string", "max_chars": "integer"},
@@ -45,7 +46,8 @@ def register_default_tools() -> None:
             name="sql_query",
             description=(
                 "Run read-only SQL queries against workspace demo database. "
-                "Only SELECT/WITH will be allowed when the real safety check is implemented."
+                "sqlglot validation allows one SELECT/WITH query and rejects writes, DDL, "
+                "multiple statements, and dangerous keywords before execution."
             ),
             input_schema={"query": "string", "limit": "integer"},
             output_schema={"rows": "array", "row_count": "integer"},

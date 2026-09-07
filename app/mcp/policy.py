@@ -62,7 +62,12 @@ def readonly_policy_metadata(settings_obj: Any) -> dict[str, Any]:
 
 
 def is_tool_exposable(spec: ToolSpec, *, alias: str | None = None) -> bool:
-    """Return whether a local tool may be exposed by the MCP server."""
+    """Return whether a local tool may be exposed by the MCP server.
+
+    Normal tools must be read-only. A narrowly marked local workflow may also
+    be exposed when it cannot mutate an external source, while its metadata
+    still reports the local side effects to clients.
+    """
 
     exposed_name = alias or spec.name
     if exposed_name in WRITE_CAPABLE_TOOL_NAMES or spec.name in WRITE_CAPABLE_TOOL_NAMES:
@@ -73,6 +78,8 @@ def is_tool_exposable(spec: ToolSpec, *, alias: str | None = None) -> bool:
         return False
     if not spec.enabled:
         return False
+    if bool((spec.metadata or {}).get("mcp_safe_local_workflow")):
+        return True
     return is_tool_read_only(spec)
 
 
@@ -140,11 +147,14 @@ def mcp_policy_metadata(spec: ToolSpec, *, alias: str | None = None) -> dict[str
 
     channel = tool_channel(spec)
     read_only = is_tool_read_only(spec)
+    side_effect_free = bool(
+        read_only and channel == MCPChannel.READONLY.value and spec.side_effect_free
+    )
     return {
         "name": alias or spec.name,
         "local_tool_name": spec.name,
         "read_only": read_only,
-        "side_effect_free": read_only and channel == MCPChannel.READONLY.value,
+        "side_effect_free": side_effect_free,
         "requires_confirmation": spec.requires_confirmation,
         "risk_level": spec.risk_level.value,
         "channel": channel,

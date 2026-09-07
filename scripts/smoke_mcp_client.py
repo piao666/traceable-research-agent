@@ -103,7 +103,11 @@ class FakeMCPHandler(BaseHTTPRequestHandler):
                                     "type": "json",
                                     "json": {
                                         "success": True,
-                                        "output": {"echo": text},
+                                        "output": {
+                                            "content": text,
+                                            "title": "Fake remote evidence",
+                                            "url": "https://example.test/evidence",
+                                        },
                                         "output_summary": f"fake remote echo returned {len(text)} chars.",
                                         "metadata": {"remote_fixture": "echo"},
                                     },
@@ -257,7 +261,10 @@ def main() -> None:
             store.update_agent_run_plan(db, failure.run_id, failure_plan)
             failure_summary = run_plan(db, failure.run_id)
             failure_traces = store.list_tool_traces(db, failure.run_id)
-            assert_true(failure_summary["status"] == "completed", "remote failure caused planned run failure")
+            assert_true(
+                failure_summary["status"] == "failed",
+                "planned run without usable remote evidence was not rejected",
+            )
             assert_true(any(trace.status == "failed" for trace in failure_traces), "remote failure trace missing")
 
             react = store.create_agent_run(
@@ -299,7 +306,10 @@ def main() -> None:
             react_run = store.get_agent_run(db, react.run_id)
             react_state = json.loads(react_run.plan_json)["react_state"]
             react_traces = store.list_tool_traces(db, react.run_id)
-            assert_true(react_summary["status"] == "completed", "remote failure caused ReAct run failure")
+            assert_true(
+                react_summary["status"] == "failed",
+                "ReAct run without usable remote evidence was not rejected",
+            )
             assert_true(react_state["completed_with_limitation"] is True, "ReAct limitation finish missing")
             assert_true(
                 any(
@@ -320,8 +330,8 @@ def main() -> None:
                 "mcp_client": "ok",
                 "fake_remote_discovery": "ok",
                 "remote_tool_call": "ok",
-                "remote_tool_failure_visible": "ok",
-                "react_remote_failure_limitation": "ok",
+                "remote_tool_failure_rejected": "ok",
+                "react_remote_failure_rejected": "ok",
                 "write_remote_hidden": "ok",
                 "remote_channel_metadata": "ok",
             },

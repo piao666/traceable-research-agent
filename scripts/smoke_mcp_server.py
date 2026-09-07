@@ -55,7 +55,9 @@ def main() -> None:
     client = TestClient(app)
     health = client.get("/mcp/health")
     assert_true(health.status_code == 200, "MCP health failed")
-    assert_true(health.json()["read_only"] is True, "MCP health is not read-only")
+    assert_true(health.json()["read_only"] is False, "MCP health hid local workflow writes")
+    assert_true(health.json()["source_operations_read_only"] is True, "MCP source policy is not read-only")
+    assert_true(health.json()["local_state_writes"] is True, "MCP local write policy is missing")
     assert_true("channel_summary" in health.json(), "MCP health missing channel summary")
 
     tools_response = client.get("/mcp/tools")
@@ -73,8 +75,9 @@ def main() -> None:
     assert_true(expected.issubset(names), f"MCP tools missing: {expected - names}")
     assert_true("report_writer" not in names, "write/barrier tool was exposed")
     for tool in tools:
-        assert_true(tool["read_only"] is True, f"{tool['name']} is not read-only")
-        assert_true(tool["side_effect_free"] is True, f"{tool['name']} is not side-effect-free")
+        expected_read_only = tool["name"] != "skill_runner"
+        assert_true(tool["read_only"] is expected_read_only, f"{tool['name']} read-only metadata is wrong")
+        assert_true(tool["side_effect_free"] is expected_read_only, f"{tool['name']} side-effect metadata is wrong")
         assert_true("risk_level" in tool, f"{tool['name']} missing risk metadata")
         assert_true(tool.get("channel") == "readonly", f"{tool['name']} missing readonly channel")
         assert_true(isinstance(tool.get("policy"), dict), f"{tool['name']} missing policy metadata")

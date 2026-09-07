@@ -1,4 +1,4 @@
-"""HTTP and JSON-RPC foundation for exposing read-only MCP tools."""
+"""HTTP and JSON-RPC foundation for MCP source readers and local workflows."""
 
 from __future__ import annotations
 
@@ -45,6 +45,8 @@ TRACE_READER_SPEC = ToolSpec(
     input_schema={"run_id": "string", "limit": "integer|null", "status": "string|null"},
     output_schema={"run_id": "string", "traces": "array", "trace_count": "integer"},
     risk_level=RiskLevel.LOW,
+    read_only=True,
+    side_effect_free=True,
     tags=["trace", "read-only"],
 )
 REPORT_READER_SPEC = ToolSpec(
@@ -53,12 +55,17 @@ REPORT_READER_SPEC = ToolSpec(
     input_schema={"run_id": "string"},
     output_schema={"run_id": "string", "markdown": "string", "exists": "boolean"},
     risk_level=RiskLevel.LOW,
+    read_only=True,
+    side_effect_free=True,
     tags=["report", "read-only"],
 )
 
 SKILL_RUNNER_SPEC = ToolSpec(
     name="skill_runner",
-    description="Execute a registered Skill workflow (search, fetch, report) and return the full result.",
+    description=(
+        "Execute a registered source-read-only Skill workflow and return the result. "
+        "The workflow persists a local Run, Trace rows, evidence, and a report, so it is not side-effect-free."
+    ),
     input_schema={
         "skill_name": "string",
         "query": "string",
@@ -72,7 +79,14 @@ SKILL_RUNNER_SPEC = ToolSpec(
         "report": "string|null",
     },
     risk_level=RiskLevel.LOW,
-    tags=["skill", "workflow", "read-only"],
+    read_only=False,
+    side_effect_free=False,
+    tags=["skill", "workflow", "source-read-only"],
+    metadata={
+        "local_state_writes": True,
+        "source_read_only": True,
+        "mcp_safe_local_workflow": True,
+    },
 )
 
 router = APIRouter(
@@ -154,7 +168,11 @@ def _exposed_tool_specs() -> list[MCPToolMetadata]:
             input_schema=skill_schema,
             output_schema=SKILL_RUNNER_SPEC.output_schema,
             risk_level=SKILL_RUNNER_SPEC.risk_level,
+            read_only=SKILL_RUNNER_SPEC.read_only,
+            side_effect_free=SKILL_RUNNER_SPEC.side_effect_free,
+            requires_confirmation=SKILL_RUNNER_SPEC.requires_confirmation,
             tags=SKILL_RUNNER_SPEC.tags,
+            metadata=SKILL_RUNNER_SPEC.metadata,
         )
         exposed.append(_metadata_from_spec(runner_spec))
 
@@ -285,12 +303,19 @@ def _run_skill_workflow(arguments: dict[str, Any]) -> ToolResult:
     """Execute a Skill workflow: load skill, run each step, return aggregated results."""
     skill_name = str(arguments.get("skill_name") or "").strip()
     query = str(arguments.get("query") or "").strip()
-    extra_params = arguments.get("parameters") or {}
+    raw_params = arguments.get("parameters")
+    extra_params = {} if raw_params is None else raw_params
 
     if not skill_name:
         return ToolResult(success=False, error_message="Missing required argument: skill_name.")
     if not query:
         return ToolResult(success=False, error_message="Missing required argument: query.")
+    if not isinstance(extra_params, dict):
+        return ToolResult(
+            success=False,
+            error_message="Skill parameters must be an object.",
+            metadata={"tool_name": "skill_runner", "error_type": "invalid_args"},
+        )
 
     skill = get_skill_def(skill_name)
     if skill is None:
@@ -305,6 +330,22 @@ def _run_skill_workflow(arguments: dict[str, Any]) -> ToolResult:
     from app.trace import store as trace_store
 
     try:
+        plan = plan_task(
+            query,
+            skill.required_tools + ["report_writer"],
+            "real",
+            planner_mode="deterministic",
+            skill_name=skill_name,
+            skill_parameters=extra_params,
+        )
+    except ValueError as exc:
+        return ToolResult(
+            success=False,
+            error_message=str(exc),
+            metadata={"tool_name": "skill_runner", "error_type": "invalid_args"},
+        )
+
+    try:
         step_results: list[dict[str, Any]] = []
         with SessionLocal() as db:
             run = trace_store.create_agent_run(
@@ -313,13 +354,6 @@ def _run_skill_workflow(arguments: dict[str, Any]) -> ToolResult:
                 report_type="summary",
                 source_mode="real",
                 allowed_tools=skill.required_tools + ["report_writer"],
-            )
-            plan = plan_task(
-                query,
-                skill.required_tools + ["report_writer"],
-                "real",
-                planner_mode="deterministic",
-                skill_name=skill_name,
             )
             trace_store.update_agent_run_plan(db, run.run_id, plan)
             summary = run_plan(db, run.run_id)
@@ -357,8 +391,10 @@ def _run_skill_workflow(arguments: dict[str, Any]) -> ToolResult:
                 "tool_name": "skill_runner",
                 "skill_name": skill.name,
                 "skill_version": skill.version,
-                "read_only": True,
+                "read_only": False,
                 "side_effect_free": False,
+                "local_state_writes": True,
+                "source_read_only": True,
             },
         )
     except Exception as exc:
@@ -396,18 +432,25 @@ def _execute_mcp_tool(db: Session, request: MCPToolCallRequest) -> MCPToolCallRe
         result = execute_tool(local_name, request.arguments)
     latency_ms = int((perf_counter() - started) * 1000)
 
+    policy_spec = SKILL_RUNNER_SPEC if is_skill_runner else spec
+    policy = mcp_policy_metadata(policy_spec, alias=request.name) if policy_spec else {
+        "read_only": True,
+        "side_effect_free": True,
+        "requires_confirmation": False,
+        "policy": {"channel": "readonly"},
+    }
     metadata = dict(result.metadata or {})
     metadata.update(
         {
             "mcp_server": settings.service_name,
             "mcp_tool_name": request.name,
             "local_tool_name": local_name,
-            "read_only": True,
-            "side_effect_free": True,
-            "requires_confirmation": False,
+            "read_only": policy["read_only"],
+            "side_effect_free": policy["side_effect_free"],
+            "requires_confirmation": policy["requires_confirmation"],
             "risk_level": (spec.risk_level.value if spec else "low"),
             "mcp_channel": ((spec.metadata or {}).get("mcp_channel") if spec else "readonly") or "readonly",
-            "policy": mcp_policy_metadata(spec, alias=request.name)["policy"] if spec else {"channel": "readonly"},
+            "policy": policy["policy"],
             "latency_ms": latency_ms,
         }
     )
@@ -447,8 +490,10 @@ async def mcp_health() -> dict[str, Any]:
         "status": "ok",
         "server": settings.service_name,
         "protocol_version": PROTOCOL_VERSION,
-        "read_only": True,
+        "read_only": False,
         "write_operations_allowed": False,
+        "source_operations_read_only": True,
+        "local_state_writes": True,
         "remote_registry_enabled": settings.mcp_remote_registry_enabled
         or bool(settings.mcp_channel_readonly_servers)
         or bool(settings.mcp_channel_interactive_servers)
@@ -473,7 +518,7 @@ async def refresh_remote_mcp_tools() -> dict[str, Any]:
 
 @router.get("/tools", response_model=MCPToolListResponse)
 async def list_mcp_tools() -> MCPToolListResponse:
-    """List read-only MCP tools discoverable by external clients."""
+    """List source readers and explicitly marked local workflows."""
 
     return MCPToolListResponse(
         server=settings.service_name,
@@ -487,7 +532,7 @@ async def call_mcp_tool(
     request: MCPToolCallRequest,
     db: Session = Depends(get_db),
 ) -> MCPToolCallResponse:
-    """Call one exposed read-only MCP tool."""
+    """Call one exposed MCP source reader or local workflow."""
 
     return _execute_mcp_tool(db, request)
 

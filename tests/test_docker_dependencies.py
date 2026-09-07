@@ -16,7 +16,8 @@ class DockerDependencyTests(unittest.TestCase):
     def test_full_environment_preserves_existing_direct_pins(self) -> None:
         self.assertEqual(read_pinned_requirements(ROOT / "requirements.txt"), {
             "alembic": "1.18.5", "beautifulsoup4": "4.13.4", "fastapi": "0.139.2",
-            "httpx": "0.28.1", "pydantic": "2.13.4", "python-docx": "1.2.0",
+            "httpx": "0.28.1", "openpyxl": "3.1.5", "pydantic": "2.13.4",
+            "python-docx": "1.2.0",
             "python-dotenv": "1.2.2", "reportlab": "5.0.0", "requests": "2.34.2",
             "sqlalchemy": "2.0.51", "pymupdf": "1.25.5", "sqlglot": "30.13.0",
             "streamlit": "1.60.0", "uvicorn": "0.51.0", "pytest": "9.1.1",
@@ -24,7 +25,7 @@ class DockerDependencyTests(unittest.TestCase):
 
     def test_optional_packages_are_not_api_requirements(self) -> None:
         api = read_pinned_requirements(ROOT / "requirements/api.txt")
-        self.assertTrue({"fastapi", "uvicorn", "alembic", "pymupdf", "reportlab"} <= api.keys())
+        self.assertTrue({"fastapi", "uvicorn", "alembic", "pymupdf", "reportlab", "openpyxl"} <= api.keys())
         self.assertFalse({"streamlit", "pytest", "pyarrow", "pandas", "numpy", "pydeck"} & api.keys())
         self.assertEqual(read_pinned_requirements(ROOT / "requirements/streamlit.txt"), {"streamlit": "1.60.0"})
         self.assertEqual(read_pinned_requirements(ROOT / "requirements/dev.txt"), {"pytest": "9.1.1"})

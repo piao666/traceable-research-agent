@@ -743,6 +743,7 @@ def plan_task(
     execution_mode_override: str | None = None,
     skill_name: str | None = None,
     retrieval_profile: str | None = None,
+    skill_parameters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a plan using deterministic rules, optional LLM planning, or a Skill template.
 
@@ -841,7 +842,13 @@ def plan_task(
     if resolved_skill_name:
         skill = get_skill_def(resolved_skill_name)
         if skill is not None:
-            plan = _skill_to_plan(skill, task, allowed_tools, source_mode)
+            plan = _skill_to_plan(
+                skill,
+                task,
+                allowed_tools,
+                source_mode,
+                skill_parameters=skill_parameters,
+            )
             plan["skill_routing"] = skill_routing
             plan["planner_source"] = "skill_auto" if skill_routing["requested"] == "auto" else "skill"
             plan["llm_provider"] = None
@@ -1452,6 +1459,46 @@ def _synchronize_confirmation_notes(plan: dict[str, Any]) -> None:
 _SKILL_PLACEHOLDER_RE = re.compile(r"\{\{(.*?)\}\}")
 
 
+def _skill_parameter_values(
+    skill: Any,
+    task: str,
+    overrides: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Resolve and validate caller-provided Skill parameters.
+
+    Unknown names and type mismatches fail closed. The task remains the default
+    query, while explicit parameters override declared defaults.
+    """
+    if overrides is not None and not isinstance(overrides, dict):
+        raise ValueError("Skill parameters must be an object.")
+    definitions = getattr(skill, "parameters", {}) or {}
+    unknown = sorted(set(overrides or {}) - set(definitions))
+    if unknown:
+        raise ValueError("Unknown Skill parameters: " + ", ".join(unknown))
+
+    values: dict[str, Any] = {"query": task}
+    type_checks = {
+        "string": lambda value: isinstance(value, str),
+        "integer": lambda value: isinstance(value, int) and not isinstance(value, bool),
+        "number": lambda value: isinstance(value, (int, float)) and not isinstance(value, bool),
+        "boolean": lambda value: isinstance(value, bool),
+        "array": lambda value: isinstance(value, list),
+        "object": lambda value: isinstance(value, dict),
+    }
+    for name, definition in definitions.items():
+        raw = definition.model_dump() if hasattr(definition, "model_dump") else dict(definition)
+        provided = overrides is not None and name in overrides
+        value = overrides[name] if provided else (task if name == "query" else raw.get("default"))
+        if value is None and raw.get("required"):
+            raise ValueError(f"Missing required Skill parameter: {name}")
+        expected = str(raw.get("type") or "string").lower()
+        check = type_checks.get(expected)
+        if value is not None and check is not None and not check(value):
+            raise ValueError(f"Skill parameter '{name}' must be {expected}.")
+        values[name] = value
+    return values
+
+
 def _resolve_skill_placeholder(
     expr: str,
     task: str,
@@ -1553,6 +1600,8 @@ def _skill_to_plan(
     task: str,
     allowed_tools: list[str] | None,
     source_mode: str = "real",
+    *,
+    skill_parameters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convert a Skill definition into a plan dict that executors understand."""
     allowed_set = set(allowed_tools) if allowed_tools is not None else None
@@ -1561,18 +1610,7 @@ def _skill_to_plan(
     ]
     steps: list[dict[str, Any]] = []
 
-    # Build skill_params from task text
-    skill_params: dict[str, Any] = {"query": task}
-    if hasattr(skill, "parameters") and skill.parameters:
-        for pname, pdef in skill.parameters.items():
-            # pdef is a Pydantic SkillParameter, not a dict
-            if hasattr(pdef, "model_dump"):
-                pdef_dict = pdef.model_dump()
-            elif isinstance(pdef, dict):
-                pdef_dict = pdef
-            else:
-                pdef_dict = {}
-            skill_params.setdefault(pname, pdef_dict.get("default"))
+    skill_params = _skill_parameter_values(skill, task, skill_parameters)
 
     # Compile step_no assignments first
     compiled_steps: list[dict[str, Any]] = []
@@ -1622,6 +1660,7 @@ def _skill_to_plan(
         "source_mode": source_mode,
         "skill_name": skill.name,
         "skill_version": skill.version,
+        "skill_parameters": skill_params,
         "required_tools": list(skill.required_tools),
         "scenario_template": skill.name,
         "allowed_tools": allowed_tools if allowed_tools is not None else default_allowed,

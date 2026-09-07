@@ -500,23 +500,25 @@ workspace/     local databases, reports, artifacts, and skills
 
 - The executor can invoke only tools registered in the unified registry.
 - `file_reader` resolves paths, blocks traversal and escaping symlinks, limits
-  content length, and reads only configured roots.
+  content length, and reads TXT/Markdown/CSV/JSON/Python/log/DOCX/XLSX only from
+  configured roots. PDF remains isolated in `pdf_reader`.
 - `sql_query` accepts one read-only `SELECT` or `WITH` statement and enforces a
   row limit.
-- External and MCP integrations are read-only, time-bounded, and redact
-  secrets from persisted trace data.
+- External source operations are read-only and time-bounded, and persisted
+  traces redact secrets. MCP `skill_runner` is explicitly not read-only or
+  side-effect-free because it creates local Runs, Traces, evidence, and reports.
 - Failed and rejected tool calls remain visible in run status and traces.
 - Plan approval and high-risk tool confirmation are explicit state transitions,
   never hidden background actions.
 
 ## Quality Checks
 
-The current registry exposes **12 read-only tools**. Earlier phase counts are not
-acceptance of the R0–R7 repairs. The R7 offline run discovered 479 unittest entries:
-467 passed and 12 failed to import pytest/Streamlit dependencies, with zero
-blocked external attempts after fixture fixes. This is **not a full pytest pass**.
-Frontend: 93 tests, typecheck, lint and build passed; isolated QA middleware:
-52 checks passed. See [release validation](RELEASE_VALIDATION.md) for limits.
+The current full offline pytest run collected 601 tests: 599 passed, 2 were
+conditionally skipped, none failed, and no external network attempt was made.
+The latest frontend baseline remains the R9 result: 110 tests, typecheck, lint
+and build passed; isolated route/fixture QA: 59 checks passed. Frontend and
+browser checks were not rerun for the post-R9 backend/tooling repair. See
+[release validation](RELEASE_VALIDATION.md) for limits.
 
 Run the same core checks locally:
 
@@ -533,7 +535,7 @@ docker compose config --quiet
 - [x] Evidence provenance, citation validation, and human plan approval
 - [x] Source-tier governance, cached extraction, PDF evidence, and academic verification
 - [x] Docker deployment configuration and local runtime persistence implementation
-- [ ] R0–R7 real Docker build/restart, Streamlit and browser acceptance
+- [ ] R9 real Docker build/restart, Streamlit and browser acceptance
 - [ ] Add a repository license before public redistribution
 - [ ] Expand operational observability for long-running self-hosted instances
 

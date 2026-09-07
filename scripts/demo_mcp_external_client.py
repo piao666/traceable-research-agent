@@ -136,8 +136,9 @@ def main() -> None:
         for tool in tools:
             if not isinstance(tool, dict):
                 continue
-            assert_true(tool.get("read_only") is True, f"{tool.get('name')} is not read-only")
-            assert_true(tool.get("side_effect_free") is True, f"{tool.get('name')} is not side-effect-free")
+            expected_read_only = tool.get("name") != "skill_runner"
+            assert_true(tool.get("read_only") is expected_read_only, f"{tool.get('name')} read-only metadata is wrong")
+            assert_true(tool.get("side_effect_free") is expected_read_only, f"{tool.get('name')} side-effect metadata is wrong")
             assert_true(tool.get("requires_confirmation") is False, f"{tool.get('name')} requires confirmation")
 
         file_call = json_rpc(

@@ -406,6 +406,8 @@ def register_remote_mcp_server(server: MCPRemoteServer) -> list[ToolSpec]:
             input_schema=metadata["input_schema"],
             output_schema=metadata["output_schema"],
             risk_level=metadata["risk_level"],
+            read_only=metadata["read_only"],
+            side_effect_free=metadata["side_effect_free"],
             requires_confirmation=requires_confirmation,
             enabled=True,
             timeout_seconds=int(max(1, server.timeout_seconds)),
