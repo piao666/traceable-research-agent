@@ -128,9 +128,13 @@ def register_default_tools() -> None:
                 "PDF URLs are routed to pdf_reader. Read-only, offline-capable. "
                 "Each page is tagged with content_basis (full_text/partial/snippet_only), "
                 "extraction_method, and extraction_confidence."
+                " To inspect already fetched content without HTTP, supply source_id, offset and max_chars, "
+                "omitting urls. Only the current run's recorded sources are readable; source IDs are not file paths."
             ),
             input_schema={
                 "urls": "list[string]",
+                "source_id": "string (optional, stored source read instead of urls)",
+                "offset": "integer (optional stored text offset)",
                 "max_chars": "integer",
                 "timeout_seconds": "integer",
             },

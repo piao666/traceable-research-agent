@@ -24,7 +24,12 @@ from app.agent.executor import (
 from app.agent.report_generation import resolve_report_llm_client
 from app.agent.preflight import enforce_execution_readiness, check_plan_readiness
 from app.agent.execution_policy import execute_with_policy, policy_failure
-from app.agent.tool_recovery import observe_result, recovery_context, unavailable_reason
+from app.agent.tool_recovery import (
+    observe_result,
+    prune_completed_fetch_urls,
+    recovery_context,
+    unavailable_reason,
+)
 from app.agent.source_context import build_source_context, prompt_source_context
 from app.agent.budget import budgeted_execution, budget_client
 from app.agent.outcome import enforce_research_outcome, report_subject
@@ -284,6 +289,8 @@ def _prompt_history(state: dict[str, Any]) -> list[dict[str, Any]]:
         compact.append(
             {
                 "step_no": observation.get("step_no"),
+                **({"source_content": observation["output"]["source_content"]}
+                   if isinstance(observation.get("output"), dict) and observation["output"].get("source_content") else {}),
                 "action": observation.get("action"),
                 "observation_summary": str(
                     observation.get("observation_summary") or ""
@@ -476,6 +483,10 @@ def run_react_task(
     state = plan.get("react_state")
     if not isinstance(state, dict):
         state = _initial_state(settings, provider, model)
+    # Static plan progress is not the number of dynamic ReAct decisions already
+    # consumed. Persist the offset so human resume cannot reset the allowance.
+    state.setdefault("step_offset", run.current_step if plan.get("adaptive_upgrade") else 0)
+    state.setdefault("step_limit", int(state["step_offset"]) + settings.react_max_steps)
     state["source_refetch_rounds_used"] = max(
         int(state.get("source_refetch_rounds_used") or 0),
         persisted_refetch_rounds(store.list_tool_traces(db, run_id)),
@@ -485,7 +496,7 @@ def run_react_task(
     plan.setdefault("requested_execution_mode", "react")
     plan["execution_mode"] = "react"
     plan["react_state"] = state
-    run.total_steps = settings.react_max_steps
+    run.total_steps = state["step_limit"]
     db.commit()
     _persist_plan(db, run_id, plan)
     run = store.mark_agent_run_running_unless_cancelled(db, run_id)
@@ -503,7 +514,7 @@ def run_react_task(
             pending_decision = None
 
     start_step = pending_step_no or max(run.current_step + 1, 1)
-    for step_no in range(start_step, settings.react_max_steps + 1):
+    for step_no in range(start_step, int(state["step_limit"]) + 1):
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _summary(cancelled, plan, "Run cancelled by user.")
@@ -523,8 +534,8 @@ def run_react_task(
                     "Optional tool unavailable; continue with other permitted capabilities.",
                     {"tool_name": name, "reason": "capability_unavailable", "executed": False,
                      "blockers": readiness["blockers"]})
-        if not active_tools:
-            return _complete_report(db, run_id, plan, state, "no_available_tools", settings, client, limitation=True)
+        # Even when tool slots are exhausted the model may assess already-read
+        # evidence and explicitly finish. No tool permission is restored here.
         if pending_decision is not None and step_no == pending_step_no:
             decision = pending_decision
             pending_decision = None
@@ -545,6 +556,7 @@ def run_react_task(
                 str(plan.get("scenario_template") or "standard"),
                 recovery_context(state, allowed_tools, settings.react_same_tool_max_calls, run.source_mode),
                 prompt_source_context(state["source_context"]),
+                plan.get("task_contract"),
             )
             response = client.complete(messages, temperature=0.0, max_tokens=800)
 
@@ -669,13 +681,17 @@ def run_react_task(
                     )
                 continue
             summary = str(decision.args.get("summary") or decision.finish_reason or "Task complete.")[:500]
+            from app.agent.research_goal import finish_failure
+            state["finish_summary"] = summary
+            state["goal_status"] = decision.args.get("goal_status")
+            unmet = finish_failure(decision.finish_reason, summary, state["goal_status"])
             metadata = _react_metadata(decision, summary, 0, state)
             record_trace_event(
                 db,
                 run_id,
                 step_no,
                 "finish",
-                "success",
+                "failed" if unmet else "success",
                 {"action": "finish", "args": decision.args},
                 summary,
                 {"summary": summary, "metadata": metadata},
@@ -691,7 +707,7 @@ def run_react_task(
                 output={"summary": summary},
             )
             store.update_agent_run_progress(db, run_id, step_no)
-            limitation = "limitation" in str(decision.finish_reason or "").lower()
+            limitation = bool(unmet) or "limitation" in str(decision.finish_reason or "").lower()
             return _complete_report(
                 db,
                 run_id,
@@ -703,6 +719,9 @@ def run_react_task(
                 limitation=limitation,
             )
 
+        skipped_fetched_urls: list[str] = []
+        if decision.action == "web_fetcher":
+            decision.args, skipped_fetched_urls = prune_completed_fetch_urls(state, decision.args)
         counts = state.setdefault("tool_call_counts", {})
         count = int(counts.get(decision.action) or 0) + 1
         blocked = unavailable_reason(state, decision.action, settings.react_same_tool_max_calls, decision.args)
@@ -854,6 +873,8 @@ def run_react_task(
         observation_summary = _observation_summary(decision.action, result)
         metadata = _react_metadata(decision, observation_summary, count, state)
         metadata.update(result.metadata)
+        if skipped_fetched_urls:
+            metadata["skipped_completed_urls"] = skipped_fetched_urls
         trace_result = ToolResult(
             success=result.success,
             output=result.output,
@@ -971,9 +992,9 @@ def run_react_task(
     record_trace_event(
         db,
         run_id,
-        settings.react_max_steps,
+        int(state["step_limit"]),
         "finish",
-        "success",
+        "failed",
         {"action": "finish"},
         reason,
         {

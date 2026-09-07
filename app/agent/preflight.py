@@ -31,6 +31,11 @@ def capability_summary(settings: Settings) -> dict[str, Any]:
     }
 
 
+def readiness_error_code(result: dict) -> str:
+    return ("task_requirements_unresolved" if any(item["code"] == "task_requirements_unresolved"
+            for item in result["blockers"]) else "configuration_not_ready")
+
+
 def check_plan_readiness(
     plan: dict[str, Any], settings: Settings, *, llm_available: bool = False,
 ) -> dict[str, Any]:
@@ -45,6 +50,13 @@ def check_plan_readiness(
                          "environment_variable": variable, "message": message})
 
     allowed = set(allowed_tool_names(plan))
+    contract = plan.get("task_contract") or {}
+    unresolved = contract.get("unresolved_fields") or []
+    if unresolved:
+        labels = {"adjustment": "复权/总回报口径", "interval": "年度、每日或累计等统计间隔", "period": "起止日期"}
+        missing("task_requirements_unresolved", "task", "task",
+                "请先在研究问题中明确" + "、".join(labels.get(field, field) for field in unresolved)
+                + "，然后重新创建计划；无需修改 API Key。")
     for name in sorted(tools):
         if name not in allowed:
             missing("disallowed_tool", name, "allowed_tools", f"Required tool '{name}' is not permitted by this plan.")
@@ -103,6 +115,9 @@ def enforce_execution_readiness(
     run = store.get_fresh_agent_run(db, run_id)
     if run is None or run.status in {"cancelled", "failed", "completed"}:
         return False
+    if not plan.get("task_contract"):
+        from app.agent.research_goal import build_task_contract
+        plan["task_contract"] = build_task_contract(run.task, run.created_at)
     bind_run_policy(run, plan)
     checked_plan = {**plan, "steps": [{"tool_name": decision_tool}], "required_tools": []} if decision_tool else plan
     result = check_plan_readiness(checked_plan, settings, llm_available=llm_available)
@@ -123,8 +138,8 @@ def enforce_execution_readiness(
     record_trace_event(db, run_id, run.current_step, "execution_preflight", "failed",
                        {}, message, result, error_message=message)
     plan["research_outcome"] = {
-        "version": "research-integrity-v1", "status": "failed",
-        "error_code": "configuration_not_ready", "effective_evidence_count": 0,
+        "version": "research-integrity-v2", "status": "failed",
+        "error_code": readiness_error_code(result), "effective_evidence_count": 0,
         "warnings": result["warnings"], "message": message,
     }
     plan["adaptive_gate_pending"] = False

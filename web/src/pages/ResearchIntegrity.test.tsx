@@ -13,14 +13,18 @@ const capabilities: RuntimeCapabilitiesResponse = {
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); sessionStorage.clear(); });
 
-it("keeps draft creation available while disclosing missing keys and separate modes", async () => {
-  vi.spyOn(api, "capabilities").mockResolvedValue(capabilities);
+it("keeps draft creation available without deployment-detail callouts", () => {
+  const capabilityRequest = vi.spyOn(api, "capabilities");
   render(<MemoryRouter><NewResearchPage /></MemoryRouter>);
-  await screen.findByText(/尚未配置 TAVILY_API_KEY/);
-  expect(screen.getByText(/三者并不等同/)).toBeInTheDocument();
+  expect(screen.queryByText(/尚未配置 TAVILY_API_KEY/)).toBeNull();
+  expect(screen.queryByText(/三者并不等同/)).toBeNull();
+  expect(screen.queryByText(/报告写入本地 workspace/)).toBeNull();
+  expect(screen.queryByText(/source_policy.v2/)).toBeNull();
+  expect(screen.queryByText(/本界面不收集账号或密钥/)).toBeNull();
   expect(screen.getByRole("button", { name: "创建并审阅计划" })).toBeEnabled();
   fireEvent.change(screen.getByRole("textbox", { name: /研究问题或目标/ }), { target: { value: "保留我的研究问题" } });
   expect(sessionStorage.getItem("tra:new-task")).toBe("保留我的研究问题");
+  expect(capabilityRequest).not.toHaveBeenCalled();
 });
 
 it("blocks approval until the refreshed preflight is ready", async () => {
@@ -40,6 +44,24 @@ it("blocks approval until the refreshed preflight is ready", async () => {
   fireEvent.click(screen.getByRole("button", { name: "重新检查配置" }));
   await waitFor(() => expect(screen.getByRole("button", { name: "批准并启动" })).toBeEnabled());
   approve.mockRestore();
+});
+
+it("distinguishes missing task requirements from missing API keys", async () => {
+  vi.spyOn(api, "reviewPlan").mockResolvedValue({ run_id: "fixture", task: "某股票近10年的涨幅数据",
+    status: "waiting_human_plan", source_mode: "real", steps: [], allowed_tools: [], execution_mode: "react",
+    estimated_total_tokens: 0, estimated_cost: 0, preflight: { ready: false, warnings: [], capabilities,
+      blockers: [{ code: "task_requirements_unresolved", capability: "task", environment_variable: "task",
+        message: "请明确统计间隔和复权口径。" }] } });
+  const approve = vi.spyOn(api, "approvePlan");
+  render(<MemoryRouter initialEntries={["/runs/fixture/plan"]}><Routes>
+    <Route path="/runs/:runId/plan" element={<PlanReviewPage />} />
+  </Routes></MemoryRouter>);
+  await screen.findByText("研究问题尚需补充");
+  expect(screen.getByText(/此问题不通过修改密钥解决/)).toBeInTheDocument();
+  expect(screen.queryByText(/请在实际部署目录的 .env 配置密钥/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "批准并启动" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "批准并启动" }));
+  expect(approve).not.toHaveBeenCalled();
 });
 
 it("labels old completed tasks as requiring review", async () => {

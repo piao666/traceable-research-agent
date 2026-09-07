@@ -50,7 +50,7 @@ export interface paths {
         };
         /**
          * List Tasks
-         * @description List tasks with optional filters and pagination.
+         * @description List user-facing tasks, with optional internal deepening runs.
          */
         get: operations["list_tasks_api_tasks_get"];
         put?: never;
@@ -1188,6 +1188,16 @@ export interface components {
             tool_cost_estimate?: number | null;
             /** Llm Cost Per Million Tokens */
             llm_cost_per_million_tokens?: number | null;
+            /**
+             * Final Report Tokens
+             * @default 0
+             */
+            final_report_tokens: number;
+            /**
+             * Final Report Llm Calls
+             * @default 0
+             */
+            final_report_llm_calls: number;
         };
         /** ExecutionBudgetResponse */
         ExecutionBudgetResponse: {
@@ -2090,6 +2100,18 @@ export interface components {
             tools: string[];
             /** Fetch Attempts */
             fetch_attempts: number;
+            /**
+             * Search Snippet
+             * @default
+             */
+            search_snippet: string;
+            /**
+             * Content Length
+             * @default 0
+             */
+            content_length: number;
+            /** Content Hash */
+            content_hash?: string | null;
         };
         /** SourceContextResponse */
         SourceContextResponse: {
@@ -2278,6 +2300,10 @@ export interface components {
         TaskPlanResponse: {
             /** Run Id */
             run_id: string;
+            /** Task Contract */
+            task_contract?: {
+                [key: string]: unknown;
+            } | null;
             execution_budget?: components["schemas"]["ExecutionBudgetResponse"] | null;
             execution_insights?: components["schemas"]["ExecutionInsightsResponse"] | null;
             /** Evidence Mapping Version */
@@ -2796,6 +2822,7 @@ export interface operations {
                 limit?: number;
                 offset?: number;
                 q?: string | null;
+                include_internal?: boolean;
             };
             header?: never;
             path?: never;

@@ -59,9 +59,28 @@ def is_agent_run_cancelled(db: Session, run_id: str) -> bool:
     return run is not None and run.status == "cancelled"
 
 
-def _filter_run_listing(stmt, status: str | None, q: str | None):
+def _filter_run_listing(
+    stmt,
+    status: str | None,
+    q: str | None,
+    *,
+    include_internal: bool = False,
+):
     # Match the API-visible status, including ongoing adaptive/deepening stages.
     plan = case((func.json_valid(AgentRun.plan_json) == 1, AgentRun.plan_json), else_="{}")
+    if not include_internal:
+        # Iterative-deepening follow-ups are implementation details of their
+        # parent task. Keep them addressable by run_id for Trace/audit views,
+        # but do not present them as separately published research tasks.
+        stmt = stmt.where(
+            and_(
+                func.coalesce(func.json_extract(plan, "$.run_role"), "")
+                != "deepening_child",
+                # Hide child runs created before run_role was introduced too.
+                func.coalesce(func.json_extract(plan, "$.version"), "")
+                != "deepening-v1",
+            )
+        )
     visible_status = case((and_(AgentRun.status == "completed", or_(
         func.json_extract(plan, "$.adaptive_gate_pending") == 1,
         func.json_extract(plan, "$.deepening_pending") == 1,
@@ -86,9 +105,12 @@ def list_agent_runs(
     limit: int = 50,
     offset: int = 0,
     q: str | None = None,
+    include_internal: bool = False,
 ) -> list[AgentRun]:
     """List agent runs with optional filters and pagination."""
-    stmt = _filter_run_listing(select(AgentRun), status, q).order_by(AgentRun.created_at.desc(), AgentRun.run_id.desc())
+    stmt = _filter_run_listing(
+        select(AgentRun), status, q, include_internal=include_internal
+    ).order_by(AgentRun.created_at.desc(), AgentRun.run_id.desc())
     if session_id:
         stmt = stmt.where(AgentRun.session_id == session_id)
     if execution_mode:
@@ -115,9 +137,15 @@ def count_agent_runs(
     created_after: datetime | None = None,
     created_before: datetime | None = None,
     q: str | None = None,
+    include_internal: bool = False,
 ) -> int:
     """Count agent runs matching optional filters."""
-    stmt = _filter_run_listing(select(func.count()).select_from(AgentRun), status, q)
+    stmt = _filter_run_listing(
+        select(func.count()).select_from(AgentRun),
+        status,
+        q,
+        include_internal=include_internal,
+    )
     if session_id:
         stmt = stmt.where(AgentRun.session_id == session_id)
     if execution_mode:
@@ -141,6 +169,11 @@ def update_agent_run_plan(db: Session, run_id: str, plan: dict) -> AgentRun:
     run = db.get(AgentRun, run_id)
     if run is None:
         raise ValueError("Task run not found")
+    from app.agent.research_goal import build_task_contract
+    # Requirements are application-derived, not an LLM-authored plan field.
+    parent = db.get(AgentRun, plan.get("parent_run_id")) if plan.get("version") == "deepening-v1" and plan.get("parent_run_id") else None
+    parent_contract = json.loads(parent.plan_json or "{}").get("task_contract") if parent else None
+    plan["task_contract"] = parent_contract or build_task_contract(run.task, run.created_at)
     run.plan_json = json.dumps(plan, ensure_ascii=False, default=str)
     run.total_steps = len(plan.get("steps") or [])
     run.current_step = 0
@@ -269,7 +302,10 @@ def replace_agent_run_plan(db: Session, run_id: str, plan: dict) -> AgentRun:
     if run is None:
         raise ValueError("Task run not found")
     run.plan_json = json.dumps(plan, ensure_ascii=False, default=str)
-    run.total_steps = len(plan.get("steps") or [])
+    state = plan.get("react_state") or {}
+    run.total_steps = (max(run.current_step, int(state.get("step_limit") or state.get("max_steps") or 0))
+                       if plan.get("execution_mode") == "react" and state
+                       else len(plan.get("steps") or []))
     run.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(run)

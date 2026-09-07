@@ -179,6 +179,8 @@ class ExecutionBudgetLimits(BaseModel):
     max_estimated_cost: float
     tool_cost_estimate: float | None = None
     llm_cost_per_million_tokens: float | None = None
+    final_report_tokens: int = 0
+    final_report_llm_calls: int = 0
 
 
 class ExecutionBudgetResponse(BaseModel):
@@ -216,6 +218,9 @@ class SourceCandidateResponse(BaseModel):
     run_ids: list[str]
     tools: list[str]
     fetch_attempts: int
+    search_snippet: str = ""
+    content_length: int = 0
+    content_hash: str | None = None
 
 
 class SourceGapsResponse(BaseModel):
@@ -246,6 +251,7 @@ class ExecutionInsightsResponse(BaseModel):
 
 class TaskPlanResponse(BaseModel):
     run_id: str
+    task_contract: dict[str, Any] | None = None
     execution_budget: ExecutionBudgetResponse | None = None
     execution_insights: ExecutionInsightsResponse | None = None
     evidence_mapping_version: str | None = None

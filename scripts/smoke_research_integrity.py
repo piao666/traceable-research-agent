@@ -137,6 +137,29 @@ def main() -> None:
                        for b in restrictions["blockers"]), restrictions
             assert request(f"/api/tasks/{restricted_id}/approve-plan", {"approved": True})[0] == 409
             assert request(f"/api/tasks/{restricted_id}")[1]["total_tool_calls"] == 0
+            status, ambiguous = request("/api/tasks", {"task": "某股票近10年的涨幅变化数据",
+                "source_mode": "real", "execution_mode_override": "planned", "require_plan_approval": True})
+            assert status == 200, ambiguous
+            ambiguous_id = ambiguous["run_id"]
+            _, unresolved = request(f"/api/tasks/{ambiguous_id}/preflight")
+            assert any(item["code"] == "task_requirements_unresolved" for item in unresolved["blockers"])
+            assert request(f"/api/tasks/{ambiguous_id}/approve-plan", {"approved": True})[0] == 409
+            assert request(f"/api/tasks/{ambiguous_id}")[1]["total_tool_calls"] == 0
+            # Reproduce the legacy child's missing steps using ONLY fixture DB.
+            status, legacy = request("/api/tasks", {"task": "Legacy child fixture", "source_mode": "real",
+                "execution_mode_override": "planned", "require_plan_approval": True})
+            assert status == 200, legacy
+            legacy_id = legacy["run_id"]
+            legacy_json = json.dumps({"version": "deepening-v1", "parent_run_id": run_id,
+                "task": "Legacy child fixture", "source_mode": "real", "execution_mode": "react",
+                "allowed_tools": [], "notes": []})
+            with sqlite3.connect(environment["TRACE_DATABASE_PATH"]) as fixture:
+                fixture.execute("UPDATE agent_runs SET plan_json=? WHERE run_id=?", (legacy_json, legacy_id))
+            status, legacy_plan = request(f"/api/tasks/{legacy_id}/plan")
+            assert status == 200 and legacy_plan["steps"] == [], legacy_plan
+            assert request(f"/api/tasks/{legacy_id}/trace")[0] == 200
+            with sqlite3.connect(environment["TRACE_DATABASE_PATH"]) as fixture:
+                assert fixture.execute("SELECT plan_json FROM agent_runs WHERE run_id=?", (legacy_id,)).fetchone()[0] == legacy_json
             _, detail = request(f"/api/sessions/{session_id}")
             assert len(detail["turns"]) == 1 and detail["turns"][0]["run_id"] == run_id
             _, renamed = request(f"/api/sessions/{session_id}", {"title": "R5 renamed"}, "PATCH")
@@ -204,6 +227,8 @@ def main() -> None:
             assert after_restart["execution_budget"] == budget
             assert after_restart["execution_insights"]["source_context"] == insights["source_context"]
             assert after_restart["execution_insights"]["allowed_tools"] == insights["allowed_tools"]
+            assert request(f"/api/tasks/{legacy_id}/plan")[0] == 200
+            assert request(f"/api/tasks/{ambiguous_id}")[1]["total_tool_calls"] == 0
         finally:
             stop(process)
     print(json.dumps({"live_api": "passed", "missing_key_approval": "blocked", "r8_permission_conflict": "blocked",
@@ -212,6 +237,7 @@ def main() -> None:
         "local_file_sql_report_restart": "passed",
         "r8_budget_restart": "passed",
         "r8_execution_insights_restart": "passed",
+        "r9_goal_preflight": "blocked_without_calls", "r9_legacy_child_plan_restart": "passed_without_rewrite",
         "external_api_calls": 0}))
 
 

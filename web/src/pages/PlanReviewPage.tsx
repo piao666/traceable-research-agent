@@ -84,6 +84,7 @@ function PlanReview({ runId }: { runId: string }) {
   if (!plan) return <div className="page stack"><PageHeader title="研究计划复核" subtitle="无法读取当前计划" /><ErrorState message={error || "计划不存在"} retry={() => setRevision((value) => value + 1)} /><Button variant="secondary" onClick={() => navigate("/runs")}>返回任务列表</Button></div>;
   const riskSummary = plan.risk_summary ?? { low: 0, medium: 0, high: 0 };
   const notes = plan.notes ?? [];
+  const goalBlocked = plan.preflight?.blockers.some((issue) => issue.code === "task_requirements_unresolved");
 
   return (
     <div className="page" data-figma-screen="32:142">
@@ -104,10 +105,10 @@ function PlanReview({ runId }: { runId: string }) {
         <Panel title="风险与配置">
           {!plan.preflight && <ErrorState message="尚未取得配置预检结果，不能批准启动。" retry={refreshReadiness} retryLabel="重新检查配置" />}
           {plan.preflight && <div className="section-gap" aria-live="polite">
-            <strong>{plan.preflight.ready ? "必要配置已就绪（尚未验证联网）" : "当前配置无法启动此计划"}</strong>
+            <strong>{goalBlocked ? "研究问题尚需补充" : plan.preflight.ready ? "必要配置已就绪（尚未验证联网）" : "当前配置无法启动此计划"}</strong>
             {plan.preflight.blockers.map((issue, index) => <p key={`${issue.capability}-${index}`} role="alert">{issue.message}</p>)}
             {plan.preflight.warnings.map((warning) => <p key={warning}>{warning}</p>)}
-            <p>请在实际部署目录的 .env 配置密钥后重新创建 API 容器，使新环境变量生效；本页面不会读取或保存密钥。</p>
+            {goalBlocked ? <p>请返回新建研究，补充问题中的日期、统计间隔或复权口径后重新创建计划。此问题不通过修改密钥解决。</p> : <p>请在实际部署目录的 .env 配置密钥后重新创建 API 容器，使新环境变量生效；本页面不会读取或保存密钥。</p>}
             <Button variant="secondary" loading={checking} disabled={approvalState === "submitting"} onClick={refreshReadiness}>重新检查配置</Button>
           </div>}
           <div className="risk-list">

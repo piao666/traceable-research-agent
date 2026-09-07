@@ -20,6 +20,7 @@ from app.trace import store
 from app.trace.models import RunBudget
 
 _active = ContextVar("research_budget", default=None)
+_final_report = ContextVar("final_report_budget", default=False)
 
 
 class BudgetExceeded(RuntimeError):
@@ -29,9 +30,12 @@ class BudgetExceeded(RuntimeError):
 
 
 def limits(settings):
-    return {name: getattr(settings, "research_" + name) for name in (
+    config = {name: getattr(settings, "research_" + name) for name in (
         "max_tool_calls", "max_llm_calls", "max_tokens", "max_seconds", "max_estimated_cost",
         "tool_cost_estimate", "llm_cost_per_million_tokens")}
+    config["final_report_tokens"] = min(8000, config["max_tokens"] // 10)
+    config["final_report_llm_calls"] = min(2, config["max_llm_calls"] // 5)
+    return config
 
 
 def ensure_budget(db, run_id, settings, *, parent_run_id=None):
@@ -70,10 +74,13 @@ class BudgetRuntime:
         if root_run and self.run_id != self.root_id and root_run.status in {"failed", "completed"}:
             raise BudgetExceeded("parent_terminal")
         config = self.limits
+        final = _final_report.get() and self.run_id == self.root_id
+        token_limit = config["max_tokens"] - (0 if final or not llm else config.get("final_report_tokens", 0))
+        llm_limit = config["max_llm_calls"] - (0 if final or not llm else config.get("final_report_llm_calls", 0))
         conditions = [RunBudget.run_id == self.root_id, RunBudget.stop_reason.is_(None),
             RunBudget.deadline > time.time(), RunBudget.tool_calls + tool <= config["max_tool_calls"],
-            RunBudget.llm_calls + llm <= config["max_llm_calls"],
-            RunBudget.reserved_tokens + tokens <= config["max_tokens"]]
+            RunBudget.llm_calls + llm <= llm_limit,
+            RunBudget.reserved_tokens + tokens <= token_limit]
         if config["max_estimated_cost"]:
             conditions.append(RunBudget.estimated_cost + cost <= config["max_estimated_cost"])
         admitted = self.db.execute(update(RunBudget).where(*conditions).values(
@@ -85,7 +92,8 @@ class BudgetRuntime:
             reason = row.stop_reason or ("deadline" if time.time() >= row.deadline else
                 "tool_calls" if row.tool_calls + tool > config["max_tool_calls"] else
                 "llm_calls" if row.llm_calls + llm > config["max_llm_calls"] else
-                "tokens" if row.reserved_tokens + tokens > config["max_tokens"] else "estimated_cost")
+                "tokens" if row.reserved_tokens + tokens > config["max_tokens"] else
+                "finalization_reserve" if row.reserved_tokens + tokens > token_limit or row.llm_calls + llm > llm_limit else "estimated_cost")
             self.stop(reason)
 
     def tool(self, name):
@@ -96,6 +104,12 @@ class BudgetRuntime:
 
     def snapshot(self):
         return budget_snapshot(self.db, self.run_id)
+
+    def can_deepen(self):
+        self.reserve()
+        row = self.snapshot()
+        return (row["accounted_tokens"] + self.limits.get("final_report_tokens", 0) + 2000 < self.limits["max_tokens"]
+                and row["llm_calls"] + self.limits.get("final_report_llm_calls", 0) + 2 < self.limits["max_llm_calls"])
 
 
 def budget_snapshot(db, run_id):
@@ -166,6 +180,23 @@ def budget_client(client):
     if client is None or isinstance(client, BudgetClient) or current_budget() is None:
         return client
     return BudgetClient(client)
+
+
+def report_budget(function):
+    @wraps(function)
+    def wrapped(run, plan, *args, **kwargs):
+        runtime = current_budget()
+        # A full retry has a lineage parent but owns a NEW root ledger. Only
+        # actual shared-budget children are excluded from finalization headroom.
+        root = runtime is not None and runtime.run_id == runtime.root_id
+        final = (root and not plan.get("adaptive_gate_pending")
+                 and (not plan.get("deepening_pending") or plan.get("deepening_phase") == "finalizing"))
+        token = _final_report.set(final)
+        try:
+            return function(run, plan, *args, **kwargs)
+        finally:
+            _final_report.reset(token)
+    return wrapped
 
 
 def budgeted_execution(function):

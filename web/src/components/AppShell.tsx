@@ -10,6 +10,10 @@ const primaryNav = [
 const secondaryNav = [
   ["/sessions", "会话"],
   ["/memory", "记忆"],
+] as const;
+
+const secondaryRouteNames = [
+  ...secondaryNav,
   ["/capabilities", "能力"],
   ["/system", "系统与质量"],
 ] as const;
@@ -23,7 +27,7 @@ function NavItems() {
 export function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation();
   const previousPath = useRef(location.pathname);
-  const routeName = location.pathname === "/" ? "概览" : location.pathname.startsWith("/research") ? "新建研究" : location.pathname.startsWith("/runs/") ? (location.pathname.endsWith("/plan") ? "计划审批" : location.pathname.endsWith("/evidence") ? "证据追踪" : location.pathname.endsWith("/report") ? "研究报告" : "实时工作台") : location.pathname.startsWith("/runs") ? "研究任务" : secondaryNav.find(([path]) => location.pathname.startsWith(path))?.[1] || "本地功能";
+  const routeName = location.pathname === "/" ? "概览" : location.pathname.startsWith("/research") ? "新建研究" : location.pathname.startsWith("/runs/") ? (location.pathname.endsWith("/plan") ? "计划审批" : location.pathname.endsWith("/evidence") ? "证据追踪" : location.pathname.endsWith("/report") ? "研究报告" : "实时工作台") : location.pathname.startsWith("/runs") ? "研究任务" : secondaryRouteNames.find(([path]) => location.pathname.startsWith(path))?.[1] || "本地功能";
   useEffect(() => {
     document.title = `${routeName} · Traceable Research Agent`;
     if (previousPath.current !== location.pathname) {
@@ -40,7 +44,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="local-state">本地实例 · 数据保存在部署端</div>
         <nav className="side-nav" aria-label="主导航"><NavItems /></nav>
       </aside>
-      <header className="topbar"><span>本地 workspace&nbsp; / &nbsp;{routeName}</span><span className="topbar-health">本地优先 · 单实例</span></header>
+      <header className="topbar"><span>本地 workspace&nbsp; / &nbsp;{routeName}</span></header>
       <main className="app-content" id="main-content" tabIndex={-1} aria-label={routeName}>{children}</main>
       <nav className="mobile-nav" aria-label="移动端主导航"><NavItems /></nav>
     </div>

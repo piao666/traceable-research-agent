@@ -121,7 +121,6 @@ it("connects empty research validation to and focuses the input", async () => {
   const input = screen.getByRole("textbox", { name: /研究问题或目标/ });
   expect(input).toHaveFocus(); expect(input).toHaveAttribute("aria-invalid", "true");
   expect(input).toHaveAttribute("aria-describedby", "research-error research-help");
-  await screen.findByText(/这里只检查配置是否存在/);
 });
 it("does not crash or promise saved drafts when browser storage is denied", async () => {
   vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new DOMException("denied"); });
@@ -131,11 +130,10 @@ it("does not crash or promise saved drafts when browser storage is denied", asyn
   show(<NewResearchPage />); await screen.findByText(/浏览器存储不可用/);
   expect(screen.getByRole("button", { name: "创建并审阅计划" })).toBeEnabled();
 });
-it("allows capability retries while preserving the research question", async () => {
-  vi.mocked(api.capabilities).mockRejectedValueOnce(new Error("配置暂不可读")).mockResolvedValue(capabilities);
+it("does not load deployment diagnostics while preserving the research question", () => {
   show(<NewResearchPage />); fireEvent.change(screen.getByRole("textbox", { name: /研究问题或目标/ }), { target: { value: "保留问题" } });
-  await screen.findByText("配置暂不可读"); fireEvent.click(screen.getByRole("button", { name: "重新读取" }));
-  await screen.findByText(/这里只检查配置是否存在/); expect(screen.getByRole("textbox", { name: /研究问题或目标/ })).toHaveValue("保留问题");
+  expect(screen.getByRole("textbox", { name: /研究问题或目标/ })).toHaveValue("保留问题");
+  expect(api.capabilities).not.toHaveBeenCalled();
 });
 
 function ModalFixture({ busy = false }: { busy?: boolean }) {

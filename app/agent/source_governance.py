@@ -166,6 +166,12 @@ def govern_tool_result(
     policy, profile = _policy_and_profile(plan, settings_obj)
     raw_items = [item for item in result.output[field] if isinstance(item, dict)]
     budgeted_items = raw_items[: settings_obj.max_discovery_candidates]
+    known = {canonicalize_url(row["url"]): row.get("fetch_status")
+             for row in (plan.get("react_state") or {}).get("source_context", {}).get("sources", [])}
+    # Preserve policy tiers; within each tier try unread candidates before
+    # repeated or failed pages. Sorting happens before per-cluster selection.
+    budgeted_items.sort(key=lambda item: {"fetched": 1, "failed": 2}.get(
+        known.get(canonicalize_url(_item_uri(tool_name, item))), 0))
     candidates: list[SourceCandidate] = []
     item_by_uri: dict[str, dict[str, Any]] = {}
     for item in budgeted_items:
@@ -185,6 +191,10 @@ def govern_tool_result(
     selected_items = [item_by_uri[candidate.uri] for candidate in selection.selected]
     output = dict(result.output)
     output[field] = selected_items
+    output["discovery_candidates"] = [{"url": _item_uri(tool_name, item),
+        "title": str(item.get("title") or "")[:160],
+        "content": str(item.get("content") or item.get("abstract") or "")[:600]}
+        for item in budgeted_items if _item_uri(tool_name, item)]
     if "returned" in output:
         output["returned"] = len(selected_items)
 
@@ -200,6 +210,8 @@ def govern_tool_result(
         refetch_round=refetch_round,
     )
     metadata["source_governance"] = governance
+    if known:
+        governance["selection_log"].append("Prefer unread candidates within existing tier/domain quotas; retain other discovery URLs for recovery.")
     metadata["result_count"] = len(selected_items)
     summary = result.output_summary or f"{tool_name} completed."
     summary = f"{summary} Source governance selected {len(selected_items)}/{len(raw_items)} candidates."

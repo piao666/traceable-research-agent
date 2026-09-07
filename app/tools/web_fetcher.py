@@ -20,7 +20,7 @@ from app.config import Settings, settings
 from app.tools.base import ToolResult
 from app.tools.fetch_cache import FetchCache, FetchCacheEntry
 from app.tools.ssrf import validate_url as _validate_url
-from app.tools.web_content_cleaner import clean_web_snippet
+from app.tools.web_content_cleaner import clean_web_snippet, page_content_issue
 
 
 USER_AGENT = "traceable-research-agent-read-only/1.0"
@@ -287,6 +287,9 @@ def web_fetch(
     Input:  urls (list[str]), max_chars (int, default 8000), timeout_seconds (int, default 10)
     Output: pages list with {url, title, content, content_basis, extraction_method, error?}
     """
+    if arguments.get("source_id"):
+        from app.tools.source_snapshot import read_snapshot
+        return read_snapshot(arguments)
     urls_raw = arguments.get("urls", [])
     if isinstance(urls_raw, str):
         urls_raw = [urls_raw]
@@ -380,6 +383,7 @@ def web_fetch(
             extraction_method = EXTRACT_NONE
             extraction_meta: dict[str, Any] = {}
             raw_html = ""
+            tables: list[dict] = []
             started = time.monotonic()
             content_type = ""
             redirect_chain: list[str] = []
@@ -410,6 +414,7 @@ def web_fetch(
                         "final_url": cached_entry.metadata.get("final_url") or valid_url,
                         "title": title,
                         "content": content[:max_chars],
+                        "tables": cached_entry.metadata.get("tables") or [],
                         "content_basis": content_basis,
                         "extraction_method": extraction_method,
                         "extraction_confidence": cached_entry.extraction_confidence,
@@ -453,6 +458,7 @@ def web_fetch(
                         extraction_meta = dict(cached_entry.metadata.get("extraction_meta") or {})
                         title = str(cached_entry.metadata.get("title") or valid_url)
                         content_type = cached_entry.content_type
+                        tables = cached_entry.metadata.get("tables") or []
                         raw_html = " " * int(cached_entry.metadata.get("raw_length") or len(content))
                         cache_status = "revalidated"
                     else:
@@ -493,6 +499,9 @@ def web_fetch(
                             valid_url,
                             trafilatura_enabled=active.web_fetcher_trafilatura_enabled,
                         )
+                        from app.tools.structured_tables import html_tables, csv_tables
+                        tables = (csv_tables(raw_html) if "csv" in content_type or urlparse(valid_url).path.lower().endswith(".csv")
+                                  else html_tables(raw_html))
                 elif response is not None:
                     fetch_error = f"HTTP {response.status_code}"
             except httpx.TimeoutException:
@@ -514,6 +523,7 @@ def web_fetch(
                 "url": valid_url,
                 "title": title,
                 "content": truncated_content,
+                "tables": tables,
                 "content_basis": content_basis,
                 "extraction_method": extraction_method,
                 "fetched_at_ms": elapsed_ms,
@@ -558,6 +568,7 @@ def web_fetch(
                         "raw_length": len(raw_html),
                         "redirect_chain": redirect_chain,
                         "extraction_meta": extraction_meta,
+                        "tables": tables,
                     },
                 )
                 if fetch_cache.put(entry):
@@ -565,6 +576,10 @@ def web_fetch(
                     page_entry["content_hash"] = content_hash
             pages.append(page_entry)
 
+    for page in pages:
+        issue = page_content_issue(str(page.get("content") or ""))
+        if issue and not page.get("error"):
+            page.update(error=issue, content_basis="snippet_only", content_issue=issue)
     fetched_count = sum(1 for p in pages if not p.get("error") and str(p.get("content") or "").strip())
     failed_count = len(pages) - fetched_count
 

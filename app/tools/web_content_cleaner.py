@@ -34,6 +34,24 @@ _NOISE_PHRASES = {
 }
 
 
+def page_content_issue(text: str) -> str | None:
+    """Recognize obvious unrendered shells, not arbitrary short documents.
+
+    Keep substantive tables even when surrounding navigation has placeholders.
+    This cannot certify semantic relevance or complete JS rendering.
+    """
+    placeholders = re.findall(r"\{\{.*?\}\}|@[a-zA-Z_]+@", text)
+    without = re.sub(r"\{\{.*?\}\}|@[a-zA-Z_]+@", "", text)
+    dated_numbers = re.findall(r"\d{4}[-/]\d{2}[-/]\d{2}\s+[-+]?\d", without)
+    loading = any(marker in without for marker in ("正在加载", "暂无相关数据", "Loading...", "loading…"))
+    if len(placeholders) >= 2 and not dated_numbers and (loading or len(without.strip()) < 40):
+        return "unrendered_page"
+    labels = ("日线", "周线", "月线", "查看更多", "快速链接", "最新公告", "指标名称")
+    if len(text) < 240 and sum(label in text for label in labels) >= 5 and not re.search(r"\d", text):
+        return "navigation_only"
+    return None
+
+
 def clean_web_snippet(text: Any, *, max_chars: int = 900) -> str:
     """Remove common navigation/page-shell noise from a search snippet."""
 

@@ -357,13 +357,14 @@ def _items_from_record(
 
 
 def _web_page_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
+    from app.tools.web_content_cleaner import page_content_issue
     items: list[EvidenceItem] = []
     for page in record["output"].get("pages") or []:
         if not isinstance(page, dict) or page.get("error"):
             continue
         content = str(page.get("content") or "").strip()
         url = str(page.get("url") or "")
-        if not content or not url.startswith(("https://", "http://")):
+        if not content or page_content_issue(content) or not url.startswith(("https://", "http://")):
             continue
         item = _make_item(run_id, record, existing_count + len(items) + 1,
                           title=str(page.get("title") or url), snippet=content,

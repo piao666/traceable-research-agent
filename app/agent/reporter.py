@@ -24,6 +24,7 @@ from app.agent.evidence import (
     _evidence_records as canonical_evidence_records,
 )
 from app.security.redaction import redact_text
+from app.agent.budget import report_budget
 
 
 # ── Phase 3: Sub-query grouping ───────────────────────────────────────
@@ -777,6 +778,9 @@ def _llm_synthesize_answer(
                 return None
             return content
     except Exception as exc:
+        from app.agent.budget import BudgetExceeded
+        if isinstance(exc, BudgetExceeded):
+            raise
         import logging
         logging.getLogger(__name__).warning("LLM synthesis failed: %s", redact_text(exc))
     return None
@@ -1422,6 +1426,7 @@ def _render_grouped_final_answer(
     return lines
 
 
+@report_budget
 def generate_markdown_report(
     run: AgentRun,
     plan: dict[str, Any],
@@ -1481,7 +1486,8 @@ def generate_markdown_report(
     _llm_answer: str | None = None
     if llm_client is not None:
         _llm_answer = _llm_synthesize_answer(
-            run.task,
+            run.task + ("\nTask requirements (do not change dates or metric): " + json.dumps(plan["task_contract"], ensure_ascii=False)
+                        if plan.get("task_contract") else ""),
             observations,
             llm_client,
             provenance_bundle,

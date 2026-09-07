@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import time
 import unittest
 from unittest.mock import patch
@@ -104,6 +105,7 @@ class DeepeningTests(unittest.TestCase):
         self.assertIsNotNone(child)
         self.assertIsInstance(child.run_id, str)
         self.assertIn(parent.run_id, child.plan_json)
+        self.assertEqual(json.loads(child.plan_json)["run_role"], "deepening_child")
         db.close()
 
 

@@ -13,6 +13,48 @@ def input_key(arguments: dict) -> str:
     return hashlib.sha256(json.dumps(arguments, sort_keys=True, default=str).encode()).hexdigest()[:24]
 
 
+def _complete_fetch_urls(state: dict, arguments: dict) -> set[str]:
+    from app.agent.source_context import source_url
+    try:
+        requested_length = min(50000, int(arguments.get("max_chars", 8000)))
+    except (TypeError, ValueError):
+        requested_length = 8000
+    return {url for row in state.get("source_context", {}).get("sources", [])
+            if row.get("fetch_status") == "fetched"
+            and not (row.get("content_basis") == "partial"
+                     and requested_length > int(row.get("content_length") or 0))
+            if (url := source_url(row.get("url")))}
+
+
+def prune_completed_fetch_urls(state: dict, arguments: dict) -> tuple[dict, list[str]]:
+    """Remove completed URLs from a mixed fetch without widening its request."""
+    from app.agent.source_context import source_url
+    prepared = dict(arguments)
+    if prepared.get("source_id") or not prepared.get("urls"):
+        return prepared, []
+    urls = prepared["urls"] if isinstance(prepared["urls"], list) else [prepared["urls"]]
+    completed = _complete_fetch_urls(state, prepared)
+    kept: list = []
+    skipped: list[str] = []
+    seen: set[str] = set()
+    for raw in urls:
+        canonical = source_url(raw)
+        # Unsafe or malformed values still reach the normal SSRF/input guard.
+        identity = canonical or f"raw:{raw}"
+        if canonical in completed or identity in seen:
+            if canonical:
+                skipped.append(canonical)
+            continue
+        seen.add(identity)
+        kept.append(raw)
+    # Keep an all-completed request intact so unavailable_reason can reject it
+    # as non-executed. An empty list would otherwise reach the reader and spend
+    # a tool attempt on an artificial "missing URLs" failure.
+    if kept:
+        prepared["urls"] = kept
+    return prepared, skipped
+
+
 def unavailable_reason(state: dict, name: str, limit: int, arguments: dict | None = None) -> str | None:
     item = state.get("tool_recovery", {}).get(name, {})
     if item.get("status") == "disabled":
@@ -23,6 +65,21 @@ def unavailable_reason(state: dict, name: str, limit: int, arguments: dict | Non
         return "cooldown"
     if arguments is not None and input_key(arguments) in item.get("blocked_inputs", {}):
         return str(item["blocked_inputs"][input_key(arguments)])
+    if arguments is not None:
+        from app.agent.source_context import source_url
+        sources = state.get("source_context", {}).get("sources", [])
+        if name == "web_fetcher" and not arguments.get("source_id"):
+            urls = arguments.get("urls") or []
+            if isinstance(urls, str):
+                urls = [urls]
+            fetched = _complete_fetch_urls(state, arguments)
+            if urls and all(source_url(url) in fetched for url in urls):
+                return "already_fetched_use_source_id"
+        if name == "file_reader" and any(
+                row["source_id"] in str(arguments.get("path") or "") for row in sources):
+            return "source_id_is_not_a_file_use_web_fetcher"
+        if name == "file_reader" and str(arguments.get("path") or "").lower().endswith((".html", ".htm")):
+            return "unsupported_file_extension_use_web_fetcher"
     return None
 
 

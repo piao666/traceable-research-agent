@@ -39,6 +39,7 @@ def build_react_messages(
     scenario_template: str | None = None,
     recovery_context: dict[str, Any] | None = None,
     research_context: dict[str, Any] | None = None,
+    task_contract: dict[str, Any] | None = None,
 ) -> list[LLMMessage]:
     """Build a JSON-only next-action prompt without requesting hidden reasoning."""
 
@@ -65,6 +66,11 @@ def build_react_messages(
         '{"thought":"short rationale","action":"MUST be from allowed list or finish",'
         '"args":{},"finish_reason":null}. '
         "If complete, use action=finish and put a concise answer in args.summary. "
+        "For finish, set args.goal_status to achieved, not_met or needs_clarification. "
+        "Tool unavailability, exhausted attempts or finding no requested dataset is NOT achieved. "
+        "Use task_contract.as_of and period exactly; never replace relative years with remembered dates. "
+        "If task_contract.unresolved_fields is nonempty, finish needs_clarification and name the missing fields. "
+        "For structured data, require actual dated rows/columns covering the requested interval; navigation or snippets are insufficient. "
         "Do not invent tools, write files directly, bypass human confirmation, "
         "use SQL writes, or request GitHub writes."
         + scenario_guidance
@@ -79,6 +85,7 @@ def build_react_messages(
         "observation_history": observation_history,
         "execution_constraints": recovery_context or {},
         "research_context": research_context or {},
+        "task_contract": task_contract or {},
         "safety_boundaries": [
             "Only allowed and enabled registered tools may be selected.",
             "SQL is limited to a single SELECT/WITH statement.",

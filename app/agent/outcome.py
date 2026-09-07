@@ -12,7 +12,7 @@ from app.config import Settings
 from app.trace import store
 from app.trace.logger import record_trace_event
 
-INTEGRITY_VERSION = "research-integrity-v1"
+INTEGRITY_VERSION = "research-integrity-v2"
 
 
 def report_subject(run):
@@ -87,6 +87,16 @@ def assess_research_outcome(run, plan, observations, traces, settings: Settings)
         code = "required_fetch_failed"
     elif missing_required:
         code = "required_step_failed"
+    from app.agent.research_goal import finish_failure, structured_goal_failure
+    state = plan.get("react_state") or {}
+    goal_failure = finish_failure(state.get("finish_reason"), state.get("finish_summary", ""),
+                                  state.get("goal_status"))
+    goal_failure = goal_failure or structured_goal_failure(plan.get("task_contract") or {}, load_observations(traces))
+    if goal_failure:
+        code = code or goal_failure
+        warnings.append("The requested result was not established; available text is not proof of goal completion.")
+    if code == "task_requirements_unresolved":
+        warnings.append("Clarify these task fields before retrying: " + ", ".join(plan["task_contract"]["unresolved_fields"]))
     research_steps = {step.get("step_no") for step in steps if step.get("tool_name") != "report_writer"}
     failed = [trace for trace in traces if trace.step_no in research_steps
               and trace.status in {"failed", "rejected", "skipped"}]
@@ -106,15 +116,25 @@ def assess_research_outcome(run, plan, observations, traces, settings: Settings)
     if plan.get("adaptive_upgrade_failed") or (plan.get("react_state") or {}).get("fallback_used"):
         warnings.append("ReAct upgrade/fallback did not complete as requested.")
     warnings.extend(plan.get("deepening_warnings") or [])
+    goal_messages = {
+        "goal_not_met": "研究目标未完成；现有来源不能证明任务已完成。请检查结束原因和证据。",
+        "task_requirements_unresolved": "研究口径尚未明确，请补充问题中的统计间隔、起止日期或复权口径。",
+        "structured_data_unavailable": "未取得覆盖目标日期范围、包含所需指标的完整结构化数据；网页正文不能代替数据结果。",
+    }
     return {
         "version": INTEGRITY_VERSION, "status": "failed" if code else "passed",
         "error_code": code, "effective_evidence_count": len(usable),
         "warnings": list(dict.fromkeys(warnings)),
-        "message": f"Research completion blocked: {code}. See tool traces." if code else "Research evidence gate passed.",
+        "message": (f"{code}: {goal_messages[code]}" if code in goal_messages else
+                    f"Research completion blocked: {code}. See tool traces." if code else "Research evidence gate passed."),
     }
 
 
 def enforce_research_outcome(db, run, plan, observations, traces, settings) -> bool:
+    from app.agent.budget import current_budget
+    runtime = current_budget()
+    if runtime is not None:
+        runtime.reserve()  # A swallowed downstream budget error cannot pass the gate.
     result = assess_research_outcome(run, plan, observations, traces, settings)
     plan["research_outcome"] = result
     if result["status"] == "failed":
@@ -195,6 +215,10 @@ def fail_execution(db: Session, run_id: str, exc: Exception):
         "version": INTEGRITY_VERSION, "status": "failed", "error_code": code, "message": message}
     plan["adaptive_gate_pending"] = False
     plan["deepening_pending"] = False
+    if plan.get("adaptive_phase"):
+        plan["adaptive_phase"] = "failed"
+    if plan.get("deepening_phase"):
+        plan["deepening_phase"] = "failed"
     store.replace_agent_run_plan(db, run_id, plan)
     record_trace_event(db, run_id, run.current_step, "execution_failure", "failed", {},
                        message, {"error_type": code}, error_message=message)

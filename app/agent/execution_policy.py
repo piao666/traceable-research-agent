@@ -94,6 +94,14 @@ def execute_with_policy(name: str, arguments: dict, plan: dict, settings: Settin
         except BudgetExceeded as exc:
             return policy_failure("budget_exhausted", str(exc), metadata={"budget_reason": exc.reason})
     prepared = dict(arguments)
+    prepared.pop("_source_snapshot", None)  # Never accept a model-supplied snapshot.
+    if name == "web_fetcher" and prepared.get("source_id"):
+        from app.agent.source_context import resolve_source_snapshot
+        from app.trace import store
+        runtime = current_budget()
+        if runtime is not None and not prepared.get("urls"):
+            prepared["_source_snapshot"] = resolve_source_snapshot(
+                store.list_tool_traces(runtime.db, runtime.run_id), str(prepared["source_id"]))
     if name == "mcp_github_search":
         # A configured mock default must not override a real run (or vice versa).
         prepared["mode"] = "public_api" if real_sources(plan) else "mock"

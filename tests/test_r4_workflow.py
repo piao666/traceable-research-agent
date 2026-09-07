@@ -168,6 +168,41 @@ class R4WorkflowTests(unittest.TestCase):
         self.assertEqual(len(second["tasks"]), 4)
         self.assertFalse({r["run_id"] for r in first["tasks"]} & {r["run_id"] for r in second["tasks"]})
 
+    def test_task_list_hides_deepening_children_but_keeps_audit_access(self):
+        legacy_child = store.create_agent_run(self.db, "internal legacy follow-up", "summary", "real")
+        store.update_agent_run_plan(self.db, legacy_child.run_id, {
+            "version": "deepening-v1", "parent_run_id": self.run.run_id,
+            "execution_mode": "react", "allowed_tools": [],
+        })
+        marked_child = store.create_agent_run(self.db, "internal marked follow-up", "summary", "real")
+        store.update_agent_run_plan(self.db, marked_child.run_id, {
+            "version": "deepening-v2", "run_role": "deepening_child",
+            "parent_run_id": self.run.run_id, "execution_mode": "react", "allowed_tools": [],
+        })
+        retry = store.create_agent_run(self.db, "user-visible retry", "summary", "real")
+        store.update_agent_run_plan(self.db, retry.run_id, {
+            "version": "r4", "parent_run_id": self.run.run_id,
+            "execution_mode": "planned", "allowed_tools": [],
+        })
+
+        visible = self.client.get("/api/tasks").json()
+        self.assertEqual(visible["total"], 2)
+        self.assertEqual(
+            {item["run_id"] for item in visible["tasks"]},
+            {self.run.run_id, retry.run_id},
+        )
+
+        diagnostic = self.client.get("/api/tasks?include_internal=true").json()
+        self.assertEqual(diagnostic["total"], 4)
+        self.assertEqual(
+            {item["run_id"] for item in diagnostic["tasks"]},
+            {self.run.run_id, retry.run_id, legacy_child.run_id, marked_child.run_id},
+        )
+        self.assertEqual(
+            self.client.get(f"/api/tasks/{legacy_child.run_id}").status_code,
+            200,
+        )
+
     def test_literal_search_escapes_wildcards_and_matches_id(self):
         store.create_agent_run(self.db, "100%_literal", "summary", "real")
         self.assertEqual(self.client.get("/api/tasks", params={"q": "%_"}).json()["total"], 1)

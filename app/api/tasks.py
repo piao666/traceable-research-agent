@@ -22,7 +22,7 @@ from app.agent.file_access_policy import (
     confirmation_details_for_path,
 )
 from app.agent.planner import plan_task, plan_task_for_review
-from app.agent.preflight import check_plan_readiness
+from app.agent.preflight import check_plan_readiness, readiness_error_code
 from app.agent.execution_policy import bind_run_policy
 from app.agent.outcome import fail_execution, result_integrity
 from app.agent.plan_guardrails import normalize_plan_arguments
@@ -71,7 +71,7 @@ def _assert_plan_ready(plan: dict[str, Any], run: AgentRun | None = None) -> Non
     readiness = check_plan_readiness(plan, settings)
     if not readiness["ready"]:
         raise HTTPException(status_code=409, detail={
-            "code": "configuration_not_ready", "message": " ".join(
+            "code": readiness_error_code(readiness), "message": " ".join(
                 issue["message"] for issue in readiness["blockers"]), "preflight": readiness,
         })
 
@@ -556,6 +556,10 @@ async def get_task_plan(
     from app.agent.budget import budget_snapshot
     from app.agent.execution_view import execution_insights
     plan = bind_run_policy(run, plan)
+    # Legacy dynamic child plans have no static steps. Normalize the response
+    # only: viewing a historical plan must not rewrite its stored JSON.
+    if plan.get("version") == "deepening-v1" and "steps" not in plan:
+        plan["steps"] = []
     plan["execution_budget"] = budget_snapshot(db, run_id)
     plan["execution_insights"] = execution_insights(run, plan, store.list_tool_traces(db, run_id))
     return TaskPlanResponse(run_id=run.run_id, **plan)
@@ -1075,9 +1079,10 @@ def list_tasks(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, max_length=500),
+    include_internal: bool = False,
     db: Session = Depends(get_db),
 ) -> TaskListResponse:
-    """List tasks with optional filters and pagination."""
+    """List user-facing tasks, with optional internal deepening runs."""
     runs = store.list_agent_runs(
         db,
         session_id=session_id,
@@ -1088,6 +1093,7 @@ def list_tasks(
         limit=limit,
         offset=offset,
         q=q,
+        include_internal=include_internal,
     )
     total = store.count_agent_runs(
         db,
@@ -1097,6 +1103,7 @@ def list_tasks(
         created_after=created_after,
         created_before=created_before,
         q=q,
+        include_internal=include_internal,
     )
     mode_key = "execution_mode"
     return TaskListResponse(

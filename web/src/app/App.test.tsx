@@ -18,5 +18,10 @@ describe("application routes", () => {
     expect(screen.getByText("TRACEABLE RESEARCH")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "概览" })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText(/API ok/)).toBeInTheDocument());
+    expect(screen.queryByRole("link", { name: "能力" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "系统与质量" })).toBeNull();
+    expect(screen.queryByText("本地优先 · 单实例")).toBeNull();
+    expect(screen.queryByText("质量摘要")).toBeNull();
+    expect(screen.queryByText("查看数据库、workspace 与配置诊断")).toBeNull();
   });
 });

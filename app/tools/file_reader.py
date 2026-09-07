@@ -168,6 +168,7 @@ def read_file(arguments: dict[str, Any]) -> ToolResult:
     content = text[:max_chars]
     relative_path = _output_path(resolved_path, allowed_root)
     chars_read = len(content)
+    from app.tools.structured_tables import csv_tables
     return ToolResult(
         success=True,
         output={
@@ -175,6 +176,7 @@ def read_file(arguments: dict[str, Any]) -> ToolResult:
             "content": content,
             "chars_read": chars_read,
             "truncated": truncated,
+            "tables": csv_tables(content, truncated=truncated) if extension == ".csv" else [],
         },
         output_summary=(
             f"Read {relative_path}: {chars_read} chars"

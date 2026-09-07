@@ -12,6 +12,40 @@ and produces an evidence-backed Markdown report.
 
 ## Why Traceable Research Agent
 
+### Goal integrity and bounded recovery (R9)
+
+Explicit inability, unavailable tools and exhausted ReAct steps cannot become
+successful research merely because some source text exists. Price-series requests
+get a creation-date-anchored task contract: unclear dates, sampling interval or
+adjustment basis block approval with a task-clarification message, not key advice.
+The contract is application-derived and inherited by deepening children. Completion
+requires actual reader-provided tabular data matching the requested metric, basis
+and basic date coverage; close prices are not a requested return series. These
+conservative checks are not a financial-data connector, name-to-symbol resolver,
+exchange-calendar audit, return calculator or general fact-checking oracle.
+
+Fetched text can be paged through the permitted `web_fetcher` using a current-Run
+`source_id`, `offset` and `max_chars`, without another HTTP request. Snapshot reads
+retain original Trace identity and create no duplicate evidence. Source IDs are
+not local filenames. Repeated unchanged fetches and unsupported HTML file reads
+are blocked before tool/HITL execution. Mixed URL requests fetch only novel,
+deduplicated pages; unread search candidates remain available
+within the source-policy tiers. Obvious loading/template shells are not full text.
+
+Budget exceptions keep their structured stop reason through synthesis and children.
+New ledgers reserve up to 8,000 tokens (10% of the total) and two LLM calls (20%)
+for the final root report; a full retry has its own ledger. Optional deepening is
+skipped when headroom is low, but a hard stop remains terminal and report creation
+is not guaranteed. Total caps, permissions and real/mock separation are unchanged.
+Planned-to-ReAct upgrades use their dynamic step allowance with monotonic Trace
+numbers. Legacy child `/plan` responses normalize missing steps read-only; child
+links persist before execution. Ordinary task lists hide deepening children while
+keeping direct audit access. Previous integrity versions require review, not rewrite.
+
+Requested overview/new-research copy and Capabilities/System navigation entries
+are removed; underlying routes/APIs remain. Citation sentence parsing preserves
+decimal values and URLs. See [latest verification and limits](RELEASE_VALIDATION.md).
+
 ### Research integrity (R0–R3)
 
 Tool success is not research completion. Missing required configuration blocks
@@ -111,7 +145,7 @@ fields does not invoke providers, create a budget for an old Run or rewrite hist
 Missing API data is not shown as zero sources or unlimited budget. A tool becoming
 selectable is not a connectivity check or a promise to retry it.
 
-Creation and approval explain that GitHub is optional, real research cannot switch
+Approval explains that GitHub is optional, real research cannot switch
 to mock, explicit empty tool permissions forbid execution, and Planned does not
 promise ReAct-style rerouting. Source queues are candidates, not verified evidence;
 evidence/report pages identify source excerpts separately from verified conclusions
@@ -407,6 +441,7 @@ need them. When `AUTH_ENABLED=true`, send the configured key in the
 |---|---|
 | `GET /health` | Service and database readiness. |
 | `POST /api/tasks` | Create a planned research task. |
+| `GET /api/tasks` | List user tasks; `include_internal=true` also returns deepening child Runs. |
 | `GET /api/tasks/{run_id}` | Read status, progress, cost, and citation metrics. |
 | `POST /api/tasks/{run_id}/run` | Execute a created task. |
 | `GET /api/tasks/{run_id}/review` | Read a plan waiting for approval. |

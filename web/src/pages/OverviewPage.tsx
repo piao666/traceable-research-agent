@@ -28,7 +28,7 @@ export function OverviewPage() {
     </section>
     <section className="two-column">
       <Panel title="需要处理">{counts ? counts.waiting ? <Link className="source-link" to="/runs?status=waiting">最近 50 条中 {counts.waiting} 个任务等待人工确认</Link> : "最近 50 条任务中暂无待处理操作" : "任务数据尚不可用，不能判断是否有待处理操作。"}</Panel>
-      <Panel title="本地环境"><ResourceState resource={health} />{health.data && <p>API {health.data.status} · {health.data.service} · {health.data.execution_mode}</p>}<Link className="source-link" to="/system">查看数据库、workspace 与配置诊断</Link></Panel>
+      <Panel title="本地环境"><ResourceState resource={health} />{health.data && <p>API {health.data.status} · {health.data.service} · {health.data.execution_mode}</p>}</Panel>
     </section>
     <section className="panel table-card" aria-labelledby="recent-title">
       <h2 id="recent-title" className="table-card-title">最近研究任务</h2>
@@ -38,6 +38,5 @@ export function OverviewPage() {
       </div>}
       {tasks?.length === 0 && <EmptyState>暂无研究任务。新建一个需要审批的研究计划开始工作。</EmptyState>}
     </section>
-    <Panel title="质量摘要" className="section-gap">质量评估是否可用以实际评估记录为准；任务完成不代表真实研究已验收。<Link className="source-link" to="/system">查看质量与限制说明</Link></Panel>
   </div>;
 }

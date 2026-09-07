@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.llm.base import LLMClient, LLMMessage
+from app.agent.budget import BudgetExceeded
 
 CITATION_PATTERN = re.compile(r"CIT-\d{3}-\d{2}")
 SENTENCE_BOUNDARIES = ".!?。！？\n"
@@ -178,6 +179,8 @@ def _apply_llm_secondary_judgment(
     ]
     try:
         response = llm_client.complete(messages, temperature=0.0, max_tokens=1200)
+    except BudgetExceeded:
+        raise
     except Exception:
         return report
     if not response.success:
@@ -208,7 +211,16 @@ def _find_citation_sentence(text: str, match_start: int) -> str:
     """Extract the sentence containing a citation match."""
     # Search backward for sentence boundary
     start = match_start
-    while start > 0 and text[start - 1] not in SENTENCE_BOUNDARIES:
+    def boundary(index: int) -> bool:
+        char = text[index]
+        if char == ".":
+            # Decimal numbers, identifiers and URL host/path dots are not stops.
+            return index + 1 == len(text) or text[index + 1].isspace()
+        if char in "!?":
+            return index + 1 == len(text) or text[index + 1].isspace()
+        return char in "。！？\n"
+
+    while start > 0 and not boundary(start - 1):
         start -= 1
     # Skip the boundary character
     if start > 0 and text[start - 1] in SENTENCE_BOUNDARIES:
@@ -218,7 +230,7 @@ def _find_citation_sentence(text: str, match_start: int) -> str:
 
     # Search forward for sentence boundary
     end = match_start
-    while end < len(text) and text[end] not in SENTENCE_BOUNDARIES:
+    while end < len(text) and not boundary(end):
         end += 1
     # Include the boundary character
     if end < len(text) and text[end] in ".!?。！？":

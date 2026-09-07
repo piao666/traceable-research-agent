@@ -72,7 +72,6 @@ a { color: inherit; text-decoration: none; }
   color: var(--ra-muted);
   font-size: 13px;
 }
-.topbar-health { color: var(--ra-status-green); }
 .app-content {
   min-height: 100vh;
   margin-left: var(--ra-sidebar-width);
@@ -313,7 +312,6 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 900px) {
   .sidebar { display: none; }
   .topbar { left: 0; height: 60px; padding: 0 16px; }
-  .topbar-health { display: none; }
   .app-content { margin-left: 0; padding: 76px 16px 92px; }
   .page-header { align-items: flex-start; }
   .page-title { font-size: 24px; }

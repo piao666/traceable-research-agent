@@ -56,7 +56,7 @@ it("renders child budget ownership and includes reservations in token count", ()
   expect(screen.getByText("12000 / 100000")).toBeInTheDocument();
   expect(screen.getByText(/审批恢复不重置/)).toBeInTheDocument();
 });
-it.each(["tool_calls", "tokens", "deadline", "llm_price_unconfigured"])("explains total-budget stop %s without pretending partial output is final", (reason) => {
+it.each(["tool_calls", "tokens", "deadline", "llm_price_unconfigured", "finalization_reserve"])("explains total-budget stop %s without pretending partial output is final", (reason) => {
   const plan = planCopy(); plan.execution_budget!.stop_reason = reason;
   panel(plan);
   expect(screen.getByText(/预算停止原因/)).toHaveTextContent("不能用中间报告冒充最终报告");
