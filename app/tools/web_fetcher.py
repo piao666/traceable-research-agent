@@ -24,6 +24,9 @@ from app.tools.web_content_cleaner import clean_web_snippet, page_content_issue
 
 
 USER_AGENT = "traceable-research-agent-read-only/1.0"
+DEFAULT_BATCH_TIMEOUT_SECONDS = 25
+MAX_BATCH_TIMEOUT_SECONDS = 25
+BATCH_RETURN_MARGIN_SECONDS = 2
 
 TITLE_PATTERN = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 
@@ -284,7 +287,8 @@ def web_fetch(
     Phase 8.2: trafilatura → BeautifulSoup → raw regex fallback chain,
     Content-Type / PDF routing, response size limits, redirect SSRF re-check.
 
-    Input:  urls (list[str]), max_chars (int, default 8000), timeout_seconds (int, default 10)
+    Input:  urls (list[str]), max_chars (int, default 8000), timeout_seconds (int, default 10),
+            batch_timeout_seconds (int, default 25; bounded below the registry deadline)
     Output: pages list with {url, title, content, content_basis, extraction_method, error?}
     """
     if arguments.get("source_id"):
@@ -304,6 +308,9 @@ def web_fetch(
     max_chars = max(500, min(max_chars, 50000))
     timeout_seconds = int(arguments.get("timeout_seconds", 10))
     timeout_seconds = max(3, min(timeout_seconds, 60))
+    batch_timeout_seconds = int(arguments.get("batch_timeout_seconds", DEFAULT_BATCH_TIMEOUT_SECONDS))
+    batch_timeout_seconds = max(5, min(batch_timeout_seconds, MAX_BATCH_TIMEOUT_SECONDS))
+    timeout_seconds = min(timeout_seconds, max(3, batch_timeout_seconds - BATCH_RETURN_MARGIN_SECONDS))
 
     active = settings_obj or settings
     max_response_bytes = active.web_fetcher_max_response_bytes
@@ -327,6 +334,8 @@ def web_fetch(
 
     pages: list[dict[str, Any]] = []
     validated: list[tuple[str, str]] = []
+    batch_started = time.monotonic()
+    batch_deferred_count = 0
 
     for raw_url in urls_raw:
         if not isinstance(raw_url, str):
@@ -376,7 +385,24 @@ def web_fetch(
         )
     client_context = owned_client if owned_client is not None else nullcontext(client)
     with client_context as active_client:
-        for original_url, valid_url in validated:
+        for index, (original_url, valid_url) in enumerate(validated):
+            elapsed_batch = time.monotonic() - batch_started
+            remaining_batch = batch_timeout_seconds - elapsed_batch
+            if index > 0 and remaining_batch < timeout_seconds + BATCH_RETURN_MARGIN_SECONDS:
+                deferred = validated[index:]
+                batch_deferred_count = len(deferred)
+                pages.extend({
+                    "url": deferred_url,
+                    "title": deferred_url,
+                    "content": "",
+                    "content_basis": "snippet_only",
+                    "extraction_method": EXTRACT_NONE,
+                    "cache_status": "not_attempted",
+                    "cache_hit": False,
+                    "fetched_at_ms": 0,
+                    "error": "batch_deadline_exceeded",
+                } for _original, deferred_url in deferred)
+                break
             fetch_error: str | None = None
             title = valid_url
             content = ""
@@ -596,7 +622,8 @@ def web_fetch(
             f"web_fetcher: {fetched_count}/{len(pages)} URLs fetched "
             f"(full_text={sum(1 for p in pages if p.get('content_basis') == 'full_text')}, "
             f"partial={sum(1 for p in pages if p.get('content_basis') == 'partial')}, "
-            f"snippet_only={sum(1 for p in pages if p.get('content_basis') == 'snippet_only')})"
+            f"snippet_only={sum(1 for p in pages if p.get('content_basis') == 'snippet_only')}, "
+            f"deadline_deferred={batch_deferred_count})"
         ),
         metadata={
             **({"error_type": "empty_result"} if not fetched_count else {}),
@@ -611,5 +638,8 @@ def web_fetch(
             "cache_misses": sum(1 for page in pages if page.get("cache_status") == "miss"),
             "cache_expired": sum(1 for page in pages if page.get("cache_status") == "expired"),
             "cache_corrupt": sum(1 for page in pages if page.get("cache_status") == "corrupt"),
+            "batch_timeout_seconds": batch_timeout_seconds,
+            "batch_deadline_exceeded": batch_deferred_count > 0,
+            "batch_deferred_count": batch_deferred_count,
         },
     )

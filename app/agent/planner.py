@@ -138,6 +138,25 @@ TECH_DOCS_RESEARCH_KEYWORDS = {
     "库文档",
     "框架文档",
 }
+TECHNICAL_PROFILE_KEYWORDS = {
+    "architecture",
+    "sandbox",
+    "memory",
+    "tool calling",
+    "plugin",
+    "protocol",
+    "sdk",
+    "api",
+    "framework",
+    "架构",
+    "沙箱",
+    "记忆",
+    "工具调用",
+    "插件",
+    "协议",
+    "技术文档",
+    "框架",
+}
 DEEP_RESEARCH_REMOTE_PRIORITY = (
     ("exa", "web_search_exa"),
     ("exa", "web_search_advanced_exa"),
@@ -805,7 +824,13 @@ def plan_task(
 
     # ── Phase 8.1: retrieval profile constraint ──────────────────
     _profile_extra: dict[str, Any] = {}
-    selected_profile = retrieval_profile or settings.default_retrieval_profile
+    normalized_task = task.casefold()
+    inferred_profile = (
+        "technical_facts"
+        if any(keyword.casefold() in normalized_task for keyword in TECHNICAL_PROFILE_KEYWORDS)
+        else settings.default_retrieval_profile
+    )
+    selected_profile = retrieval_profile or inferred_profile
     try:
         from app.evidence.policy import load_source_policy
         policy = load_source_policy(settings.source_policy_path)

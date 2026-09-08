@@ -31,8 +31,8 @@ from app.agent.tool_recovery import (
     unavailable_reason,
 )
 from app.agent.source_context import build_source_context, prompt_source_context
-from app.agent.budget import budgeted_execution, budget_client
-from app.agent.outcome import enforce_research_outcome, report_subject
+from app.agent.budget import budgeted_execution, budget_client, limits as budget_limits
+from app.agent.outcome import enforce_research_outcome, load_observations, report_subject
 from app.agent.react_prompt import build_react_messages
 from app.agent.react_schema import (
     ReActDecision,
@@ -60,6 +60,10 @@ from app.tools.registry import execute_tool, get_tool, list_tools
 from app.trace import store
 from app.trace.logger import record_tool_result, record_trace_event
 from app.trace.models import AgentRun
+
+
+MAX_NON_EXECUTION_REPLACEMENTS = 2
+MAX_DYNAMIC_REACT_STEPS = 20
 
 
 def _parse_plan(run: AgentRun) -> dict[str, Any]:
@@ -178,7 +182,62 @@ def _initial_state(settings: Settings, provider: str, model: str | None) -> dict
         "fallback_used": False,
         "completed_with_limitation": False,
         "finish_reason": None,
+        "replacement_steps_granted": 0,
     }
+
+
+def _react_step_capacity(settings_obj: Settings) -> int:
+    """Bound decisions by the same root resources used by the budget ledger."""
+
+    configured = budget_limits(settings_obj)
+    llm_capacity = configured["max_llm_calls"] - configured.get("final_report_llm_calls", 0)
+    token_capacity = (
+        configured["max_tokens"] - configured.get("final_report_tokens", 0)
+    ) // 1200
+    time_capacity = configured["max_seconds"] // 5
+    # One finish decision does not consume a tool call, while corrections are
+    # separately bounded below. Runtime reservations remain the final authority.
+    tool_capacity = configured["max_tool_calls"] + 1
+    return max(
+        1,
+        min(
+            MAX_DYNAMIC_REACT_STEPS,
+            llm_capacity,
+            token_capacity,
+            time_capacity,
+            tool_capacity,
+        ),
+    )
+
+
+def _react_step_allowance(plan: dict[str, Any], settings_obj: Settings) -> int:
+    capacity = _react_step_capacity(settings_obj)
+    base = min(settings_obj.react_max_steps, capacity)
+    if not settings_obj.deep_research_enabled or _research_scenario(plan) is None:
+        return base
+    extension = max(4, settings_obj.deep_research_max_depth * settings_obj.deep_research_breadth)
+    return min(capacity, base + extension)
+
+
+def _grant_non_execution_replacement(
+    db: Session,
+    run: AgentRun,
+    state: dict[str, Any],
+    settings_obj: Settings,
+) -> bool:
+    """Replace a bounded number of rejected decisions without widening budgets."""
+
+    granted = int(state.get("replacement_steps_granted") or 0)
+    offset = int(state.get("step_offset") or 0)
+    capacity_limit = offset + _react_step_capacity(settings_obj)
+    if granted >= MAX_NON_EXECUTION_REPLACEMENTS or int(state["step_limit"]) >= capacity_limit:
+        return False
+    state["replacement_steps_granted"] = granted + 1
+    state["step_limit"] = int(state["step_limit"]) + 1
+    state["max_steps"] = int(state.get("max_steps") or 0) + 1
+    run.total_steps = int(state["step_limit"])
+    db.commit()
+    return True
 
 
 def _persist_plan(db: Session, run_id: str, plan: dict[str, Any]) -> None:
@@ -262,6 +321,11 @@ def _append_observation(
     output: Any | None = None,
     trace_id: str | None = None,
 ) -> None:
+    persisted_output = None
+    if isinstance(output, dict) and isinstance(output.get("source_content"), dict):
+        source_content = dict(output["source_content"])
+        source_content["text"] = str(source_content.get("text") or "")[:8000]
+        persisted_output = {"source_content": source_content}
     observation = ReActStepObservation(
         trace_id=trace_id,
         step_no=step_no,
@@ -273,7 +337,10 @@ def _append_observation(
         error_message=error_message,
         tool_result_metadata=metadata,
         finish_reason=decision.finish_reason,
-        output=output,
+        # Complete tool output is authoritative in tool_traces. Keeping only a
+        # bounded snapshot-read excerpt prevents plan_json from duplicating all
+        # search and page bodies on every polling response.
+        output=persisted_output,
     )
     state.setdefault("observation_history", []).append(observation.model_dump())
 
@@ -339,8 +406,8 @@ def _complete_report(
     run = store.get_agent_run(db, run_id)
     if run is None:
         raise ValueError("Task run not found.")
-    observations = list(state.get("observation_history") or [])
     traces = store.list_tool_traces(db, run_id)
+    observations = load_observations(traces)
     if not enforce_research_outcome(db, run, plan, observations, traces, settings_obj):
         return _summary(store.get_fresh_agent_run(db, run_id), plan)
     provenance_bundle = materialize_execution_provenance(
@@ -481,12 +548,18 @@ def run_react_task(
     provider = str(description.get("provider") or settings.react_llm_provider)
     model = description.get("model") or settings.react_llm_model
     state = plan.get("react_state")
-    if not isinstance(state, dict):
+    new_state = not isinstance(state, dict)
+    if new_state:
         state = _initial_state(settings, provider, model)
     # Static plan progress is not the number of dynamic ReAct decisions already
     # consumed. Persist the offset so human resume cannot reset the allowance.
     state.setdefault("step_offset", run.current_step if plan.get("adaptive_upgrade") else 0)
-    state.setdefault("step_limit", int(state["step_offset"]) + settings.react_max_steps)
+    if new_state:
+        state["max_steps"] = _react_step_allowance(plan, settings)
+    else:
+        state.setdefault("max_steps", _react_step_allowance(plan, settings))
+    state.setdefault("step_limit", int(state["step_offset"]) + int(state["max_steps"]))
+    state.setdefault("replacement_steps_granted", 0)
     state["source_refetch_rounds_used"] = max(
         int(state.get("source_refetch_rounds_used") or 0),
         persisted_refetch_rounds(store.list_tool_traces(db, run_id)),
@@ -514,7 +587,10 @@ def run_react_task(
             pending_decision = None
 
     start_step = pending_step_no or max(run.current_step + 1, 1)
-    for step_no in range(start_step, int(state["step_limit"]) + 1):
+    hard_step_limit = int(state["step_offset"]) + _react_step_capacity(settings)
+    for step_no in range(start_step, hard_step_limit + 1):
+        if step_no > int(state["step_limit"]):
+            break
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _summary(cancelled, plan, "Run cancelled by user.")
@@ -575,6 +651,7 @@ def run_react_task(
                     reason, {"metadata": {"error_type": "tool_unavailable", "executed": False}}, error_message=reason)
                 state.setdefault("observation_history", []).append({"step_no": step_no, "action": candidate,
                     "success": False, "observation_summary": reason, "error_message": reason})
+                _grant_non_execution_replacement(db, run, state, settings)
                 plan["react_state"] = state
                 _persist_plan(db, run_id, plan)
                 store.update_agent_run_progress(db, run_id, step_no)
@@ -624,6 +701,7 @@ def run_react_task(
                         "error_message": reason,
                         "tool_result_metadata": {"error_type": "disallowed_tool"},
                     })
+                    _grant_non_execution_replacement(db, run, state, settings)
                     plan["react_state"] = state
                     _persist_plan(db, run_id, plan)
                     continue  # Let LLM retry with the rejection feedback visible
@@ -666,6 +744,7 @@ def run_react_task(
                     rejection_reason,
                     metadata,
                 )
+                _grant_non_execution_replacement(db, run, state, settings)
                 plan["react_state"] = state
                 _persist_plan(db, run_id, plan)
                 if int(state.get("invalid_decisions") or 0) >= 2 and settings.react_fallback_to_planned:
@@ -749,6 +828,7 @@ def run_react_task(
                 error_message=reason,
             )
             _append_observation(state, step_no, decision, reason, False, reason, metadata)
+            _grant_non_execution_replacement(db, run, state, settings)
             store.update_agent_run_progress(db, run_id, step_no)
             plan["react_state"] = state
             _persist_plan(db, run_id, plan)
@@ -906,6 +986,8 @@ def run_react_task(
             record_trace_event(db, run_id, step_no, "tool_recovery", "warning", {"tool_name": decision.action},
                 f"Tool recovery: {decision.action} {recovered.get('reason')}; other permitted tools remain available.",
                 {"tool_name": decision.action, **recovered})
+        if result.metadata.get("executed") is False:
+            _grant_non_execution_replacement(db, run, state, settings)
         plan["react_state"] = state
         _persist_plan(db, run_id, plan)
         store.update_agent_run_progress(
@@ -988,7 +1070,7 @@ def run_react_task(
             plan["react_state"] = state
             _persist_plan(db, run_id, plan)
 
-    reason = f"react_max_steps reached: limit={settings.react_max_steps}."
+    reason = f"react_max_steps reached: limit={state['max_steps']}."
     record_trace_event(
         db,
         run_id,

@@ -32,6 +32,15 @@ are blocked before tool/HITL execution. Mixed URL requests fetch only novel,
 deduplicated pages; unread search candidates remain available
 within the source-policy tiers. Obvious loading/template shells are not full text.
 
+Pending or previously failed source IDs now resolve to the URL recorded by the
+same Run instead of being treated as readable snapshots. Equivalent fetch inputs
+share a recovery identity, and up to two rejected/non-executed decisions receive
+bounded replacement slots. Multi-URL fetches stop before the registry deadline,
+return completed pages, and mark deferred pages explicitly. Technical tasks infer
+the `technical_facts` profile unless the caller selects another profile; supported
+vendor documentation and verified repositories are classified as primary sources.
+Search-only and partial passages use medium rather than high evidence confidence.
+
 Budget exceptions keep their structured stop reason through synthesis and children.
 New ledgers reserve up to 8,000 tokens (10% of the total) and two LLM calls (20%)
 for the final root report; a full retry has its own ledger. Optional deepening is
@@ -41,6 +50,10 @@ Planned-to-ReAct upgrades use their dynamic step allowance with monotonic Trace
 numbers. Legacy child `/plan` responses normalize missing steps read-only; child
 links persist before execution. Ordinary task lists hide deepening children while
 keeping direct audit access. Previous integrity versions require review, not rewrite.
+Deep-research ReAct allowances can grow from the configured base according to depth
+and breadth, while remaining capped by the shared tool, LLM, token and time budget.
+Full tool bodies remain in Trace; persisted ReAct observations retain only bounded
+decision summaries and snapshot excerpts so `/plan` polling does not duplicate them.
 
 Requested overview/new-research copy and Capabilities/System navigation entries
 are removed; underlying routes/APIs remain. Citation sentence parsing preserves
@@ -137,24 +150,23 @@ for review and excluded from trusted quality trends.
 
 ### Execution explanations and integration checks (R8.6)
 
-The workbench now displays the typed, read-only `execution_insights` and
-`execution_budget` plan fields: allowed tools, per-tool recovery/cooldown/input
-restrictions, root/child shared counters, optional CNY cost estimates, stop reasons
-and the bounded candidate-source queue with exact Trace links. Reading these
-fields does not invoke providers, create a budget for an old Run or rewrite history.
-Missing API data is not shown as zero sources or unlimited budget. A tool becoming
-selectable is not a connectivity check or a promise to retry it.
+The workbench uses the typed, read-only `execution_insights` field only for the
+bounded candidate-source queue with exact Trace links. Internal shared-budget,
+tool-recovery and permission-list details remain available through the API and Trace
+but are intentionally not rendered in the user-facing workbench. Missing API data
+is not shown as zero sources.
 
-Approval explains that GitHub is optional, real research cannot switch
-to mock, explicit empty tool permissions forbid execution, and Planned does not
-promise ReAct-style rerouting. Source queues are candidates, not verified evidence;
+Plan review omits internal allowed-tool lists, planner notes and generic execution-
+boundary callouts. Source queues are candidates, not verified evidence;
 evidence/report pages identify source excerpts separately from verified conclusions
-and expose snapshot/Trace identities. No browser-based budget/key editing is added.
+and expose snapshot/Trace identities. Persisted English integrity warnings from
+older Runs are translated to Chinese in the UI. No browser-based budget/key editing
+is added.
 
 Offline integration covers GitHub 401 → non-GitHub source URL → fetch → actual
 saved Markdown with resolvable provenance → typed page contract. DOM tests cover
-page refresh, budget/permission limits, cancellation, and report → evidence → Trace
-navigation. External providers/model decisions remain fixtures. Full pytest,
+page refresh, hidden internal execution details, Chinese integrity warnings,
+cancellation, and report → evidence → Trace navigation. External providers/model decisions remain fixtures. Full pytest,
 container/runtime, browser/390px and live-provider acceptance are still separate,
 unpassed gates; see [release validation](RELEASE_VALIDATION.md).
 
@@ -513,11 +525,11 @@ workspace/     local databases, reports, artifacts, and skills
 
 ## Quality Checks
 
-The current full offline pytest run collected 601 tests: 599 passed, 2 were
+The current full offline pytest run collected 612 tests: 610 passed, 2 were
 conditionally skipped, none failed, and no external network attempt was made.
-The latest frontend baseline remains the R9 result: 110 tests, typecheck, lint
-and build passed; isolated route/fixture QA: 59 checks passed. Frontend and
-browser checks were not rerun for the post-R9 backend/tooling repair. See
+The latest frontend baseline is 103 tests; typecheck, lint and build passed;
+isolated route/fixture QA: 59 checks passed. Browser layout and live-provider
+acceptance remain separate manual checks. See
 [release validation](RELEASE_VALIDATION.md) for limits.
 
 Run the same core checks locally:

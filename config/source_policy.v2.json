@@ -24,7 +24,13 @@
     "sec.gov": "regulatory",
     "gov.cn": "regulatory",
     "stats.gov.cn": "regulatory",
-    "docs.python.org": "official"
+    "docs.python.org": "official",
+    "deepseek.com": "official",
+    "openai.com": "official",
+    "learn.chatgpt.com": "official",
+    "anthropic.com": "official",
+    "code.claude.com": "official",
+    "platform.claude.com": "official"
   },
   "blocked_domains": [],
   "claim_types": {
@@ -84,6 +90,12 @@
       "springer.com": "T0",
       "nature.com": "T0",
       "science.org": "T0",
+      "deepseek.com": "T0",
+      "openai.com": "T0",
+      "learn.chatgpt.com": "T0",
+      "anthropic.com": "T0",
+      "code.claude.com": "T0",
+      "platform.claude.com": "T0",
       "edu.cn": "T1",
       "ac.cn": "T1",
       "github.com": "T1",
@@ -96,7 +108,10 @@
       "jianshu.com": "T2"
     },
     "org_verified_official_repos": {
-      "github.com/example-org/verified-repo": "T0"
+      "github.com/example-org/verified-repo": "T0",
+      "github.com/deepseek-ai/deepseek-harness": "T0",
+      "github.com/openai/codex": "T0",
+      "github.com/anthropics/claude-code": "T0"
     }
   },
   "retrieval_profiles": {
@@ -105,7 +120,7 @@
       "min_independent_sources": 3,
       "max_t2_ratio": 0.20,
       "max_per_domain": 2,
-      "shortfall_policy": "report_only",
+      "shortfall_policy": "targeted_refetch",
       "freshness_days": 365
     },
     "academic_literature": {

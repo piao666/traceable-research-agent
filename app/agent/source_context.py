@@ -46,6 +46,23 @@ def resolve_source_snapshot(traces, source_id: str):
     return None
 
 
+def resolve_source_record(traces, source_id: str) -> dict | None:
+    """Resolve a run-local source ID to its authoritative queue record.
+
+    Discovery records deliberately expose IDs before full text has been fetched.
+    Callers use this helper to distinguish a pending/failed URL from an already
+    fetched snapshot without trusting model-supplied URL text.
+    """
+
+    if not isinstance(source_id, str) or not source_id.startswith("S"):
+        return None
+    context = build_source_context(traces)
+    return next(
+        (dict(row) for row in context.get("sources") or [] if row.get("source_id") == source_id),
+        None,
+    )
+
+
 def build_source_context(traces, *, max_sources: int = 64) -> dict:
     sources = {}
     omitted = 0

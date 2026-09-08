@@ -4,7 +4,6 @@ import { useRunContext } from "../hooks/useRunContext";
 import { MetricCard, Panel, StatusChip } from "../components/primitives";
 import { useFocusTarget } from "../hooks/useFocusTarget";
 import { ExecutionInsights } from "../components/ExecutionInsights";
-import { ResearchPolicyNote } from "../components/ResearchPolicyNote";
 
 export function WorkbenchPage() {
   const { task, plan, traces, detailErrors } = useRunContext();
@@ -20,7 +19,6 @@ export function WorkbenchPage() {
       <MetricCard label="累计调用耗时" value={`${(task.total_latency_ms / 1000).toFixed(2)} s`} note="累计调用时长，并非总墙钟耗时" />
       <MetricCard label="原调用估值记录" value={task.estimated_cost > 0 ? task.estimated_cost.toFixed(4) : "未记录 / 0"} note="旧调用估值口径；非共享预算或账单金额" />
     </section>
-    <ResearchPolicyNote sourceMode={task.source_mode} executionMode={task.execution_mode} />
     <ExecutionInsights plan={plan} />
     <div className="workbench-columns">
       <Panel title="执行计划">
@@ -31,7 +29,6 @@ export function WorkbenchPage() {
             <details><summary><span>{step.step_no}. {step.goal}</span><span className="muted">{step.tool_name}</span></summary><pre className="json-block" tabIndex={0}>{JSON.stringify(step.arguments, null, 2)}</pre><p>完成条件：{step.completion_criteria || "未记录"}</p><p>风险：{step.risk_level}；{step.requires_confirmation ? "需人工确认" : "无需人工确认"}</p></details>
           </li>)}</ol>
           {!plan.steps.length && <p>没有静态步骤，查看下方实际执行 Trace。</p>}
-          {plan.notes.map((note, index) => <p key={index}>{note}</p>)}
           {(task.deepening_phase || task.adaptive_phase) && <p>深化阶段：{task.deepening_phase || "无"}；自适应阶段：{task.adaptive_phase || "无"}</p>}
           {!!plan.deepening_sub_run_ids?.length && <><h3>深化子任务</h3><ul>{plan.deepening_sub_run_ids.map((id) => <li key={id}><Link className="source-link" to={`/runs/${encodeURIComponent(id)}`}>{id}</Link></li>)}</ul><p>子任务学习笔记不自动等于主报告的受支持结论。</p></>}
         </>}

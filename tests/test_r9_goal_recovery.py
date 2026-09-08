@@ -131,12 +131,180 @@ class GoalRecoveryTests(unittest.TestCase):
         finally:
             _active.reset(token)
 
+    def test_pending_source_id_uses_recorded_url_without_trusting_model_url(self):
+        from app.agent.budget import BudgetRuntime, _active
+        from app.agent.execution_policy import execute_with_policy
+        from app.agent.source_context import build_source_context
+        from app.tools.base import ToolResult
+
+        run = store.create_agent_run(
+            self.db, "fixture", "summary", "real", allowed_tools=["web_fetcher"]
+        )
+        record_trace_event(
+            self.db,
+            run.run_id,
+            1,
+            "tavily_search",
+            "success",
+            {},
+            "search",
+            {"results": [{"url": URL, "content": "Discovery excerpt."}]},
+        )
+        source_id = build_source_context(
+            store.list_tool_traces(self.db, run.run_id)
+        )["sources"][0]["source_id"]
+        captured = {}
+
+        def execute(name, arguments):
+            captured.update(arguments)
+            return ToolResult(
+                success=True,
+                output={"pages": [{"url": arguments["urls"][0], "content": "Fetched text."}]},
+            )
+
+        token = _active.set(BudgetRuntime(self.db, run.run_id, self.settings))
+        try:
+            result = execute_with_policy(
+                "web_fetcher",
+                {"source_id": source_id, "offset": 100, "max_chars": 10000},
+                {"allowed_tools": ["web_fetcher"], "source_mode": "real"},
+                self.settings,
+                execute,
+            )
+        finally:
+            _active.reset(token)
+        self.assertTrue(result.success)
+        self.assertEqual(captured["urls"], [URL])
+        self.assertNotIn("source_id", captured)
+        self.assertNotIn("offset", captured)
+        self.assertEqual(result.metadata["resolved_source_id"], source_id)
+        self.assertEqual(result.metadata["source_reference_mode"], "recorded_url")
+
     def test_repeat_fetch_and_invented_file_path_are_rejected_without_confirmation(self):
         from app.agent.tool_recovery import unavailable_reason
         state = {"source_context": {"sources": [{"url": URL, "source_id": "S123abc", "fetch_status": "fetched"}]}}
         self.assertEqual(unavailable_reason(state, "web_fetcher", 5, {"urls": [URL], "max_chars": 50000}), "already_fetched_use_source_id")
         self.assertEqual(unavailable_reason(state, "file_reader", 5, {"path": "/workspace/docs/S123abc.html"}), "source_id_is_not_a_file_use_web_fetcher")
         self.assertIsNone(unavailable_reason(state, "web_fetcher", 5, {"source_id": "S123abc"}))
+
+    def test_blocked_fetch_inputs_use_source_semantics_and_normalized_defaults(self):
+        from app.agent.tool_recovery import observe_result, unavailable_reason
+        from app.tools.base import ToolResult
+
+        state = {"source_context": {"sources": [{
+            "url": URL,
+            "source_id": "S123abc",
+            "fetch_status": "pending",
+        }]}}
+        observe_result(
+            state,
+            "web_fetcher",
+            {"source_id": "S123abc"},
+            ToolResult(success=False, error_message="missing", metadata={
+                "error_type": "not_found", "executed": False,
+            }),
+            3,
+        )
+        self.assertEqual(
+            unavailable_reason(
+                state,
+                "web_fetcher",
+                3,
+                {"urls": [URL], "max_chars": 8000, "timeout_seconds": 10},
+            ),
+            "not_found",
+        )
+
+    def test_non_executed_decision_gets_one_bounded_replacement_step(self):
+        from app.tools.base import ToolResult
+
+        def handler(name, arguments):
+            if arguments.get("source_id"):
+                return ToolResult(
+                    success=False,
+                    error_message="Source is not available in this run.",
+                    metadata={"error_type": "not_found", "executed": False},
+                )
+            return ToolResult(
+                success=True,
+                output={"pages": [{
+                    "url": URL,
+                    "content": "Substantive official source text.",
+                    "content_basis": "full_text",
+                }]},
+                output_summary="Fetched fixture",
+            )
+
+        run, result, _, execute = self.run_script(
+            [
+                decision("web_fetcher", source_id="Sunknown"),
+                decision("web_fetcher", urls=[URL]),
+                decision("finish", goal_status="achieved"),
+            ],
+            handler=handler,
+            settings=self.settings.model_copy(update={"react_max_steps": 2}),
+        )
+        plan = json.loads(run.plan_json)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["total_steps"], 3)
+        self.assertEqual(plan["react_state"]["replacement_steps_granted"], 1)
+        self.assertEqual(execute.call_count, 2)
+
+    def test_react_plan_does_not_duplicate_large_tool_outputs(self):
+        from app.tools.base import ToolResult
+
+        large_content = "A" * 100_000 + "UNIQUE_TRACE_TAIL"
+
+        def handler(_name, _arguments):
+            return ToolResult(
+                success=True,
+                output={"pages": [{
+                    "url": URL,
+                    "content": large_content,
+                    "content_basis": "full_text",
+                }]},
+                output_summary="Fetched large fixture",
+            )
+
+        run, result, _, _ = self.run_script(
+            [decision("web_fetcher", urls=[URL]), decision("finish", goal_status="achieved")],
+            handler=handler,
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertNotIn("UNIQUE_TRACE_TAIL", run.plan_json)
+        self.assertLess(len(run.plan_json), 30_000)
+        self.assertIn(
+            "UNIQUE_TRACE_TAIL",
+            "".join(trace.output_json or "" for trace in store.list_tool_traces(self.db, run.run_id)),
+        )
+
+    def test_deep_research_step_allowance_uses_shared_budget_capacity(self):
+        from app.agent.react_executor import _react_step_allowance
+
+        plan = {"scenario_template": "deep_web_research"}
+        settings = self.settings.model_copy(update={
+            "react_max_steps": 8,
+            "deep_research_enabled": True,
+            "deep_research_max_depth": 2,
+            "deep_research_breadth": 3,
+        })
+        self.assertEqual(_react_step_allowance(plan, settings), 14)
+
+    def test_snippet_only_evidence_is_not_high_confidence(self):
+        from app.agent.evidence import build_evidence_bundle
+
+        run = store.create_agent_run(self.db, "fixture", "summary", "real")
+        search = record_trace_event(self.db, run.run_id, 1, "tavily_search", "success", {}, "search", {
+            "results": [{"url": URL, "content": "Search-only excerpt."}],
+        })
+        page = record_trace_event(self.db, run.run_id, 2, "web_fetcher", "success", {}, "page", {
+            "pages": [{"url": "https://example.net/full", "content": "Full source text.",
+                       "content_basis": "full_text"}],
+        })
+        bundle = build_evidence_bundle(run, {}, [], [search, page])
+        confidence = {item.source_ref: item.confidence for item in bundle.evidence_items}
+        self.assertEqual(confidence[URL], "medium")
+        self.assertEqual(confidence["https://example.net/full"], "high")
 
     def test_mixed_fetch_prunes_completed_and_duplicate_urls_but_keeps_new_page(self):
         second = "https://example.net/new-source"

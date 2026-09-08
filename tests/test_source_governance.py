@@ -77,6 +77,38 @@ class TierPriorityTests(unittest.TestCase):
         )
         self.assertEqual(source_class, "blog")
 
+    def test_supported_vendor_docs_and_verified_repositories_are_t0(self) -> None:
+        for uri in (
+            "https://www.deepseek.com/harness/en",
+            "https://developers.openai.com/api/docs",
+            "https://code.claude.com/docs/en/sandboxing",
+            "https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md",
+            "https://github.com/openai/codex",
+            "https://github.com/anthropics/claude-code",
+        ):
+            with self.subTest(uri=uri):
+                result = classify_tier("tavily_search", uri, {}, self.policy)
+                self.assertEqual(result.tier, "T0")
+                if "github.com" in uri:
+                    self.assertEqual(result.source_class, "official_code")
+
+    def test_verified_repository_community_pages_do_not_inherit_t0(self) -> None:
+        for section in ("issues/12", "discussions/1436", "pull/7"):
+            result = classify_tier(
+                "tavily_search",
+                f"https://github.com/deepseek-ai/deepseek-harness/{section}",
+                {},
+                self.policy,
+            )
+            with self.subTest(section=section):
+                self.assertEqual(result.tier, "T1")
+
+    def test_user_content_hosts_do_not_inherit_official_tier(self) -> None:
+        for uri in ("https://chatgpt.com/share/example", "https://claude.com/share/example"):
+            result = classify_tier("tavily_search", uri, {}, self.policy)
+            with self.subTest(uri=uri):
+                self.assertEqual(result.tier, "T2")
+
 
 class SelectionBudgetTests(unittest.TestCase):
     def test_max_candidates_applies_to_t0_selection(self) -> None:
@@ -225,6 +257,20 @@ class ExecutionGovernanceTests(unittest.TestCase):
         plan = plan_task("Generate a report", allowed_tools=["report_writer"])
         self.assertEqual(plan["retrieval_profile"], "generic")
         self.assertEqual(plan["profile_constraints"]["name"], "generic")
+
+    def test_planner_infers_technical_profile_but_respects_explicit_choice(self) -> None:
+        from app.agent.planner import plan_task
+
+        task = "对比三个编码智能体的架构、沙箱、记忆、工具调用和插件机制"
+        inferred = plan_task(task, allowed_tools=["report_writer"])
+        explicit = plan_task(
+            task,
+            allowed_tools=["report_writer"],
+            retrieval_profile="generic",
+        )
+        self.assertEqual(inferred["retrieval_profile"], "technical_facts")
+        self.assertEqual(inferred["profile_constraints"]["shortfall_policy"], "targeted_refetch")
+        self.assertEqual(explicit["retrieval_profile"], "generic")
 
     def test_task_api_snapshot_contains_profile_and_budgets(self) -> None:
         from fastapi.testclient import TestClient

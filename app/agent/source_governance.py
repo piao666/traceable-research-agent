@@ -103,6 +103,11 @@ def prepare_tool_arguments(
         preferred = list((plan.get("profile_constraints") or {}).get("prefer_domains") or [])
         if preferred:
             prepared["include_domains"] = preferred
+        elif int((plan.get("profile_constraints") or {}).get("min_t0_sources") or 0) > 0:
+            query = str(prepared.get("query") or "").strip()
+            marker = "official documentation primary source"
+            if query and marker not in query.casefold():
+                prepared["query"] = f"{query} {marker}"
     return prepared
 
 

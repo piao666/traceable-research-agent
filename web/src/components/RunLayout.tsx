@@ -6,13 +6,14 @@ import type { RunContext } from "../hooks/useRunContext";
 import { Button, PageHeader, Panel, StatusChip } from "./primitives";
 import { Modal } from "./Modal";
 import { LoadingState } from "./Feedback";
+import { localizeQualityWarning } from "../lib/messages";
 
 type Action = "cancel" | "retry" | "approve" | "reject" | "start";
 const actionLabels: Record<Action, string> = { cancel: "取消任务", retry: "完整重试", approve: "批准并继续", reject: "拒绝执行", start: "启动研究" };
 const connectionLabels = { loading: "正在读取", connecting: "连接实时更新", live: "实时连接正常", polling: "轮询恢复中 · 每 5 秒同步", paused: "等待操作 · 每 5 秒同步", closed: "任务已结束 · 实时连接已关闭" };
 
 export function IntegrityNotice({ task }: { task: NonNullable<RunContext["task"]> }) {
-  const warnings = [...new Set(task.quality_warnings ?? [])];
+  const warnings = [...new Set((task.quality_warnings ?? []).map(localizeQualityWarning))];
   if (!task.requires_review && !warnings.length && task.status !== "failed") return null;
   return <aside className="warning-banner" aria-label="研究限制">
     {task.requires_review && <strong>历史结果待复核：旧状态和旧质量分数不能证明研究有效。</strong>}

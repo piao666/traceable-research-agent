@@ -100,6 +100,21 @@ class WebFetcherTests(unittest.TestCase):
         self.assertEqual(result.metadata.get("fetcher_backend"), "httpx_multi_level")
         self.assertTrue(result.metadata.get("read_only"))
 
+    def test_batch_deadline_returns_completed_pages_and_marks_deferred_urls(self):
+        clock = iter(range(20))
+        with patch("app.tools.web_fetcher.time.monotonic", side_effect=lambda: next(clock)):
+            result = self.fetch({
+                "urls": ["https://example.com/one", "https://example.net/two"],
+                "timeout_seconds": 3,
+                "batch_timeout_seconds": 5,
+            })
+        self.assertTrue(result.success)
+        self.assertEqual(result.output["fetched_count"], 1)
+        self.assertEqual(result.output["total_count"], 2)
+        self.assertEqual(result.output["pages"][1]["error"], "batch_deadline_exceeded")
+        self.assertTrue(result.metadata["batch_deadline_exceeded"])
+        self.assertEqual(result.metadata["batch_deferred_count"], 1)
+
 
 # ── arguments_from tests ───────────────────────────────────────────────
 

@@ -3,7 +3,6 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { api, type TaskPlanResponse } from "../api/client";
 import { RunLayout } from "../components/RunLayout";
 import { ExecutionInsights } from "../components/ExecutionInsights";
-import { ResearchPolicyNote } from "../components/ResearchPolicyNote";
 import { r8PlanFixture } from "../test/r8Fixtures";
 import { evidenceFixture, graphFixture, taskFixture, traceFixture } from "../test/r4Fixtures";
 import { WorkbenchPage } from "./WorkbenchPage";
@@ -34,52 +33,64 @@ function panel(plan: TaskPlanResponse | null = planCopy()) {
   return render(<MemoryRouter><ExecutionInsights plan={plan} /></MemoryRouter>);
 }
 
-it("shows GitHub disabled while non-GitHub sources and completed research stay visible", async () => {
+it("hides internal budget and recovery panels while candidate sources stay visible", async () => {
+  const plan = planCopy();
+  plan.notes = ["内部规划备注样本"];
+  vi.mocked(api.getPlan).mockResolvedValue(plan);
   show();
-  await screen.findByText("本任务内禁用");
-  expect(screen.getByText(/认证失败/)).toBeInTheDocument();
+  await screen.findByRole("heading", { name: "候选来源与抓取进度" });
   expect(screen.getByText("已完成")).toBeInTheDocument();
-  expect(screen.getAllByText("可继续选择")).toHaveLength(2);
+  expect(screen.queryByRole("heading", { name: "共享执行预算" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "工具恢复与许可名单" })).not.toBeInTheDocument();
+  expect(screen.queryByText("本任务内禁用")).not.toBeInTheDocument();
+  expect(screen.queryByText("内部规划备注样本")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("研究执行边界")).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: /https:\/\/example.org\/source/ })).toHaveAttribute("href", "https://example.org/source");
   expect(screen.getByText(/候选 URL 不等于有效证据/)).toBeInTheDocument();
 });
-it("keeps unknown cost and disabled cost cap distinct from free research", () => {
-  panel();
-  expect(screen.getByText("费用估值（CNY）")).toBeInTheDocument();
-  expect(screen.getByText("不可完整估算（存在未配置价格）")).toBeInTheDocument();
-  expect(screen.getByText("未启用（不是零费用）")).toBeInTheDocument();
+it("renders persisted English integrity warnings in Chinese", async () => {
+  vi.mocked(api.getTask).mockResolvedValue({
+    ...taskFixture,
+    quality_warnings: [
+      "The requested result was not established; available text is not proof of goal completion.",
+      "Some source pages/documents could not be read; only successfully extracted content supports this report.",
+      "ReAct stopped with a limitation; the available evidence does not imply exhaustive research.",
+    ],
+  });
+  show();
+  await screen.findByText("尚未取得请求的研究结果；现有文本不能证明研究目标已经完成。");
+  expect(screen.getByText("部分来源页面或文档无法读取；本报告仅由成功提取的内容提供支持。")).toBeInTheDocument();
+  expect(screen.getByText("ReAct 因执行限制而停止；现有证据不能代表已经完成全面研究。")).toBeInTheDocument();
+  expect(screen.queryByText(/The requested result was not established/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/Some source pages\/documents could not be read/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/ReAct stopped with a limitation/)).not.toBeInTheDocument();
 });
-it("renders child budget ownership and includes reservations in token count", () => {
-  const plan = planCopy(); plan.execution_budget!.root_run_id = "parent-id";
-  panel(plan);
-  expect(screen.getByRole("link", { name: "查看预算所属父任务" })).toHaveAttribute("href", "/runs/parent-id");
-  expect(screen.getByText("12000 / 100000")).toBeInTheDocument();
-  expect(screen.getByText(/审批恢复不重置/)).toBeInTheDocument();
+it("renders persisted English report warnings in Chinese", async () => {
+  vi.mocked(api.getTask).mockResolvedValue({ ...taskFixture, status: "completed" });
+  vi.mocked(api.getReport).mockResolvedValue({
+    run_id: "fixture",
+    exists: true,
+    availability: "available",
+    markdown: "# 固定测试报告",
+    requires_review: false,
+    citation_evaluated: true,
+    quality_warnings: ["Some research steps failed or were skipped; inspect the persisted Trace before using the report."],
+  });
+  show("/runs/fixture/report");
+  await screen.findByText("部分研究步骤执行失败或被跳过；使用报告前请检查已保存的 Trace。");
+  expect(screen.queryByText(/Some research steps failed or were skipped/)).not.toBeInTheDocument();
 });
-it.each(["tool_calls", "tokens", "deadline", "llm_price_unconfigured", "finalization_reserve"])("explains total-budget stop %s without pretending partial output is final", (reason) => {
-  const plan = planCopy(); plan.execution_budget!.stop_reason = reason;
-  panel(plan);
-  expect(screen.getByText(/预算停止原因/)).toHaveTextContent("不能用中间报告冒充最终报告");
-});
-it("does not interpret unavailable plans as zero sources or unlimited budget", () => {
+it("does not interpret an unavailable plan as zero sources", () => {
   panel(null);
-  expect(screen.getByText(/不等于剩余额度无限/)).toBeInTheDocument();
   expect(screen.getByText(/尚未取得来源队列，不能显示为零来源/)).toBeInTheDocument();
   expect(screen.queryByText(/待抓取 0/)).not.toBeInTheDocument();
 });
-it("refreshes a failed plan read into actual source and budget snapshots", async () => {
+it("refreshes a failed plan read into the actual source snapshot", async () => {
   vi.mocked(api.getPlan).mockRejectedValueOnce(new Error("snapshot unavailable"));
   show(); await screen.findByText(/snapshot unavailable/);
   fireEvent.click(screen.getByRole("button", { name: "刷新状态" }));
-  await screen.findByText("3 / 40");
+  await screen.findByRole("link", { name: /https:\/\/example.org\/source/ });
   expect(screen.queryByText(/尚未取得来源队列/)).not.toBeInTheDocument();
-});
-it("distinguishes cooldown and one blocked input without a retry control", () => {
-  const plan = planCopy(); plan.execution_insights!.tools[1] = { name: "tavily_search", status: "cooldown", reason: "cooldown", retry_at: 1788397300, blocked_input_count: 0 };
-  panel(plan);
-  expect(screen.getByText(/到期只恢复选择资格/)).toBeInTheDocument();
-  expect(screen.getByText(/已拦截 1 组重复输入/)).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: /重试/ })).not.toBeInTheDocument();
 });
 it("uses exact candidate Trace links and renders hostile source text inertly", () => {
   const plan = planCopy(); const source = plan.execution_insights!.source_context.sources[0];
@@ -101,20 +112,21 @@ it("labels source excerpts and shows snapshot/trace identities on citation navig
 });
 it("does not claim an empty explicit permission list allows registry tools", async () => {
   vi.spyOn(api, "reviewPlan").mockResolvedValue({ run_id: "fixture", task: "受限计划", status: "waiting_human_plan",
-    source_mode: "real", execution_mode: "react", steps: [], allowed_tools: [], estimated_total_tokens: 0, estimated_cost: 0 });
+    source_mode: "real", execution_mode: "react", steps: [], allowed_tools: ["tavily_search"], notes: ["规划备注样本"],
+    estimated_total_tokens: 0, estimated_cost: 0 });
   show("/runs/fixture/plan");
-  await screen.findByText("空名单：不允许执行任何工具");
+  await screen.findByText("受限计划");
   expect(screen.getByRole("button", { name: "批准并启动" })).toBeDisabled();
+  expect(screen.queryByText("允许工具")).not.toBeInTheDocument();
+  expect(screen.queryByText("计划备注")).not.toBeInTheDocument();
+  expect(screen.queryByText("tavily_search")).not.toBeInTheDocument();
+  expect(screen.queryByText("规划备注样本")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("研究执行边界")).not.toBeInTheDocument();
   expect(screen.queryByText("由本地注册表决定")).not.toBeInTheDocument();
-});
-it("explains planned and mock boundaries without promising dynamic recovery or real evidence", () => {
-  render(<ResearchPolicyNote executionMode="planned" sourceMode="mock" />);
-  expect(screen.getByText(/Planned 按已批准步骤执行/)).toBeInTheDocument();
-  expect(screen.getByText(/不能作为真实联网研究验收/)).toBeInTheDocument();
 });
 it("preserves cancelled task controls even if a stale budget snapshot exists", async () => {
   vi.mocked(api.getTask).mockResolvedValue({ ...taskFixture, status: "cancelled" });
-  show(); await screen.findByRole("heading", { name: "共享执行预算" });
+  show(); await screen.findByRole("heading", { name: "候选来源与抓取进度" });
   expect(screen.getByRole("button", { name: "完整重试" })).toBeEnabled();
   expect(screen.queryByRole("button", { name: "启动研究" })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "批准并继续" })).not.toBeInTheDocument();

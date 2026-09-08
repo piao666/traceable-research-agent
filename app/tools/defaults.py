@@ -139,6 +139,7 @@ def register_default_tools() -> None:
                 "offset": "integer (optional stored text offset)",
                 "max_chars": "integer",
                 "timeout_seconds": "integer",
+                "batch_timeout_seconds": "integer",
             },
             output_schema={
                 "pages": "array",
@@ -149,6 +150,7 @@ def register_default_tools() -> None:
             risk_level=RiskLevel.LOW,
             read_only=True,
             side_effect_free=True,
+            timeout_seconds=35,
             tags=["web", "fetch", "read-only"],
         ),
         handler=web_fetch,

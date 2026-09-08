@@ -75,13 +75,13 @@ component tests stub dialog methods and cannot verify native focus containment.
 Code Connect remains unpublished; the earlier account-seat limitation has not
 been revalidated in this batch. No new Figma nodes/templates are fabricated.
 
-R8.6 adds `ResearchPolicyNote` on creation/approval/workbench and
-`ExecutionInsights` on the workbench using the existing Panel/StatusChip styles.
-Evidence/report labels distinguish `source_excerpt` from verified conclusions and
-expose exact snapshot/Trace identities. These are code-side additions without new
-Figma node claims. Typed plan insights derive from persisted state, never execute
-tools or edit budgets. API failure, legacy absence, cooldown, per-tool limits and
-total-budget stops have distinct explanations; costs are CNY estimates, not bills.
+The current UI keeps `ExecutionInsights` only for the bounded candidate-source
+queue. Shared-budget, per-tool recovery and permission-list details remain in the
+typed API/Trace data but are not rendered in the workbench. Plan review also omits
+allowed-tool lists, planner notes and the former generic execution-boundary callout.
+Evidence/report labels still distinguish `source_excerpt` from verified conclusions
+and expose exact snapshot/Trace identities. Persisted English integrity warnings
+from older Runs are translated to Chinese at the presentation boundary.
 
 ## R6–R8 verification
 

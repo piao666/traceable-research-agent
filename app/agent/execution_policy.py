@@ -95,13 +95,29 @@ def execute_with_policy(name: str, arguments: dict, plan: dict, settings: Settin
             return policy_failure("budget_exhausted", str(exc), metadata={"budget_reason": exc.reason})
     prepared = dict(arguments)
     prepared.pop("_source_snapshot", None)  # Never accept a model-supplied snapshot.
+    source_resolution: dict[str, Any] = {}
     if name == "web_fetcher" and prepared.get("source_id"):
-        from app.agent.source_context import resolve_source_snapshot
+        from app.agent.source_context import resolve_source_record, resolve_source_snapshot
         from app.trace import store
         runtime = current_budget()
         if runtime is not None and not prepared.get("urls"):
-            prepared["_source_snapshot"] = resolve_source_snapshot(
-                store.list_tool_traces(runtime.db, runtime.run_id), str(prepared["source_id"]))
+            traces = store.list_tool_traces(runtime.db, runtime.run_id)
+            source_id = str(prepared["source_id"])
+            snapshot = resolve_source_snapshot(traces, source_id)
+            source = resolve_source_record(traces, source_id)
+            if snapshot is not None:
+                prepared["_source_snapshot"] = snapshot
+            elif source is not None and source.get("fetch_status") != "fetched":
+                # The ID came from this run's discovery trace, so the recorded
+                # URL is authoritative and does not widen model permissions.
+                prepared.pop("source_id", None)
+                prepared.pop("offset", None)
+                prepared["urls"] = [source["url"]]
+                source_resolution = {
+                    "resolved_source_id": source_id,
+                    "source_reference_mode": "recorded_url",
+                    "source_previous_status": source.get("fetch_status"),
+                }
     if name == "mcp_github_search":
         # A configured mock default must not override a real run (or vice versa).
         prepared["mode"] = "public_api" if real_sources(plan) else "mock"
@@ -109,6 +125,10 @@ def execute_with_policy(name: str, arguments: dict, plan: dict, settings: Settin
         # The ReAct recovery loop owns retries; prevent nested transport retries.
         prepared["_max_transport_retries"] = 0
     result = execute(name, prepared)
+    if source_resolution:
+        result = result.model_copy(update={
+            "metadata": {**result.metadata, **source_resolution},
+        })
     if real_sources(plan) and (_contains_demonstration(result.metadata) or _contains_demonstration(result.output)):
         return policy_failure("source_mode_violation", "Demonstration/fallback output rejected for real research.",
             executed=True, metadata={"rejected_source_type": result.metadata.get("data_source"),

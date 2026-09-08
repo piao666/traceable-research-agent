@@ -258,14 +258,20 @@ def classify_tier(
     # A repository-specific rule must win over the generic github.com tier.
     if hostname == "github.com" or hostname.endswith(".github.com"):
         org_repo = _github_org_repo(hostname, canonical_uri)
-        if org_repo:
+        path_parts = [part.casefold() for part in urlsplit(canonical_uri).path.split("/") if part]
+        # Repository ownership authenticates maintained code and documentation,
+        # not community-authored issue, discussion or pull-request content.
+        community_area = len(path_parts) >= 3 and path_parts[2] in {
+            "issues", "discussions", "pull", "pulls",
+        }
+        if org_repo and not community_area:
             for verified_path, tier in policy.tier_hints.org_verified_official_repos.items():
                 normalized_path = verified_path.lower().removeprefix("https://").removeprefix("http://")
                 normalized_path = normalized_path.removeprefix("github.com/").strip("/")
                 if org_repo == normalized_path or org_repo.startswith(f"{normalized_path}/"):
                     return TierClassification(
                         tier=tier,
-                        source_class=source_class,
+                        source_class="official_code",
                         classification_rule=f"verified_repo:{verified_path}",
                         classification_confidence=0.90,
                     )

@@ -9,8 +9,52 @@ from app.tools.base import ToolResult
 from app.tools.errors import classify_tool_error
 
 
-def input_key(arguments: dict) -> str:
-    return hashlib.sha256(json.dumps(arguments, sort_keys=True, default=str).encode()).hexdigest()[:24]
+def _normalized_int(value, default: int) -> int:
+    try:
+        return int(value if value is not None else default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _semantic_arguments(name: str, arguments: dict, state: dict | None = None) -> dict:
+    """Normalize equivalent requests before persisting a blocked-input key."""
+
+    prepared = dict(arguments or {})
+    if name != "web_fetcher":
+        return prepared
+    sources = (state or {}).get("source_context", {}).get("sources", [])
+    source_id = str(prepared.get("source_id") or "")
+    source = next((row for row in sources if row.get("source_id") == source_id), None)
+    if source_id:
+        # Pending IDs and their recorded URLs are the same fetch intent. Fetched
+        # IDs remain snapshot reads because offset is meaningful in that mode.
+        if source and source.get("fetch_status") != "fetched":
+            prepared.pop("source_id", None)
+            prepared.pop("offset", None)
+            prepared["urls"] = [source.get("url")]
+        else:
+            prepared = {
+                "source_id": source_id,
+                "offset": _normalized_int(prepared.get("offset"), 0),
+                "max_chars": _normalized_int(prepared.get("max_chars"), 8000),
+            }
+            return prepared
+    urls = prepared.get("urls") or []
+    if isinstance(urls, str):
+        urls = [urls]
+    from app.agent.source_context import source_url
+    normalized_urls = sorted({source_url(url) or str(url) for url in urls})
+    return {
+        "urls": normalized_urls,
+        "max_chars": _normalized_int(prepared.get("max_chars"), 8000),
+        "timeout_seconds": _normalized_int(prepared.get("timeout_seconds"), 10),
+        "batch_timeout_seconds": _normalized_int(prepared.get("batch_timeout_seconds"), 25),
+    }
+
+
+def input_key(arguments: dict, name: str = "", state: dict | None = None) -> str:
+    normalized = _semantic_arguments(name, arguments, state) if name else dict(arguments or {})
+    return hashlib.sha256(json.dumps(normalized, sort_keys=True, default=str).encode()).hexdigest()[:24]
 
 
 def _complete_fetch_urls(state: dict, arguments: dict) -> set[str]:
@@ -63,8 +107,8 @@ def unavailable_reason(state: dict, name: str, limit: int, arguments: dict | Non
         return "tool_call_limit"
     if float(item.get("retry_at", 0)) > time.time():
         return "cooldown"
-    if arguments is not None and input_key(arguments) in item.get("blocked_inputs", {}):
-        return str(item["blocked_inputs"][input_key(arguments)])
+    if arguments is not None and input_key(arguments, name, state) in item.get("blocked_inputs", {}):
+        return str(item["blocked_inputs"][input_key(arguments, name, state)])
     if arguments is not None:
         from app.agent.source_context import source_url
         sources = state.get("source_context", {}).get("sources", [])
@@ -104,7 +148,7 @@ def observe_result(state: dict, name: str, arguments: dict, result: ToolResult, 
         if category in {"auth_error", "unavailable"} and not page_scoped:
             item.update(status="disabled", reason=category, retry_at=0)
         elif category in {"policy_error", "not_found", "invalid_request", "auth_error"}:
-            item.setdefault("blocked_inputs", {})[input_key(arguments)] = category
+            item.setdefault("blocked_inputs", {})[input_key(arguments, name, state)] = category
             item.update(status="available", reason="input_blocked", retry_at=0)
         elif category in {"timeout", "rate_limited", "provider_error"} and not page_scoped:
             try:
@@ -113,7 +157,7 @@ def observe_result(state: dict, name: str, arguments: dict, result: ToolResult, 
                 delay = 1
             item.update(status="cooldown", reason=category, retry_at=time.time() + max(1, min(delay, 3600)))
         else:
-            item.setdefault("blocked_inputs", {})[input_key(arguments)] = category
+            item.setdefault("blocked_inputs", {})[input_key(arguments, name, state)] = category
             item.update(status="available", reason="input_blocked", retry_at=0)
     if counts[name] >= limit and item.get("status") != "disabled":
         item.update(status="exhausted", reason="tool_call_limit")

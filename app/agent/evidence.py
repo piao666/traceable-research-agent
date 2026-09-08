@@ -159,7 +159,10 @@ def build_evidence_bundle(
         if record["tool_name"] == "report_writer":
             continue
         extracted = _items_from_record(run.run_id, record, len(items))
-        items.extend(item for item in extracted if is_eligible_evidence(item))
+        for item in extracted:
+            _calibrate_content_confidence(item)
+            if is_eligible_evidence(item):
+                items.append(item)
 
     groups = _group_items(items)
     claims, unsupported = _claim_maps(run, plan, items, records)
@@ -840,6 +843,19 @@ def _make_item(
         is_fallback=is_fallback,
         unsupported_reason=unsupported_reason,
     )
+
+
+def _calibrate_content_confidence(item: EvidenceItem) -> None:
+    """Do not label discovery snippets as equivalent to fetched source text."""
+
+    if item.confidence in {"unsupported", "low"} or item.is_mock or item.is_fallback:
+        return
+    basis = str(item.metadata.get("content_basis") or "").casefold()
+    evidence_role = str(item.metadata.get("evidence_role") or "").casefold()
+    if basis in {"snippet_only", "search_snippet"} or evidence_role == "discovery":
+        item.confidence = "medium"
+    elif basis == "partial" and item.confidence == "high":
+        item.confidence = "medium"
 
 
 def _source_type(record: dict[str, Any]) -> str:
