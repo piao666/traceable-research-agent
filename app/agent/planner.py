@@ -912,6 +912,7 @@ def plan_task(
     should_try_llm = mode == "llm" or (mode == "auto" and settings.llm_planner_enabled)
     if should_try_llm:
         fallback_reason = "LLM planner unavailable; used deterministic fallback."
+        fallback_error_type = "provider_unavailable"
         client = create_llm_client(settings)
         response = call_llm_for_plan(client, task, allowed_tools, source_mode, scenario_template)
         if response.success and response.content:
@@ -934,9 +935,21 @@ def plan_task(
                     try:
                         from app.agent.query_decomposer import decompose_and_annotate_plan
 
-                        normalized = decompose_and_annotate_plan(task, normalized, client, n=4)
+                        auxiliary_errors: list[dict[str, Any]] = []
+                        normalized = decompose_and_annotate_plan(
+                            task,
+                            normalized,
+                            client,
+                            n=4,
+                            error_callback=auxiliary_errors.append,
+                        )
+                        if auxiliary_errors:
+                            normalized["planner_auxiliary_errors"] = auxiliary_errors
                     except Exception:
-                        pass
+                        normalized["planner_auxiliary_errors"] = [{
+                            "role": "planner_decomposer",
+                            "error_type": "provider_unavailable",
+                        }]
                     _ensure_full_planner_steps(
                         normalized,
                         task,
@@ -954,15 +967,24 @@ def plan_task(
                     _apply_requested_result_count(normalized, task)
                     return _apply_execution_mode(normalized, execution_mode_override, _memory_extra, task)
                 fallback_reason = "LLM output failed schema validation; used deterministic fallback."
+                fallback_error_type = "structured_output_invalid"
+            else:
                 fallback_reason = "LLM output was not valid JSON; used deterministic fallback."
+                fallback_error_type = "structured_output_invalid"
         elif response.error_message:
             fallback_reason = f"{response.error_message}; used deterministic fallback."
+            fallback_error_type = str(response.metadata.get("error_type") or "provider_unavailable")
 
         plan = deterministic_plan_task(task, allowed_tools, source_mode, scenario_template)
         plan["planner_source"] = "deterministic_fallback"
         plan["llm_provider"] = client.describe().get("provider")
         plan["llm_model"] = client.describe().get("model")
         plan["notes"] = list(plan.get("notes") or []) + [_safe_fallback_reason(fallback_reason)]
+        plan["planner_error"] = {
+            "error_type": fallback_error_type,
+            "message": _safe_fallback_reason(fallback_reason),
+            "fallback_target": "deterministic",
+        }
         _synchronize_confirmation_notes(plan)
         _apply_requested_result_count(plan, task)
         return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)

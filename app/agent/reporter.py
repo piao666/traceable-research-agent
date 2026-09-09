@@ -10,9 +10,11 @@ from typing import Any, Callable
 try:
     from app.llm.base import LLMClient
     from app.llm.base import LLMMessage
+    from app.llm.base import LLMResponse
 except ImportError:
     LLMClient = None   # type: ignore[assignment,misc]
     LLMMessage = None  # type: ignore[assignment,misc]
+    LLMResponse = None  # type: ignore[assignment,misc]
 
 from dataclasses import dataclass, field
 
@@ -724,7 +726,30 @@ def _llm_synthesize_answer(
     """Call LLM to synthesize tool evidence into a coherent answer.
     Returns synthesized text, or None if LLM call fails / no useful evidence.
     """
-    if LLMClient is None or not llm_client.is_available():
+    def notify_failure(error_type: str) -> None:
+        if usage_callback is None or LLMResponse is None:
+            return
+        try:
+            description = llm_client.describe()
+        except Exception:
+            description = {}
+        usage_callback(LLMResponse(
+            success=False,
+            provider=str(description.get("provider") or "unknown"),
+            model=description.get("model"),
+            error_message=f"Report synthesis failed ({error_type}).",
+            metadata={"error_type": error_type},
+        ))
+
+    if LLMClient is None:
+        notify_failure("provider_unavailable")
+        return None
+    try:
+        available = llm_client.is_available()
+    except Exception:
+        available = False
+    if not available:
+        notify_failure("provider_unavailable")
         return None
     if not has_useful_evidence(observations):
         return None
@@ -770,19 +795,33 @@ def _llm_synthesize_answer(
     )
     try:
         response = llm_client.complete(messages)
-        if usage_callback is not None and response.usage is not None:
-            usage_callback(response)
         if response.success and response.content:
             content = response.content.strip()
             if provenance_bundle and not _valid_synthesis_citations(content, provenance_bundle):
+                response.metadata = {
+                    **response.metadata,
+                    "error_type": "structured_output_invalid",
+                }
+                if usage_callback is not None:
+                    usage_callback(response)
                 return None
+            if usage_callback is not None:
+                usage_callback(response)
             return content
+        if response.success:
+            response.metadata = {**response.metadata, "error_type": "malformed_response"}
+        elif not response.metadata.get("error_type"):
+            response.metadata = {**response.metadata, "error_type": "provider_unavailable"}
+        if usage_callback is not None:
+            usage_callback(response)
     except Exception as exc:
         from app.agent.budget import BudgetExceeded
         if isinstance(exc, BudgetExceeded):
+            notify_failure("budget_exhausted")
             raise
         import logging
         logging.getLogger(__name__).warning("LLM synthesis failed: %s", redact_text(exc))
+        notify_failure("provider_unavailable")
     return None
 
 

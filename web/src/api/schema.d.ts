@@ -466,6 +466,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runtime/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify Runtime Capabilities
+         * @description Explicitly perform minimal real LLM/search/fetch probes.
+         */
+        post: operations["verify_runtime_capabilities_api_runtime_preflight_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runtime/diagnostics": {
         parameters: {
             query?: never;
@@ -1922,6 +1942,21 @@ export interface components {
         };
         /** RuntimeCapabilitiesResponse */
         RuntimeCapabilitiesResponse: {
+            /**
+             * Research Profile
+             * @default standard
+             */
+            research_profile: string;
+            /**
+             * Research Environment Ready
+             * @default false
+             */
+            research_environment_ready: boolean;
+            /**
+             * Search Provider
+             * @default tavily
+             */
+            search_provider: string;
             /** Offline Mode */
             offline_mode: boolean;
             /** Tavily Configured */
@@ -1945,6 +1980,36 @@ export interface components {
              * @default false
              */
             connectivity_verified: boolean;
+            /** Items */
+            items?: components["schemas"]["RuntimeCapability"][];
+        };
+        /** RuntimeCapability */
+        RuntimeCapability: {
+            /** Name */
+            name: string;
+            /** Category */
+            category: string;
+            /** Configured */
+            configured: boolean;
+            /** Reachable */
+            reachable?: boolean | null;
+            /** Usable */
+            usable: boolean;
+            /** Mode */
+            mode: string;
+            /** Detail */
+            detail: string;
+            /** Error Type */
+            error_type?: string | null;
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Checks */
+            checks?: {
+                [key: string]: boolean;
+            };
         };
         /** RuntimeCheck */
         RuntimeCheck: {
@@ -1976,6 +2041,35 @@ export interface components {
             mcp_enabled: boolean;
             /** Mcp Configured */
             mcp_configured: boolean;
+        };
+        /** RuntimePreflightBlocker */
+        RuntimePreflightBlocker: {
+            /** Capability */
+            capability: string;
+            /** Error Type */
+            error_type: string;
+            /** Message */
+            message: string;
+        };
+        /** RuntimePreflightResponse */
+        RuntimePreflightResponse: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Profile */
+            profile: string;
+            /** Ready */
+            ready: boolean;
+            /** Verified */
+            verified: boolean;
+            /** Capabilities */
+            capabilities: components["schemas"]["RuntimeCapability"][];
+            /** Blockers */
+            blockers: components["schemas"]["RuntimePreflightBlocker"][];
+            /** Warnings */
+            warnings: string[];
         };
         /** SessionCreateRequest */
         SessionCreateRequest: {
@@ -3514,6 +3608,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RuntimeCapabilitiesResponse"];
+                };
+            };
+        };
+    };
+    verify_runtime_capabilities_api_runtime_preflight_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimePreflightResponse"];
                 };
             };
         };

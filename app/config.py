@@ -10,6 +10,77 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+RESEARCH_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
+    "deep": {
+        "offline_mode": False,
+        "external_tools_default_mode": "real",
+        "allow_mock_fallback": False,
+        "execution_mode": "react",
+        "react_enabled": True,
+        "react_max_steps": 12,
+        "react_same_tool_max_calls": 6,
+        "llm_planner_enabled": True,
+        "report_generation_mode": "llm",
+        "deep_research_enabled": True,
+        "research_max_tool_calls": 80,
+        "research_max_llm_calls": 64,
+        "research_max_tokens": 200000,
+        "research_max_seconds": 1800,
+    },
+    "standard": {
+        "offline_mode": False,
+        "external_tools_default_mode": "real",
+        "allow_mock_fallback": False,
+        "execution_mode": "planned",
+        "react_enabled": True,
+        "react_max_steps": 8,
+        "react_same_tool_max_calls": 3,
+        "llm_planner_enabled": True,
+        "report_generation_mode": "llm",
+        "deep_research_enabled": False,
+        "research_max_tool_calls": 40,
+        "research_max_llm_calls": 40,
+        "research_max_tokens": 100000,
+        "research_max_seconds": 900,
+    },
+    "offline": {
+        "offline_mode": True,
+        "external_tools_default_mode": "mock",
+        "allow_mock_fallback": False,
+        "execution_mode": "planned",
+        "react_enabled": False,
+        "react_max_steps": 8,
+        "react_same_tool_max_calls": 3,
+        "llm_planner_enabled": False,
+        "report_generation_mode": "deterministic",
+        "deep_research_enabled": False,
+        "research_max_tool_calls": 20,
+        "research_max_llm_calls": 12,
+        "research_max_tokens": 40000,
+        "research_max_seconds": 300,
+    },
+}
+
+# An installation that has not adopted RESEARCH_PROFILE keeps the pre-R10
+# defaults. Copying the new .env.example opts into the real Deep profile.
+LEGACY_RUNTIME_DEFAULTS: dict[str, object] = {
+    "offline_mode": False,
+    "external_tools_default_mode": "real",
+    "allow_mock_fallback": False,
+    "execution_mode": "planned",
+    "react_enabled": True,
+    "react_max_steps": 8,
+    "react_same_tool_max_calls": 3,
+    "llm_planner_enabled": False,
+    "report_generation_mode": "deterministic",
+    "deep_research_enabled": False,
+    "research_max_tool_calls": 40,
+    "research_max_llm_calls": 40,
+    "research_max_tokens": 100000,
+    "research_max_seconds": 900,
+}
+
+
 class Settings(BaseModel):
     """Runtime settings loaded from environment variables.
 
@@ -27,6 +98,8 @@ class Settings(BaseModel):
     allow_auth_disabled_in_dev: bool = True
     async_run_enabled: bool = True
     async_run_poll_interval_seconds: int = 1
+    research_profile: str = "standard"
+    search_provider: str = "tavily"
     external_tools_default_mode: str = "real"
     offline_mode: bool = False
     allow_mock_fallback: bool = False
@@ -76,6 +149,7 @@ class Settings(BaseModel):
     llm_planner_mode: str = "auto"
     llm_model: str | None = None
     llm_base_url: str | None = None
+    llm_api_key: str | None = None
     deepseek_api_key: str | None = None
     qwen_api_key: str | None = None
     llm_timeout_seconds: int = 20
@@ -136,6 +210,22 @@ class Settings(BaseModel):
         normalized = str(value or "real").strip().lower()
         return normalized if normalized in {"real", "mock"} else "real"
 
+    @field_validator("research_profile", mode="before")
+    @classmethod
+    def validate_research_profile(cls, value: object) -> str:
+        normalized = str(value or "standard").strip().lower()
+        if normalized not in RESEARCH_PROFILE_DEFAULTS:
+            raise ValueError("RESEARCH_PROFILE must be deep, standard, or offline")
+        return normalized
+
+    @field_validator("search_provider", mode="before")
+    @classmethod
+    def validate_search_provider(cls, value: object) -> str:
+        normalized = str(value or "tavily").strip().lower()
+        if normalized != "tavily":
+            raise ValueError("SEARCH_PROVIDER currently supports tavily")
+        return normalized
+
     @field_validator("github_tool_default_mode", mode="before")
     @classmethod
     def validate_github_tool_default_mode(cls, value: object) -> str:
@@ -160,8 +250,8 @@ class Settings(BaseModel):
     @classmethod
     def validate_llm_provider(cls, value: object) -> str:
         normalized = str(value or "qwen").strip().lower()
-        if normalized not in {"deterministic", "qwen", "deepseek"}:
-            raise ValueError("LLM provider must be deterministic, qwen, or deepseek")
+        if normalized not in {"deterministic", "openai_compatible", "qwen", "deepseek"}:
+            raise ValueError("LLM provider must be deterministic, openai_compatible, qwen, or deepseek")
         return normalized
 
     @field_validator("llm_planner_mode", mode="before")
@@ -254,17 +344,31 @@ class Settings(BaseModel):
             parsed = int(value)
         except (TypeError, ValueError):
             parsed = 3
-        return min(max(parsed, 1), 10)
+        return min(max(parsed, 1), 20)
 
     @classmethod
     def from_env(cls) -> "Settings":
         """Build settings from environment without exposing secret values."""
 
+        profile_value = os.getenv("RESEARCH_PROFILE")
+        profile = str(profile_value or "standard").strip().lower() or "standard"
+        if profile not in RESEARCH_PROFILE_DEFAULTS:
+            raise ValueError("RESEARCH_PROFILE must be deep, standard, or offline")
+        defaults = RESEARCH_PROFILE_DEFAULTS[profile] if profile_value is not None else LEGACY_RUNTIME_DEFAULTS
+        provider_default = (
+            "qwen" if profile_value is None else "deterministic" if profile == "offline" else "openai_compatible"
+        )
+        provider = os.getenv("LLM_PROVIDER", provider_default).strip().lower() or provider_default
+        llm_model = _env_optional("LLM_MODEL")
+        react_provider = os.getenv("REACT_LLM_PROVIDER", provider).strip().lower() or provider
+        react_model = os.getenv("REACT_LLM_MODEL", llm_model or "").strip()
         return cls(
-            research_max_tool_calls=_env_int("RESEARCH_MAX_TOOL_CALLS", 40),
-            research_max_llm_calls=_env_int("RESEARCH_MAX_LLM_CALLS", 40),
-            research_max_tokens=_env_int("RESEARCH_MAX_TOKENS", 100000),
-            research_max_seconds=_env_int("RESEARCH_MAX_SECONDS", 900),
+            research_profile=profile,
+            search_provider=_env_choice("SEARCH_PROVIDER", "tavily", {"tavily"}),
+            research_max_tool_calls=_env_int("RESEARCH_MAX_TOOL_CALLS", int(defaults["research_max_tool_calls"])),
+            research_max_llm_calls=_env_int("RESEARCH_MAX_LLM_CALLS", int(defaults["research_max_llm_calls"])),
+            research_max_tokens=_env_int("RESEARCH_MAX_TOKENS", int(defaults["research_max_tokens"])),
+            research_max_seconds=_env_int("RESEARCH_MAX_SECONDS", int(defaults["research_max_seconds"])),
             research_max_estimated_cost=os.getenv("RESEARCH_MAX_ESTIMATED_COST", "0"),
             research_tool_cost_estimate=_env_optional("RESEARCH_TOOL_COST_ESTIMATE"),
             research_llm_cost_per_million_tokens=_env_optional("RESEARCH_LLM_COST_PER_MILLION_TOKENS"),
@@ -281,10 +385,10 @@ class Settings(BaseModel):
                 "ASYNC_RUN_POLL_INTERVAL_SECONDS", 1
             ),
             external_tools_default_mode=_env_choice(
-                "EXTERNAL_TOOLS_DEFAULT_MODE", "real", {"real", "mock"}
+                "EXTERNAL_TOOLS_DEFAULT_MODE", str(defaults["external_tools_default_mode"]), {"real", "mock"}
             ),
-            offline_mode=_env_bool("OFFLINE_MODE", False),
-            allow_mock_fallback=_env_bool("ALLOW_MOCK_FALLBACK", False),
+            offline_mode=_env_bool("OFFLINE_MODE", bool(defaults["offline_mode"])),
+            allow_mock_fallback=_env_bool("ALLOW_MOCK_FALLBACK", bool(defaults["allow_mock_fallback"])),
             github_tool_default_mode=_env_choice(
                 "GITHUB_TOOL_DEFAULT_MODE", "public_api", {"public_api", "mock"}
             ),
@@ -365,17 +469,15 @@ class Settings(BaseModel):
                 "PARALLEL_TIMEOUT_SECONDS", 60, 5, 300
             ),
             execution_mode=_env_choice(
-                "EXECUTION_MODE", "planned", {"planned", "react"}
+                "EXECUTION_MODE", str(defaults["execution_mode"]), {"planned", "react"}
             ),
-            react_enabled=_env_bool("REACT_ENABLED", True),
-            react_max_steps=_env_bounded_int("REACT_MAX_STEPS", 8, 1, 20),
+            react_enabled=_env_bool("REACT_ENABLED", bool(defaults["react_enabled"])),
+            react_max_steps=_env_bounded_int("REACT_MAX_STEPS", int(defaults["react_max_steps"]), 1, 20),
             react_same_tool_max_calls=_env_bounded_int(
-                "REACT_SAME_TOOL_MAX_CALLS", 3, 1, 10
+                "REACT_SAME_TOOL_MAX_CALLS", int(defaults["react_same_tool_max_calls"]), 1, 20
             ),
-            react_llm_provider=os.getenv("REACT_LLM_PROVIDER", "qwen").strip().lower()
-            or "qwen",
-            react_llm_model=os.getenv("REACT_LLM_MODEL", "qwen-plus").strip()
-            or "qwen-plus",
+            react_llm_provider=react_provider,
+            react_llm_model=react_model,
             react_decision_strict_json=_env_bool(
                 "REACT_DECISION_STRICT_JSON", True
             ),
@@ -385,14 +487,15 @@ class Settings(BaseModel):
             react_finish_on_invalid_decision=_env_bool(
                 "REACT_FINISH_ON_INVALID_DECISION", True
             ),
-            llm_planner_enabled=_env_bool("LLM_PLANNER_ENABLED", False),
+            llm_planner_enabled=_env_bool("LLM_PLANNER_ENABLED", bool(defaults["llm_planner_enabled"])),
             report_generation_mode=os.getenv(
-                "REPORT_GENERATION_MODE", "deterministic"
+                "REPORT_GENERATION_MODE", str(defaults["report_generation_mode"])
             ),
-            llm_provider=os.getenv("LLM_PROVIDER", "qwen").strip() or "qwen",
+            llm_provider=provider,
             llm_planner_mode=os.getenv("LLM_PLANNER_MODE", "auto").strip() or "auto",
-            llm_model=_env_optional("LLM_MODEL"),
+            llm_model=llm_model,
             llm_base_url=_env_optional("LLM_BASE_URL"),
+            llm_api_key=_env_optional("LLM_API_KEY"),
             deepseek_api_key=_env_optional("DEEPSEEK_API_KEY"),
             qwen_api_key=_env_optional("QWEN_API_KEY"),
             llm_timeout_seconds=_env_int("LLM_TIMEOUT_SECONDS", 20),
@@ -417,7 +520,7 @@ class Settings(BaseModel):
                 "SOURCE_POLICY_PATH", "config/source_policy.v2.json"
             ).strip()
             or "config/source_policy.v2.json",
-            deep_research_enabled=_env_bool("DEEP_RESEARCH_ENABLED", False),
+            deep_research_enabled=_env_bool("DEEP_RESEARCH_ENABLED", bool(defaults["deep_research_enabled"])),
             deep_research_max_depth=_env_bounded_int("DEEP_RESEARCH_MAX_DEPTH", 2, 1, 5),
             deep_research_breadth=_env_bounded_int("DEEP_RESEARCH_BREADTH", 3, 1, 10),
             memory_llm_extraction_enabled=_env_bool("MEMORY_LLM_EXTRACTION_ENABLED", False),
@@ -458,10 +561,12 @@ class Settings(BaseModel):
         """Return the configured API key for provider without logging it."""
 
         normalized = provider.lower()
+        if normalized == "openai_compatible":
+            return self.llm_api_key
         if normalized == "deepseek":
-            return self.deepseek_api_key
+            return self.deepseek_api_key or self.llm_api_key
         if normalized == "qwen":
-            return self.qwen_api_key
+            return self.qwen_api_key or self.llm_api_key
         return None
 
     def get_llm_provider_config(self, provider: str) -> dict:
@@ -469,6 +574,16 @@ class Settings(BaseModel):
 
         normalized = provider.lower()
         use_overrides = normalized == self.llm_provider.lower()
+        if normalized == "openai_compatible":
+            return {
+                "provider": "openai_compatible",
+                "api_key_env_name": "LLM_API_KEY",
+                "default_base_url": None,
+                "default_model": None,
+                "base_url": self.llm_base_url,
+                "model": self.llm_model,
+                "has_key": bool(self.llm_api_key),
+            }
         if normalized == "deepseek":
             return {
                 "provider": "deepseek",
@@ -477,7 +592,7 @@ class Settings(BaseModel):
                 "default_model": "deepseek-chat",
                 "base_url": self.llm_base_url if use_overrides and self.llm_base_url else "https://api.deepseek.com",
                 "model": self.llm_model if use_overrides and self.llm_model else "deepseek-chat",
-                "has_key": bool(self.deepseek_api_key),
+                "has_key": bool(self.get_llm_api_key("deepseek")),
             }
         if normalized == "qwen":
             return {
@@ -489,7 +604,7 @@ class Settings(BaseModel):
                 if use_overrides and self.llm_base_url
                 else "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "model": self.llm_model if use_overrides and self.llm_model else "qwen-plus",
-                "has_key": bool(self.qwen_api_key),
+                "has_key": bool(self.get_llm_api_key("qwen")),
             }
         return {
             "provider": normalized,
@@ -510,7 +625,7 @@ class Settings(BaseModel):
             "llm_provider": self.llm_provider,
             "llm_planner_mode": self.llm_planner_mode,
             "llm_model": self.llm_model,
-            "llm_base_url": self.llm_base_url,
+            "llm_api_key_configured": bool(self.llm_api_key),
             "deepseek_has_key": bool(self.deepseek_api_key),
             "qwen_has_key": bool(self.qwen_api_key),
             "llm_timeout_seconds": self.llm_timeout_seconds,
@@ -531,7 +646,13 @@ class Settings(BaseModel):
         """Return startup-relevant settings without credential values."""
 
         return {
-            "research_budget": {name: value for name, value in self.model_dump().items() if name.startswith("research_")},
+            "research_budget": {
+                name: value
+                for name, value in self.model_dump().items()
+                if name.startswith("research_") and name != "research_profile"
+            },
+            "research_profile": self.research_profile,
+            "search_provider": self.search_provider,
             "service_name": self.service_name,
             "phase": self.phase,
             "offline_mode": self.offline_mode,

@@ -18,14 +18,55 @@ class ContextIdentityTests(unittest.TestCase):
     skill_plan = recovery.RecoveryTests.skill_plan
     run_script = recovery.RecoveryTests.run_script
 
-    def test_search_urls_survive_prompt_compaction_and_fetch_updates_state(self):
+    def test_search_urls_survive_prompt_compaction_without_bloating_saved_plan(self):
         run, result, client, _ = self.run_script([decision("tavily_search", query="docs"),
             decision("web_fetcher", urls=[URL]), decision("finish")])
         context = client.payloads[1]["research_context"]
         self.assertEqual(context["sources"][0]["url"], URL)
         self.assertEqual(context["sources"][0]["fetch_status"], "pending")
         self.assertEqual(client.payloads[2]["research_context"]["sources"][0]["fetch_status"], "fetched")
-        self.assertTrue(json.loads(run.plan_json)["react_state"]["source_context"]["sources"])
+        saved_state = json.loads(run.plan_json)["react_state"]
+        self.assertNotIn("source_context", saved_state)
+        self.assertEqual(saved_state["source_context_summary"]["gaps"]["fetched"], 1)
+
+    def test_react_reaching_report_reserve_hands_off_instead_of_budget_failure(self):
+        from app.llm.base import LLMResponse, LLMUsage
+        from app.agent.budget import estimate_message_tokens
+        from tests.test_r8_recovery import ScriptedLLM
+
+        class MeteredLLM(ScriptedLLM):
+            def complete(self, messages, **kwargs):
+                self.payloads.append(json.loads(messages[-1].content))
+                action = next(self.actions, decision("finish"))
+                estimate = estimate_message_tokens(messages, kwargs.get("max_tokens", 800))
+                total = 1000 if len(self.payloads) == 1 else 44000 - estimate // 2
+                return LLMResponse(
+                    success=True,
+                    content=json.dumps(action),
+                    provider="fixture",
+                    model="offline",
+                    usage=LLMUsage(prompt_tokens=total - 100, completion_tokens=100, total_tokens=total),
+                )
+
+        client = MeteredLLM([
+            decision("tavily_search", query="docs"),
+            decision("web_fetcher", urls=[URL]),
+            decision("finish"),
+        ])
+        run, result, _, execute = self.run_script(
+            [],
+            settings=self.settings.model_copy(update={"research_max_tokens": 50000}),
+            client=client,
+        )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(execute.call_count, 2)
+        self.assertTrue(run.report_path)
+        budget = json.loads(run.plan_json)["execution_budget"]
+        self.assertIsNone(budget["stop_reason"])
+        self.assertTrue(any(
+            trace.tool_name == "research_finalization_handoff"
+            for trace in store.list_tool_traces(self.db, run.run_id)
+        ))
 
     def test_context_rebuilds_from_all_traces_not_last_twenty_summaries(self):
         from app.agent.source_context import build_source_context
@@ -120,8 +161,24 @@ class ContextIdentityTests(unittest.TestCase):
         prompt = prompt_source_context(context, limit=2)
         self.assertEqual(len(prompt["sources"]), 2)
         self.assertIn("example.net", prompt["sources"][1]["url"])
-        self.assertLessEqual(len(prompt["sources"][0]["snippet"]), 600)
+        self.assertLessEqual(len(prompt["sources"][0]["excerpt"]), 280)
+        self.assertNotIn("search_snippet", prompt["sources"][0])
         self.assertEqual(len(build_source_context([trace], max_sources=2)["sources"]), 2)
+
+    def test_prompt_keeps_fetched_evidence_visible_with_pending_queue(self):
+        from app.agent.source_context import build_source_context, prompt_source_context
+        run = store.create_agent_run(self.db, "fixture", "summary", "real")
+        search = record_trace_event(self.db, run.run_id, 1, "tavily_search", "success", {}, "search", {
+            "results": [
+                {"url": URL, "title": "Fetched", "content": "discovery"},
+                {"url": "https://example.net/pending", "title": "Pending", "content": "candidate"},
+            ]
+        })
+        fetch = record_trace_event(self.db, run.run_id, 2, "web_fetcher", "success", {}, "fetch", {
+            "pages": [{"url": URL, "content": "Verified full-text evidence."}]
+        })
+        prompt = prompt_source_context(build_source_context([search, fetch]), limit=2)
+        self.assertEqual([source["fetch_status"] for source in prompt["sources"]], ["fetched", "pending"])
 
     def test_deepening_prompt_preserves_urls_and_child_run_identity(self):
         from app.agent.deepening import _build_deepening_messages
@@ -260,6 +317,32 @@ class SharedBudgetTests(unittest.TestCase):
             self.assertEqual(client.complete.call_count, 1)
         finally:
             _active.reset(token)
+
+    def test_token_estimate_handles_chinese_as_characters_not_utf8_bytes(self):
+        from app.agent.budget import estimate_text_tokens
+        chinese = "研究架构沙箱记忆工具调用插件"
+        estimate = estimate_text_tokens(chinese)
+        self.assertGreaterEqual(estimate, len(chinese))
+        self.assertLess(estimate, len(chinese.encode("utf-8")))
+
+    def test_root_research_reserve_requests_finalization_without_terminal_stop(self):
+        from app.agent.budget import FinalizationRequired, _active, report_budget
+        runtime = self.runtime(research_max_tokens=1000, research_max_llm_calls=10)
+        runtime.reserve(llm=1, tokens=850)
+        with self.assertRaises(FinalizationRequired):
+            runtime.reserve(llm=1, tokens=100)
+        self.assertIsNone(runtime.snapshot()["stop_reason"])
+
+        @report_budget
+        def finalize(run, plan):
+            runtime.reserve(llm=1, tokens=100)
+
+        token = _active.set(runtime)
+        try:
+            finalize(store.get_agent_run(self.db, runtime.run_id), {})
+        finally:
+            _active.reset(token)
+        self.assertEqual(runtime.snapshot()["accounted_tokens"], 950)
 
     def test_deadline_and_unknown_price_block_admission(self):
         from app.agent.budget import BudgetExceeded

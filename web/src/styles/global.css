@@ -222,6 +222,7 @@ a { color: inherit; text-decoration: none; }
 .summary-row span:first-child { color: var(--ra-muted); }
 .summary-callout { padding: 12px; border-radius: var(--ra-radius-md); background: var(--ra-blue-soft); color: var(--ra-accent-strong); font-size: 12px; line-height: 1.6; }
 .error-banner { padding: 12px 14px; color: var(--ra-status-danger); background: var(--ra-danger-soft); border: 1px solid rgb(180 35 24 / 25%); border-radius: var(--ra-radius-md); }
+.success-banner { padding: 12px 14px; color: var(--ra-status-success); background: rgb(0 122 92 / 10%); border: 1px solid rgb(0 122 92 / 35%); border-radius: var(--ra-radius-md); }
 .empty-state { padding: 52px 24px; text-align: center; color: var(--ra-muted); }
 .draft-chip { padding: 7px 12px; border-radius: 999px; background: var(--ra-panel-soft); color: var(--ra-muted); font-size: 12px; font-weight: 500; }
 

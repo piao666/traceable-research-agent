@@ -60,6 +60,23 @@ class GoalRecoveryTests(unittest.TestCase):
         self.assertEqual(contract["goal_kind"], "price_series")
         self.assertIn("adjustment", contract["unresolved_fields"])
 
+    def test_comparison_contract_builds_product_dimension_coverage_matrix(self):
+        from app.agent.research_goal import build_task_contract
+        from app.research.coverage import assess_comparison_coverage
+        task = "对比DeepSeek Harness、Codex和Claude Code的核心差异，从架构、沙箱、记忆、工具调用以及插件等方面深度解析。"
+        contract = build_task_contract(task, datetime(2026, 9, 8))
+        self.assertEqual(contract["goal_kind"], "comparison")
+        self.assertEqual(contract["entities"], ["DeepSeek Harness", "Codex", "Claude Code"])
+        self.assertEqual(len(contract["requirements"]), 15)
+        context = {"sources": [{"source_id": "S1", "url": "https://openai.com/codex",
+            "title": "Codex architecture and sandbox", "snippet": "Codex memory, tool calling and plugins",
+            "fetch_status": "fetched"}]}
+        coverage = assess_comparison_coverage(contract, context)
+        self.assertTrue(coverage["applicable"])
+        self.assertFalse(coverage["complete"])
+        self.assertGreater(coverage["covered"], 0)
+        self.assertTrue(any("DeepSeek Harness" in gap for gap in coverage["gaps"]))
+
     def test_template_shell_is_not_effective_web_evidence(self):
         from app.agent.evidence import build_evidence_bundle
         run = store.create_agent_run(self.db, "fixture", "summary", "real")
@@ -289,6 +306,28 @@ class GoalRecoveryTests(unittest.TestCase):
             "deep_research_breadth": 3,
         })
         self.assertEqual(_react_step_allowance(plan, settings), 14)
+
+    def test_comparison_contract_expands_steps_without_manual_deepening_switch(self):
+        from app.agent.react_executor import _react_step_allowance, _tool_call_limit
+        from app.agent.research_goal import build_task_contract
+
+        plan = {
+            "scenario_template": "deep_web_research",
+            "task_contract": build_task_contract(
+                "对比DeepSeek Harness、Codex和Claude Code的核心差异，从架构、沙箱、记忆、工具调用以及插件等方面深度解析。"
+            ),
+        }
+        settings = self.settings.model_copy(update={
+            "deep_research_enabled": False,
+            "react_max_steps": 8,
+            "research_max_llm_calls": 40,
+            "research_max_tool_calls": 40,
+            "research_max_tokens": 100000,
+        })
+        self.assertEqual(_react_step_allowance(plan, settings), 23)
+        self.assertEqual(_tool_call_limit(plan, settings, "tavily_search"), 8)
+        configured = settings.model_copy(update={"react_same_tool_max_calls": 20})
+        self.assertEqual(_tool_call_limit(plan, configured, "tavily_search"), 20)
 
     def test_snippet_only_evidence_is_not_high_confidence(self):
         from app.agent.evidence import build_evidence_bundle

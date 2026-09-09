@@ -160,7 +160,7 @@ def call_llm_for_plan(
             provider=str(description.get("provider") or "unknown"),
             model=description.get("model"),
             error_message=str(description.get("reason") or "LLM client unavailable."),
-            metadata={"available": False, "error_type": "unavailable"},
+            metadata={"available": False, "error_type": "provider_unavailable"},
         )
     messages = build_planner_messages(task, allowed_tools, source_mode, scenario_template)
     return client.complete(messages, temperature=0.0, max_tokens=2000)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import re
 from time import perf_counter
 from typing import Any
 
@@ -21,7 +23,7 @@ from app.agent.executor import (
     _persist_reference_verification,
     run_plan,
 )
-from app.agent.report_generation import resolve_report_llm_client
+from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
 from app.agent.preflight import enforce_execution_readiness, check_plan_readiness
 from app.agent.execution_policy import execute_with_policy, policy_failure
 from app.agent.tool_recovery import (
@@ -31,8 +33,13 @@ from app.agent.tool_recovery import (
     unavailable_reason,
 )
 from app.agent.source_context import build_source_context, prompt_source_context
-from app.agent.budget import budgeted_execution, budget_client, limits as budget_limits
-from app.agent.outcome import enforce_research_outcome, load_observations, report_subject
+from app.agent.budget import (
+    FinalizationRequired,
+    budget_client,
+    budgeted_execution,
+    limits as budget_limits,
+)
+from app.agent.outcome import enforce_research_outcome, fail_execution, load_observations, report_subject
 from app.agent.react_prompt import build_react_messages
 from app.agent.react_schema import (
     ReActDecision,
@@ -55,6 +62,7 @@ from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
 from app.llm.providers import create_llm_client
 from app.mcp.policy import requires_interactive_confirmation
+from app.research.coverage import assess_comparison_coverage
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool, get_tool, list_tools
 from app.trace import store
@@ -63,7 +71,13 @@ from app.trace.models import AgentRun
 
 
 MAX_NON_EXECUTION_REPLACEMENTS = 2
-MAX_DYNAMIC_REACT_STEPS = 20
+MAX_DYNAMIC_REACT_STEPS = 32
+ACADEMIC_DISCOVERY_TOOLS = {
+    "arxiv_search",
+    "crossref_search",
+    "openalex_search",
+    "semantic_scholar_search",
+}
 
 
 def _parse_plan(run: AgentRun) -> dict[str, Any]:
@@ -213,10 +227,42 @@ def _react_step_capacity(settings_obj: Settings) -> int:
 def _react_step_allowance(plan: dict[str, Any], settings_obj: Settings) -> int:
     capacity = _react_step_capacity(settings_obj)
     base = min(settings_obj.react_max_steps, capacity)
-    if not settings_obj.deep_research_enabled or _research_scenario(plan) is None:
-        return base
-    extension = max(4, settings_obj.deep_research_max_depth * settings_obj.deep_research_breadth)
+    extension = 0
+    if settings_obj.deep_research_enabled and _research_scenario(plan) is not None:
+        extension = max(4, settings_obj.deep_research_max_depth * settings_obj.deep_research_breadth)
+    contract = plan.get("task_contract") or {}
+    if contract.get("goal_kind") == "comparison":
+        # Product/dimension requirements need room for discovery, fetching and
+        # gap repair even when optional multi-round deepening is disabled.
+        complexity = max(
+            len(contract.get("requirements") or []),
+            len(contract.get("entities") or []) + len(contract.get("dimensions") or []) + 2,
+        )
+        extension = max(extension, min(24, complexity))
     return min(capacity, base + extension)
+
+
+def _tool_call_limit(plan: dict[str, Any], settings_obj: Settings, name: str) -> int:
+    """Return a task-aware per-tool allowance below the root safety ceiling."""
+
+    base = max(1, int(settings_obj.react_same_tool_max_calls))
+    contract = plan.get("task_contract") or {}
+    broad_research = _research_scenario(plan) is not None or contract.get("goal_kind") == "comparison"
+    if broad_research and name in {"tavily_search", "mcp_github_search", "web_fetcher", "pdf_reader"}:
+        requirements = len(contract.get("requirements") or [])
+        adaptive = min(12, max(6, (requirements + 1) // 2))
+        # Task adaptation may widen an explicit operator setting, never narrow
+        # it. The root atomic tool budget remains the authoritative hard cap.
+        return max(base, adaptive)
+    return base
+
+
+def _tool_is_relevant(plan: dict[str, Any], name: str) -> bool:
+    contract = plan.get("task_contract") or {}
+    if contract.get("goal_kind") != "comparison" or name not in ACADEMIC_DISCOVERY_TOOLS:
+        return True
+    task = str(contract.get("original_task") or "")
+    return bool(re.search(r"论文|学术|研究文献|paper|academic|literature", task, re.I))
 
 
 def _grant_non_execution_replacement(
@@ -241,7 +287,20 @@ def _grant_non_execution_replacement(
 
 
 def _persist_plan(db: Session, run_id: str, plan: dict[str, Any]) -> None:
-    store.replace_agent_run_plan(db, run_id, plan)
+    # Source records are rebuilt from authoritative traces before every model
+    # decision. Avoid duplicating the full queue in plan_json and every /plan
+    # polling response; retain only its compact gap summary and coverage matrix.
+    persisted = copy.deepcopy(plan)
+    state = persisted.get("react_state")
+    if isinstance(state, dict):
+        context = state.pop("source_context", None)
+        if isinstance(context, dict):
+            state["source_context_summary"] = {
+                "version": context.get("version"),
+                "gaps": dict(context.get("gaps") or {}),
+                "omitted_count": int(context.get("omitted_count") or 0),
+            }
+    store.replace_agent_run_plan(db, run_id, persisted)
 
 
 def _confirmation_required(plan: dict[str, Any], action: str) -> bool:
@@ -349,7 +408,8 @@ def _prompt_history(state: dict[str, Any]) -> list[dict[str, Any]]:
     """Keep provider context concise while the persisted state retains evidence."""
 
     compact: list[dict[str, Any]] = []
-    for observation in list(state.get("observation_history") or [])[-20:]:
+    history_limit = 6 if state.get("llm_context_compacted") else 20
+    for observation in list(state.get("observation_history") or [])[-history_limit:]:
         metadata = observation.get("tool_result_metadata")
         if not isinstance(metadata, dict):
             metadata = {}
@@ -397,12 +457,29 @@ def _complete_report(
         cancelled = store.get_fresh_agent_run(db, run_id)
         return _summary(cancelled, plan, "Run cancelled by user.")
     state["finish_reason"] = finish_reason
-    state["source_context"] = build_source_context(store.list_tool_traces(db, run_id))
+    traces = store.list_tool_traces(db, run_id)
+    state["source_context"] = build_source_context(traces)
+    state["coverage_matrix"] = assess_comparison_coverage(
+        plan.get("task_contract"), state["source_context"], traces
+    )
+    if state["coverage_matrix"].get("applicable") and not state["coverage_matrix"].get("complete"):
+        state["goal_status"] = "not_met"
+        gaps = "; ".join(list(state["coverage_matrix"].get("gaps") or [])[:6])
+        state["finish_summary"] = (
+            "Required comparison coverage is incomplete: " + gaps
+        )[:500]
     state["completed_with_limitation"] = limitation
     state["pending_confirmation"] = None
     plan["react_state"] = state
     plan["execution_mode"] = "react"
     _persist_plan(db, run_id, plan)
+    context = state.pop("source_context", None)
+    if isinstance(context, dict):
+        state["source_context_summary"] = {
+            "version": context.get("version"),
+            "gaps": dict(context.get("gaps") or {}),
+            "omitted_count": int(context.get("omitted_count") or 0),
+        }
     run = store.get_agent_run(db, run_id)
     if run is None:
         raise ValueError("Task run not found.")
@@ -420,19 +497,48 @@ def _complete_report(
     )
     _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
     _llm = resolve_report_llm_client(settings_obj, llm_client)
+    report_llm_responses: list[Any] = []
     citation_validation_reports: list[Any] = []
     reference_verification_reports: list[Any] = []
-    markdown = generate_markdown_report(
-        report_subject(run),
-        plan,
-        observations,
-        traces,
-        llm_client=_llm,
-        provenance_bundle=provenance_bundle,
-        report_type=run.report_type,
-        citation_validation_callback=citation_validation_reports.append,
-        reference_verification_callback=reference_verification_reports.append,
-    )
+    try:
+        markdown = generate_markdown_report(
+            report_subject(run),
+            plan,
+            observations,
+            traces,
+            llm_client=_llm,
+            provenance_bundle=provenance_bundle,
+            report_type=run.report_type,
+            usage_callback=report_llm_responses.append,
+            citation_validation_callback=citation_validation_reports.append,
+            reference_verification_callback=reference_verification_reports.append,
+        )
+    except Exception as exc:
+        if report_llm_responses:
+            response = report_llm_responses[-1]
+            record_report_synthesis_trace(
+                db,
+                run_id,
+                traces,
+                response,
+                success=bool(
+                    response.success
+                    and str(response.content or "").strip()
+                    and not response.metadata.get("error_type")
+                ),
+            )
+        from app.agent.budget import BudgetExceeded
+        if isinstance(exc, BudgetExceeded):
+            raise
+        failed = fail_execution(db, run_id, exc)
+        return _summary(failed, plan, failed.error_message)
+    if report_llm_responses:
+        response = report_llm_responses[-1]
+        record_report_synthesis_trace(db, run_id, traces, response, success=True)
+        if response.usage:
+            state["_llm_token_in"] = int(state.get("_llm_token_in") or 0) + response.usage.prompt_tokens
+            state["_llm_token_out"] = int(state.get("_llm_token_out") or 0) + response.usage.completion_tokens
+        traces = store.list_tool_traces(db, run_id)
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
     _persist_citation_validation(
@@ -513,6 +619,59 @@ def _fallback_to_plan(
     return run_plan(db, run_id, settings_obj=settings_obj)
 
 
+def _finalize_at_research_boundary(
+    db: Session,
+    run_id: str,
+    plan: dict[str, Any],
+    state: dict[str, Any],
+    step_no: int,
+    settings_obj: Settings,
+    llm_client: LLMClient | None,
+) -> dict:
+    """Hand a root Run from discovery to its protected report budget."""
+
+    coverage = state.get("coverage_matrix") or {}
+    incomplete = bool(coverage.get("applicable") and not coverage.get("complete"))
+    if incomplete:
+        gaps = "; ".join(list(coverage.get("gaps") or [])[:6])
+        summary = f"Research budget reached the report boundary with uncovered requirements: {gaps}"
+        state["goal_status"] = "not_met"
+    else:
+        summary = "Research budget reached the report boundary; finalizing from verified evidence."
+    state["finish_reason"] = "finalization_reserve_handoff"
+    state["finish_summary"] = summary[:500]
+    state["budget_handoff"] = "final_report"
+    plan["react_state"] = state
+    record_trace_event(
+        db,
+        run_id,
+        max(0, step_no - 1),
+        "research_finalization_handoff",
+        "warning" if incomplete else "success",
+        {"action": "finalize", "reason": "finalization_reserve"},
+        summary,
+        {
+            "metadata": {
+                "execution_mode": "react",
+                "stop_reason_persisted": False,
+                "coverage_complete": not incomplete,
+                "uncovered_requirements": list(coverage.get("gaps") or [])[:12],
+            }
+        },
+    )
+    _persist_plan(db, run_id, plan)
+    return _complete_report(
+        db,
+        run_id,
+        plan,
+        state,
+        "finalization_reserve_handoff",
+        settings_obj,
+        llm_client,
+        limitation=True,
+    )
+
+
 @budgeted_execution
 def run_react_task(
     db: Session,
@@ -566,6 +725,15 @@ def run_react_task(
     )
     state["llm_provider"] = provider
     state["llm_model"] = model
+    tool_limits = {name: _tool_call_limit(plan, settings, name) for name in allowed_tools}
+    state["tool_call_limits"] = tool_limits
+    irrelevant_tools = [name for name in allowed_tools if not _tool_is_relevant(plan, name)]
+    for name in irrelevant_tools:
+        state.setdefault("tool_recovery", {})[name] = {
+            "status": "disabled",
+            "reason": "task_irrelevant",
+            "attempts": int(state.get("tool_call_counts", {}).get(name, 0)),
+        }
     plan.setdefault("requested_execution_mode", "react")
     plan["execution_mode"] = "react"
     plan["react_state"] = state
@@ -594,11 +762,15 @@ def run_react_task(
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _summary(cancelled, plan, "Run cancelled by user.")
-        state["source_context"] = build_source_context(store.list_tool_traces(db, run_id))
+        current_traces = store.list_tool_traces(db, run_id)
+        state["source_context"] = build_source_context(current_traces)
+        state["coverage_matrix"] = assess_comparison_coverage(
+            plan.get("task_contract"), state["source_context"], current_traces
+        )
         _persist_plan(db, run_id, plan)
         active_tools = []
         for name in allowed_tools:
-            if unavailable_reason(state, name, settings.react_same_tool_max_calls):
+            if unavailable_reason(state, name, tool_limits[name]):
                 continue
             readiness = check_plan_readiness({**plan, "steps": [{"tool_name": name}], "required_tools": []},
                                             settings, llm_available=client.is_available())
@@ -630,11 +802,19 @@ def run_react_task(
                 available_specs,
                 _prompt_history(state),
                 str(plan.get("scenario_template") or "standard"),
-                recovery_context(state, allowed_tools, settings.react_same_tool_max_calls, run.source_mode),
-                prompt_source_context(state["source_context"]),
+                recovery_context(state, allowed_tools, tool_limits, run.source_mode),
+                {
+                    **prompt_source_context(state["source_context"]),
+                    "coverage_matrix": state["coverage_matrix"],
+                },
                 plan.get("task_contract"),
             )
-            response = client.complete(messages, temperature=0.0, max_tokens=800)
+            try:
+                response = client.complete(messages, temperature=0.0, max_tokens=800)
+            except FinalizationRequired:
+                return _finalize_at_research_boundary(
+                    db, run_id, plan, state, step_no, settings, client
+                )
 
             # ── Phase 6: Accumulate LLM token usage ────────────────────
             if response.success and response.usage:
@@ -644,6 +824,11 @@ def run_react_task(
                 state["_llm_token_out"] += response.usage.completion_tokens
 
             raw = extract_json_object(response.content or "") if response.success else None
+            llm_error_type = (
+                str(response.metadata.get("error_type") or "provider_unavailable")
+                if not response.success
+                else None
+            )
             candidate = normalize_action(str((raw or {}).get("action", "")))
             if candidate in allowed_tools and candidate not in active_tools:
                 reason = f"Tool '{candidate}' is unavailable for this run; choose another permitted tool."
@@ -659,7 +844,8 @@ def run_react_task(
             try:
                 if raw is None:
                     raise ReActDecisionError(
-                        _safe_error(response.error_message or "LLM output was not valid JSON.")
+                        _safe_error(response.error_message or "LLM output was not valid JSON."),
+                        llm_error_type or "structured_output_invalid",
                     )
                 decision = validate_react_decision(raw, active_tools, available_names)
             except ReActDecisionError as exc:
@@ -688,6 +874,28 @@ def run_react_task(
                     error_message=reason,
                 )
                 invalid_count = int(state.get("invalid_decisions") or 0)
+                terminal_provider_errors = {
+                    "auth_error",
+                    "permission_error",
+                    "invalid_request",
+                    "model_not_found",
+                    "budget_exhausted",
+                    "cancelled",
+                }
+                if exc.error_type == "context_overflow":
+                    # Persist this choice so resumed execution also uses the
+                    # reduced observation window for its bounded retry.
+                    state["llm_context_compacted"] = True
+                if exc.error_type in terminal_provider_errors:
+                    if settings.react_fallback_to_planned and not any(
+                        item.get("success") for item in state.get("observation_history") or []
+                    ):
+                        return _fallback_to_plan(
+                            db, run_id, plan, state, step_no, reason, settings, exc.error_type
+                        )
+                    return _complete_report(
+                        db, run_id, plan, state, reason, settings, client, limitation=True
+                    )
                 # Give LLM one self-correction chance: append the rejection as an observation
                 # so it can see why its tool choice was rejected and pick a valid one.
                 if invalid_count <= 1:
@@ -803,7 +1011,7 @@ def run_react_task(
             decision.args, skipped_fetched_urls = prune_completed_fetch_urls(state, decision.args)
         counts = state.setdefault("tool_call_counts", {})
         count = int(counts.get(decision.action) or 0) + 1
-        blocked = unavailable_reason(state, decision.action, settings.react_same_tool_max_calls, decision.args)
+        blocked = unavailable_reason(state, decision.action, tool_limits[decision.action], decision.args)
         if blocked or decision.action not in active_tools:
             reason = (
                 f"Tool '{decision.action}' cannot execute this request ({blocked or 'unavailable'}); choose another input or tool."
@@ -948,7 +1156,7 @@ def run_react_task(
             return _summary(store.get_fresh_agent_run(db, run_id), plan)
         result = execute_with_policy(decision.action, execution_args, plan, settings, execute_tool)
         latency_ms = int((perf_counter() - started) * 1000)
-        recovered = observe_result(state, decision.action, decision.args, result, settings.react_same_tool_max_calls)
+        recovered = observe_result(state, decision.action, decision.args, result, tool_limits[decision.action])
         result = govern_tool_result(decision.action, result, plan, settings)
         observation_summary = _observation_summary(decision.action, result)
         metadata = _react_metadata(decision, observation_summary, count, state)
@@ -1002,11 +1210,11 @@ def run_react_task(
 
         def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
             refetch_started = perf_counter()
-            blocked = unavailable_reason(state, name, settings.react_same_tool_max_calls, refetch_args)
+            blocked = unavailable_reason(state, name, tool_limits[name], refetch_args)
             if blocked:
                 return policy_failure("tool_unavailable", "Refetch skipped: tool unavailable."), 0
             refetch_result = execute_with_policy(name, refetch_args, plan, settings, execute_tool)
-            observe_result(state, name, refetch_args, refetch_result, settings.react_same_tool_max_calls)
+            observe_result(state, name, refetch_args, refetch_result, tool_limits[name])
             return refetch_result, int((perf_counter() - refetch_started) * 1000)
 
         refetches = execute_targeted_refetches(
@@ -1017,7 +1225,7 @@ def run_react_task(
             settings,
             execute=_execute_refetch,
             max_rounds=min(settings.max_refetch_rounds - refetch_rounds_used,
-                           max(0, settings.react_same_tool_max_calls - int(counts.get(decision.action, 0)))),
+                           max(0, tool_limits[decision.action] - int(counts.get(decision.action, 0)))),
             starting_round=refetch_rounds_used,
         )
         for refetch in refetches:

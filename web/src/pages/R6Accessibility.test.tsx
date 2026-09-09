@@ -14,7 +14,7 @@ import { NewResearchPage } from "./NewResearchPage";
 import { taskFixture } from "../test/r4Fixtures";
 import { readDraft, saveDraft, removeDraft } from "../lib/draft";
 
-const capabilities = { offline_mode: true, tavily_configured: false, llm_provider: "qwen", llm_configured: false, react_provider: "qwen", react_configured: false, react_enabled: false, deep_research_enabled: false, report_generation_mode: "deterministic", connectivity_verified: false };
+const capabilities = { research_profile: "offline", research_environment_ready: true, search_provider: "tavily", offline_mode: true, tavily_configured: false, llm_provider: "qwen", llm_configured: false, react_provider: "qwen", react_configured: false, react_enabled: false, deep_research_enabled: false, report_generation_mode: "deterministic", connectivity_verified: false };
 const review: PlanReviewResponse = { run_id: "fixture", task: "测试计划", status: "waiting_human_plan", execution_mode: "planned", steps: [], allowed_tools: [], estimated_total_tokens: 0, estimated_cost: 0, preflight: { ready: true, blockers: [], warnings: [], capabilities } };
 const emptyTasks: TaskListResponse = { tasks: [], total: 0, limit: 50, offset: 0 };
 beforeEach(() => {
@@ -130,10 +130,10 @@ it("does not crash or promise saved drafts when browser storage is denied", asyn
   show(<NewResearchPage />); await screen.findByText(/浏览器存储不可用/);
   expect(screen.getByRole("button", { name: "创建并审阅计划" })).toBeEnabled();
 });
-it("does not load deployment diagnostics while preserving the research question", () => {
+it("loads only concise capabilities while preserving the research question", async () => {
   show(<NewResearchPage />); fireEvent.change(screen.getByRole("textbox", { name: /研究问题或目标/ }), { target: { value: "保留问题" } });
   expect(screen.getByRole("textbox", { name: /研究问题或目标/ })).toHaveValue("保留问题");
-  expect(api.capabilities).not.toHaveBeenCalled();
+  await waitFor(() => expect(api.capabilities).toHaveBeenCalledTimes(1));
 });
 
 function ModalFixture({ busy = false }: { busy?: boolean }) {

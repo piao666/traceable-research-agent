@@ -119,6 +119,51 @@ def _record_memory_recall_trace(
     )
 
 
+def _record_planner_fallback_trace(db: Session, run_id: str, plan: dict[str, Any]) -> None:
+    """Persist sanitized Planner failures without prompts or provider output."""
+
+    failure = plan.get("planner_error")
+    failures = [failure] if isinstance(failure, dict) else []
+    failures.extend(
+        item
+        for item in (plan.get("planner_auxiliary_errors") or [])
+        if isinstance(item, dict)
+    )
+    if not failures:
+        return
+    from app.trace.logger import record_trace_event
+
+    for item in failures:
+        role = str(item.get("role") or "planner")[:80]
+        error_type = str(item.get("error_type") or "provider_unavailable")
+        fallback_target = str(item.get("fallback_target") or (
+            "original_task" if role == "planner_decomposer" else "deterministic"
+        ))
+        message = str(item.get("message") or (
+            "Planner decomposition failed; the original task was retained."
+            if role == "planner_decomposer"
+            else "LLM planning failed; deterministic fallback was used."
+        ))[:500]
+        record_trace_event(
+            db=db,
+            run_id=run_id,
+            step_no=0,
+            tool_name="research_planner",
+            status="failed",
+            input_data={"role": role},
+            output_summary=message,
+            output_data={
+                "metadata": {
+                    "error_type": error_type,
+                    "fallback_target": fallback_target,
+                    "llm_provider": item.get("provider") or plan.get("llm_provider"),
+                    "llm_model": item.get("model") or plan.get("llm_model"),
+                }
+            },
+            error_message=message,
+        )
+
+
 def _merge_approved_steps(
     original_steps: list[Any],
     modified_steps: list[dict[str, Any]] | None,
@@ -484,6 +529,7 @@ def create_task(
         memory_recall_trace = plan.pop("memory_recall_trace", None)
         run = store.update_agent_run_plan(db, run.run_id, plan)
         _persist_plan_config_snapshot(db, run.run_id, safe_config, plan)
+        _record_planner_fallback_trace(db, run.run_id, plan)
         _record_memory_recall_trace(db, run.run_id, memory_recall_trace)
         run = store.update_agent_run_status(db, run.run_id, WAITING_HUMAN_PLAN, None)
         return TaskCreateResponse(
@@ -510,6 +556,7 @@ def create_task(
     memory_recall_trace = plan.pop("memory_recall_trace", None)
     run = store.update_agent_run_plan(db, run.run_id, plan)
     _persist_plan_config_snapshot(db, run.run_id, safe_config, plan)
+    _record_planner_fallback_trace(db, run.run_id, plan)
 
     # ── Phase 5: record memory_recall trace event ─────────────────
     _record_memory_recall_trace(db, run.run_id, memory_recall_trace)

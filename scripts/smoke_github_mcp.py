@@ -199,7 +199,13 @@ def _fallback_smoke() -> None:
     assert len(attempts) == 3 and backoffs == [0.5, 1.0]
 
     def rate_limited(request, **_kwargs):
-        raise HTTPError(request.full_url, 403, "rate limited", {}, io.BytesIO())
+        raise HTTPError(
+            request.full_url,
+            403,
+            "rate limited",
+            {"X-RateLimit-Remaining": "0", "Retry-After": "30"},
+            io.BytesIO(),
+        )
 
     rate_fallback = github_search(
         {**ARGUMENTS, "mode": "public_api"},

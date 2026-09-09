@@ -523,7 +523,9 @@ class ResearchIntegrityTests(unittest.TestCase):
         self.assertTrue(any("completeness was not established" in text for text in outcome["warnings"]))
         rounds = [trace for trace in store.list_tool_traces(self.db, self.run.run_id) if trace.tool_name == "deepening_round"]
         self.assertEqual(rounds[0].status, "failed")
-        self.assertFalse(json.loads(rounds[0].output_json)["is_comprehensive"])
+        failure = json.loads(rounds[0].output_json)
+        self.assertFalse(failure["is_comprehensive"])
+        self.assertEqual(failure["metadata"]["error_type"], "provider_unavailable")
 
     def test_deepening_final_gate_rejects_no_evidence(self):
         from unittest.mock import Mock

@@ -6,10 +6,12 @@ import json
 from time import sleep
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from app.config import Settings
-from app.llm.base import LLMClient, LLMMessage, LLMResponse, LLMUsage
+from app.llm.base import LLMClient, LLMMessage, LLMResponse
+from app.llm.errors import classify_http_error, classify_transport_error, retry_delay
 
 
 class UnavailableLLMClient(LLMClient):
@@ -42,7 +44,7 @@ class UnavailableLLMClient(LLMClient):
             provider=self.provider,
             model=self.model,
             error_message=self.reason,
-            metadata={"available": False, "error_type": "unavailable"},
+            metadata={"available": False, "error_type": "provider_unavailable"},
         )
 
 
@@ -72,7 +74,7 @@ class OpenAICompatibleLLMClient(LLMClient):
         return {
             "provider": self.provider,
             "model": self.model,
-            "base_url": self.base_url,
+            "base_url_configured": bool(self.base_url),
             "available": self.is_available(),
         }
 
@@ -101,17 +103,14 @@ class OpenAICompatibleLLMClient(LLMClient):
         )
 
         last_error = None
+        last_metadata: dict[str, Any] = {"available": True, "error_type": "provider_unavailable"}
         for attempt in range(self.max_retries + 1):
+            retryable = False
             try:
                 with urlopen(request, timeout=self.timeout_seconds) as response:
                     response_payload = json.loads(response.read().decode("utf-8"))
                 content = response_payload["choices"][0]["message"]["content"]
-                usage_raw = response_payload.get("usage") or {}
-                usage = LLMUsage(
-                    prompt_tokens=usage_raw.get("prompt_tokens", 0),
-                    completion_tokens=usage_raw.get("completion_tokens", 0),
-                    total_tokens=usage_raw.get("total_tokens", 0),
-                ) if usage_raw else None
+                usage = self.normalize_usage(response_payload.get("usage"))
                 return LLMResponse(
                     success=True,
                     content=str(content),
@@ -125,22 +124,57 @@ class OpenAICompatibleLLMClient(LLMClient):
                     usage=usage,
                 )
             except HTTPError as exc:
-                last_error = f"HTTP error from {self.provider}: {exc.code}"
+                try:
+                    response_body = exc.read(4096).decode("utf-8", errors="replace")
+                except Exception:
+                    response_body = ""
+                info = classify_http_error(exc.code, exc.headers, response_body)
+                last_error = info.message
+                retryable = info.retryable
+                last_metadata = {
+                    "available": True,
+                    "error_type": info.error_type,
+                    "http_status": info.http_status,
+                    "retry_after_seconds": info.retry_after_seconds,
+                    "retry_count": attempt,
+                }
             except (URLError, TimeoutError) as exc:
-                last_error = f"Network error from {self.provider}: {exc}"
+                reason = exc.reason if isinstance(exc, URLError) and isinstance(exc.reason, BaseException) else exc
+                info = classify_transport_error(reason)
+                last_error = info.message
+                retryable = True
+                last_metadata = {
+                    "available": True,
+                    "error_type": info.error_type,
+                    "retry_count": attempt,
+                }
             except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
-                last_error = f"Invalid response from {self.provider}: {exc}"
-            except Exception as exc:
-                last_error = f"LLM request failed for {self.provider}: {exc}"
-            if attempt < self.max_retries:
-                sleep(0.2)
+                last_error = "LLM provider returned a malformed response."
+                retryable = True
+                last_metadata = {
+                    "available": True,
+                    "error_type": "malformed_response",
+                    "retry_count": attempt,
+                }
+            except Exception:
+                last_error = "LLM provider request failed (provider_unavailable)."
+                retryable = True
+                last_metadata = {
+                    "available": True,
+                    "error_type": "provider_unavailable",
+                    "retry_count": attempt,
+                }
+            if retryable and attempt < self.max_retries:
+                sleep(retry_delay(attempt, last_metadata.get("retry_after_seconds")))
+                continue
+            break
 
         return LLMResponse(
             success=False,
             provider=self.provider,
             model=self.model,
             error_message=last_error or f"LLM request failed for {self.provider}.",
-            metadata={"available": True, "error_type": "provider_error"},
+            metadata=last_metadata,
         )
 
 
@@ -158,7 +192,7 @@ def create_llm_client(
             model=None,
             reason="deterministic planner selected; no external LLM required",
         )
-    if selected not in {"deepseek", "qwen"}:
+    if selected not in {"openai_compatible", "deepseek", "qwen"}:
         return UnavailableLLMClient(
             provider=selected,
             model=None,
@@ -167,18 +201,28 @@ def create_llm_client(
 
     provider_config = settings.get_llm_provider_config(selected)
     api_key = settings.get_llm_api_key(selected)
+    missing: list[str] = []
     if not api_key:
+        missing.append(str(provider_config["api_key_env_name"] or "LLM_API_KEY"))
+    base_url = str(provider_config.get("base_url") or "")
+    parsed_base = urlsplit(base_url)
+    if parsed_base.scheme not in {"http", "https"} or not parsed_base.netloc:
+        missing.append("LLM_BASE_URL")
+    selected_model = model or provider_config.get("model")
+    if not selected_model:
+        missing.append("LLM_MODEL")
+    if missing:
         return UnavailableLLMClient(
             provider=selected,
-            model=model or provider_config["model"],
-            reason=f"{provider_config['api_key_env_name']} is not configured",
+            model=selected_model,
+            reason=f"{', '.join(dict.fromkeys(missing))} is not configured",
         )
 
     from app.agent.budget import budget_client
     return budget_client(OpenAICompatibleLLMClient(
         provider=selected,
-        model=model or provider_config["model"],
-        base_url=provider_config["base_url"],
+        model=selected_model,
+        base_url=base_url,
         api_key=api_key,
         timeout_seconds=settings.llm_timeout_seconds,
         max_retries=settings.llm_max_retries,

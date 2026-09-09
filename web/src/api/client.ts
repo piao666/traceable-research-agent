@@ -10,6 +10,7 @@ export type PlanReviewResponse = components["schemas"]["PlanReviewResponse"];
 export type TaskRunResponse = components["schemas"]["TaskRunResponse"];
 export type TaskPreflightResponse = components["schemas"]["TaskPreflightResponse"];
 export type RuntimeCapabilitiesResponse = components["schemas"]["RuntimeCapabilitiesResponse"];
+export type RuntimePreflightResponse = components["schemas"]["RuntimePreflightResponse"];
 export type TaskPlanResponse = components["schemas"]["TaskPlanResponse"];
 export type ToolTraceResponse = components["schemas"]["ToolTraceResponse"];
 export type EvidenceBundleResponse = components["schemas"]["EvidenceBundleResponse"];
@@ -27,12 +28,12 @@ export class ApiError extends Error {
   constructor(message: string, public status: number, public detail?: unknown) { super(message); }
 }
 
-async function requestResponse<T>(path: string, read: (response: Response) => Promise<T>, init?: RequestInit): Promise<T> {
+async function requestResponse<T>(path: string, read: (response: Response) => Promise<T>, init?: RequestInit, timeoutMs = 20000): Promise<T> {
   const controller = new AbortController();
   const abort = () => controller.abort();
   if (init?.signal?.aborted) abort();
   init?.signal?.addEventListener("abort", abort, { once: true });
-  const timeout = window.setTimeout(abort, 20000);
+  const timeout = window.setTimeout(abort, timeoutMs);
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       ...init, signal: controller.signal,
@@ -68,8 +69,8 @@ async function requestResponse<T>(path: string, read: (response: Response) => Pr
   }
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  return requestResponse(path, (response) => response.json() as Promise<T>, init);
+async function requestJson<T>(path: string, init?: RequestInit, timeoutMs?: number): Promise<T> {
+  return requestResponse(path, (response) => response.json() as Promise<T>, init, timeoutMs);
 }
 
 const taskPath = (id: string) => `/api/tasks/${encodeURIComponent(id)}`;
@@ -106,6 +107,7 @@ export const api = {
   qualityRun: (id: string, signal?: AbortSignal) => requestJson<components["schemas"]["ImprovementRunResponse"]>(`/api/improvement/runs/${encodeURIComponent(id)}`, { signal }),
   health: (signal?: AbortSignal) => requestJson<Health>("/health", { signal }),
   capabilities: (signal?: AbortSignal) => requestJson<RuntimeCapabilitiesResponse>("/api/runtime/capabilities", { signal }),
+  runtimePreflight: () => requestJson<RuntimePreflightResponse>("/api/runtime/preflight", post({}), 90000),
   listTasks: (limit = 50, offset = 0, filters: { status?: string; q?: string; session_id?: string } = {}, signal?: AbortSignal) => {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (filters.status && filters.status !== "all") params.set("status", filters.status);

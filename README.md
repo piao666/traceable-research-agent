@@ -12,6 +12,70 @@ and produces an evidence-backed Markdown report.
 
 ## Why Traceable Research Agent
 
+### Real Runtime profiles and preflight (R10)
+
+R10 makes a real research deployment explicit. `RESEARCH_PROFILE` supplies
+coherent defaults, and any explicitly set environment variable still overrides
+its Profile value:
+
+| Profile | Intended use | Default behavior |
+|---|---|---|
+| `deep` | real multi-source research | dynamic ReAct, LLM planning/reporting, deepening, broad safety ceilings, no mock fallback |
+| `standard` | lower-cost real research | planned/adaptive execution, real search/fetch and LLM reporting, no deepening by default |
+| `offline` | development, CI and demonstrations | deterministic planning/reporting and explicitly isolated fixture sources |
+
+The minimum real configuration is:
+
+```env
+RESEARCH_PROFILE=deep
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=https://example.com/v1
+LLM_MODEL=your-model
+LLM_API_KEY=your-key
+SEARCH_PROVIDER=tavily
+TAVILY_API_KEY=your-key
+```
+
+The generic adapter uses OpenAI-compatible Chat Completions. The legacy `qwen`
+and `deepseek` names remain aliases with their existing endpoint/model defaults.
+Provider failures use stable categories such as `auth_error`,
+`permission_error`, `rate_limited`, `timeout`, `model_not_found`,
+`context_overflow`, `malformed_response` and `structured_output_invalid`.
+Non-retryable configuration errors stop retrying; transient failures use bounded
+backoff; ReAct records the category in Trace and can fall back without expanding
+tool permissions. Context overflow activates a smaller persisted observation
+window for one bounded retry.
+
+`GET /api/runtime/capabilities` is a non-network configuration projection.
+`POST /api/runtime/preflight` is an explicit, quota-consuming check of the real
+LLM completion/JSON response, Tavily result provenance and static page fetch. The
+new-research page shows only the concise readiness result and lets the user start
+this explicit verification; credentials, endpoints, prompts and response bodies
+are never returned. PDF, academic and remote MCP capabilities remain separate;
+optional capability absence does not make an otherwise usable real runtime fail.
+
+The research roles are logically separated even when one model serves all of
+them: Planner builds the task contract and plan, Actor selects and runs permitted
+tools, Critic evaluates coverage/evidence gaps, and Synthesizer writes only from
+the active traceable evidence revision. `.env.example.full` is the advanced
+configuration reference, while `.env.example.offline` keeps fixture mode out of
+the normal real-runtime setup.
+
+For an explicit command-line acceptance check, run preflight first and add
+`--run-task` to persist one real search → fetch → LLM-report Run. The confirmation
+flag is mandatory so tests and accidental invocations cannot consume quota:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls
+.\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls --run-task
+```
+
+The automated suite verifies Profiles, aliases, adapter usage normalization,
+error classification/retry behavior across Planner, Actor, Critic and
+Synthesizer, mock rejection, secret redaction, preflight contracts and the
+no-call confirmation guard. Live-provider acceptance still has to be run in the
+operator's configured deployment.
+
 ### Goal integrity and bounded recovery (R9)
 
 Explicit inability, unavailable tools and exhausted ReAct steps cannot become
@@ -43,15 +107,18 @@ Search-only and partial passages use medium rather than high evidence confidence
 
 Budget exceptions keep their structured stop reason through synthesis and children.
 New ledgers reserve up to 8,000 tokens (10% of the total) and two LLM calls (20%)
-for the final root report; a full retry has its own ledger. Optional deepening is
-skipped when headroom is low, but a hard stop remains terminal and report creation
-is not guaranteed. Total caps, permissions and real/mock separation are unchanged.
+for the final root report; a full retry has its own ledger. Reaching that reserve
+in root research is now a non-terminal handoff to the quality gate and report path;
+actual total-cap, deadline, permission and cost breaches remain terminal. Optional
+deepening is skipped when headroom is low. Real/mock separation is unchanged.
 Planned-to-ReAct upgrades use their dynamic step allowance with monotonic Trace
 numbers. Legacy child `/plan` responses normalize missing steps read-only; child
 links persist before execution. Ordinary task lists hide deepening children while
 keeping direct audit access. Previous integrity versions require review, not rewrite.
-Deep-research ReAct allowances can grow from the configured base according to depth
-and breadth, while remaining capped by the shared tool, LLM, token and time budget.
+Deep-research ReAct allowances can grow from the configured base according to depth,
+breadth and comparison-contract complexity. Core discovery/fetch tools receive a
+broader task-aware per-tool allowance while the shared tool, LLM, token and time
+limits remain safety ceilings rather than the research strategy itself.
 Full tool bodies remain in Trace; persisted ReAct observations retain only bounded
 decision summaries and snapshot excerpts so `/plan` polling does not duplicate them.
 
@@ -64,7 +131,8 @@ decimal values and URLs. See [latest verification and limits](RELEASE_VALIDATION
 Tool success is not research completion. Missing required configuration blocks
 execution without discarding a draft. `GET /api/runtime/capabilities` discloses
 configuration presence (never secrets); `GET /api/tasks/{run_id}/preflight`
-checks the actual plan. Neither endpoint verifies external connectivity.
+checks the actual plan. Neither endpoint verifies external connectivity; the
+explicit R10 `POST /api/runtime/preflight` does.
 
 - Local file/SQL plans need no search or model keys unless LLM mode is requested.
 - Empty upstream results skip dependent fetches. Zero usable evidence or a failed
@@ -81,9 +149,12 @@ checks the actual plan. Neither endpoint verifies external connectivity.
   records are excluded from trusted trends/routing; active evidence revisions are
   append-only. No automatic database purge or historical rewrite is performed.
 
-The **Deep Web template**, **ReAct execution mode**, and deployment-level
-`DEEP_RESEARCH_ENABLED` switch are separate. The switch only adds rounds to
-ReAct. Follow-up learning notes are not supported conclusions: inspect their
+The **Deep Web template**, automatically selected execution mode, and deployment-level
+`DEEP_RESEARCH_ENABLED` switch are separate. New-research UI no longer submits a
+manual Planned/ReAct override; the backend records the deterministic routing reason.
+Its default retrieval strategy is also automatic, allowing technical-comparison
+tasks to infer `technical_facts`. The switch only adds rounds to ReAct. Follow-up
+learning notes are not supported conclusions: inspect their
 linked sub-runs. D01–D11 now have API-connected pages. R6 shared-state,
 responsive and keyboard/focus changes are implemented locally; browser visual
 and current Figma reconciliation checks remain unverified. R7 regression and
@@ -118,7 +189,9 @@ external-provider availability; see the [validation ledger](RELEASE_VALIDATION.m
 ReAct rebuilds a bounded source queue from persisted traces, not the last few
 summary strings. It retains URLs, titles, excerpts, source/Trace identities,
 fetch status, content basis and remaining fetch gaps. Up to 64 sources are kept;
-the prompt exposes 12 with domain diversity and unread sources prioritized.
+the prompt exposes a compact domain-diverse mix that always includes fetched
+evidence alongside priority pending sources. The full queue is not duplicated in
+persisted `plan_json`; it is rebuilt from Trace and only gap summaries are retained.
 Credential-bearing URLs and demonstration results are excluded. Source text is
 untrusted data, never permission to execute instructions. Deepening prompts also
 retain source URLs and originating Run/Trace identities.
@@ -133,12 +206,14 @@ existing evidence/Trace; it cannot expose an intermediate report as final.
 
 The optional estimated-cost cap is in CNY and disabled by default. A nonzero cap
 requires deployment-provided conservative tool/token price estimates; unknown
-prices block external calls. Missing token usage retains the conservative input
-bytes/output-token reservation. This is not an exact tokenizer or billing cap.
+prices block external calls. Missing token usage retains a conservative language-
+aware prompt/output reservation (CJK characters are not counted as UTF-8 bytes),
+then reconciles to provider usage when available. This is not an exact tokenizer
+or billing cap.
 Time limits stop new work; in-flight calls retain transport timeouts. Tool counts
 are invocations, not every URL/HTTP request within a reader. Draft planning,
 independent tool API calls and separate post-run memory extraction are outside
-the execution ledger. See `.env.example` for `RESEARCH_*` settings.
+the execution ledger. See `.env.example.full` for advanced `RESEARCH_*` settings.
 
 New runs use `trace-source-v2`: plan goals are not treated as observed facts.
 Extractive claims cite their actual source passages; report rendering and the
@@ -346,6 +421,7 @@ Prerequisite: Docker Desktop or Docker Engine with Compose v2.
 git clone https://github.com/piao666/traceable-research-agent.git
 Set-Location traceable-research-agent
 Copy-Item .env.example .env
+# Edit .env and provide LLM_BASE_URL, LLM_MODEL, LLM_API_KEY and TAVILY_API_KEY.
 docker compose up --build -d
 ```
 
@@ -428,16 +504,18 @@ When a default port is unavailable, set `TRACEABLE_API_PORT`,
 
 ## Configuration
 
-Copy `.env.example` to `.env`; it documents every available setting. `.env` is
-local-only and must never be committed.
+Copy `.env.example` to `.env` for the minimum real setup. Advanced overrides are
+documented in `.env.example.full`; the isolated fixture setup is
+`.env.example.offline`. `.env` is local-only and must never be committed.
 
 | Setting | Default | Purpose |
 |---|---|---|
 | `AUTH_ENABLED` | `false` | Enable local API-key authentication. |
 | `DEMO_API_KEY` | empty | API key required when authentication is enabled. |
-| `EXECUTION_MODE` | `planned` | Choose stable planned execution or `react`. |
-| `OFFLINE_MODE` | `false` | Disable remote tool use for offline operation. |
-| `REPORT_GENERATION_MODE` | `deterministic` | Use offline-safe reporting or configured LLM reporting. |
+| `RESEARCH_PROFILE` | `standard` in code; `deep` in `.env.example` | Select coherent real-deep, real-standard or offline defaults. |
+| `EXECUTION_MODE` | Profile-dependent | Advanced override for automatic routing defaults. |
+| `OFFLINE_MODE` | Profile-dependent | Advanced override; use the `offline` Profile for normal offline work. |
+| `REPORT_GENERATION_MODE` | Profile-dependent | Advanced override for deterministic or configured-LLM reporting. |
 | `TAVILY_API_KEY` | empty | Enable real web search. |
 | `QWEN_API_KEY` / `DEEPSEEK_API_KEY` | empty | Enable an optional configured LLM provider. |
 | `FILE_READER_ALLOWED_ROOTS` | `workspace/docs` | Allowlisted roots for local file reads. |
@@ -525,9 +603,9 @@ workspace/     local databases, reports, artifacts, and skills
 
 ## Quality Checks
 
-The current full offline pytest run collected 612 tests: 610 passed, 2 were
+The current full offline pytest run collected 651 tests: 649 passed, 2 were
 conditionally skipped, none failed, and no external network attempt was made.
-The latest frontend baseline is 103 tests; typecheck, lint and build passed;
+The latest frontend baseline is 104 tests; typecheck, lint and build passed;
 isolated route/fixture QA: 59 checks passed. Browser layout and live-provider
 acceptance remain separate manual checks. See
 [release validation](RELEASE_VALIDATION.md) for limits.
@@ -541,13 +619,17 @@ Run the same core checks locally:
 docker compose config --quiet
 ```
 
+The offline runner automatically uses a disposable SQLite database and never
+opens the deployment workspace database.
+
 ## Roadmap
 
 - [x] Traceable planned and optional ReAct execution
 - [x] Evidence provenance, citation validation, and human plan approval
 - [x] Source-tier governance, cached extraction, PDF evidence, and academic verification
 - [x] Docker deployment configuration and local runtime persistence implementation
-- [ ] R9 real Docker build/restart, Streamlit and browser acceptance
+- [x] R10.0a research-to-finalization handoff and comparison coverage stabilization
+- [ ] R10 real Docker build/restart and live provider preflight/acceptance
 - [ ] Add a repository license before public redistribution
 - [ ] Expand operational observability for long-running self-hosted instances
 

@@ -16,10 +16,13 @@ class ToolErrorCategory(str, Enum):
     TIMEOUT = "timeout"
     RATE_LIMITED = "rate_limited"
     AUTH_ERROR = "auth_error"
+    PERMISSION_ERROR = "permission_error"
     PROVIDER_ERROR = "provider_error"
     INVALID_RESULT = "invalid_result"
     INTERNAL_ERROR = "internal_error"
     INVALID_REQUEST = "invalid_request"
+    MODEL_NOT_FOUND = "model_not_found"
+    CONTEXT_OVERFLOW = "context_overflow"
     POLICY_ERROR = "policy_error"
     UNAVAILABLE = "unavailable"
     NOT_FOUND = "not_found"
@@ -64,7 +67,9 @@ def classify_tool_error(error_type: object, error_message: object = None) -> Too
         return ToolErrorCategory.RATE_LIMITED
     if "timeout" in text or "timed out" in text:
         return ToolErrorCategory.TIMEOUT
-    if normalized in {"missing_api_key", "auth_error", "unauthorized", "forbidden"} or any(
+    if normalized in {"permission_error", "forbidden"}:
+        return ToolErrorCategory.PERMISSION_ERROR
+    if normalized in {"missing_api_key", "auth_error", "unauthorized"} or any(
         term in text for term in ("authentication", "unauthorized", "invalid credential")
     ) or re.search(r"\bhttp\s+401\b", text):
         return ToolErrorCategory.AUTH_ERROR
@@ -76,7 +81,11 @@ def classify_tool_error(error_type: object, error_message: object = None) -> Too
         "parse_error",
     }:
         return ToolErrorCategory.INVALID_RESULT
-    if normalized in {"invalid_args", "invalid_arguments", "invalid_sql"}:
+    if normalized == "model_not_found":
+        return ToolErrorCategory.MODEL_NOT_FOUND
+    if normalized == "context_overflow":
+        return ToolErrorCategory.CONTEXT_OVERFLOW
+    if normalized in {"invalid_args", "invalid_arguments", "invalid_sql", "invalid_request"}:
         return ToolErrorCategory.INVALID_REQUEST
     if normalized in {
         "safety_rejected",
@@ -106,6 +115,7 @@ def classify_tool_error(error_type: object, error_message: object = None) -> Too
         "mcp_remote_error",
         "mcp_remote_call_failed",
         "provider_error",
+        "provider_unavailable",
         "sql_error",
         "search_error",
         "read_error",

@@ -475,7 +475,11 @@ def main() -> None:
                 store.update_agent_run_plan(db, failure.run_id, fail_plan)
                 summary = run_plan(db, failure.run_id)
                 traces = store.list_tool_traces(db, failure.run_id)
-                assert_true(summary["status"] == "completed", "remote failure caused run failure")
+                assert_true(summary["status"] == "failed", "evidence-free remote failure passed the quality gate")
+                assert_true(
+                    (summary.get("research_outcome") or {}).get("error_code") == "no_usable_evidence",
+                    "remote failure did not retain the explicit no-evidence outcome",
+                )
                 assert_true(
                     any(
                         trace.tool_name == "firecrawl_fail.fail"

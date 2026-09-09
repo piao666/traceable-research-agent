@@ -85,5 +85,6 @@ def judge_report(
         result.setdefault("missing_dimensions", [])
         return result
     except (json.JSONDecodeError, Exception) as exc:
-        logger.warning("LLM judge failed: %s, using fallback", exc)
+        from app.security.redaction import redact_text
+        logger.warning("LLM judge failed: %s, using fallback", redact_text(exc))
         return dict(_DETERMINISTIC_FALLBACK)

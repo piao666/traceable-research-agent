@@ -15,7 +15,7 @@ from app.agent.preflight import enforce_execution_readiness
 from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, load_observations, report_subject, result_integrity, skip_dependency
 from app.agent.execution_policy import execute_with_policy
 from app.agent.budget import budgeted_execution
-from app.agent.report_generation import resolve_report_llm_client
+from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
 from app.agent.source_governance import (
     execute_targeted_refetches,
@@ -692,37 +692,34 @@ def run_plan(
         report_llm_responses: list[Any] = []
         citation_validation_reports: list[Any] = []
         reference_verification_reports: list[Any] = []
-        markdown = generate_markdown_report(
-            report_subject(run),
-            plan,
-            observations,
-            traces,
-            llm_client=_llm,
-            provenance_bundle=provenance_bundle,
-            report_type=run.report_type,
-            usage_callback=report_llm_responses.append,
-            citation_validation_callback=citation_validation_reports.append,
-            reference_verification_callback=reference_verification_reports.append,
-        )
-        if report_llm_responses:
-            from app.llm.cost import estimate_cost
-
-            response = report_llm_responses[-1]
-            usage = response.usage
-            report_cost = estimate_cost(response.provider, response.model, usage)
-            record_trace_event(
-                db=db,
-                run_id=run_id,
-                step_no=max((trace.step_no for trace in traces), default=0) + 1,
-                tool_name="report_synthesis",
-                status="success",
-                input_data={"provider": response.provider, "model": response.model},
-                output_summary="LLM report synthesis completed.",
-                output_data={"provider": response.provider, "model": response.model},
-                token_in=usage.prompt_tokens,
-                token_out=usage.completion_tokens,
-                estimated_cost=report_cost,
+        try:
+            markdown = generate_markdown_report(
+                report_subject(run),
+                plan,
+                observations,
+                traces,
+                llm_client=_llm,
+                provenance_bundle=provenance_bundle,
+                report_type=run.report_type,
+                usage_callback=report_llm_responses.append,
+                citation_validation_callback=citation_validation_reports.append,
+                reference_verification_callback=reference_verification_reports.append,
             )
+        finally:
+            if report_llm_responses:
+                response = report_llm_responses[-1]
+                record_report_synthesis_trace(
+                    db,
+                    run_id,
+                    traces,
+                    response,
+                    success=bool(
+                        response.success
+                        and str(response.content or "").strip()
+                        and not response.metadata.get("error_type")
+                    ),
+                )
+        if report_llm_responses:
             traces = store.list_tool_traces(db, run_id)
         report_path = save_report(run_id, markdown)
         run = store.update_agent_run_report(db, run_id, report_path)

@@ -145,9 +145,9 @@ def observe_result(state: dict, name: str, arguments: dict, result: ToolResult, 
         # A page failure must not disable the entire web/PDF reader.
         page_scoped = name in {"web_fetcher", "pdf_reader"} or (
             result.metadata.get("http_status") == 403 and category != "rate_limited")
-        if category in {"auth_error", "unavailable"} and not page_scoped:
+        if category in {"auth_error", "permission_error", "model_not_found", "unavailable"} and not page_scoped:
             item.update(status="disabled", reason=category, retry_at=0)
-        elif category in {"policy_error", "not_found", "invalid_request", "auth_error"}:
+        elif category in {"policy_error", "not_found", "invalid_request", "auth_error", "permission_error", "context_overflow"}:
             item.setdefault("blocked_inputs", {})[input_key(arguments, name, state)] = category
             item.update(status="available", reason="input_blocked", retry_at=0)
         elif category in {"timeout", "rate_limited", "provider_error"} and not page_scoped:
@@ -164,9 +164,14 @@ def observe_result(state: dict, name: str, arguments: dict, result: ToolResult, 
     return dict(item)
 
 
-def recovery_context(state: dict, allowed: list[str], limit: int, source_mode: str) -> dict:
+def recovery_context(state: dict, allowed: list[str], limit: int | dict[str, int], source_mode: str) -> dict:
+    def tool_limit(name: str) -> int:
+        if isinstance(limit, dict):
+            return max(1, int(limit.get(name, 1)))
+        return max(1, int(limit))
+
     return {"source_mode": source_mode, "mock_allowed": source_mode in {"mock", "offline"},
-            "tool_status": {name: {"unavailable_reason": unavailable_reason(state, name, limit),
-                "remaining_attempts": max(0, limit - int(state.get("tool_call_counts", {}).get(name, 0)))}
+            "tool_status": {name: {"unavailable_reason": unavailable_reason(state, name, tool_limit(name)),
+                "remaining_attempts": max(0, tool_limit(name) - int(state.get("tool_call_counts", {}).get(name, 0)))}
                 for name in allowed},
             "instruction": "Choose another permitted tool when one fails or is unavailable. Never replace real evidence with mock data."}

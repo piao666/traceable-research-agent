@@ -33,7 +33,11 @@ class SourcePackRegistry:
             for item in os.getenv("MCP_BRIDGE_ENABLED_PROVIDERS", "firecrawl,exa,context7").split(",")
             if item.strip()
         ]
-        fake_mode = env_bool("MCP_BRIDGE_FAKE_MODE", True)
+        profile = os.getenv("RESEARCH_PROFILE", "").strip().lower()
+        # Preserve the pre-Profile development default, while explicit real
+        # Profiles never silently activate fixture providers.
+        default_fake_mode = True if not profile else profile == "offline"
+        fake_mode = env_bool("MCP_BRIDGE_FAKE_MODE", default_fake_mode)
         timeout_seconds = float(os.getenv("MCP_BRIDGE_TIMEOUT_SECONDS", "20") or 20)
         max_results = env_int("MCP_BRIDGE_MAX_RESULTS", 20)
         max_content_chars = env_int("MCP_BRIDGE_MAX_CONTENT_CHARS", 12000)

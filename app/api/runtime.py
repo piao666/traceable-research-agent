@@ -1,4 +1,4 @@
-"""Read-only local runtime capability disclosure; no secret editing or probing."""
+"""Non-secret local disclosure plus an explicit, quota-consuming preflight probe."""
 from fastapi import APIRouter, Depends
 from datetime import datetime, timezone
 import os
@@ -7,7 +7,12 @@ from sqlalchemy.orm import Session
 
 from app.agent.preflight import capability_summary
 from app.config import settings
-from app.schemas import RuntimeCapabilitiesResponse, RuntimeDiagnosticsResponse, RuntimeCheck
+from app.schemas import (
+    RuntimeCapabilitiesResponse,
+    RuntimeDiagnosticsResponse,
+    RuntimeCheck,
+    RuntimePreflightResponse,
+)
 from app.database import get_db, WORKSPACE_DIR
 from app.security import require_api_key
 
@@ -17,6 +22,15 @@ router = APIRouter(prefix="/runtime", tags=["runtime"], dependencies=[Depends(re
 @router.get("/capabilities", response_model=RuntimeCapabilitiesResponse)
 def get_runtime_capabilities() -> RuntimeCapabilitiesResponse:
     return RuntimeCapabilitiesResponse(**capability_summary(settings))
+
+
+@router.post("/preflight", response_model=RuntimePreflightResponse)
+def verify_runtime_capabilities() -> RuntimePreflightResponse:
+    """Explicitly perform minimal real LLM/search/fetch probes."""
+
+    from app.runtime.preflight import run_runtime_preflight
+
+    return RuntimePreflightResponse(**run_runtime_preflight(settings))
 
 
 @router.get("/diagnostics", response_model=RuntimeDiagnosticsResponse)

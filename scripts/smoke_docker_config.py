@@ -55,7 +55,16 @@ def main() -> None:
     _assert("scripts/migrate_database.py" in entrypoint, "database migrations missing")
     _assert("scripts/init_demo_db.py" in entrypoint, "demo database initialization missing")
 
-    for token in ("AUTH_ENABLED=false", "DEMO_API_KEY=", "QWEN_API_KEY=", "DEEPSEEK_API_KEY="):
+    for token in (
+        "RESEARCH_PROFILE=deep",
+        "LLM_PROVIDER=openai_compatible",
+        "LLM_BASE_URL=",
+        "LLM_MODEL=",
+        "LLM_API_KEY=",
+        "SEARCH_PROVIDER=tavily",
+        "TAVILY_API_KEY=",
+        "AUTH_ENABLED=false",
+    ):
         _assert(token in env_example, f".env.example missing {token}")
     for name in ("streamlit", "pytest", "pyarrow", "pandas", "numpy", "pydeck"):
         _assert(name not in api_requirements, f"API includes UI/test dependency: {name}")

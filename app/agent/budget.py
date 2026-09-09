@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+import math
 import time
 from contextvars import ContextVar
 from functools import wraps
@@ -27,6 +28,43 @@ class BudgetExceeded(RuntimeError):
     def __init__(self, reason):
         self.reason = reason
         super().__init__("Research budget stopped: " + reason)
+
+
+class FinalizationRequired(BudgetExceeded):
+    """Signal a root research loop to stop discovery and spend its report reserve.
+
+    This is deliberately non-terminal: unlike a hard budget breach it must not
+    persist ``stop_reason`` before the root Run has had a chance to finalize.
+    """
+
+
+def estimate_text_tokens(value: str) -> int:
+    """Conservative tokenizer-independent estimate without counting UTF-8 bytes.
+
+    CJK characters commonly occupy one token while ordinary ASCII prose is
+    closer to four characters per token.  A 20% margin covers JSON punctuation,
+    code and tokenizer differences until a provider reports actual usage.
+    """
+
+    text = str(value or "")
+    cjk = sum(
+        1
+        for char in text
+        if ("\u3400" <= char <= "\u4dbf")
+        or ("\u4e00" <= char <= "\u9fff")
+        or ("\uf900" <= char <= "\ufaff")
+    )
+    non_ascii = sum(1 for char in text if ord(char) > 127) - cjk
+    ascii_chars = len(text) - cjk - non_ascii
+    estimate = math.ceil(ascii_chars / 4) + cjk + math.ceil(non_ascii / 2)
+    return max(1, math.ceil(estimate * 1.2))
+
+
+def estimate_message_tokens(messages, max_tokens: int) -> int:
+    """Estimate prompt plus requested completion with per-message overhead."""
+
+    prompt = sum(estimate_text_tokens(message.content) + 12 for message in messages)
+    return prompt + max(0, int(max_tokens))
 
 
 def limits(settings):
@@ -94,6 +132,8 @@ class BudgetRuntime:
                 "llm_calls" if row.llm_calls + llm > config["max_llm_calls"] else
                 "tokens" if row.reserved_tokens + tokens > config["max_tokens"] else
                 "finalization_reserve" if row.reserved_tokens + tokens > token_limit or row.llm_calls + llm > llm_limit else "estimated_cost")
+            if reason == "finalization_reserve" and self.run_id == self.root_id and not final:
+                raise FinalizationRequired(reason)
             self.stop(reason)
 
     def tool(self, name):
@@ -151,9 +191,9 @@ class BudgetClient(LLMClient):
         runtime = current_budget()
         if runtime is None or not self.is_available():
             return self.client.complete(messages, temperature=temperature, max_tokens=max_tokens)
-        # Conservative tokenizer-independent admission; missing usage keeps this
-        # reservation charged, never treats an unknown provider bill as free.
-        reserved = sum(len(m.content.encode("utf-8")) + 32 for m in messages) + max_tokens
+        # Missing provider usage keeps this conservative reservation charged;
+        # known usage below reconciles it to the provider's actual accounting.
+        reserved = estimate_message_tokens(messages, max_tokens)
         rate = runtime.limits["llm_cost_per_million_tokens"]
         if runtime.limits["max_estimated_cost"] and rate is None:
             runtime.stop("llm_price_unconfigured")

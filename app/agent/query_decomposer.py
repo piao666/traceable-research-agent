@@ -13,9 +13,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Callable
 
 from app.llm.base import LLMClient, LLMMessage
+from app.llm.errors import classify_transport_error
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,7 @@ def decompose_task(
     llm_client: LLMClient,
     n: int = 4,
     force: bool = False,
+    error_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[str]:
     """Decompose a broad task into N independent sub-questions.
 
@@ -141,8 +143,21 @@ def decompose_task(
         logger.debug("Task too specific for decomposition, skipping: %s", task[:60])
         return [task]
 
-    if not llm_client.is_available():
+    try:
+        available = llm_client.is_available()
+    except Exception as exc:
+        from app.security.redaction import redact_text
+        logger.warning("Decomposition LLM availability check failed: %s", redact_text(exc))
+        if error_callback:
+            error_callback({
+                "role": "planner_decomposer",
+                "error_type": classify_transport_error(exc).error_type,
+            })
+        return decompose_task_by_rules(task, n=n)
+    if not available:
         logger.info("LLM client unavailable, using rule-based decomposition fallback.")
+        if error_callback:
+            error_callback({"role": "planner_decomposer", "error_type": "provider_unavailable"})
         return decompose_task_by_rules(task, n=n)
 
     messages = [
@@ -159,13 +174,30 @@ def decompose_task(
     try:
         response = llm_client.complete(messages)
         if not response.success or not response.content:
-            logger.warning("Decomposition LLM call failed: %s", response.error_message)
+            from app.security.redaction import redact_text
+            logger.warning("Decomposition LLM call failed: %s", redact_text(response.error_message))
+            if error_callback:
+                error_callback({
+                    "role": "planner_decomposer",
+                    "error_type": str(response.metadata.get("error_type") or (
+                        "malformed_response" if response.success else "provider_unavailable"
+                    )),
+                    "provider": response.provider,
+                    "model": response.model,
+                })
             return [task]
 
         sub_queries = _parse_sub_queries(response.content)
 
         if len(sub_queries) < 2:
             logger.info("Decomposition produced too few items (%d), using original task.", len(sub_queries))
+            if error_callback:
+                error_callback({
+                    "role": "planner_decomposer",
+                    "error_type": "structured_output_invalid",
+                    "provider": response.provider,
+                    "model": response.model,
+                })
             return [task]
 
         sub_queries = sub_queries[:n]
@@ -173,7 +205,13 @@ def decompose_task(
         return sub_queries
 
     except Exception as exc:
-        logger.warning("Sub-query decomposition error: %s", exc)
+        from app.security.redaction import redact_text
+        logger.warning("Sub-query decomposition error: %s", redact_text(exc))
+        if error_callback:
+            error_callback({
+                "role": "planner_decomposer",
+                "error_type": classify_transport_error(exc).error_type,
+            })
         return [task]
 
 
@@ -182,6 +220,7 @@ def decompose_and_annotate_plan(
     plan: dict[str, Any],
     llm_client: LLMClient,
     n: int = 4,
+    error_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Decompose task and attach sub_queries to the plan for downstream use.
 
@@ -194,7 +233,7 @@ def decompose_and_annotate_plan(
     if plan.get("sub_queries"):
         return plan   # already decomposed
 
-    sub_queries = decompose_task(task, llm_client, n=n)
+    sub_queries = decompose_task(task, llm_client, n=n, error_callback=error_callback)
     plan["sub_queries"] = sub_queries
     plan["decomposed"] = len(sub_queries) > 1
     return plan

@@ -8,12 +8,40 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 import re
 
+from app.research.coverage import comparison_requirements
+
+
+def _split_comparison_terms(value: str) -> list[str]:
+    parts = re.split(r"\s*(?:、|，|,|；|;|以及|和|与|\bvs\.?\b|\bversus\b)\s*", value, flags=re.I)
+    return [part.strip(" ：:。.") for part in parts if part.strip(" ：:。.")]
+
+
+def _comparison_scope(task: str) -> tuple[list[str], list[str]]:
+    entity_match = re.search(
+        r"(?:对比|比较)\s*(.+?)(?:的核心差异|的主要差异|之间的差异|的差异)", task, re.I
+    )
+    dimension_match = re.search(r"从\s*(.+?)\s*(?:等)?方面", task, re.I)
+    if not entity_match or not dimension_match:
+        return [], []
+    entities = _split_comparison_terms(entity_match.group(1))
+    dimensions = _split_comparison_terms(dimension_match.group(1))
+    return entities, dimensions
+
 
 def build_task_contract(task: str, created_at: datetime | None = None) -> dict:
     anchor = (created_at or datetime.now(timezone.utc)).date()
     contract = {"version": "task-contract-v1", "as_of": anchor.isoformat(),
                 "original_task": task, "goal_kind": "research", "period": None,
                 "unresolved_fields": []}
+    entities, dimensions = _comparison_scope(task)
+    if len(entities) >= 2 and len(dimensions) >= 2:
+        contract.update(
+            version="task-contract-v2",
+            goal_kind="comparison",
+            entities=entities,
+            dimensions=dimensions,
+            requirements=comparison_requirements(entities, dimensions),
+        )
     match = re.search(r"(?:近|最近|过去)\s*(\d{1,2}|十)\s*年|(?:last|past)\s+(\d{1,2})\s+years", task, re.I)
     if match:
         raw = match.group(1) or match.group(2)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import json
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -54,3 +55,69 @@ class LLMClient(ABC):
         max_tokens: int = 2000,
     ) -> LLMResponse:
         """Complete a chat request."""
+
+    def capabilities(self) -> dict[str, Any]:
+        """Describe adapter features without making a network request."""
+
+        return {
+            **self.describe(),
+            "chat_completions": True,
+            "structured_output": True,
+            "usage_normalization": True,
+            "streaming": False,
+        }
+
+    def health_check(self) -> LLMResponse:
+        """Perform the same minimal structured call used by runtime preflight."""
+
+        return self.structured_complete(
+            [
+                LLMMessage(role="system", content="Return only a JSON object."),
+                LLMMessage(role="user", content='Return exactly {"ok":true}.'),
+            ],
+            temperature=0.0,
+            max_tokens=16,
+        )
+
+    def structured_complete(
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.0,
+        max_tokens: int = 2000,
+    ) -> LLMResponse:
+        """Return a completion only when its content is a JSON object."""
+
+        response = self.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        if not response.success:
+            return response
+        try:
+            parsed = json.loads(str(response.content or ""))
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            return response
+        return LLMResponse(
+            success=False,
+            provider=response.provider,
+            model=response.model,
+            error_message="LLM structured response was not a JSON object.",
+            metadata={**response.metadata, "error_type": "structured_output_invalid"},
+            usage=response.usage,
+        )
+
+    @staticmethod
+    def normalize_usage(raw: dict[str, Any] | None) -> LLMUsage | None:
+        """Normalize OpenAI-compatible usage without assuming it is present."""
+
+        if not isinstance(raw, dict) or not raw:
+            return None
+        return LLMUsage(
+            prompt_tokens=max(0, int(raw.get("prompt_tokens") or 0)),
+            completion_tokens=max(0, int(raw.get("completion_tokens") or 0)),
+            total_tokens=max(0, int(raw.get("total_tokens") or 0)),
+        )
+
+    def stream(self, messages: list[LLMMessage], **_kwargs: Any):
+        """Streaming is an optional adapter capability and is not enabled yet."""
+
+        raise NotImplementedError("This LLM adapter does not support streaming.")

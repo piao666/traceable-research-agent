@@ -10,7 +10,7 @@ import { NewResearchPage } from "./NewResearchPage";
 const time = "2026-09-02T00:00:00";
 const session: SessionDetail = { session_id: "s1", title: "会话甲", turns: [], created_at: time, updated_at: time };
 const memory: Memory = { memory_id: "m1", content: "偏好中文", kind: "preference", extraction_method: "rule", confidence: 0.8, status: "pending", source_run_id: "r1", source_session_id: "s1", created_at: time, updated_at: time };
-const capabilities = { offline_mode: false, tavily_configured: false, llm_provider: "qwen", llm_configured: false, react_provider: "qwen", react_configured: false, react_enabled: true, deep_research_enabled: false, report_generation_mode: "deterministic", connectivity_verified: false };
+const capabilities = { research_profile: "standard", research_environment_ready: false, search_provider: "tavily", offline_mode: false, tavily_configured: false, llm_provider: "qwen", llm_configured: false, react_provider: "qwen", react_configured: false, react_enabled: true, deep_research_enabled: false, report_generation_mode: "deterministic", connectivity_verified: false };
 const diagnostics = { checked_at: time, checks: [{ name: "service", status: "ok" as const, message: "API 请求已响应" }], capabilities, execution_mode: "planned", memory_llm_extraction_enabled: false, mcp_enabled: false, mcp_configured: false };
 
 beforeEach(() => {
@@ -72,6 +72,11 @@ it("carries session into plan creation and isolates its draft", async () => {
   fireEvent.click(screen.getByRole("button", { name: "创建并审阅计划" }));
   await screen.findByText("计划审阅页");
   expect(create).toHaveBeenCalledWith(expect.objectContaining({ task: "会话草稿", session_id: "s1", require_plan_approval: true }));
+  const payload = create.mock.calls[0][0];
+  expect(payload).not.toHaveProperty("execution_mode_override");
+  expect(payload).not.toHaveProperty("retrieval_profile");
+  expect(screen.queryByText("Planned")).toBeNull();
+  expect(screen.queryByText("ReAct")).toBeNull();
   expect(sessionStorage.getItem("tra:new-task")).toBe("独立草稿");
   expect(sessionStorage.getItem("tra:new-task:s1")).toBeNull();
 });

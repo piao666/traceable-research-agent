@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session
 
@@ -15,19 +16,35 @@ from app.tools.registry import get_tool
 
 def capability_summary(settings: Settings) -> dict[str, Any]:
     """Presence is not a connectivity test. Never return endpoints or credentials."""
+    from app.runtime.capabilities import local_capability_items, required_runtime_ready
+
     provider = settings.llm_provider
     react_provider = settings.react_llm_provider or provider
+    items = local_capability_items(settings)
+    llm_item = next((item for item in items if item.get("name") == "llm"), {})
+    react_config = settings.get_llm_provider_config(react_provider)
+    react_base = urlsplit(str(react_config.get("base_url") or ""))
+    react_configured = react_provider == "deterministic" or bool(
+        settings.get_llm_api_key(react_provider)
+        and react_base.scheme in {"http", "https"}
+        and react_base.netloc
+        and (settings.react_llm_model or react_config.get("model"))
+    )
     return {
+        "research_profile": settings.research_profile,
+        "research_environment_ready": required_runtime_ready(settings, items),
+        "search_provider": settings.search_provider,
         "offline_mode": settings.offline_mode,
         "tavily_configured": bool(settings.tavily_api_key),
         "llm_provider": provider,
-        "llm_configured": bool(settings.get_llm_api_key(provider)),
+        "llm_configured": bool(llm_item.get("configured")),
         "react_provider": react_provider,
-        "react_configured": bool(settings.get_llm_api_key(react_provider)),
+        "react_configured": react_configured,
         "react_enabled": settings.react_enabled,
         "deep_research_enabled": settings.deep_research_enabled,
         "report_generation_mode": settings.report_generation_mode,
         "connectivity_verified": False,
+        "items": items,
     }
 
 

@@ -1,11 +1,12 @@
 """Release regressions using only disposable local data."""
+import os
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
 
 from scripts.init_demo_db import init_demo_db
-from scripts.run_offline_tests import is_loopback
+from scripts.run_offline_tests import isolated_test_database, is_loopback
 
 
 class R7ReleaseTests(unittest.TestCase):
@@ -37,6 +38,21 @@ class R7ReleaseTests(unittest.TestCase):
             self.assertTrue(is_loopback(host))
         for host in ("example.com", "192.168.1.1", "8.8.8.8", "localhost.example.com"):
             self.assertFalse(is_loopback(host))
+
+    def test_offline_runner_uses_temporary_database_and_restores_environment(self):
+        original = os.environ.get("TRACE_DATABASE_PATH")
+        os.environ["TRACE_DATABASE_PATH"] = "operator-database.sqlite"
+        try:
+            with isolated_test_database() as path:
+                self.assertEqual(os.environ["TRACE_DATABASE_PATH"], path)
+                self.assertNotEqual(path, "operator-database.sqlite")
+                self.assertFalse(Path(path).exists())
+            self.assertEqual(os.environ["TRACE_DATABASE_PATH"], "operator-database.sqlite")
+        finally:
+            if original is None:
+                os.environ.pop("TRACE_DATABASE_PATH", None)
+            else:
+                os.environ["TRACE_DATABASE_PATH"] = original
 
     def test_docker_context_excludes_local_status_and_database_sidecars(self):
         root = Path(__file__).resolve().parents[1]

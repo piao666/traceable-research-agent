@@ -29,6 +29,9 @@ class TaskCreateRequest(BaseModel):
 
 
 class RuntimeCapabilitiesResponse(BaseModel):
+    research_profile: str = "standard"
+    research_environment_ready: bool = False
+    search_provider: str = "tavily"
     offline_mode: bool
     tavily_configured: bool
     llm_provider: str
@@ -39,6 +42,36 @@ class RuntimeCapabilitiesResponse(BaseModel):
     deep_research_enabled: bool
     report_generation_mode: str
     connectivity_verified: bool = False
+    items: list["RuntimeCapability"] = Field(default_factory=list)
+
+
+class RuntimeCapability(BaseModel):
+    name: str
+    category: str
+    configured: bool
+    reachable: bool | None = None
+    usable: bool
+    mode: str
+    detail: str
+    error_type: str | None = None
+    checked_at: datetime
+    checks: dict[str, bool] = Field(default_factory=dict)
+
+
+class RuntimePreflightBlocker(BaseModel):
+    capability: str
+    error_type: str
+    message: str
+
+
+class RuntimePreflightResponse(BaseModel):
+    checked_at: datetime
+    profile: str
+    ready: bool
+    verified: bool
+    capabilities: list[RuntimeCapability]
+    blockers: list[RuntimePreflightBlocker]
+    warnings: list[str]
 
 
 class RuntimeCheck(BaseModel):

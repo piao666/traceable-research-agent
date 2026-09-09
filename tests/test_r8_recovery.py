@@ -47,6 +47,22 @@ class ScriptedLLM:
         return LLMResponse(success=True, content=json.dumps(action), provider="fixture", model="offline")
 
 
+class FailedLLM(ScriptedLLM):
+    def __init__(self, error_type: str):
+        super().__init__([])
+        self.error_type = error_type
+
+    def complete(self, messages, **kwargs):
+        self.payloads.append(json.loads(messages[-1].content))
+        return LLMResponse(
+            success=False,
+            provider="fixture",
+            model="offline",
+            error_message=f"Fixture {self.error_type}.",
+            metadata={"error_type": self.error_type},
+        )
+
+
 class RecoveryTests(unittest.TestCase):
     def setUp(self):
         self.specs = patch.dict(registry._tool_specs, clear=True)
@@ -72,12 +88,12 @@ class RecoveryTests(unittest.TestCase):
         return {**_skill_to_plan(skill, "Compare evaluation frameworks", allowed, "real"),
                 "execution_mode": "react"}
 
-    def run_script(self, actions, handler=None, plan=None, settings=None):
+    def run_script(self, actions, handler=None, plan=None, settings=None, client=None):
         from app.agent.react_executor import run_react_task
         plan = plan or self.skill_plan()
         run = store.create_agent_run(self.db, "Compare evaluation frameworks", "summary", "real")
         store.update_agent_run_plan(self.db, run.run_id, plan)
-        client = ScriptedLLM(actions)
+        client = client or ScriptedLLM(actions)
 
         def fixture(tool, args):
             if tool == "tavily_search":
@@ -144,14 +160,91 @@ class RecoveryTests(unittest.TestCase):
         self.assertNotIn("mcp_github_search", client.payloads[2]["allowed_tools"])
         self.assertEqual(json.loads(run.plan_json)["research_outcome"]["effective_evidence_count"], 3)
 
+    def test_terminal_llm_error_is_traced_and_falls_back_without_retry(self):
+        client = FailedLLM("auth_error")
+        run, result, _, _ = self.run_script([], client=client)
+        self.assertIn(result["status"], {"completed", "failed"})
+        self.assertEqual(len(client.payloads), 1)
+        traces = store.list_tool_traces(self.db, run.run_id)
+        decision_trace = next(item for item in traces if item.tool_name == "react_decision")
+        self.assertEqual(json.loads(decision_trace.output_json)["metadata"]["error_type"], "auth_error")
+        fallback_trace = next(item for item in traces if item.tool_name == "react_fallback")
+        self.assertEqual(json.loads(fallback_trace.output_json)["metadata"]["error_type"], "auth_error")
+
+    def test_planner_fallback_error_is_a_redacted_trace_event(self):
+        from app.api.tasks import _record_planner_fallback_trace
+        run = store.create_agent_run(self.db, "fixture", "summary", "mock")
+        plan = {
+            "planner_error": {
+                "error_type": "auth_error",
+                "message": "Authorization: Bearer secret-planner-token",
+            },
+            "llm_provider": "fixture",
+            "llm_model": "fixture",
+        }
+        _record_planner_fallback_trace(self.db, run.run_id, plan)
+        trace = store.list_tool_traces(self.db, run.run_id)[0]
+        serialized = f"{trace.input_json} {trace.output_json} {trace.error_message}"
+        self.assertEqual(trace.tool_name, "research_planner")
+        self.assertNotIn("secret-planner-token", serialized)
+        self.assertEqual(json.loads(trace.output_json)["metadata"]["error_type"], "auth_error")
+
+    def test_report_synthesis_failure_is_a_redacted_trace_event(self):
+        from app.agent.report_generation import record_report_synthesis_trace
+        run = store.create_agent_run(self.db, "fixture", "summary", "mock")
+        response = LLMResponse(
+            success=False,
+            provider="fixture",
+            model="fixture",
+            error_message="Authorization: Bearer secret-report-token",
+            metadata={
+                "error_type": "auth_error",
+                "provider_payload": "secret-report-token",
+            },
+        )
+        trace = record_report_synthesis_trace(
+            self.db,
+            run.run_id,
+            [],
+            response,
+            success=False,
+        )
+        serialized = f"{trace.input_json} {trace.output_json} {trace.error_message}"
+        self.assertEqual(trace.tool_name, "report_synthesis")
+        self.assertEqual(trace.status, "failed")
+        self.assertNotIn("secret-report-token", serialized)
+        self.assertEqual(json.loads(trace.output_json)["metadata"]["error_type"], "auth_error")
+
+    def test_context_overflow_switches_to_compact_prompt_window(self):
+        from app.agent.react_executor import _prompt_history
+        history = [{"step_no": index, "action": "fixture", "observation_summary": str(index)} for index in range(25)]
+        self.assertEqual(len(_prompt_history({"observation_history": history})), 20)
+        compact = _prompt_history({"observation_history": history, "llm_context_compacted": True})
+        self.assertEqual(len(compact), 6)
+        self.assertEqual(compact[0]["step_no"], 19)
+
     def test_tool_limit_does_not_end_other_research(self):
         settings = self.settings.model_copy(update={"react_same_tool_max_calls": 1})
+        plan = self.skill_plan()
+        plan["scenario_template"] = "standard"
         _, result, client, execute = self.run_script([
             decision("tavily_search", query="one"), decision("tavily_search", query="two"),
-            decision("web_fetcher", urls=[URL]), decision("finish")], settings=settings)
+            decision("web_fetcher", urls=[URL]), decision("finish")], settings=settings, plan=plan)
         self.assertEqual(result["status"], "completed")
         self.assertEqual(sum(c.args[0] == "tavily_search" for c in execute.call_args_list), 1)
         self.assertNotIn("tavily_search", client.payloads[1]["allowed_tools"])
+
+    def test_deep_research_uses_task_aware_core_tool_allowance(self):
+        settings = self.settings.model_copy(update={"react_same_tool_max_calls": 1})
+        run, result, _, execute = self.run_script([
+            decision("tavily_search", query="one"),
+            decision("tavily_search", query="two"),
+            decision("web_fetcher", urls=[URL]),
+            decision("finish"),
+        ], settings=settings)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(sum(c.args[0] == "tavily_search" for c in execute.call_args_list), 2)
+        self.assertEqual(json.loads(run.plan_json)["react_state"]["tool_call_limits"]["tavily_search"], 6)
 
     def test_explicit_mock_argument_never_reaches_tool_in_real_run(self):
         plan = {**self.skill_plan(), "steps": []}

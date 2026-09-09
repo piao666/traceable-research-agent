@@ -11,6 +11,51 @@
 
 ## 核心亮点
 
+### 真实运行档位与预检（R10）
+
+R10 用 `RESEARCH_PROFILE` 把真实研究与离线测试明确分开；显式环境变量仍可覆盖
+档位默认值：`deep` 默认采用动态 ReAct、LLM 规划／报告、多轮深化以及更宽松的
+共享安全上限；`standard` 用较低成本执行真实搜索、抓取和 LLM 报告；`offline`
+只用于开发、CI 与演示，采用 deterministic 和显式模拟来源。
+
+普通部署只需在复制 `.env.example` 后填写以下最小配置：
+
+```env
+RESEARCH_PROFILE=deep
+LLM_PROVIDER=openai_compatible
+LLM_BASE_URL=https://example.com/v1
+LLM_MODEL=your-model
+LLM_API_KEY=your-key
+SEARCH_PROVIDER=tavily
+TAVILY_API_KEY=your-key
+```
+
+底层统一使用 OpenAI-compatible Chat Completions；旧 `qwen`、`deepseek` 名称仍作为
+带默认地址和模型的兼容别名。模型错误统一分类为认证、权限、限流、超时、模型不存在、
+上下文溢出、响应损坏和结构化输出无效等类型：不可重试的配置错误立即停止，暂时错误
+有界退避，上下文溢出只用更小观察窗口重试一次，ReAct 会把原始分类写入 Trace。
+
+`GET /api/runtime/capabilities` 只做无网络的脱敏配置投影；用户点击新建研究页的
+“验证真实连接”后，`POST /api/runtime/preflight` 才会实际验证模型最小 JSON 响应、
+Tavily 的真实 URL 以及静态网页正文抓取。页面只显示研究环境、模型、搜索、网页和
+PDF 的简要中文状态，不返回密钥、端点、提示词或响应正文；缺少可选学术／MCP 能力
+不会阻止基础真实研究。`.env.example.full` 保存高级配置参考，
+`.env.example.offline` 单独保存离线配置，正常真实配置不再默认启用 Fake Mode。
+
+Planner、Actor、Critic、Synthesizer 在逻辑上分层：分别负责计划与任务契约、获准
+工具执行、证据覆盖缺口判断，以及只依据 active evidence revision 合成报告。可用以下
+命令先做真实预检，再选择生成一个持久化的真实搜索→抓取→LLM 报告验收 Run；确认参数
+用于防止测试或误操作消耗额度：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls
+.\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls --run-task
+```
+
+自动测试已覆盖档位、Provider 兼容、usage 归一化、Planner／Actor／Critic／
+Synthesizer 错误分类与恢复、模拟结果拒绝、敏感信息脱敏和预检契约；真实厂商验收
+仍需在使用者已配置密钥的部署环境执行。
+
 ### 目标达成与有界恢复修复（R9）
 
 明确未取得目标数据、工具不可用或 ReAct 步骤耗尽时，不再凭已有正文判定研究成功。
@@ -51,7 +96,8 @@
 
 工具返回成功不等于研究完成。缺少必要配置时，系统保留草稿并阻止执行。
 `GET /api/runtime/capabilities` 只披露脱敏配置状态；
-`GET /api/tasks/{run_id}/preflight` 按实际计划检查，不代表联网验证通过。
+`GET /api/tasks/{run_id}/preflight` 按实际计划检查，不代表联网验证通过；只有显式
+调用 R10 的 `POST /api/runtime/preflight` 才会访问外部服务。
 
 - 本地文件／SQL 计划不要求搜索或模型密钥，除非显式要求 LLM 模式。
 - 上游空结果会跳过依赖抓取；零有效证据、必需抓取或必需步骤失败不能完成
@@ -106,7 +152,7 @@ Run／Trace 身份、抓取状态、内容范围与未完成抓取项。队列�
 账单限额。时长从首次执行起算，包含工具人工确认等待；阻止新操作，不强杀已在
 执行的网络请求。工具次数指调用次数，不是抓取器内部每个 URL／HTTP 请求。
 草稿规划、独立工具 API、任务结束后的独立记忆提取不计入此执行账本。
-配置项详见 `.env.example` 的 `RESEARCH_*` 部分。
+高级预算配置见 `.env.example.full` 的 `RESEARCH_*` 部分。
 
 新执行采用 `trace-source-v2`：不再把计划目标当作已证实结论，摘录型结论只关联
 实际来源片段。报告与证据 API 共用权威 Trace 顺序；相同输出的两次调用仍有不同
@@ -285,6 +331,7 @@ Invoke-RestMethod -Method Get `
 git clone https://github.com/piao666/traceable-research-agent.git
 Set-Location traceable-research-agent
 Copy-Item .env.example .env
+# 编辑 .env，填写 LLM_BASE_URL、LLM_MODEL、LLM_API_KEY 和 TAVILY_API_KEY。
 docker compose up --build -d
 ```
 
@@ -362,16 +409,18 @@ docker compose down
 
 ## 配置
 
-复制 `.env.example` 为 `.env`，其中包含全部可配置项。`.env` 只供本地使用，
+复制 `.env.example` 为 `.env` 可获得最小真实配置；高级覆盖项见
+`.env.example.full`，隔离的模拟环境见 `.env.example.offline`。`.env` 只供本地使用，
 绝不能提交。
 
 | 设置 | 默认值 | 用途 |
 |---|---|---|
 | `AUTH_ENABLED` | `false` | 启用本地 API Key 认证。 |
 | `DEMO_API_KEY` | 空 | 认证启用时所需的 API Key。 |
-| `EXECUTION_MODE` | `planned` | 选择稳定的计划式执行或 `react`。 |
-| `OFFLINE_MODE` | `false` | 禁用远程工具，适用于离线环境。 |
-| `REPORT_GENERATION_MODE` | `deterministic` | 选择离线安全报告或已配置的 LLM 报告。 |
+| `RESEARCH_PROFILE` | 代码默认 `standard`；`.env.example` 使用 `deep` | 选择真实深度、真实标准或离线档位。 |
+| `EXECUTION_MODE` | 随档位变化 | 高级覆盖项，用于调整自动执行路由默认值。 |
+| `OFFLINE_MODE` | 随档位变化 | 高级覆盖项；常规离线运行应选择 `offline` 档位。 |
+| `REPORT_GENERATION_MODE` | 随档位变化 | 高级覆盖项，选择规则报告或已配置的模型报告。 |
 | `TAVILY_API_KEY` | 空 | 启用真实网页搜索。 |
 | `QWEN_API_KEY` / `DEEPSEEK_API_KEY` | 空 | 启用可选的 LLM Provider。 |
 | `FILE_READER_ALLOWED_ROOTS` | `workspace/docs` | 本地文件读取的受限根目录。 |
@@ -454,8 +503,8 @@ workspace/     本地数据库、报告、产物与 Skill
 
 ## 质量验证
 
-当前完整离线 pytest 共收集 612 项：610 项通过、2 项按条件跳过、0 项失败，
-外部网络尝试为零。前端最新基线为 103 项测试，类型检查、Lint、构建全部通过，
+当前完整离线 pytest 共收集 651 项：649 项通过、2 项按条件跳过、0 项失败，
+外部网络尝试为零。前端最新基线为 104 项测试，类型检查、Lint、构建全部通过，
 隔离路由／固定数据检查 59 项通过；浏览器布局与真实服务验收仍需人工执行。
 剩余限制见[发布验证清单](RELEASE_VALIDATION.md)。
 

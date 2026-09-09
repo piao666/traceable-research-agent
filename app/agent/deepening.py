@@ -17,12 +17,14 @@ from sqlalchemy.orm import Session
 
 from app.agent.react_executor import run_react_task
 from app.agent.executor import _persist_citation_validation, _persist_reference_verification
-from app.agent.outcome import enforce_research_outcome, report_subject
+from app.agent.outcome import enforce_research_outcome, fail_execution, report_subject
 from app.agent.budget import BudgetExceeded, budgeted_execution, budget_client, current_budget
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings as _settings
 from app.evidence.service import materialize_execution_provenance
-from app.llm.base import LLMClient, LLMMessage
+from app.llm.base import LLMClient, LLMMessage, LLMResponse
+from app.llm.cost import estimate_cost
+from app.llm.errors import LLM_ERROR_TYPES, classify_transport_error
 from app.llm.providers import create_llm_client
 from app.trace import store
 from app.trace.logger import record_trace_event
@@ -150,6 +152,49 @@ def _record_deepening_round_trace(
             "is_comprehensive": is_comprehensive,
             "sub_run_ids": sub_run_ids,
         },
+    )
+
+
+def _record_critic_failure_trace(
+    db: Session,
+    run_id: str,
+    round_num: int,
+    client: LLMClient,
+    error_type: str,
+    response: LLMResponse | None = None,
+) -> None:
+    """Persist a categorized, non-secret Research Critic failure."""
+
+    try:
+        description = client.describe()
+    except Exception:
+        description = {}
+    category = error_type if error_type in LLM_ERROR_TYPES else "provider_unavailable"
+    provider = str((response.provider if response else None) or description.get("provider") or "unknown")[:80]
+    model = str((response.model if response else None) or description.get("model") or "")[:160] or None
+    usage = response.usage if response else None
+    message = f"Research Critic failed ({category}); completeness was not established."
+    record_trace_event(
+        db,
+        run_id,
+        round_num,
+        "deepening_round",
+        "failed",
+        {"round": round_num, "provider": provider, "model": model},
+        message,
+        {
+            "metadata": {
+                "error_type": category,
+                "provider": provider,
+                "model": model,
+                "retryable": bool(response and response.metadata.get("retryable", False)),
+            },
+            "is_comprehensive": False,
+        },
+        error_message=message,
+        token_in=usage.prompt_tokens if usage else 0,
+        token_out=usage.completion_tokens if usage else 0,
+        estimated_cost=estimate_cost(provider, model, usage),
     )
 
 
@@ -354,22 +399,41 @@ def run_deepening(
         try:
             response = client.complete(messages, temperature=0.0, max_tokens=1200)
         except BudgetExceeded:
+            _record_critic_failure_trace(
+                db, run_id, round_num, client, "budget_exhausted"
+            )
             raise
-        except Exception:
+        except Exception as exc:
+            info = classify_transport_error(exc)
+            _record_critic_failure_trace(
+                db, run_id, round_num, client, info.error_type
+            )
             response = None
 
         if response is None or not response.success or not response.content:
             message = "Deepening synthesis failed; research completeness was not established."
             deepening_warnings.append(message)
-            record_trace_event(db, run_id, round_num, "deepening_round", "failed", {}, message,
-                               {"error_type": "llm_failed", "is_comprehensive": False})
+            if response is not None:
+                error_type = str(response.metadata.get("error_type") or (
+                    "malformed_response" if response.success else "provider_unavailable"
+                ))
+                _record_critic_failure_trace(
+                    db, run_id, round_num, client, error_type, response
+                )
             break
 
         deepening = _parse_deepening_response(response.content)
         if deepening.get("error"):
             message = "Invalid deepening response; research completeness was not established."
             deepening_warnings.append(message)
-            record_trace_event(db, run_id, round_num, "deepening_round", "failed", {}, message, deepening)
+            _record_critic_failure_trace(
+                db,
+                run_id,
+                round_num,
+                client,
+                "structured_output_invalid",
+                response,
+            )
             break
         learnings = deepening.get("learnings") or []
         follow_ups = deepening.get("follow_up_queries") or []
@@ -451,23 +515,54 @@ def run_deepening(
         settings_obj,
     )
 
-    from app.agent.report_generation import resolve_report_llm_client
+    from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
     _llm = resolve_report_llm_client(settings_obj, client)
+    report_llm_responses: list[Any] = []
     citation_validation_reports: list[Any] = []
     reference_verification_reports: list[Any] = []
-    markdown = generate_markdown_report(
-        report_subject(run), plan,
-        [
-            obs for obs in all_observations
-            if not obs.get("metadata", {}).get("sub_run_id")
-        ],
-        [t for t in all_traces if t.run_id == run_id],
-        llm_client=_llm,
-        provenance_bundle=provenance_bundle,
-        report_type=run.report_type,
-        citation_validation_callback=citation_validation_reports.append,
-        reference_verification_callback=reference_verification_reports.append,
-    )
+    try:
+        markdown = generate_markdown_report(
+            report_subject(run), plan,
+            [
+                obs for obs in all_observations
+                if not obs.get("metadata", {}).get("sub_run_id")
+            ],
+            [t for t in all_traces if t.run_id == run_id],
+            llm_client=_llm,
+            provenance_bundle=provenance_bundle,
+            report_type=run.report_type,
+            usage_callback=report_llm_responses.append,
+            citation_validation_callback=citation_validation_reports.append,
+            reference_verification_callback=reference_verification_reports.append,
+        )
+    except Exception as exc:
+        if report_llm_responses:
+            response = report_llm_responses[-1]
+            record_report_synthesis_trace(
+                db,
+                run_id,
+                all_traces,
+                response,
+                success=bool(
+                    response.success
+                    and str(response.content or "").strip()
+                    and not response.metadata.get("error_type")
+                ),
+            )
+        if isinstance(exc, BudgetExceeded):
+            raise
+        failed = fail_execution(db, run_id, exc)
+        from app.agent.executor import _summary
+        return _summary(failed)
+    if report_llm_responses:
+        record_report_synthesis_trace(
+            db,
+            run_id,
+            all_traces,
+            report_llm_responses[-1],
+            success=True,
+        )
+        all_traces = store.list_tool_traces(db, run_id)
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
     _persist_citation_validation(
