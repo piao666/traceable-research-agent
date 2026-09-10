@@ -131,6 +131,11 @@ class TaskListItem(ResearchIntegrityResponse):
     total_tool_calls: int = 0
     estimated_cost: float = 0.0
     session_id: str | None = None
+    parent_run_id: str | None = None
+    root_run_id: str | None = None
+    run_role: str = "root"
+    research_scope_id: str | None = None
+    engine_version: str = "legacy"
     created_at: datetime
     updated_at: datetime
 
@@ -189,6 +194,11 @@ class TaskStatusResponse(ResearchIntegrityResponse):
     adaptive_phase: str | None = None
     deepening_pending: bool = False
     deepening_phase: str | None = None
+    parent_run_id: str | None = None
+    root_run_id: str | None = None
+    run_role: str = "root"
+    research_scope_id: str | None = None
+    engine_version: str = "legacy"
 
 
 class PlanStepResponse(BaseModel):
@@ -335,6 +345,8 @@ class TaskRunResponse(ResearchIntegrityResponse):
     adaptive_phase: str | None = None
     deepening_pending: bool = False
     deepening_phase: str | None = None
+    research_scope_id: str | None = None
+    engine_version: str | None = None
 
 
 class AsyncRunResponse(ResearchIntegrityResponse):
@@ -348,6 +360,7 @@ class AsyncRunResponse(ResearchIntegrityResponse):
     adaptive_gate_pending: bool = False
     adaptive_upgrade: bool = False
     adaptive_phase: str | None = None
+    research_scope_id: str | None = None
 
 
 class TaskConfirmRequest(BaseModel):
@@ -485,6 +498,47 @@ class ProvenanceBundleResponse(BaseModel):
     reasoning: dict[str, Any] | None = None
     reliability_scores: list[dict[str, Any]] = Field(default_factory=list)
     resolutions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ResearchScopeResponse(BaseModel):
+    scope_id: str
+    root_run_id: str
+    engine_version: str
+    status: str
+    research_contract: dict[str, Any]
+    run_ids: list[str]
+    node_counts: dict[str, int]
+    budget: dict[str, Any] | None = None
+    created_at: str
+    updated_at: str
+
+
+class ResearchTreeResponse(BaseModel):
+    scope: ResearchScopeResponse
+    roots: list[dict[str, Any]]
+
+
+class ScopeEvidenceResponse(BaseModel):
+    run_id: str
+    schema_version: str
+    extractor_version: str
+    scope_id: str
+    root_run_id: str
+    engine_version: str
+    status: str
+    runs: list[dict[str, Any]]
+    revisions: list[dict[str, Any]]
+    source_documents: list[dict[str, Any]]
+    source_snapshots: list[dict[str, Any]]
+    passages: list[dict[str, Any]]
+    assertions: list[dict[str, Any]]
+    claims: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+    report_claims: list[dict[str, Any]]
+    citations: list[dict[str, Any]]
+    reliability_scores: list[dict[str, Any]] = Field(default_factory=list)
+    resolutions: list[dict[str, Any]] = Field(default_factory=list)
+    integrity: dict[str, Any]
 
 
 class EvidenceExportResponse(BaseModel):

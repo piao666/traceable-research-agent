@@ -771,6 +771,12 @@ def extract_academic_references(provenance_bundle: dict[str, Any]) -> list[dict[
     return refs
 
 
+def extract_scope_academic_references(scope_bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract academic references from a cross-run Scope projection."""
+
+    return extract_academic_references(scope_bundle)
+
+
 # ── Report rendering ──────────────────────────────────────────────────────
 
 def render_reference_verification_section(report: ReferenceVerificationReport) -> list[str]:

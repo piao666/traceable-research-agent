@@ -1,4 +1,28 @@
-# 修复发布与验收清单（R0–R11）
+# 修复发布与验收清单（R0–R12）
+
+## R12 Deep Research Engine V2：本地待提交记录
+
+本轮以远端 `feature/improvements@b0edf9c` 与本地 R11 提交 `5a32482` 为基线，
+完成 R12 Engine V2 替换。Deep Profile 现在由持久化 Research Scope／Tree 统一编排，
+显式 AgentRun lineage 和数据库关系取代 `plan_json` 权威；节点继续复用 ReAct、只读
+工具注册表、恢复、Trace、Evidence Pipeline 与根 Run 共享预算。子 Evidence 不复制
+到 Parent，只通过 Scope 投影进入整体 Outcome 与唯一最终报告，并保留
+`Citation → Passage → Snapshot → Trace → origin_run_id`。
+
+| 验证 | 本轮结果与边界 |
+|---|---|
+| R12 专项 | 23 项通过；1 项严格 xfail 属于 R14 长报告上下文缺陷 |
+| 后端完整离线回归 | 收集 717 项：714 通过、2 条件跳过、1 严格 xfail、0 失败；13 条第三方弃用警告；0 次外部访问 |
+| 前端 | OpenAPI 契约同步；类型检查、Lint、11 个测试文件／104 项测试、生产构建通过 |
+| 迁移 | 0001→0012、幂等升级、Alembic schema check、SQL parser 全部通过 |
+| 综合 Smoke | 18/18 通过；研究完整性与 Docker 静态配置 Smoke 通过 |
+| 真实环境 | 未运行 Docker、真实模型、搜索、抓取或 Windows 浏览器人工验收 |
+| 发布状态 | R11 已本地提交为 `5a32482` 但推送因缺少 HTTPS 凭据失败；R12 尚未提交或推送；`LICENSE` 未处理 |
+
+R12 Definition of Done 已由自动回归覆盖：Deep Dispatcher 只走 V2；Scope／Node 与
+lineage 持久化；父子 Evidence 逻辑聚合；Child Evidence 可进入最终报告；Child
+Citation 可反查原 Trace；所有节点共享 root budget；Standard／Offline 旧路径无回归；
+旧 `run_deepening` 仅为带弃用告警的兼容 wrapper。
 
 ## R11 Retrieval & Source Reliability：本地待提交记录
 
@@ -22,7 +46,7 @@ Remote Extract 缺失配置只表示可选能力不可用，不会被提升为�
 | 综合 Smoke | 18/18 通过；本地评估 78/80 通过，2 项真实网络依赖按设计跳过，0 硬失败 |
 | Docker | 静态配置 Smoke 通过；镜像声明安装 `playwright==1.62.0` 及 Chromium，并为 API 配置 1 GB `/dev/shm`；当前环境没有 Docker CLI，未实际构建／启动 |
 | 真实 Fetch | 未执行；已提供受 `--confirm-real-calls --r11-fetch-smoke` 保护的静态／Browser／PDF／已配置 Remote smoke |
-| 发布状态 | R11 修改尚未提交或推送；`LICENSE` 按用户要求未处理 |
+| 发布状态 | R11 已本地提交为 `5a32482`；当前环境缺少 GitHub HTTPS 凭据，尚未推送；`LICENSE` 按用户要求未处理 |
 
 两项严格 xfail 是在 R11 开始时冻结的后续阶段缺陷：旧 `deepening.py` 排除子 Run
 Observation（R12 替换）以及旧单次报告上下文 7000 字符硬截断（R14 分节 Composer

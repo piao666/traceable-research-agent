@@ -22,11 +22,17 @@ def create_agent_run(
     allowed_tools: list[str] | None = None,
     session_id: str | None = None,
     run_config_snapshot: str | None = None,
+    parent_run_id: str | None = None,
+    root_run_id: str | None = None,
+    run_role: str = "root",
+    research_scope_id: str | None = None,
+    engine_version: str = "legacy",
 ) -> AgentRun:
     """Create a pending run record."""
 
+    run_id = uuid4().hex
     run = AgentRun(
-        run_id=uuid4().hex,
+        run_id=run_id,
         task=task,
         report_type=report_type,
         source_mode=source_mode,
@@ -34,6 +40,11 @@ def create_agent_run(
         allowed_tools_json=json.dumps(allowed_tools) if allowed_tools is not None else None,
         session_id=session_id,
         run_config_snapshot=run_config_snapshot,
+        parent_run_id=parent_run_id,
+        root_run_id=root_run_id or run_id,
+        run_role=run_role,
+        research_scope_id=research_scope_id,
+        engine_version=engine_version,
     )
     db.add(run)
     db.commit()
@@ -74,6 +85,7 @@ def _filter_run_listing(
         # but do not present them as separately published research tasks.
         stmt = stmt.where(
             and_(
+                AgentRun.run_role == "root",
                 func.coalesce(func.json_extract(plan, "$.run_role"), "")
                 != "deepening_child",
                 # Hide child runs created before run_role was introduced too.

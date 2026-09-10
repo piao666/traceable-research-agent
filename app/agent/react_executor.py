@@ -462,7 +462,11 @@ def _complete_report(
     state["coverage_matrix"] = assess_comparison_coverage(
         plan.get("task_contract"), state["source_context"], traces
     )
-    if state["coverage_matrix"].get("applicable") and not state["coverage_matrix"].get("complete"):
+    if (
+        not plan.get("defer_to_research_scope")
+        and state["coverage_matrix"].get("applicable")
+        and not state["coverage_matrix"].get("complete")
+    ):
         state["goal_status"] = "not_met"
         gaps = "; ".join(list(state["coverage_matrix"].get("gaps") or [])[:6])
         state["finish_summary"] = (
@@ -485,6 +489,21 @@ def _complete_report(
         raise ValueError("Task run not found.")
     traces = store.list_tool_traces(db, run_id)
     observations = load_observations(traces)
+    if plan.get("defer_to_research_scope"):
+        # Research-tree nodes own their traces and Evidence, while completion
+        # and reporting are decided exactly once at Scope level.  Persist the
+        # node's provenance here, but do not run the single-Run quality gate or
+        # create an intermediate report that excludes sibling evidence.
+        materialize_execution_provenance(
+            db,
+            run,
+            plan,
+            observations,
+            traces,
+            settings_obj,
+        )
+        run = store.update_agent_run_status(db, run_id, "completed", None)
+        return _summary(run, plan, "Research node completed; Scope finalization is deferred.")
     if not enforce_research_outcome(db, run, plan, observations, traces, settings_obj):
         return _summary(store.get_fresh_agent_run(db, run_id), plan)
     provenance_bundle = materialize_execution_provenance(
@@ -588,6 +607,19 @@ def _fallback_to_plan(
     settings_obj: Settings,
     error_type: str = "invalid_decision",
 ) -> dict:
+    if plan.get("defer_to_research_scope"):
+        # Deep Research V2 has one dynamic node executor. A model failure is a
+        # truthful node limitation, not permission to switch to the separate
+        # planned runtime and produce an isolated report.
+        return _complete_report(
+            db,
+            run_id,
+            plan,
+            state,
+            reason,
+            settings_obj,
+            limitation=True,
+        )
     state["fallback_used"] = True
     state["finish_reason"] = "react_fallback_to_planned"
     plan.setdefault("requested_execution_mode", "react")

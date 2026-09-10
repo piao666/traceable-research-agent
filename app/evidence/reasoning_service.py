@@ -363,6 +363,14 @@ def get_claim_evidence_audit(
     ]
 
 
+def get_scope_reasoning_bundle(db: Session, scope_id: str) -> dict[str, Any]:
+    """Read-only Scope adapter; per-run reasoning rows retain ownership."""
+
+    from app.evidence.scope_service import get_scope_reasoning_bundle as _scope_bundle
+
+    return _scope_bundle(db, scope_id)
+
+
 def _score_dict(item: EvidenceReliabilityScore) -> dict[str, Any]:
     return {
         "score_id": item.score_id,

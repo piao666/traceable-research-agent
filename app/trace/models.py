@@ -14,6 +14,12 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def current_run_id(context) -> str:
+    """Use the row's run_id as the default lineage root for direct ORM inserts."""
+
+    return str(context.get_current_parameters()["run_id"])
+
+
 class AgentRun(Base):
     """Database row for one accepted research task."""
 
@@ -47,6 +53,28 @@ class AgentRun(Base):
 
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     run_config_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    parent_run_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("agent_runs.run_id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    root_run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("agent_runs.run_id", ondelete="RESTRICT"),
+        nullable=False,
+        default=current_run_id,
+        index=True,
+    )
+    run_role: Mapped[str] = mapped_column(String(32), nullable=False, default="root", index=True)
+    research_scope_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    engine_version: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="legacy", index=True
+    )
 
     traces: Mapped[list["ToolTrace"]] = relationship(
         back_populates="run",

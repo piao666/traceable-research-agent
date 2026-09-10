@@ -580,7 +580,7 @@ class GoalRecoveryTests(unittest.TestCase):
             _active.reset(token)
 
     def test_child_budget_stops_parent_and_preserves_exportable_child_link(self):
-        from app.agent.deepening import run_deepening
+        from app.agent.deepening import _legacy_run_deepening_v1 as run_deepening
         from app.agent.budget import current_budget
         from app.llm.base import LLMResponse
         from app.tools.base import ToolResult

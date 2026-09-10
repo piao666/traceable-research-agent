@@ -1,11 +1,8 @@
-"""Iterative deepening loop for deep research (Phase 5).
+"""Deprecated Deep Research V1 compatibility module.
 
-Wraps the ReAct executor in a multi-round cycle:
-  Round 0: initial ReAct run with the user's original task
-  Round N: LLM synthesizes learnings → follow_up_queries → new sub-queries → ReAct run
-
-Stops when MAX_DEPTH is reached, follow_up_queries is empty, or LLM is unavailable.
-Each round's learnings are persisted as trace events.
+The public ``run_deepening`` entry point delegates to Research Scope Engine V2.
+The private V1 implementation remains for one compatibility cycle so historical
+regressions can be isolated; it is not reachable from the runtime dispatcher.
 """
 
 from __future__ import annotations
@@ -236,6 +233,11 @@ def _run_single_round(
             source_mode=parent_run.source_mode if parent_run else "real",
             allowed_tools=inherited_tools,
             session_id=None,
+            parent_run_id=parent_run_id,
+            root_run_id=(parent_run.root_run_id if parent_run else parent_run_id),
+            run_role="legacy_deepening_child",
+            research_scope_id=(parent_run.research_scope_id if parent_run else None),
+            engine_version="legacy",
         )
         sub_plan = {
                 "version": "deepening-v1",
@@ -298,12 +300,13 @@ def _run_single_round(
 
 
 @budgeted_execution
-def run_deepening(
+def _legacy_run_deepening_v1(
     db: Session,
     run_id: str,
     settings_obj: Settings = _settings,
     llm_client: LLMClient | None = None,
 ) -> dict[str, Any]:
+    """Retired round-based engine retained only for compatibility tests."""
     """Execute iterative deepening research.
 
     Entry point called by the API run endpoint when DEEP_RESEARCH_ENABLED=true
@@ -619,3 +622,29 @@ def run_deepening(
         "deepening_rounds": plan.get("deepening_total_rounds", 0),
         "deepening_learnings_count": len(all_learnings),
     }
+
+
+def run_deepening(
+    db: Session,
+    run_id: str,
+    settings_obj: Settings = _settings,
+    llm_client: LLMClient | None = None,
+) -> dict[str, Any]:
+    """Deprecated compatibility entry point for Deep Research Engine V2."""
+
+    import warnings
+
+    warnings.warn(
+        "app.agent.deepening.run_deepening is deprecated; use "
+        "app.research.orchestrator.run_deep_research_v2",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from app.research.orchestrator import run_deep_research_v2
+
+    return run_deep_research_v2(
+        db,
+        run_id,
+        settings_obj,
+        llm_client=llm_client,
+    )

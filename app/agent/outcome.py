@@ -13,6 +13,7 @@ from app.trace import store
 from app.trace.logger import record_trace_event
 
 INTEGRITY_VERSION = "research-integrity-v2"
+SCOPE_INTEGRITY_VERSION = "research-scope-outcome-v2"
 
 
 def report_subject(run):
@@ -163,7 +164,10 @@ def result_integrity(run) -> dict[str, Any]:
     except (ValueError, TypeError, AttributeError):
         plan = {}
         outcome = {}
-    legacy = run.status == "completed" and outcome.get("version") != INTEGRITY_VERSION
+    legacy = run.status == "completed" and outcome.get("version") not in {
+        INTEGRITY_VERSION,
+        SCOPE_INTEGRITY_VERSION,
+    }
     mapping_review = bool(run.status == "completed" and plan.get("execution_mode") == "react"
                           and plan.get("steps") and plan.get("evidence_mapping_version") != "trace-source-v2")
     legacy = legacy or mapping_review
@@ -232,7 +236,9 @@ def trusted_run_ids():
     safe_plan = case((func.json_valid(AgentRun.plan_json), AgentRun.plan_json), else_="{}")
     return select(AgentRun.run_id).where(
         AgentRun.status == "completed",
-        func.json_extract(safe_plan, "$.research_outcome.version") == INTEGRITY_VERSION,
+        func.json_extract(safe_plan, "$.research_outcome.version").in_(
+            [INTEGRITY_VERSION, SCOPE_INTEGRITY_VERSION]
+        ),
         func.json_extract(safe_plan, "$.research_outcome.status") == "passed",
         func.json_extract(safe_plan, "$.research_outcome.effective_evidence_count") > 0,
         ~((func.coalesce(func.json_extract(safe_plan, "$.execution_mode"), "planned") == "react")

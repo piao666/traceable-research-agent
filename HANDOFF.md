@@ -1,72 +1,81 @@
-# 交接文档：R11 Retrieval Foundation 本地验收完成、待发布
+# 交接文档：R12 Deep Research Engine V2 本地验收完成、待提交
 
-> 本文档用于跨会话交接。移动中的发布状态以远端 `feature/improvements` HEAD
-> 及其对应 GitHub Actions 结果为准，避免把旧提交号误写成当前分支 HEAD。
+> 本文档用于跨会话交接。发布状态以远端 `feature/improvements` HEAD 与对应
+> GitHub Actions 为准；本地通过不等于已发布或已完成真实联网验收。
 
 ## 一、当前状态
 
 - **分支**：`feature/improvements`
-- **当前已发布基线**：`b0edf9c4b1a121a18ec193b6977406c9d3f21738`
-- **当前阶段**：`R11 — Retrieval & Source Reliability Foundation`
-- **发布状态**：R10 已发布且 CI 成功；R11 实现和本地门禁已收口，尚未提交或推送
-- **项目边界**：单实例、本地优先；不内置多租户、RAG 或向量数据库
+- **远端已发布基线**：`b0edf9c4b1a121a18ec193b6977406c9d3f21738`（R10）
+- **本地 R11 提交**：`5a32482`，因当前环境缺少 GitHub HTTPS 凭据尚未推送
+- **当前阶段**：`R12 — Deep Research Engine V2 Replacement`
+- **R12 状态**：实现与离线门禁完成，修改尚未提交或推送
+- **项目边界**：单实例、本地优先、SQLite／workspace 持久化、只读外部工具；
+  不引入多租户、RBAC、分布式基础设施、向量数据库或通用 RAG
+- **明确排除**：R13 研究智能、R14 长报告与崩溃恢复、R15 真实验收、`LICENSE`
 
-## 二、已发布能力（截至 b0edf9c）
+## 二、R12 已完成内容
 
-- 计划式与 ReAct 调研执行、人工计划审批、恢复与重试。
-- Run、Trace、Evidence、Citation、Report 的可追溯持久化与导出。
-- 共享预算、子任务关联、失败原因保真和有界恢复。
-- 信源治理、网页正文缓存、PDF 阅读、学术检索和 Skill 工作流。
-- FastAPI、React/Vite 与 Streamlit 界面，以及 Docker 配置和本地持久化。
-- R9 增加研究目标检查、数据口径约束、来源 ID 复用、重复抓取抑制和旧结果完整性标记。
-- R10 增加真实运行档位、OpenAI-compatible Provider、稳定模型错误分类、显式
-  Runtime Preflight、宽松动态研究上限和最终报告软切换。
+1. `AgentRun` 增加显式 `parent_run_id`、`root_run_id`、`run_role`、
+   `research_scope_id`、`engine_version`，默认列表隐藏内部研究节点。
+2. 新增迁移 `0012_research_scope_and_lineage`，保守回填旧 Run，并持久化
+   `ResearchScope`、`ResearchNode`；DB lineage 是唯一权威，旧 `plan_json`
+   字段只作兼容投影。
+3. 新增 Research Scope Resolver、Tree 投影、节点执行器与 Scope 级预算统计；
+   所有后代 Run 复用根 Run 的既有 `RunBudget`。
+4. Deep Profile Dispatcher 直接进入 Engine V2 Research Orchestrator；Standard 与
+   Offline 继续使用原路径。节点复用 ReAct、Tool Registry、执行策略、恢复、Trace
+   与 Evidence Pipeline。
+5. 子节点结束时只固化证据，不生成中间主体报告；根 Run 在 Scope 质量门通过后，
+   使用父子全部 Evidence 生成唯一最终报告。
+6. Scope Evidence 只做跨 Run 逻辑聚合，不复制子 Run 数据；聚合实体保留
+   `origin_run_id`、`origin_trace_id`、`research_node_id`，引用可反查到子 Trace。
+7. 增加 Scope Outcome、Citation、Reasoning、Reference adapter，以及
+   `research-scope`、`research-tree`、`scope-evidence` 三个只读 API。
+8. `app.agent.deepening.run_deepening` 仅保留一个兼容周期的弃用 wrapper；正式
+   Dispatcher 不再调用旧 Round 引擎，私有旧实现只用于历史回归定位。
 
-本轮关键提交（文档提交本身以分支 HEAD 为准）：
+## 三、R12 验证结果
+
+- R12 专项：`23 passed`，另有 1 项严格 `xfail` 为 R14 长报告上下文缺陷。
+- 完整离线 pytest：收集 717 项，`714 passed / 2 skipped / 1 xfailed / 0 failed`；
+  13 条第三方弃用警告；离线网络守卫记录 0 次外部访问。
+- 前端：OpenAPI 契约已同步；类型检查、Lint、11 个测试文件／104 项测试、生产构建通过。
+- 迁移：全量升级至 0012、重复升级、Alembic autogenerate check、SQL 安全解析通过。
+- 综合 Smoke：18/18 通过，应用本地评估通过。
+- 其他：Python `compileall`、研究完整性 Smoke、Docker 静态配置 Smoke、
+  `git diff --check` 通过。
+- 未执行：Docker 镜像实际构建／启动、Windows 前端人工验收、真实 LLM／搜索／抓取；
+  当前结果不得表述为真实联网验收通过。
+
+## 四、R12 核心验收链
+
+核心回归构造 Parent Evidence A 与 Child Evidence B，并确认：
 
 ```text
-b0edf9c 2026-09-09 feat(runtime): complete real runtime foundation
-3040641 2026-09-08 fix: strengthen research recovery and simplify execution UI
-de91b9d 2026-09-07 docs: finalize repository repair handoff
-adc76a9 2026-09-07 test: stabilize feature branch CI gates
+Scope Bundle 同时包含 A / B
+→ 最终报告可使用 B 的 CIT 标签
+→ Citation(B) 解析到 Child Passage
+→ Child Passage 解析到 Child Snapshot / Trace / origin_run_id
 ```
 
-## 三、本轮 R11 待发布修复
+子 Evidence 始终归子 Run 所有，没有以 Parent `run_id` 再写一份。
 
-当前修复范围不含 `LICENSE`：
+## 五、下一步
 
-1. 固定统一 FetchRequest／FetchResult 和稳定状态／失败分类。
-2. 将 HTTP、HTML 提取、正文质量判断从 `web_fetcher` 拆分为可组合模块。
-3. 新增隔离 Playwright Browser Backend，保留 SSRF、最终 URL、体积、下载和非持久 Profile 边界。
-4. 新增 PDF 与 Firecrawl／Exa Adapter，并由 Adaptive Router 在单次工具调用内完成回退。
-5. 增加 Canonical URL 与 Content Hash 两级去重及基础 Source Identity／转载归并元数据。
-6. 将 Fetch 元数据接入 Evidence、SourceDocument、SourceSnapshot、Trace 与 Recovery。
-7. 增加高级环境配置、固定 Playwright 依赖、Docker Chromium 与受确认保护的真实 R11 Smoke。
-8. 保持 `web_fetcher` 外部名称和输出主结构兼容，不引入 R12 Coverage／Research Tree 或 R14 Long Report。
-
-## 四、验证结果
-
-- Python `compileall` 与 `git diff --check` 通过。
-- 后端完整离线 pytest：收集 695 项，691 通过、2 条件跳过、2 严格 xfail、0 失败；7 条第三方弃用警告；0 次外部网络尝试。
-- R11 专项及旧 Fetch／Evidence／Recovery 兼容回归通过。
-- 前端本轮未修改；沿用 R10 的 104 项、类型检查、Lint 和生产构建通过基线。
-- 综合项目 Smoke：18/18 通过；本地评估 78/80 通过，余下 2 项为明确标注的真实网络依赖，0 硬失败。
-- Docker 静态配置 Smoke 通过；声明 Playwright Chromium 和 API 1 GB `/dev/shm`；当前环境没有 Docker CLI，未实际构建／启动。
-- 未调用真实外网 Fetch／收费服务，未执行 Windows 浏览器人工验收。
-
-## 五、下一步与未验证项
-
-- 审阅当前差异后提交并推送到 `feature/improvements`，确认功能分支 CI 通过。
-- 在 Windows 预览目录拉取新提交并重新构建 Docker；运行 `scripts/validate_real_runtime.py --confirm-real-calls --r11-fetch-smoke` 完成静态／Browser／PDF／已配置远端抓取验收。
-- R11 发布后进入 R12 Deep Research Engine V2 替换；不在 R11 提前修复旧子 Run 聚合或长报告 Composer。
-- `LICENSE` 按用户要求暂不处理。
+1. 审阅 R12 差异后提交；先解决 GitHub 凭据再推送 R11 与 R12，并观察功能分支 CI。
+2. 用户若确认进入下一阶段，再按方案实施 R13；不要在 R12 提前加入 Coverage／Gap、
+   Conflict Verification、结构化数据工具或停止策略。
+3. R14 再处理分章节 Report Composer、7000 字符旧上下文限制、Checkpoint／Resume 与清理策略。
+4. R15 和人工阶段再执行真实 Provider、Browser／PDF／Remote Extract 与 Docker 验收。
+5. `LICENSE` 按用户要求暂不处理。
 
 ## 六、工程注意事项
 
-1. `TASK.md`、`docs/`、`.env`、`workspace/` 运行产物均为本地内容，不得提交。
-2. 文件读取必须保持路径边界、逐文件 HITL 和长度／体积上限。
+1. `TASK.md`、`docs/`、`.env`、`workspace/` 运行产物是本地内容，不得提交。
+2. 文件读取继续保持路径边界、逐文件 HITL 和长度／体积限制。
 3. 外部系统写操作不得通过 MCP 暴露；本地持久化副作用必须在工具元数据中如实声明。
-4. 所有工具执行继续保留 Trace；失败、拒绝和预算耗尽不得被报告生成覆盖。
-5. 不要把固定数据或 mock 回归描述成真实联网验收。
+4. 每次工具执行必须保留 Trace；失败、拒绝和硬预算耗尽不得被报告生成覆盖。
+5. 不要把固定数据、mock 回归或静态 Docker 配置检查描述成真实环境验收。
 
 (End of file)

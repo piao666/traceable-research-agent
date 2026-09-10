@@ -80,10 +80,6 @@ def test_web_fetch_output_still_materializes_as_evidence_v2_item() -> None:
     assert items[0].metadata["extraction_method"] == "beautifulsoup"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Legacy Deepening deliberately excludes child observations; R12 Engine V2 must replace it.",
-)
 def test_legacy_deepening_no_longer_excludes_child_evidence() -> None:
     from app.agent.deepening import run_deepening
 

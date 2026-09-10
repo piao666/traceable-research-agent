@@ -11,6 +11,25 @@
 
 ## 核心亮点
 
+### Deep Research Engine V2（R12）
+
+Deep Profile 现在只有一条正式执行链：一个持久化 Research Scope 包含 Root 与各研究
+分支组成的 Research Tree。`AgentRun` 正式记录 `parent_run_id`、`root_run_id`、
+`run_role`、`research_scope_id` 和 `engine_version`；迁移
+`0012_research_scope_and_lineage` 会保守回填旧 Run，运行时不再把 `plan_json` 当作
+lineage 权威来源。
+
+每个节点继续复用已有的受治理 ReAct Executor、只读 Tool Registry、恢复策略、Trace、
+Evidence Pipeline 与根 Run 共享预算。子 Run Evidence 仍归属于原子 Run，只通过只读
+Scope 聚合层进入整体完成判定和最终报告，因此完整保留
+`Citation → Passage → Snapshot → Trace → origin_run_id`。Root 只生成一次基于整个 Scope
+的最终报告；节点完成时不会再先生成遗漏兄弟分支证据的中间报告。Standard 与 Offline
+继续沿用原执行路径。
+
+旧 `app.agent.deepening.run_deepening` 名称仅保留一个兼容周期，调用时发出弃用告警并
+转入 Engine V2；Dispatcher 已不再调用旧 Round 引擎。Coverage／Gap Intelligence 与
+分章节长报告仍严格留在 R13／R14。
+
 ### 自适应抓取与来源可靠性（R11）
 
 R11 保留外部 `web_fetcher` 工具契约，并将内部实现替换为自适应抓取路由。系统先使用
@@ -34,8 +53,8 @@ Playwright Chromium。真实静态页、Browser、PDF 与已配置远端提取�
 .\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls --r11-fetch-smoke
 ```
 
-离线测试使用注入的 HTTP／Browser／Provider fixture，不会发起真实外网请求。R11 不
-引入 Research Tree、Coverage 评分或长报告组合，这些仍属于 R12–R14。
+离线测试使用注入的 HTTP／Browser／Provider fixture，不会发起真实外网请求。R11
+自身仍只是抓取层；R12 直接消费统一 Fetch 结果，不与具体抓取 Backend 耦合。
 
 ### 真实运行档位与预检（R10）
 
@@ -444,6 +463,7 @@ docker compose down
 | `AUTH_ENABLED` | `false` | 启用本地 API Key 认证。 |
 | `DEMO_API_KEY` | 空 | 认证启用时所需的 API Key。 |
 | `RESEARCH_PROFILE` | 代码默认 `standard`；`.env.example` 使用 `deep` | 选择真实深度、真实标准或离线档位。 |
+| `DEEP_RESEARCH_ENGINE_VERSION` | `v2` | 固定 Deep Profile 唯一受支持的正式引擎；旧 V1 不再是运行选项。 |
 | `EXECUTION_MODE` | 随档位变化 | 高级覆盖项，用于调整自动执行路由默认值。 |
 | `OFFLINE_MODE` | 随档位变化 | 高级覆盖项；常规离线运行应选择 `offline` 档位。 |
 | `REPORT_GENERATION_MODE` | 随档位变化 | 高级覆盖项，选择规则报告或已配置的模型报告。 |
@@ -470,6 +490,9 @@ Bearer 凭据。
 | `POST /api/tasks/{run_id}/confirm` | 恢复或拒绝受保护的操作。 |
 | `GET /api/tasks/{run_id}/trace` | 查询持久化的工具 trace。 |
 | `GET /api/tasks/{run_id}/evidence/v2` | 查询溯源和引用。 |
+| `GET /api/tasks/{run_id}/research-scope` | 查询 Scope lineage 与共享预算统计。 |
+| `GET /api/tasks/{run_id}/research-tree` | 查询任意 Scope 成员 Run 对应的嵌套 Research Tree。 |
+| `GET /api/tasks/{run_id}/scope-evidence` | 查询带来源 Run／Trace 链接的跨 Run 逻辑证据。 |
 | `GET /api/reports/{run_id}` | 获取 Markdown 报告。 |
 | `GET /api/tools` | 列出已注册工具元数据。 |
 | `GET /api/skills` | 列出已安装的任务 Skill。 |
@@ -551,9 +574,9 @@ docker compose config --quiet
 - [x] Docker 部署配置与本地运行数据持久化实现
 - [x] R10.0a 研究到报告切换与技术比较覆盖稳定化
 - [x] R11 HTTP／Browser／PDF／远端自适应抓取基础与来源身份
+- [x] R12 Deep Research Engine V2、Research Scope／Tree 与跨 Run Evidence
 - [ ] R10 真实 Docker 构建／重启与 Provider 预检／验收
 - [ ] R11 需确认的真实静态页／Browser／PDF／远端抓取验收
-- [ ] R12 Deep Research Engine V2 替换
 - [ ] 在公开再分发前补充仓库许可证
 - [ ] 为长时间运行的自托管实例扩展运维可观测性
 

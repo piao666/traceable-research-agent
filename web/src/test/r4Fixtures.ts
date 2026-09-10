@@ -7,6 +7,7 @@ export const taskFixture: TaskStatusResponse = {
   created_at: "2026-09-02T01:00:00", updated_at: "2026-09-02T01:01:00",
   research_outcome: { status: "failed", effective_evidence_count: 0 },
   execution_mode: "planned", adaptive_gate_pending: false, adaptive_upgrade: false, adaptive_upgrade_failed: false, deepening_pending: false,
+  run_role: "root", engine_version: "legacy",
   citation_total: 0, citation_supported: 0, citation_weakly_supported: 0, citation_unsupported: 0, citation_accuracy: 0,
 };
 export const planFixture: TaskPlanResponse = {

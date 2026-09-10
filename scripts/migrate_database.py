@@ -43,6 +43,7 @@ P3_TABLES = {
 P4_TABLES = {
     "improvement_logs",
 }
+R12_TABLES = {"research_scopes", "research_nodes"}
 
 
 def bootstrap_revision_for_tables(
@@ -96,6 +97,30 @@ def bootstrap_revision_for_tables(
                     if "improvement_logs" in inspector.get_table_names():
                         if "memory_audit_events" in inspector.get_table_names():
                             if "run_budgets" in inspector.get_table_names():
+                                present_r12 = table_names & R12_TABLES
+                                lineage_columns = {
+                                    "parent_run_id",
+                                    "root_run_id",
+                                    "run_role",
+                                    "research_scope_id",
+                                    "engine_version",
+                                }
+                                if present_r12 or lineage_columns & agent_run_cols:
+                                    if not R12_TABLES.issubset(table_names):
+                                        missing = ", ".join(sorted(R12_TABLES - present_r12))
+                                        raise RuntimeError(
+                                            "Legacy database has a partial R12 research schema; "
+                                            f"missing tables: {missing}"
+                                        )
+                                    if not lineage_columns.issubset(agent_run_cols):
+                                        missing = ", ".join(sorted(lineage_columns - agent_run_cols))
+                                        raise RuntimeError(
+                                            "Legacy database has a partial R12 AgentRun schema; "
+                                            f"missing columns: {missing}"
+                                        )
+                                    return _required_stamp(
+                                        current_revision, "0012_research_scope_and_lineage"
+                                    )
                                 return _required_stamp(current_revision, "0011_run_budgets")
                             return _required_stamp(current_revision, "0010_memory_audit")
                         return _required_stamp(current_revision, "0009_improvement_log")
@@ -122,6 +147,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0009_improvement_log": 9,
         "0010_memory_audit": 10,
         "0011_run_budgets": 11,
+        "0012_research_scope_and_lineage": 12,
     }
     if current_revision is None:
         return schema_revision

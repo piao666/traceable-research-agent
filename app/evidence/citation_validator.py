@@ -353,6 +353,16 @@ def validate_citations(
     return report
 
 
+def validate_scope_citations(
+    report_text: str,
+    scope_bundle: dict[str, Any],
+    **kwargs: Any,
+) -> CitationValidationReport:
+    """Validate Scope labels, including labels resolving to child passages."""
+
+    return validate_citations(report_text, scope_bundle, **kwargs)
+
+
 def render_citation_validation_section(report: CitationValidationReport) -> list[str]:
     """Render the citation validation section as Markdown lines."""
     if report.total == 0:

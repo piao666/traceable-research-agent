@@ -12,6 +12,28 @@ and produces an evidence-backed Markdown report.
 
 ## Why Traceable Research Agent
 
+### Deep Research Engine V2 (R12)
+
+Deep Profile now has one official execution path: a persisted Research Scope
+containing a Research Tree of root and branch Runs. `AgentRun` records explicit
+`parent_run_id`, `root_run_id`, `run_role`, `research_scope_id` and
+`engine_version` lineage; migration `0012_research_scope_and_lineage` backfills
+existing Runs without relying on `plan_json` as the authority.
+
+Each branch reuses the existing governed ReAct executor, read-only Tool
+Registry, recovery policy, Trace, Evidence Pipeline and the root Run's shared
+budget. Branch Evidence stays owned by the branch Run. A read-only Scope layer
+aggregates it logically for outcome checks and final synthesis, preserving the
+chain `Citation → Passage → Snapshot → Trace → origin_run_id`. The root writes
+one final report from the complete Scope; node completion no longer writes an
+intermediate report that omits sibling evidence. Standard and Offline profiles
+continue to use their existing executors.
+
+The legacy `app.agent.deepening.run_deepening` symbol remains for one
+compatibility release as a deprecation-warning adapter to Engine V2; the
+Dispatcher no longer calls the legacy round engine. Research intelligence,
+coverage/gap policy and hierarchical long-report composition remain R13/R14.
+
 ### Adaptive retrieval and source reliability (R11)
 
 R11 keeps the public `web_fetcher` tool contract while replacing its internals
@@ -41,8 +63,8 @@ PDF and configured remote-extractor checks are deliberately confirmation-gated:
 ```
 
 The offline suite uses injected HTTP/browser/provider fixtures and never makes
-these real calls. R11 does not introduce research trees, coverage scoring or
-long-report composition; those remain R12-R14 work.
+these real calls. R11 itself remains the retrieval layer; R12 consumes its
+uniform Fetch results without coupling the Engine to an individual backend.
 
 ### Real Runtime profiles and preflight (R10)
 
@@ -545,6 +567,7 @@ documented in `.env.example.full`; the isolated fixture setup is
 | `AUTH_ENABLED` | `false` | Enable local API-key authentication. |
 | `DEMO_API_KEY` | empty | API key required when authentication is enabled. |
 | `RESEARCH_PROFILE` | `standard` in code; `deep` in `.env.example` | Select coherent real-deep, real-standard or offline defaults. |
+| `DEEP_RESEARCH_ENGINE_VERSION` | `v2` | Pin the only supported Deep Profile engine; legacy V1 is not a runtime option. |
 | `EXECUTION_MODE` | Profile-dependent | Advanced override for automatic routing defaults. |
 | `OFFLINE_MODE` | Profile-dependent | Advanced override; use the `offline` Profile for normal offline work. |
 | `REPORT_GENERATION_MODE` | Profile-dependent | Advanced override for deterministic or configured-LLM reporting. |
@@ -571,6 +594,9 @@ need them. When `AUTH_ENABLED=true`, send the configured key in the
 | `POST /api/tasks/{run_id}/confirm` | Resume or reject a guarded operation. |
 | `GET /api/tasks/{run_id}/trace` | Read persisted tool traces. |
 | `GET /api/tasks/{run_id}/evidence/v2` | Read provenance and citations. |
+| `GET /api/tasks/{run_id}/research-scope` | Read persisted Scope lineage and shared-budget statistics. |
+| `GET /api/tasks/{run_id}/research-tree` | Read the nested Research Tree for any Scope member Run. |
+| `GET /api/tasks/{run_id}/scope-evidence` | Read logical cross-run Evidence with origin Run/Trace links. |
 | `GET /api/reports/{run_id}` | Fetch the Markdown report. |
 | `GET /api/tools` | List registered tool metadata. |
 | `GET /api/skills` | List installed task skills. |
@@ -662,9 +688,9 @@ opens the deployment workspace database.
 - [x] Docker deployment configuration and local runtime persistence implementation
 - [x] R10.0a research-to-finalization handoff and comparison coverage stabilization
 - [x] R11 adaptive HTTP/Browser/PDF/remote retrieval foundation and source identity
+- [x] R12 Deep Research Engine V2, Research Scope/Tree and cross-run Evidence
 - [ ] R10 real Docker build/restart and live provider preflight/acceptance
 - [ ] R11 confirmation-gated real static/Browser/PDF/remote fetch acceptance
-- [ ] R12 Deep Research Engine V2 replacement
 - [ ] Add a repository license before public redistribution
 - [ ] Expand operational observability for long-running self-hosted instances
 

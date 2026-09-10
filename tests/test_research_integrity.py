@@ -500,7 +500,7 @@ class ResearchIntegrityTests(unittest.TestCase):
 
     def test_deepening_failed_synthesis_records_limitation_not_comprehensive(self):
         from unittest.mock import Mock
-        from app.agent.deepening import run_deepening
+        from app.agent.deepening import _legacy_run_deepening_v1 as run_deepening
         from app.llm.base import LLMResponse
         client = Mock()
         client.is_available.return_value = True
@@ -529,7 +529,7 @@ class ResearchIntegrityTests(unittest.TestCase):
 
     def test_deepening_final_gate_rejects_no_evidence(self):
         from unittest.mock import Mock
-        from app.agent.deepening import run_deepening
+        from app.agent.deepening import _legacy_run_deepening_v1 as run_deepening
         from app.llm.base import LLMResponse
         client = Mock()
         client.is_available.return_value = True

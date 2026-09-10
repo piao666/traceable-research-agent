@@ -40,6 +40,9 @@ from app.schemas import (
     PlanReviewResponse,
     PlanReviewStep,
     ProvenanceBundleResponse,
+    ResearchScopeResponse,
+    ResearchTreeResponse,
+    ScopeEvidenceResponse,
     TaskCancelRequest,
     TaskCreateRequest,
     TaskCreateResponse,
@@ -281,6 +284,11 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
         adaptive_phase=plan_meta.get("adaptive_phase"),
         deepening_pending=plan_meta.get("deepening_pending", False),
         deepening_phase=plan_meta.get("deepening_phase"),
+        parent_run_id=run.parent_run_id,
+        root_run_id=run.root_run_id,
+        run_role=run.run_role,
+        research_scope_id=run.research_scope_id,
+        engine_version=run.engine_version,
     )
 
 
@@ -306,6 +314,8 @@ def _task_run_response(summary: dict) -> TaskRunResponse:
         adaptive_phase=summary.get("adaptive_phase"),
         deepening_pending=summary.get("deepening_pending", False),
         deepening_phase=summary.get("deepening_phase"),
+        research_scope_id=summary.get("research_scope_id"),
+        engine_version=summary.get("engine_version"),
     )
 
 
@@ -1067,6 +1077,59 @@ async def get_task_provenance(
     return ProvenanceBundleResponse(**payload)
 
 
+@router.get("/{run_id}/research-scope", response_model=ResearchScopeResponse)
+async def get_task_research_scope(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> ResearchScopeResponse:
+    """Return the persisted Deep Research Scope for any member run."""
+
+    from app.research.scope import resolve_research_scope, scope_summary
+
+    if store.get_agent_run(db, run_id) is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    scope = resolve_research_scope(db, run_id)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="Research scope not found")
+    return ResearchScopeResponse(**scope_summary(db, scope))
+
+
+@router.get("/{run_id}/research-tree", response_model=ResearchTreeResponse)
+async def get_task_research_tree(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> ResearchTreeResponse:
+    """Return a nested DB-backed Research Tree projection."""
+
+    from app.research.scope import resolve_research_scope
+    from app.research.tree import get_research_tree
+
+    if store.get_agent_run(db, run_id) is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    scope = resolve_research_scope(db, run_id)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="Research scope not found")
+    return ResearchTreeResponse(**get_research_tree(db, scope))
+
+
+@router.get("/{run_id}/scope-evidence", response_model=ScopeEvidenceResponse)
+async def get_task_scope_evidence(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> ScopeEvidenceResponse:
+    """Return logical cross-run Evidence with origin-run Trace links."""
+
+    from app.evidence.scope_service import get_scope_provenance_bundle
+    from app.research.scope import resolve_research_scope
+
+    if store.get_agent_run(db, run_id) is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    scope = resolve_research_scope(db, run_id)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="Research scope not found")
+    return ScopeEvidenceResponse(**get_scope_provenance_bundle(db, scope))
+
+
 @router.get("/{run_id}/evidence/export", response_model=EvidenceExportResponse)
 async def export_task_evidence(
     run_id: str,
@@ -1120,7 +1183,9 @@ async def download_task_evidence_export(
 def list_tasks(
     session_id: str | None = Query(None),
     status: str | None = Query(None),
-    execution_mode: str | None = Query(None, pattern="^(planned|react)$"),
+    execution_mode: str | None = Query(
+        None, pattern="^(planned|react|deep_research_v2)$"
+    ),
     created_after: datetime | None = Query(None),
     created_before: datetime | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
@@ -1165,6 +1230,11 @@ def list_tasks(
                 total_tool_calls=r.total_tool_calls,
                 estimated_cost=r.estimated_cost,
                 session_id=r.session_id,
+                parent_run_id=r.parent_run_id,
+                root_run_id=r.root_run_id,
+                run_role=r.run_role,
+                research_scope_id=r.research_scope_id,
+                engine_version=r.engine_version,
                 created_at=r.created_at,
                 updated_at=r.updated_at,
             )
@@ -1271,6 +1341,9 @@ def retry_task(
         allowed_tools=allowed_tools,
         session_id=original.session_id,
         run_config_snapshot=json.dumps(settings.get_safe_runtime_config_summary(), ensure_ascii=False, sort_keys=True),
+        parent_run_id=run_id,
+        run_role="root",
+        engine_version=original.engine_version or "legacy",
     )
     store.update_agent_run_plan(db, new_run.run_id, plan)
     _persist_plan_config_snapshot(db, new_run.run_id, settings.get_safe_runtime_config_summary(), plan)

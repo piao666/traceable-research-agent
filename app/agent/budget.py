@@ -31,7 +31,7 @@ class BudgetExceeded(RuntimeError):
 
 
 class FinalizationRequired(BudgetExceeded):
-    """Signal a root research loop to stop discovery and spend its report reserve.
+    """Signal a research-scope node to stop discovery and preserve report reserve.
 
     This is deliberately non-terminal: unlike a hard budget breach it must not
     persist ``stop_reason`` before the root Run has had a chance to finalize.
@@ -132,7 +132,7 @@ class BudgetRuntime:
                 "llm_calls" if row.llm_calls + llm > config["max_llm_calls"] else
                 "tokens" if row.reserved_tokens + tokens > config["max_tokens"] else
                 "finalization_reserve" if row.reserved_tokens + tokens > token_limit or row.llm_calls + llm > llm_limit else "estimated_cost")
-            if reason == "finalization_reserve" and self.run_id == self.root_id and not final:
+            if reason == "finalization_reserve" and not final:
                 raise FinalizationRequired(reason)
             self.stop(reason)
 

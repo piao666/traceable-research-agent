@@ -90,6 +90,8 @@ def _refresh_result(db: Session, run_id: str, result: dict) -> dict:
             "adaptive_phase": plan.get("adaptive_phase"),
             "deepening_pending": bool(plan.get("deepening_pending")),
             "deepening_phase": plan.get("deepening_phase"),
+            "research_scope_id": run.research_scope_id,
+            "engine_version": run.engine_version,
         }
     )
     return refreshed
@@ -151,8 +153,11 @@ def run_task_by_mode(
         )
         try:
             if settings_obj.deep_research_enabled:
-                from app.agent.deepening import run_deepening
-                result = run_deepening(db, run_id, settings_obj, llm_client=llm_client)
+                from app.research.orchestrator import run_deep_research_v2
+
+                result = run_deep_research_v2(
+                    db, run_id, settings_obj, llm_client=llm_client
+                )
             else:
                 result = run_react_task(db, run_id, settings_obj, llm_client=llm_client)
             if adaptive_requested_mode:
@@ -170,6 +175,14 @@ def run_task_by_mode(
                     _store.replace_agent_run_plan(db, run_id, final_plan)
             return _finalize_result(db, run_id, result)
         except Exception as exc:
+            if settings_obj.deep_research_enabled:
+                # Deep Profile has one official Engine V2 path. Never hide a
+                # Scope failure by switching to the unrelated planned runtime.
+                db.rollback()
+                failed = fail_execution(db, run_id, exc)
+                from app.agent.executor import _summary
+
+                return _finalize_result(db, run_id, _summary(failed))
             successful = any(trace.status == "success" for trace in _store.list_tool_traces(db, run_id))
             if not settings_obj.react_fallback_to_planned or successful or run is None:
                 db.rollback()
