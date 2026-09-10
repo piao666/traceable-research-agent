@@ -5,6 +5,7 @@ services:
       target: api
     ports:
       - "8000:8000"
+    shm_size: "1gb"
     volumes:
       - ./workspace:/app/workspace
     env_file:

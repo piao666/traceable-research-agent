@@ -363,10 +363,10 @@ def _web_page_items(run_id: str, record: dict[str, Any], existing_count: int) ->
     from app.tools.web_content_cleaner import page_content_issue
     items: list[EvidenceItem] = []
     for page in record["output"].get("pages") or []:
-        if not isinstance(page, dict) or page.get("error"):
+        if not isinstance(page, dict) or page.get("error") or page.get("deduplicated"):
             continue
         content = str(page.get("content") or "").strip()
-        url = str(page.get("url") or "")
+        url = str(page.get("canonical_url") or page.get("final_url") or page.get("url") or "")
         if not content or page_content_issue(content) or not url.startswith(("https://", "http://")):
             continue
         item = _make_item(run_id, record, existing_count + len(items) + 1,
@@ -374,7 +374,10 @@ def _web_page_items(run_id: str, record: dict[str, Any], existing_count: int) ->
                           source_ref=url, source_type="web")
         item.metadata.update({key: page[key] for key in (
             "content_basis", "extraction_method", "extraction_confidence", "content_hash",
-            "source_cluster_id", "hostname", "source_tier", "truncated",
+            "source_cluster_id", "hostname", "source_tier", "truncated", "requested_url",
+            "final_url", "canonical_url", "canonical_hint", "published_at", "content_type",
+            "fetch_status", "fetch_backend", "provider", "quality", "source_identity",
+            "redirect_chain", "retrieval_attempts", "fragment_locator",
         ) if key in page})
         item.metadata.setdefault("content_basis", "partial")
         items.append(item)

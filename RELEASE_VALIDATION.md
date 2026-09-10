@@ -1,6 +1,40 @@
-# 修复发布与验收清单（R0–R10）
+# 修复发布与验收清单（R0–R11）
 
-## R10 Real Runtime：本地待提交记录
+## R11 Retrieval & Source Reliability：本地待提交记录
+
+本轮以已发布的 `feature/improvements@b0edf9c` 为基线，按 R11–R15 Deep
+Research Engine V2 重构方案完成 R11。外部工具名仍为 `web_fetcher`，内部已经
+拆为统一 Fetch Contract、HTTP Backend、HTML Extractor、Content Quality Gate、
+隔离 Playwright Browser Backend、PDF Adapter、Firecrawl／Exa Remote Adapter 和
+Adaptive Router。HTTP 200 的 JavaScript 空壳、Challenge、CAPTCHA、Cookie／登录墙、
+软 404／429、付费墙、PDF 原始数据和低质量模板不会被计为有效研究正文。
+
+URL 规范化、Canonical URL 与内容哈希两级去重已经进入抓取与来源队列；最终
+URL 级失败分类及各 Backend 尝试记录进入 ToolResult／Trace。请求 URL、最终 URL、
+Canonical URL、Provider、提取方式／置信度、Fetch Status、发布时间、重定向链和
+Source Identity 会进入 Evidence、SourceDocument 与 SourceSnapshot。Browser 和
+Remote Extract 缺失配置只表示可选能力不可用，不会被提升为全系统故障。
+
+| 验证 | 本轮结果与边界 |
+|---|---|
+| 后端完整离线回归 | 收集 695 项：691 通过、2 条件跳过、2 项严格 xfail、0 失败；7 条第三方弃用警告；0 次外部网络尝试 |
+| R11 专项 | Fetch Contract、质量门、HTTP／Browser／PDF／Remote、路由、SSRF、Canonical／Hash 去重、Evidence／Snapshot、配置与 Docker 契约全部通过 |
+| 综合 Smoke | 18/18 通过；本地评估 78/80 通过，2 项真实网络依赖按设计跳过，0 硬失败 |
+| Docker | 静态配置 Smoke 通过；镜像声明安装 `playwright==1.62.0` 及 Chromium，并为 API 配置 1 GB `/dev/shm`；当前环境没有 Docker CLI，未实际构建／启动 |
+| 真实 Fetch | 未执行；已提供受 `--confirm-real-calls --r11-fetch-smoke` 保护的静态／Browser／PDF／已配置 Remote smoke |
+| 发布状态 | R11 修改尚未提交或推送；`LICENSE` 按用户要求未处理 |
+
+两项严格 xfail 是在 R11 开始时冻结的后续阶段缺陷：旧 `deepening.py` 排除子 Run
+Observation（R12 替换）以及旧单次报告上下文 7000 字符硬截断（R14 分节 Composer
+替换）。它们不是 R11 回归失败，也没有在本阶段越层修改。
+
+真实 R11 Fetch 验收命令：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls --r11-fetch-smoke
+```
+
+## R10 Real Runtime：已发布记录（b0edf9c）
 
 本轮完成三档 `RESEARCH_PROFILE`、通用 OpenAI-compatible Provider、稳定 LLM
 错误分类、显式真实 Runtime Preflight、新建研究页中文环境状态，以及受
@@ -27,7 +61,7 @@ Deepening Synthesizer 的失败均写入脱敏 Trace；空响应、非法结构�
 | 综合 Smoke | 18/18 通过；本地评估包含在内，0 硬失败 |
 | Docker | 静态配置 Smoke 通过；当前环境无 Docker CLI，未实际构建或启动容器 |
 | 真实 Provider | 未调用收费模型或 Tavily；实现已完成，但需在使用者配置密钥后运行真实预检及 `--run-task` 验收 |
-| 发布状态 | R10 实现与本地门禁已收口；修改尚未提交或推送；`LICENSE` 未处理 |
+| 发布状态 | R10 已发布至 `feature/improvements@b0edf9c`；对应 CI 成功；`LICENSE` 未处理 |
 
 真实验收命令：
 

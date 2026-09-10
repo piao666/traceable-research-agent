@@ -67,9 +67,15 @@ def classify_tool_error(error_type: object, error_message: object = None) -> Too
         return ToolErrorCategory.RATE_LIMITED
     if "timeout" in text or "timed out" in text:
         return ToolErrorCategory.TIMEOUT
-    if normalized in {"permission_error", "forbidden"}:
+    if normalized in {"permission_error", "forbidden", "http_403"}:
         return ToolErrorCategory.PERMISSION_ERROR
-    if normalized in {"missing_api_key", "auth_error", "unauthorized"} or any(
+    if normalized in {
+        "missing_api_key",
+        "auth_error",
+        "unauthorized",
+        "http_401",
+        "login_required",
+    } or any(
         term in text for term in ("authentication", "unauthorized", "invalid credential")
     ) or re.search(r"\bhttp\s+401\b", text):
         return ToolErrorCategory.AUTH_ERROR
@@ -79,6 +85,17 @@ def classify_tool_error(error_type: object, error_message: object = None) -> Too
         "invalid_vectors",
         "invalid_decision",
         "parse_error",
+        "javascript_required",
+        "cloudflare_challenge",
+        "bot_challenge",
+        "captcha",
+        "cookie_wall",
+        "paywall",
+        "empty_document",
+        "boilerplate_only",
+        "content_too_large",
+        "pdf_routed",
+        "extraction_failed",
     }:
         return ToolErrorCategory.INVALID_RESULT
     if normalized == "model_not_found":
@@ -93,17 +110,30 @@ def classify_tool_error(error_type: object, error_message: object = None) -> Too
         "approval_mismatch",
         "disallowed_tool",
         "source_mode_violation",
+        "invalid_url",
+        "ssrf_blocked",
+        "redirect_error",
     }:
         return ToolErrorCategory.POLICY_ERROR
-    if normalized in {"not_found", "db_not_found", "index_missing", "missing_report_file"}:
+    if normalized in {
+        "not_found",
+        "db_not_found",
+        "index_missing",
+        "missing_report_file",
+        "http_404",
+        "http_410",
+        "soft_not_found",
+    }:
         return ToolErrorCategory.NOT_FOUND
     if normalized in {
         "disabled",
         "backend_disabled",
         "backend_unavailable",
+        "remote_extract_unavailable",
         "adapter_not_configured",
         "unavailable",
         "not_implemented",
+        "unsupported_content_type",
     }:
         return ToolErrorCategory.UNAVAILABLE
     if normalized in {"handler_error", "parallel_worker_error", "internal_error"}:
@@ -119,6 +149,11 @@ def classify_tool_error(error_type: object, error_message: object = None) -> Too
         "sql_error",
         "search_error",
         "read_error",
+        "dns_error",
+        "connection_error",
+        "http_5xx",
+        "extraction_failed",
+        "pdf_corrupt",
     }:
         return ToolErrorCategory.PROVIDER_ERROR
     return ToolErrorCategory.UNKNOWN

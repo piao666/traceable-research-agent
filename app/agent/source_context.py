@@ -21,7 +21,12 @@ def source_url(value) -> str | None:
         if any(any(word in key.lower() for word in ("token", "secret", "signature", "api_key", "apikey"))
                for key, _ in parse_qsl(parts.query)):
             return None  # Never persist access-bearing URLs in model context.
-        return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path or "/", parts.query, ""))
+        from app.retrieval.url_normalizer import canonicalize_url
+
+        normalized = canonicalize_url(
+            urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path or "/", parts.query, ""))
+        ).normalized_url
+        return normalized if normalized.startswith(("http://", "https://")) else None
     except ValueError:
         return None
 
@@ -38,7 +43,7 @@ def resolve_source_snapshot(traces, source_id: str):
         if not isinstance(output, dict) or _contains_demonstration(output):
             continue
         for page in output.get("pages") or []:
-            url = source_url(page.get("url"))
+            url = source_url(page.get("canonical_url") or page.get("final_url") or page.get("url"))
             content = str(page.get("content") or "")
             if (url and "S" + hashlib.sha256(url.encode()).hexdigest()[:12] == source_id
                     and content and not page.get("error") and not page_content_issue(content)):
@@ -91,7 +96,17 @@ def build_source_context(traces, *, max_sources: int = 64) -> dict:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            url = source_url(row.get("url") or row.get("html_url") or row.get("pdf_url") or row.get("abstract_url") or row.get("openAccessUrl"))
+            if page_read and row.get("deduplicated"):
+                continue
+            url = source_url(
+                row.get("canonical_url")
+                or row.get("final_url")
+                or row.get("url")
+                or row.get("html_url")
+                or row.get("pdf_url")
+                or row.get("abstract_url")
+                or row.get("openAccessUrl")
+            )
             if not url:
                 continue
             if url not in sources and len(sources) >= max_sources:

@@ -188,6 +188,17 @@ class Settings(BaseModel):
     web_fetcher_cache_dir: str = "workspace/cache/fetch"
     web_fetcher_trafilatura_enabled: bool = True
     web_fetcher_playwright_enabled: bool = False
+    # ── R11: adaptive retrieval router ─────────────────────────────
+    fetch_router_enabled: bool = True
+    fetch_http_enabled: bool = True
+    fetch_browser_enabled: bool = True
+    fetch_remote_extract_enabled: bool = True
+    fetch_browser_timeout_seconds: int = 20
+    fetch_browser_max_concurrency: int = 2
+    fetch_remote_extract_provider_order: str = "firecrawl,exa"
+    fetch_quality_min_score: float = Field(default=0.55, ge=0.0, le=1.0)
+    url_canonicalization_enabled: bool = True
+    content_dedup_enabled: bool = True
     # ── Phase 8.3: PDF reader ──────────────────────────────────────
     pdf_reader_enabled: bool = True
     pdf_reader_max_pages: int = 50
@@ -540,6 +551,17 @@ class Settings(BaseModel):
             web_fetcher_cache_dir=_env_str("WEB_FETCHER_CACHE_DIR", "workspace/cache/fetch"),
             web_fetcher_trafilatura_enabled=_env_bool("WEB_FETCHER_TRAFILATURA_ENABLED", True),
             web_fetcher_playwright_enabled=_env_bool("WEB_FETCHER_PLAYWRIGHT_ENABLED", False),
+            # R11
+            fetch_router_enabled=_env_bool("FETCH_ROUTER_ENABLED", True),
+            fetch_http_enabled=_env_bool("FETCH_HTTP_ENABLED", True),
+            fetch_browser_enabled=_env_bool("FETCH_BROWSER_ENABLED", True),
+            fetch_remote_extract_enabled=_env_bool("FETCH_REMOTE_EXTRACT_ENABLED", True),
+            fetch_browser_timeout_seconds=_env_bounded_int("FETCH_BROWSER_TIMEOUT_SECONDS", 20, 3, 120),
+            fetch_browser_max_concurrency=_env_bounded_int("FETCH_BROWSER_MAX_CONCURRENCY", 2, 1, 8),
+            fetch_remote_extract_provider_order=_env_str("FETCH_REMOTE_EXTRACT_PROVIDER_ORDER", "firecrawl,exa"),
+            fetch_quality_min_score=_env_bounded_float("FETCH_QUALITY_MIN_SCORE", 0.55, 0.0, 1.0),
+            url_canonicalization_enabled=_env_bool("URL_CANONICALIZATION_ENABLED", True),
+            content_dedup_enabled=_env_bool("CONTENT_DEDUP_ENABLED", True),
             # Phase 8.3
             pdf_reader_enabled=_env_bool("PDF_READER_ENABLED", True),
             pdf_reader_max_pages=_env_bounded_int("PDF_READER_MAX_PAGES", 50, 1, 200),
@@ -691,6 +713,17 @@ class Settings(BaseModel):
             "web_fetcher_cache_enabled": self.web_fetcher_cache_enabled,
             "web_fetcher_trafilatura_enabled": self.web_fetcher_trafilatura_enabled,
             "web_fetcher_playwright_enabled": self.web_fetcher_playwright_enabled,
+            # R11
+            "fetch_router_enabled": self.fetch_router_enabled,
+            "fetch_http_enabled": self.fetch_http_enabled,
+            "fetch_browser_enabled": self.fetch_browser_enabled,
+            "fetch_remote_extract_enabled": self.fetch_remote_extract_enabled,
+            "fetch_browser_timeout_seconds": self.fetch_browser_timeout_seconds,
+            "fetch_browser_max_concurrency": self.fetch_browser_max_concurrency,
+            "fetch_remote_extract_provider_order": self.fetch_remote_extract_provider_order,
+            "fetch_quality_min_score": self.fetch_quality_min_score,
+            "url_canonicalization_enabled": self.url_canonicalization_enabled,
+            "content_dedup_enabled": self.content_dedup_enabled,
             # Phase 8.3
             "pdf_reader_enabled": self.pdf_reader_enabled,
             "pdf_reader_max_pages": self.pdf_reader_max_pages,
@@ -790,6 +823,15 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_bounded_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return min(max(_env_int(name, default), minimum), maximum)
+
+
+def _env_bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    value = os.getenv(name)
+    try:
+        parsed = float(value.strip()) if value is not None else default
+    except ValueError:
+        parsed = default
+    return min(max(parsed, minimum), maximum)
 
 
 def _bounded_value(value: object, default: int, minimum: int, maximum: int) -> int:

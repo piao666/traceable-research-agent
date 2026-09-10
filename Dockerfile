@@ -25,7 +25,8 @@ FROM runtime-base AS api-deps
 COPY requirements/api.txt requirements/api.txt
 RUN --mount=type=cache,id=traceable-pip-py311,target=/root/.cache/pip,sharing=locked \
     python -m pip install --prefer-binary -r requirements/api.txt \
-    && python -m pip check
+    && python -m pip check \
+    && python -m playwright install --with-deps chromium
 
 FROM api-deps AS api
 

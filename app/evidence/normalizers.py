@@ -5,13 +5,9 @@ from __future__ import annotations
 import hashlib
 import re
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from app.agent.evidence import EvidenceItem
-
-
-TRACKING_QUERY_PREFIXES = ("utm_",)
-TRACKING_QUERY_KEYS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
 
 
 def canonical_source_uri(item: EvidenceItem) -> str:
@@ -28,29 +24,16 @@ def canonical_source_uri(item: EvidenceItem) -> str:
 
 
 def canonicalize_url(url: str) -> str:
-    parsed = urlsplit(url.strip())
-    scheme = parsed.scheme.lower()
-    hostname = (parsed.hostname or "").lower()
-    port = parsed.port
-    netloc = hostname
-    if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
-        netloc = f"{hostname}:{port}"
-    path = re.sub(r"/{2,}", "/", parsed.path or "/")
-    if path != "/":
-        path = path.rstrip("/")
-    query_items = [
-        (key, value)
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if key.lower() not in TRACKING_QUERY_KEYS
-        and not key.lower().startswith(TRACKING_QUERY_PREFIXES)
-    ]
-    return urlunsplit((scheme, netloc, path, urlencode(sorted(query_items)), ""))
+    from app.retrieval.url_normalizer import canonicalize_url as normalize
+
+    return normalize(url).normalized_url
 
 
 def source_provider(item: EvidenceItem) -> str:
     metadata = item.metadata or {}
     return str(
         metadata.get("remote_server")
+        or metadata.get("provider")
         or metadata.get("data_source")
         or item.tool_name
         or "unknown"
@@ -58,6 +41,9 @@ def source_provider(item: EvidenceItem) -> str:
 
 
 def source_organization(item: EvidenceItem, canonical_uri: str) -> str | None:
+    identity = item.metadata.get("source_identity") if isinstance(item.metadata, dict) else None
+    if isinstance(identity, dict) and identity.get("organization"):
+        return str(identity["organization"])[:255]
     if canonical_uri.startswith(("http://", "https://")):
         return (urlsplit(canonical_uri).hostname or "")[:255] or None
     if canonical_uri.startswith("github://"):

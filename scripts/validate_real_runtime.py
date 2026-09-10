@@ -47,7 +47,71 @@ def _parser() -> argparse.ArgumentParser:
         default="Summarize the FastAPI official documentation for dependency injection and cite the fetched source.",
         help="Acceptance-task question used only with --run-task.",
     )
+    parser.add_argument(
+        "--r11-fetch-smoke",
+        action="store_true",
+        help="Run the explicit R11 static, Browser, PDF, and configured remote-extractor smoke.",
+    )
+    parser.add_argument("--static-url", default="https://example.com/", help="Public static HTML fixture URL.")
+    parser.add_argument("--browser-url", default="https://playwright.dev/python/", help="Public Browser fixture URL.")
+    parser.add_argument(
+        "--pdf-url",
+        default="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+        help="Public PDF fixture URL.",
+    )
     return parser
+
+
+def _r11_fetch_smoke(args: argparse.Namespace) -> int:
+    from app.retrieval.remote_extract import configured_remote_providers
+    from app.tools.web_fetcher import web_fetch
+
+    cases = [
+        ("static_http", args.static_url, ["http"]),
+        ("browser", args.browser_url, ["browser"]),
+        ("pdf", args.pdf_url, []),
+    ]
+    remote = configured_remote_providers(
+        provider_order=settings.fetch_remote_extract_provider_order,
+    )
+    if settings.fetch_remote_extract_enabled and any(provider.available() for provider in remote):
+        cases.append(("remote_extract", args.static_url, ["remote_extract"]))
+
+    results = []
+    for name, url, preferred in cases:
+        result = web_fetch(
+            {
+                "urls": [url],
+                "preferred_backends": preferred,
+                "max_chars": 8000,
+                "timeout_seconds": settings.fetch_browser_timeout_seconds,
+                "batch_timeout_seconds": min(120, settings.fetch_browser_timeout_seconds + 10),
+            },
+            settings_obj=settings,
+        )
+        page = result.output["pages"][0] if result.output and result.output.get("pages") else {}
+        results.append(
+            {
+                "case": name,
+                "success": result.success,
+                "fetch_status": page.get("fetch_status"),
+                "fetch_backend": page.get("fetch_backend"),
+                "provider": page.get("provider"),
+                "content_basis": page.get("content_basis"),
+                "failure_code": page.get("error_code") or page.get("error"),
+                "retrieval_attempts": page.get("retrieval_attempts") or [],
+            }
+        )
+    ready = bool(results) and all(item["success"] for item in results)
+    _print(
+        {
+            "stage": "r11_fetch_smoke",
+            "ready": ready,
+            "cases": results,
+            "remote_case": "executed" if any(item["case"] == "remote_extract" for item in results) else "not_configured",
+        }
+    )
+    return 0 if ready else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -66,6 +130,9 @@ def main(argv: list[str] | None = None) -> int:
             "message": "Real runtime validation requires the deep or standard profile.",
         })
         return 2
+
+    if args.r11_fetch_smoke:
+        return _r11_fetch_smoke(args)
 
     preflight = run_runtime_preflight(settings)
     _print({"stage": "preflight", **preflight})

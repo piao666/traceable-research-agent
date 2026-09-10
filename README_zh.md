@@ -11,6 +11,32 @@
 
 ## 核心亮点
 
+### 自适应抓取与来源可靠性（R11）
+
+R11 保留外部 `web_fetcher` 工具契约，并将内部实现替换为自适应抓取路由。系统先使用
+成本最低的静态 HTTP；HTTP 状态成功后仍必须通过正文质量门。JavaScript 空壳、
+Cloudflare／Bot challenge、CAPTCHA、Cookie／登录墙、软 404／429、付费墙、PDF
+原始二进制及低质量模板不会再冒充研究正文。符合恢复条件时，同一次工具调用会转入
+隔离且不持久化的 Playwright Context，再按配置尝试 Firecrawl／Exa；PDF URL 或
+检测出的 PDF 内容则交给现有的页级 PDF Reader。
+
+HTTP、Browser、PDF 与 Remote Extract 统一返回 `FetchResult`，保存请求／最终／
+Canonical URL、稳定状态、Provider、提取方法与置信度、重定向链、正文范围、内容哈希
+和来源身份。Canonical URL 与内容哈希两级去重，防止等价页面被重复请求或作为多个
+独立证据入库。上述元数据同时进入 Trace、`SourceDocument` 与 `SourceSnapshot`；
+Agent Recovery 只处理最终的 URL 级结果，不再反复调用静态 HTTP。
+
+高级开关、阈值和 Provider 顺序仅记录在 `.env.example.full`；Docker 会安装固定版本的
+Playwright Chromium。真实静态页、Browser、PDF 与已配置远端提取器的 Smoke 必须
+显式确认后执行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls --r11-fetch-smoke
+```
+
+离线测试使用注入的 HTTP／Browser／Provider fixture，不会发起真实外网请求。R11 不
+引入 Research Tree、Coverage 评分或长报告组合，这些仍属于 R12–R14。
+
 ### 真实运行档位与预检（R10）
 
 R10 用 `RESEARCH_PROFILE` 把真实研究与离线测试明确分开；显式环境变量仍可覆盖
@@ -523,7 +549,11 @@ docker compose config --quiet
 - [x] 证据溯源、引用校验和人工计划审批
 - [x] 信源分层治理、缓存提取、PDF 证据与学术文献校验
 - [x] Docker 部署配置与本地运行数据持久化实现
-- [ ] R9 真实 Docker 构建／重启、Streamlit 与浏览器验收
+- [x] R10.0a 研究到报告切换与技术比较覆盖稳定化
+- [x] R11 HTTP／Browser／PDF／远端自适应抓取基础与来源身份
+- [ ] R10 真实 Docker 构建／重启与 Provider 预检／验收
+- [ ] R11 需确认的真实静态页／Browser／PDF／远端抓取验收
+- [ ] R12 Deep Research Engine V2 替换
 - [ ] 在公开再分发前补充仓库许可证
 - [ ] 为长时间运行的自托管实例扩展运维可观测性
 

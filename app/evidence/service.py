@@ -342,7 +342,18 @@ def _materialize_item(
         "tool_name": item.tool_name,
         "is_mock": item.is_mock,
         "is_fallback": item.is_fallback,
-        **{key: item.metadata[key] for key in ("source_cluster_id", "hostname") if key in item.metadata},
+        **{
+            key: item.metadata[key]
+            for key in (
+                "source_cluster_id",
+                "hostname",
+                "source_identity",
+                "published_at",
+                "content_hash",
+                "canonical_url",
+            )
+            if key in item.metadata
+        },
     }
     # ── Phase 8.1: tier classification ──────────────────────────
     try:
@@ -381,6 +392,28 @@ def _materialize_item(
             {
                 "size_bytes": artifact.size_bytes,
                 "compressed_size_bytes": artifact.compressed_size_bytes,
+                **{
+                    key: item.metadata[key]
+                    for key in (
+                        "requested_url",
+                        "final_url",
+                        "canonical_url",
+                        "canonical_hint",
+                        "published_at",
+                        "content_type",
+                        "content_basis",
+                        "extraction_method",
+                        "extraction_confidence",
+                        "fetch_status",
+                        "fetch_backend",
+                        "provider",
+                        "quality",
+                        "source_identity",
+                        "redirect_chain",
+                        "retrieval_attempts",
+                    )
+                    if key in item.metadata
+                },
             }
         ),
     )

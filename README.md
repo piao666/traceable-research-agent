@@ -12,6 +12,38 @@ and produces an evidence-backed Markdown report.
 
 ## Why Traceable Research Agent
 
+### Adaptive retrieval and source reliability (R11)
+
+R11 keeps the public `web_fetcher` tool contract while replacing its internals
+with an adaptive retrieval router. Static HTTP remains the first and cheapest
+backend. A successful HTTP status is accepted only after extraction-quality
+checks; JavaScript shells, Cloudflare or bot challenges, CAPTCHA, cookie/login
+walls, soft 404/429 pages, paywalls, raw PDF data and low-quality boilerplate
+are classified rather than treated as research evidence. Eligible failures can
+fall back inside the same tool call to an isolated Playwright context and then
+to configured Firecrawl or Exa extraction. PDF URLs and detected PDF responses
+are delegated to the existing page-aware PDF reader.
+
+Every backend returns one `FetchResult` shape with requested/final/canonical
+URLs, stable status, provider, extraction method and confidence, redirect
+chain, content basis/hash and source identity. Canonical URL and content-hash
+deduplication prevent equivalent pages from being fetched or materialized as
+independent evidence more than once. The same metadata is retained in Trace,
+`SourceDocument` and `SourceSnapshot`; Agent recovery sees the final URL-level
+outcome instead of repeatedly retrying static HTTP.
+
+Advanced limits and provider order are documented only in `.env.example.full`.
+Docker installs the pinned Playwright Chromium runtime. Real static, Browser,
+PDF and configured remote-extractor checks are deliberately confirmation-gated:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls --r11-fetch-smoke
+```
+
+The offline suite uses injected HTTP/browser/provider fixtures and never makes
+these real calls. R11 does not introduce research trees, coverage scoring or
+long-report composition; those remain R12-R14 work.
+
 ### Real Runtime profiles and preflight (R10)
 
 R10 makes a real research deployment explicit. `RESEARCH_PROFILE` supplies
@@ -629,7 +661,10 @@ opens the deployment workspace database.
 - [x] Source-tier governance, cached extraction, PDF evidence, and academic verification
 - [x] Docker deployment configuration and local runtime persistence implementation
 - [x] R10.0a research-to-finalization handoff and comparison coverage stabilization
+- [x] R11 adaptive HTTP/Browser/PDF/remote retrieval foundation and source identity
 - [ ] R10 real Docker build/restart and live provider preflight/acceptance
+- [ ] R11 confirmation-gated real static/Browser/PDF/remote fetch acceptance
+- [ ] R12 Deep Research Engine V2 replacement
 - [ ] Add a repository license before public redistribution
 - [ ] Expand operational observability for long-running self-hosted instances
 
