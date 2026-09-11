@@ -99,7 +99,10 @@ class GoalRecoveryTests(unittest.TestCase):
     def test_citation_sentence_preserves_decimal_and_url(self):
         from app.evidence.citation_validator import _find_citation_sentence
         sentence = "增长为 12.50%，详见 https://example.org/data.csv [CIT-001-01]。"
-        self.assertEqual(_find_citation_sentence(sentence, sentence.index("CIT-")), sentence)
+        self.assertEqual(
+            _find_citation_sentence(sentence, sentence.index("CIT-")),
+            (sentence, 0, len(sentence)),
+        )
 
     def test_snapshot_read_uses_registry_without_network_or_new_evidence(self):
         from app.agent.budget import BudgetRuntime, _active

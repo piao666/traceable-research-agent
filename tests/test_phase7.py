@@ -15,6 +15,7 @@ from app.agent.file_access_policy import file_reader_execution_arguments
 from app.database import Base
 from app.evidence import models as evidence_models  # noqa: F401
 from app.memory import models as memory_models  # noqa: F401
+from app.research import models as research_models  # noqa: F401
 from app.trace import models as trace_models  # noqa: F401
 
 
@@ -48,6 +49,9 @@ class _FakeCitationLLM:
 
 class Phase7DatabaseTestCase(unittest.TestCase):
     def setUp(self) -> None:
+        from app.tools.defaults import register_default_tools
+
+        register_default_tools()
         self.engine = create_engine(
             "sqlite://",
             connect_args={"check_same_thread": False},
@@ -234,7 +238,7 @@ class CitationValidationTests(Phase7DatabaseTestCase):
             "citations": [{"citation_label": "CIT-001-01", "passage_id": "p1"}],
         }
 
-    def test_duplicate_labels_are_counted_once_and_cjk_is_supported(self) -> None:
+    def test_duplicate_labels_are_validated_per_occurrence(self) -> None:
         from app.evidence.citation_validator import validate_citations
 
         report = (
@@ -242,8 +246,30 @@ class CitationValidationTests(Phase7DatabaseTestCase):
             "## 9. 引用索引\n\n| [CIT-001-01] | 原文 |"
         )
         result = validate_citations(report, self._bundle())
-        self.assertEqual(result.total, 1)
+        self.assertEqual(result.total, 2)
+        self.assertEqual(result.occurrence_total, 2)
+        self.assertEqual(result.unique_citation_count, 1)
         self.assertEqual(result.supported, 1)
+        self.assertEqual(result.unsupported, 1)
+        self.assertLess(result.details[0].marker_start, result.details[1].marker_start)
+        self.assertGreater(result.details[0].sentence_end, result.details[0].sentence_start)
+
+    def test_same_label_can_have_supported_and_unsupported_occurrences(self) -> None:
+        from app.evidence.citation_validator import validate_citations
+
+        report = (
+            "Alpha revenue reached 100 USD [CIT-001-01]. "
+            "Unrelated weather report [CIT-001-01]."
+        )
+        result = validate_citations(
+            report,
+            self._bundle("Alpha revenue reached 100 USD"),
+        )
+
+        self.assertEqual(result.occurrence_total, 2)
+        self.assertEqual(result.supported_occurrences, 1)
+        self.assertEqual(result.unsupported_occurrences, 1)
+        self.assertEqual(result.occurrence_accuracy, 0.5)
 
     def test_llm_secondary_judgment_is_explicit_and_metered(self) -> None:
         from app.evidence.citation_validator import validate_citations

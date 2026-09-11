@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -414,4 +414,81 @@ class ScopeClaimResolution(Base):
     independent_support_count: Mapped[int] = mapped_column(Integer, nullable=False)
     independent_refute_count: Mapped[int] = mapped_column(Integer, nullable=False)
     rationale_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ReportRevision(Base):
+    __tablename__ = "report_revisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "root_run_id",
+            "content_hash",
+            name="uq_report_revisions_root_content_hash",
+        ),
+        Index("ix_report_revisions_root_run_id", "root_run_id"),
+        Index("ix_report_revisions_scope_id", "scope_id"),
+    )
+
+    report_revision_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    root_run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("agent_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scope_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("research_scopes.scope_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    final_answer_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    report_path: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ReportClaimOccurrence(Base):
+    __tablename__ = "report_claim_occurrences"
+    __table_args__ = (
+        Index("ix_report_claim_occurrences_revision", "report_revision_id"),
+    )
+
+    claim_occurrence_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    report_revision_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("report_revisions.report_revision_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    section: Mapped[str] = mapped_column(String(255), nullable=False)
+    claim_text: Mapped[str] = mapped_column(Text, nullable=False)
+    sentence_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    sentence_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    normalized_claim_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class CitationOccurrence(Base):
+    __tablename__ = "citation_occurrences"
+    __table_args__ = (
+        Index("ix_citation_occurrences_claim", "claim_occurrence_id"),
+        Index("ix_citation_occurrences_label", "citation_label"),
+        Index("ix_citation_occurrences_passage", "passage_id"),
+        Index("ix_citation_occurrences_origin_run", "origin_run_id"),
+    )
+
+    citation_occurrence_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    claim_occurrence_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("report_claim_occurrences.claim_occurrence_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    citation_label: Mapped[str] = mapped_column(String(64), nullable=False)
+    passage_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    origin_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    origin_trace_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    marker_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    marker_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(32), nullable=False)
+    keyword_overlap: Mapped[float] = mapped_column(Float, nullable=False)
+    judgment_source: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

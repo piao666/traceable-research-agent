@@ -1787,10 +1787,11 @@ def generate_markdown_report(
                         from app.llm.providers import create_llm_client
 
                         validation_llm_client = create_llm_client(_reporter_settings)
-                # Validate actual answer claims, not the citation index quoting sources.
-                report_text = "\n".join(_final_answer_lines)
+                # Validate the exact Final Answer body later materialized as
+                # ReportClaimOccurrence rows, never the citation appendix.
+                final_answer_text = "\n".join(_final_answer_lines)
                 citation_validation_report = validate_citations(
-                    report_text,
+                    final_answer_text,
                     provenance_bundle,
                     min_supported_overlap=0.15,
                     min_weak_overlap=0.05,

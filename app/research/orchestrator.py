@@ -19,6 +19,7 @@ from app.agent.react_executor import _summary, run_react_task
 from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings as _settings
+from app.evidence.citation_validator import materialize_final_report_occurrences
 from app.evidence.scope_service import get_scope_provenance_bundle
 from app.llm.base import LLMClient
 from app.llm.providers import create_llm_client
@@ -354,6 +355,15 @@ def run_deep_research_v2(
     root_traces = store.list_tool_traces(db, run_id)
     _persist_citation_validation(db, run_id, citation_reports, root_traces)
     _persist_reference_verification(db, run_id, reference_reports, root_traces)
+    materialize_final_report_occurrences(
+        db,
+        root_run_id=run_id,
+        scope_id=scope.scope_id,
+        markdown=markdown,
+        provenance_bundle=scope_evidence,
+        report_path=report_path,
+        validation_report=citation_reports[-1] if citation_reports else None,
+    )
     _after_run_completed(db, root, markdown, step_no=max((t.step_no for t in root_traces), default=0) + 1)
     update_scope_status(db, scope.scope_id, "completed")
     root = store.update_agent_run_status(db, run_id, "completed", None)

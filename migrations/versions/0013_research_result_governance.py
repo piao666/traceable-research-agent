@@ -129,9 +129,130 @@ def upgrade() -> None:
         "scope_claim_resolutions",
         ["status"],
     )
+    op.create_table(
+        "report_revisions",
+        sa.Column("report_revision_id", sa.String(length=64), nullable=False),
+        sa.Column("root_run_id", sa.String(), nullable=False),
+        sa.Column("scope_id", sa.String(length=64), nullable=True),
+        sa.Column("content_hash", sa.String(length=64), nullable=False),
+        sa.Column("final_answer_hash", sa.String(length=64), nullable=False),
+        sa.Column("report_path", sa.Text(), nullable=False),
+        sa.Column("status", sa.String(length=32), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["root_run_id"], ["agent_runs.run_id"], ondelete="CASCADE"
+        ),
+        sa.ForeignKeyConstraint(
+            ["scope_id"], ["research_scopes.scope_id"], ondelete="SET NULL"
+        ),
+        sa.PrimaryKeyConstraint("report_revision_id"),
+        sa.UniqueConstraint(
+            "root_run_id",
+            "content_hash",
+            name="uq_report_revisions_root_content_hash",
+        ),
+    )
+    op.create_index(
+        "ix_report_revisions_root_run_id",
+        "report_revisions",
+        ["root_run_id"],
+    )
+    op.create_index(
+        "ix_report_revisions_scope_id",
+        "report_revisions",
+        ["scope_id"],
+    )
+    op.create_table(
+        "report_claim_occurrences",
+        sa.Column("claim_occurrence_id", sa.String(length=64), nullable=False),
+        sa.Column("report_revision_id", sa.String(length=64), nullable=False),
+        sa.Column("section", sa.String(length=255), nullable=False),
+        sa.Column("claim_text", sa.Text(), nullable=False),
+        sa.Column("sentence_start", sa.Integer(), nullable=False),
+        sa.Column("sentence_end", sa.Integer(), nullable=False),
+        sa.Column("normalized_claim_text", sa.Text(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["report_revision_id"],
+            ["report_revisions.report_revision_id"],
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("claim_occurrence_id"),
+    )
+    op.create_index(
+        "ix_report_claim_occurrences_revision",
+        "report_claim_occurrences",
+        ["report_revision_id"],
+    )
+    op.create_table(
+        "citation_occurrences",
+        sa.Column("citation_occurrence_id", sa.String(length=64), nullable=False),
+        sa.Column("claim_occurrence_id", sa.String(length=64), nullable=False),
+        sa.Column("citation_label", sa.String(length=64), nullable=False),
+        sa.Column("passage_id", sa.String(length=64), nullable=True),
+        sa.Column("origin_run_id", sa.String(), nullable=True),
+        sa.Column("origin_trace_id", sa.String(), nullable=True),
+        sa.Column("marker_start", sa.Integer(), nullable=False),
+        sa.Column("marker_end", sa.Integer(), nullable=False),
+        sa.Column("verdict", sa.String(length=32), nullable=False),
+        sa.Column("keyword_overlap", sa.Float(), nullable=False),
+        sa.Column("judgment_source", sa.String(length=32), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["claim_occurrence_id"],
+            ["report_claim_occurrences.claim_occurrence_id"],
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("citation_occurrence_id"),
+    )
+    op.create_index(
+        "ix_citation_occurrences_claim",
+        "citation_occurrences",
+        ["claim_occurrence_id"],
+    )
+    op.create_index(
+        "ix_citation_occurrences_label",
+        "citation_occurrences",
+        ["citation_label"],
+    )
+    op.create_index(
+        "ix_citation_occurrences_passage",
+        "citation_occurrences",
+        ["passage_id"],
+    )
+    op.create_index(
+        "ix_citation_occurrences_origin_run",
+        "citation_occurrences",
+        ["origin_run_id"],
+    )
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_citation_occurrences_origin_run",
+        table_name="citation_occurrences",
+    )
+    op.drop_index(
+        "ix_citation_occurrences_passage",
+        table_name="citation_occurrences",
+    )
+    op.drop_index(
+        "ix_citation_occurrences_label",
+        table_name="citation_occurrences",
+    )
+    op.drop_index(
+        "ix_citation_occurrences_claim",
+        table_name="citation_occurrences",
+    )
+    op.drop_table("citation_occurrences")
+    op.drop_index(
+        "ix_report_claim_occurrences_revision",
+        table_name="report_claim_occurrences",
+    )
+    op.drop_table("report_claim_occurrences")
+    op.drop_index("ix_report_revisions_scope_id", table_name="report_revisions")
+    op.drop_index("ix_report_revisions_root_run_id", table_name="report_revisions")
+    op.drop_table("report_revisions")
     op.drop_index(
         "ix_scope_claim_resolutions_status",
         table_name="scope_claim_resolutions",

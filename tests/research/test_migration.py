@@ -50,5 +50,8 @@ def test_migration_0012_backfills_nested_legacy_lineage(tmp_path):
         "scope_claim_groups",
         "scope_claim_members",
         "scope_claim_resolutions",
+        "report_revisions",
+        "report_claim_occurrences",
+        "citation_occurrences",
     }.issubset(inspect(engine).get_table_names())
     engine.dispose()
