@@ -1104,7 +1104,46 @@ def _conflict_alert_lines(bundle: dict[str, Any] | None) -> list[str]:
 
 
 def _render_reasoning_markdown(bundle: dict[str, Any] | None) -> list[str]:
-    if not bundle or not bundle.get("reasoning"):
+    if not bundle:
+        return []
+    if bundle.get("scope_resolutions"):
+        reasoning = bundle.get("reasoning") or {}
+        groups = {
+            item.get("group_id"): item
+            for item in bundle.get("scope_claim_groups") or []
+        }
+        lines = [
+            "## 8. 可靠性、冲突与限制",
+            "",
+            f"* 策略版本: `{reasoning.get('policy_version')}`",
+            f"* 策略哈希: `{reasoning.get('policy_hash')}`",
+            f"* 推理引擎: `{reasoning.get('engine_version')}`",
+            "",
+        ]
+        for resolution in bundle.get("scope_resolutions") or []:
+            group = groups.get(resolution.get("group_id")) or {}
+            status = str(resolution.get("status"))
+            lines.extend(
+                [
+                    f"### {group.get('representative_claim_text') or resolution.get('group_id')}",
+                    "",
+                    f"* 跨 Run 冲突状态: `{status}`",
+                    f"* 聚合置信度: `{resolution.get('confidence')}`",
+                    f"* 独立支持/反驳来源: `{resolution.get('independent_support_count')}` / "
+                    f"`{resolution.get('independent_refute_count')}`",
+                ]
+            )
+            if status in {"unresolved", "requires_human"}:
+                lines.append("* **结论限制：跨 Run 冲突尚未解决，报告不得选择单一确定答案。**")
+            for relation in (resolution.get("rationale") or {}).get("relations") or []:
+                lines.append(
+                    f"* `{relation.get('relation')}` score=`{relation.get('score')}` "
+                    f"origin_run=`{relation.get('origin_run_id')}` "
+                    f"cluster=`{relation.get('source_cluster_id')}`"
+                )
+            lines.append("")
+        return lines
+    if not bundle.get("reasoning"):
         return []
     claims = {item.get("claim_id"): item for item in bundle.get("claims") or []}
     score_by_edge = {

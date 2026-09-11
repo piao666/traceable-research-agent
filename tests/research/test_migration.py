@@ -38,10 +38,17 @@ def test_migration_0012_backfills_nested_legacy_lineage(tmp_path):
             "FROM agent_runs ORDER BY run_id"
         )).fetchall()
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0012_research_scope_and_lineage"
+    assert revision == "0013_research_result_governance"
     assert {row[0]: row[2] for row in rows} == {
         "root": "root", "child": "root", "grandchild": "root"
     }
     assert next(row for row in rows if row[0] == "child")[3] == "legacy_deepening_child"
-    assert {"research_scopes", "research_nodes"}.issubset(inspect(engine).get_table_names())
+    assert {
+        "research_scopes",
+        "research_nodes",
+        "scope_reasoning_runs",
+        "scope_claim_groups",
+        "scope_claim_members",
+        "scope_claim_resolutions",
+    }.issubset(inspect(engine).get_table_names())
     engine.dispose()

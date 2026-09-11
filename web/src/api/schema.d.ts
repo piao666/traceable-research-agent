@@ -2169,6 +2169,14 @@ export interface components {
             metrics?: {
                 [key: string]: number;
             } | null;
+            /** Scope Claim Groups */
+            scope_claim_groups?: {
+                [key: string]: unknown;
+            }[];
+            /** Scope Resolutions */
+            scope_resolutions?: {
+                [key: string]: unknown;
+            }[];
         };
         /** RoutingStateResponse */
         RoutingStateResponse: {
@@ -2406,6 +2414,18 @@ export interface components {
             metrics: {
                 [key: string]: number;
             };
+            /** Reasoning */
+            reasoning?: {
+                [key: string]: unknown;
+            } | null;
+            /** Scope Claim Groups */
+            scope_claim_groups?: {
+                [key: string]: unknown;
+            }[];
+            /** Scope Resolutions */
+            scope_resolutions?: {
+                [key: string]: unknown;
+            }[];
             /** Integrity */
             integrity: {
                 [key: string]: unknown;

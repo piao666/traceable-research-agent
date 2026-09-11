@@ -319,3 +319,99 @@ class ClaimResolution(Base):
     independent_refute_count: Mapped[int] = mapped_column(Integer, nullable=False)
     rationale_json: Mapped[str] = mapped_column(Text, nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ScopeReasoningRun(Base):
+    __tablename__ = "scope_reasoning_runs"
+    __table_args__ = (
+        Index("ix_scope_reasoning_runs_scope_id", "scope_id"),
+        Index("ix_scope_reasoning_runs_fingerprint", "evidence_fingerprint"),
+    )
+
+    reasoning_run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("research_scopes.scope_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    engine_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
+class ScopeClaimGroup(Base):
+    __tablename__ = "scope_claim_groups"
+    __table_args__ = (
+        Index("ix_scope_claim_groups_reasoning_run", "reasoning_run_id"),
+        Index("ix_scope_claim_groups_normalized_key", "normalized_key"),
+    )
+
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reasoning_run_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("scope_reasoning_runs.reasoning_run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    normalized_key: Mapped[str] = mapped_column(Text, nullable=False)
+    representative_claim_text: Mapped[str] = mapped_column(Text, nullable=False)
+    unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    time_scope: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ScopeClaimMember(Base):
+    __tablename__ = "scope_claim_members"
+    __table_args__ = (
+        Index("ix_scope_claim_members_group_id", "group_id"),
+        Index("ix_scope_claim_members_origin_run_id", "origin_run_id"),
+        Index("ix_scope_claim_members_claim_id", "claim_id"),
+    )
+
+    member_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("scope_claim_groups.group_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    origin_run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("agent_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    claim_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("research_claims.claim_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ScopeClaimResolution(Base):
+    __tablename__ = "scope_claim_resolutions"
+    __table_args__ = (
+        Index("ix_scope_claim_resolutions_group_id", "group_id"),
+        Index("ix_scope_claim_resolutions_status", "status"),
+    )
+
+    resolution_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("scope_claim_groups.group_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    support_quality: Mapped[float] = mapped_column(Float, nullable=False)
+    refute_quality: Mapped[float] = mapped_column(Float, nullable=False)
+    independent_support_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    independent_refute_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    rationale_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

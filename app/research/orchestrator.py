@@ -275,6 +275,10 @@ def run_deep_research_v2(
             break
 
     scope_evidence = get_scope_provenance_bundle(db, scope)
+    from app.evidence.scope_reasoning import materialize_scope_reasoning
+
+    materialize_scope_reasoning(db, scope.scope_id, settings_obj.source_policy_path)
+    scope_evidence = get_scope_provenance_bundle(db, scope)
     outcome = assess_scope_outcome(
         db,
         scope,

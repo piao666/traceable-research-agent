@@ -523,6 +523,8 @@ class ResultEvidenceResponse(ProvenanceBundleResponse):
     revisions: list[dict[str, Any]] = Field(default_factory=list)
     scope_identity: dict[str, Any] | None = None
     metrics: dict[str, int] | None = None
+    scope_claim_groups: list[dict[str, Any]] = Field(default_factory=list)
+    scope_resolutions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ResearchScopeResponse(BaseModel):
@@ -565,6 +567,9 @@ class ScopeEvidenceResponse(BaseModel):
     resolutions: list[dict[str, Any]] = Field(default_factory=list)
     scope_identity: dict[str, Any]
     metrics: dict[str, int]
+    reasoning: dict[str, Any] | None = None
+    scope_claim_groups: list[dict[str, Any]] = Field(default_factory=list)
+    scope_resolutions: list[dict[str, Any]] = Field(default_factory=list)
     integrity: dict[str, Any]
 
 

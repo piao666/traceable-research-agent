@@ -76,6 +76,9 @@ def get_scope_provenance_bundle(db: Session, scope: ResearchScope | str) -> dict
         if revisions and integrity["all_traceability_resolves"]
         else "partial"
     )
+    from app.evidence.scope_reasoning import get_scope_reasoning_bundle
+
+    scope_reasoning = get_scope_reasoning_bundle(db, scope_obj.scope_id)
     return {
         # Keep the single-run ProvenanceBundle top-level contract so existing
         # report/citation consumers can read a scope projection unchanged.
@@ -101,22 +104,20 @@ def get_scope_provenance_bundle(db: Session, scope: ResearchScope | str) -> dict
         **combined,
         "scope_identity": scope_identity,
         "metrics": metrics,
+        **scope_reasoning,
         "integrity": integrity,
     }
 
 
 def get_scope_reasoning_bundle(db: Session, scope: ResearchScope | str) -> dict[str, Any]:
-    bundle = get_scope_provenance_bundle(db, scope)
-    return {
-        "scope_id": bundle["scope_id"],
-        "root_run_id": bundle["root_run_id"],
-        "reasoning": [
-            revision for revision in bundle["revisions"] if revision.get("status") == "complete"
-        ],
-        "reliability_scores": bundle["reliability_scores"],
-        "resolutions": bundle["resolutions"],
-        "integrity": bundle["integrity"],
-    }
+    from app.evidence.scope_reasoning import (
+        get_scope_reasoning_bundle as get_persisted_scope_reasoning,
+    )
+
+    scope_obj = db.get(ResearchScope, scope) if isinstance(scope, str) else scope
+    if scope_obj is None:
+        raise ValueError("Research scope not found")
+    return get_persisted_scope_reasoning(db, scope_obj.scope_id)
 
 
 def _tag_bundle(
