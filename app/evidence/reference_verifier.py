@@ -20,11 +20,14 @@ import re
 import threading
 import time
 import unicodedata
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
+
+from app.agent.budget import reserve_tool
 
 
 # ── Rate limiting ────────────────────────────────────────────────────────
@@ -32,6 +35,29 @@ from urllib.request import Request, urlopen
 _RATE_LIMIT_LOCK = threading.Lock()
 _LAST_REQUEST_AT = 0.0
 _MIN_INTERVAL_S = 1.0  # polite: 1 request per second across indexes
+_INDEX_ATTEMPTS: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "reference_index_attempts",
+    default=None,
+)
+
+
+def _record_index_attempt(
+    index: str,
+    identifier_type: str,
+    status: str,
+    *,
+    cache_hit: bool,
+) -> None:
+    attempts = _INDEX_ATTEMPTS.get()
+    if attempts is not None:
+        attempts.append(
+            {
+                "index": index,
+                "identifier_type": identifier_type,
+                "status": status,
+                "cache_hit": cache_hit,
+            }
+        )
 
 
 def _respect_rate_limit() -> None:
@@ -166,6 +192,7 @@ class ReferenceVerificationReport:
     details: list[ReferenceVerificationDetail] = field(default_factory=list)
     indexes_available: list[str] = field(default_factory=list)
     network_failures: int = 0
+    index_attempts: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def verification_rate(self) -> float:
@@ -183,6 +210,7 @@ class ReferenceVerificationReport:
             "verification_rate": self.verification_rate,
             "indexes_available": self.indexes_available,
             "network_failures": self.network_failures,
+            "index_attempts": self.index_attempts,
             "details": [d.to_dict() for d in self.details],
         }
 
@@ -270,15 +298,18 @@ def _check_crossref_doi(doi: str, timeout: int, cache: _ReferenceCache | None) -
     if cache:
         entry = cache.get(doi, "doi")
         if entry:
+            _record_index_attempt("crossref", "doi", entry.status, cache_hit=True)
             return entry.status, entry.data, entry.data.get("failure_reason")
 
     url = f"https://api.crossref.org/works/{quote(doi, safe='')}"
+    reserve_tool("reference_index:crossref")
     data, error = _http_get_json(url, timeout=timeout)
     if error or not data:
         reason = error or "unknown"
         result = {"index": "crossref", "failure_reason": reason}
         if cache:
             cache.put(doi, "doi", "unresolved", result)
+        _record_index_attempt("crossref", "doi", "unresolved", cache_hit=False)
         return "unresolved", result, reason
 
     message = data.get("message") if isinstance(data.get("message"), dict) else {}
@@ -286,6 +317,7 @@ def _check_crossref_doi(doi: str, timeout: int, cache: _ReferenceCache | None) -
         result = {"index": "crossref", "failure_reason": "not_found"}
         if cache:
             cache.put(doi, "doi", "unresolved", result)
+        _record_index_attempt("crossref", "doi", "unresolved", cache_hit=False)
         return "unresolved", result, "not_found"
 
     title_list = message.get("title") or []
@@ -310,6 +342,7 @@ def _check_crossref_doi(doi: str, timeout: int, cache: _ReferenceCache | None) -
     }
     if cache:
         cache.put(doi, "doi", "verified", result)
+    _record_index_attempt("crossref", "doi", "verified", cache_hit=False)
     return "verified", result, None
 
 
@@ -318,15 +351,18 @@ def _check_openalex_doi(doi: str, timeout: int, cache: _ReferenceCache | None) -
     if cache:
         entry = cache.get(doi, "doi_openalex")
         if entry:
+            _record_index_attempt("openalex", "doi", entry.status, cache_hit=True)
             return entry.status, entry.data, entry.data.get("failure_reason")
 
     url = f"https://api.openalex.org/works/doi:{quote(doi, safe='')}"
+    reserve_tool("reference_index:openalex")
     data, error = _http_get_json(url, timeout=timeout)
     if error or not data:
         reason = error or "unknown"
         result = {"index": "openalex", "failure_reason": reason}
         if cache:
             cache.put(doi, "doi_openalex", "unresolved", result)
+        _record_index_attempt("openalex", "doi", "unresolved", cache_hit=False)
         return "unresolved", result, reason
 
     matched_title = data.get("title")
@@ -351,6 +387,7 @@ def _check_openalex_doi(doi: str, timeout: int, cache: _ReferenceCache | None) -
     }
     if cache:
         cache.put(doi, "doi_openalex", "verified", result)
+    _record_index_attempt("openalex", "doi", "verified", cache_hit=False)
     return "verified", result, None
 
 
@@ -359,16 +396,19 @@ def _check_arxiv_id(arxiv_id: str, timeout: int, cache: _ReferenceCache | None) 
     if cache:
         entry = cache.get(arxiv_id, "arxiv")
         if entry:
+            _record_index_attempt("arxiv", "arxiv", entry.status, cache_hit=True)
             return entry.status, entry.data, entry.data.get("failure_reason")
 
     cleaned = arxiv_id.strip().replace("arxiv:", "").replace("arXiv:", "")
     url = f"http://export.arxiv.org/api/query?id_list={quote(cleaned)}&max_results=1"
+    reserve_tool("reference_index:arxiv")
     raw_xml, error = _http_get_xml(url, timeout=timeout)
     if error or not raw_xml:
         reason = error or "unknown"
         result = {"index": "arxiv", "failure_reason": reason}
         if cache:
             cache.put(arxiv_id, "arxiv", "unresolved", result)
+        _record_index_attempt("arxiv", "arxiv", "unresolved", cache_hit=False)
         return "unresolved", result, reason
 
     import xml.etree.ElementTree as ET
@@ -380,6 +420,7 @@ def _check_arxiv_id(arxiv_id: str, timeout: int, cache: _ReferenceCache | None) 
         root = ET.fromstring(raw_xml)
     except ET.ParseError:
         result = {"index": "arxiv", "failure_reason": "parse_error"}
+        _record_index_attempt("arxiv", "arxiv", "unresolved", cache_hit=False)
         return "unresolved", result, "parse_error"
 
     entry = root.find("atom:entry", ns)
@@ -387,6 +428,7 @@ def _check_arxiv_id(arxiv_id: str, timeout: int, cache: _ReferenceCache | None) 
         result = {"index": "arxiv", "failure_reason": "not_found"}
         if cache:
             cache.put(arxiv_id, "arxiv", "unresolved", result)
+        _record_index_attempt("arxiv", "arxiv", "unresolved", cache_hit=False)
         return "unresolved", result, "not_found"
 
     title_el = entry.find("atom:title", ns)
@@ -406,6 +448,7 @@ def _check_arxiv_id(arxiv_id: str, timeout: int, cache: _ReferenceCache | None) 
     }
     if cache:
         cache.put(arxiv_id, "arxiv", "verified", result)
+    _record_index_attempt("arxiv", "arxiv", "verified", cache_hit=False)
     return "verified", result, None
 
 
@@ -417,15 +460,22 @@ def _check_semantic_scholar_title(
     if cache:
         entry = cache.get(title_key, "s2_title")
         if entry:
+            _record_index_attempt(
+                "semantic_scholar", "title_author", entry.status, cache_hit=True
+            )
             return entry.status, entry.data, entry.data.get("failure_reason")
 
     url = f"https://api.semanticscholar.org/graph/v1/paper/search?{urlencode({'query': title[:300], 'limit': '3', 'fields': 'title,authors,year,venue,externalIds'})}"
+    reserve_tool("reference_index:semantic_scholar")
     data, error = _http_get_json(url, timeout=timeout)
     if error or not data:
         reason = error or "unknown"
         result = {"index": "semantic_scholar", "failure_reason": reason}
         if cache:
             cache.put(title_key, "s2_title", "unresolved", result)
+        _record_index_attempt(
+            "semantic_scholar", "title_author", "unresolved", cache_hit=False
+        )
         return "unresolved", result, reason
 
     papers = data.get("data") if isinstance(data.get("data"), list) else []
@@ -433,6 +483,9 @@ def _check_semantic_scholar_title(
         result = {"index": "semantic_scholar", "failure_reason": "not_found"}
         if cache:
             cache.put(title_key, "s2_title", "unresolved", result)
+        _record_index_attempt(
+            "semantic_scholar", "title_author", "unresolved", cache_hit=False
+        )
         return "unresolved", result, "not_found"
 
     # Find best match by title similarity
@@ -463,6 +516,9 @@ def _check_semantic_scholar_title(
     status = "verified" if best_sim >= 0.8 else "probable"
     if cache:
         cache.put(title_key, "s2_title", status, result)
+    _record_index_attempt(
+        "semantic_scholar", "title_author", status, cache_hit=False
+    )
     return status, result, None
 
 
@@ -484,6 +540,15 @@ class ReferenceVerifier:
         self.cache = _ReferenceCache(cache_dir, cache_ttl) if cache_dir else None
 
     def verify(self, references: list[dict[str, Any]]) -> ReferenceVerificationReport:
+        token = _INDEX_ATTEMPTS.set([])
+        try:
+            report = self._verify(references)
+            report.index_attempts = list(_INDEX_ATTEMPTS.get() or [])
+            return report
+        finally:
+            _INDEX_ATTEMPTS.reset(token)
+
+    def _verify(self, references: list[dict[str, Any]]) -> ReferenceVerificationReport:
         """Verify a list of reference dicts.
 
         Each reference dict should have:

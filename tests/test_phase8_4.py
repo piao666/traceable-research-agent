@@ -698,6 +698,66 @@ class CacheConfigTests(unittest.TestCase):
             cache_file.write_text(json.dumps(payload), encoding="utf-8")
             self.assertIsNone(restarted.get("10.1000/test", "doi"))
 
+    def test_real_index_request_reserves_budget_but_cache_hit_does_not(self):
+        payload = {
+            "message": {
+                "title": ["A Traceable Research Result"],
+                "author": [{"given": "Ada", "family": "Lovelace"}],
+                "published": {"date-parts": [[2024]]},
+                "container-title": ["Research Systems"],
+                "DOI": "10.1000/traceable",
+            }
+        }
+        reference = {
+            "document_id": "doc-1",
+            "title": "A Traceable Research Result",
+            "authors": ["Ada Lovelace"],
+            "year": 2024,
+            "venue": "Research Systems",
+            "doi": "10.1000/traceable",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            verifier = ReferenceVerifier(
+                allowed_indexes=["crossref"],
+                timeout=5,
+                cache_dir=directory,
+            )
+            with (
+                patch(
+                    "app.evidence.reference_verifier._http_get_json",
+                    return_value=(payload, None),
+                ) as request,
+                patch("app.evidence.reference_verifier.reserve_tool") as reserve,
+            ):
+                first = verifier.verify([reference])
+                second = verifier.verify([reference])
+
+        request.assert_called_once()
+        reserve.assert_called_once_with("reference_index:crossref")
+        self.assertEqual(
+            first.index_attempts,
+            [
+                {
+                    "index": "crossref",
+                    "identifier_type": "doi",
+                    "status": "verified",
+                    "cache_hit": False,
+                }
+            ],
+        )
+        self.assertEqual(
+            second.index_attempts,
+            [
+                {
+                    "index": "crossref",
+                    "identifier_type": "doi",
+                    "status": "verified",
+                    "cache_hit": True,
+                }
+            ],
+        )
+        self.assertEqual(second.to_dict()["index_attempts"], second.index_attempts)
+
 
 # ── Rate limiting ───────────────────────────────────────────────────────────
 

@@ -22,6 +22,7 @@ from app.trace.models import RunBudget
 
 _active = ContextVar("research_budget", default=None)
 _final_report = ContextVar("final_report_budget", default=False)
+_LOCAL_ONLY_TOOLS = frozenset({"file_reader", "sql_query", "report_writer"})
 
 
 class BudgetExceeded(RuntimeError):
@@ -137,7 +138,9 @@ class BudgetRuntime:
             self.stop(reason)
 
     def tool(self, name):
-        cost = 0 if name in {"file_reader", "sql_query", "report_writer"} else self.limits["tool_cost_estimate"]
+        # Internal reference-index calls use ``reference_index:<name>`` and are
+        # deliberately chargeable just like other real external tool calls.
+        cost = 0 if name in _LOCAL_ONLY_TOOLS else self.limits["tool_cost_estimate"]
         if self.limits["max_estimated_cost"] and cost is None:
             self.stop("tool_price_unconfigured")
         self.reserve(tool=1, cost=cost or 0)
