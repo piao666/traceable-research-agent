@@ -26,6 +26,7 @@ from app.improvement.lifecycle import finalize_improvement_cycle
 from app.improvement.models import ImprovementLog
 from app.main import app
 from app.memory import models as memory_models  # noqa: F401
+from app.research.scope import create_research_node, create_research_scope
 from app.schemas import TaskPlanResponse
 from app.trace import models as trace_models  # noqa: F401
 from app.trace import store
@@ -377,6 +378,151 @@ class ImprovementFrontendContractTests(unittest.TestCase):
         traces = store.list_tool_traces(self.db, run.run_id)
         self.assertEqual(traces[-1].tool_name, "improvement_evaluation")
         self.assertEqual(traces[-1].status, "success")
+
+    def test_deep_v2_evaluator_uses_effective_scope_result_boundary(self) -> None:
+        from app.agent.outcome import SCOPE_INTEGRITY_VERSION
+        from app.improvement.evaluator import auto_evaluate_and_log
+        from app.reporting.integrity import REPORT_INTEGRITY_VERSION
+
+        root = self._create_run(
+            plan=_plan(
+                execution_mode="deep_research_v2",
+                deepening_phase="deprecated",
+                research_outcome={
+                    "version": SCOPE_INTEGRITY_VERSION,
+                    "status": "passed",
+                    "effective_evidence_count": 9,
+                },
+                report_integrity={
+                    "version": REPORT_INTEGRITY_VERSION,
+                    "status": "passed",
+                },
+            )
+        )
+        scope = create_research_scope(self.db, root.run_id, {})
+        root_node = create_research_node(
+            self.db,
+            scope.scope_id,
+            parent_node_id=None,
+            run_id=root.run_id,
+            node_type="discovery",
+            topic="Discovery",
+            query="scope",
+            research_goal="scope",
+            depth=0,
+            priority=0,
+            status="completed",
+        )
+        child_run_ids: list[str] = []
+        for priority, topic in enumerate(("Branch A", "Branch B"), 1):
+            child = store.create_agent_run(
+                self.db,
+                topic,
+                "summary",
+                "real",
+                parent_run_id=root.run_id,
+                root_run_id=root.run_id,
+                run_role="research_branch",
+                research_scope_id=scope.scope_id,
+                engine_version="v2",
+            )
+            child_run_ids.append(child.run_id)
+            create_research_node(
+                self.db,
+                scope.scope_id,
+                parent_node_id=root_node.node_id,
+                run_id=child.run_id,
+                node_type="query",
+                topic=topic,
+                query=topic,
+                research_goal=topic,
+                depth=1,
+                priority=priority,
+                status="completed",
+            )
+        store.update_agent_run_citation_validation(
+            self.db,
+            root.run_id,
+            total=15,
+            supported=15,
+            weakly_supported=0,
+            unsupported=0,
+            accuracy=1.0,
+        )
+        store.update_agent_run_status(self.db, root.run_id, "completed", None)
+
+        tiers = ["T2", "T2", *("T0" for _ in range(4)), *("T1" for _ in range(3))]
+        origin_run_ids = [
+            root.run_id,
+            root.run_id,
+            *([child_run_ids[0]] * 4),
+            *([child_run_ids[1]] * 3),
+        ]
+        documents = [
+            {
+                "document_id": f"doc-{index}",
+                "origin_run_id": origin_run_ids[index],
+                "canonical_uri": f"https://example.com/{index}",
+                "metadata": {
+                    "research_eligible": True,
+                    "source_tier": tier,
+                },
+            }
+            for index, tier in enumerate(tiers)
+        ]
+        passages = [
+            {
+                "passage_id": f"passage-{index}",
+                "content_basis": (
+                    "full_text" if index < 5 else "partial" if index < 7 else "snippet_only"
+                ),
+            }
+            for index in range(9)
+        ]
+        provenance = {
+            "source_documents": documents,
+            "source_snapshots": [],
+            "passages": passages,
+            "assertions": [],
+            "scope_identity": {
+                "source_aliases": [
+                    {"representative_document_id": item["document_id"]}
+                    for item in documents
+                ],
+                "passage_aliases": [
+                    {"representative_passage_id": item["passage_id"]}
+                    for item in passages
+                ],
+            },
+        }
+        with (
+            patch(
+                "app.improvement.evaluator.get_result_provenance_bundle",
+                return_value=provenance,
+            ) as get_provenance,
+            patch(
+                "app.improvement.evaluator.list_result_traces",
+                return_value=[],
+            ) as get_traces,
+        ):
+            entry = auto_evaluate_and_log(self.db, root.run_id)
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.execution_mode, "deep_research_v2")
+        self.assertEqual((entry.tier_t0, entry.tier_t1, entry.tier_t2), (4, 3, 2))
+        self.assertEqual(entry.citation_count, 15)
+        self.assertEqual(
+            {item["origin_run_id"] for item in documents},
+            {root.run_id, *child_run_ids},
+        )
+        metadata = json.loads(entry.evaluation_metadata_json)
+        self.assertEqual(metadata["result_scope"], "research_scope")
+        self.assertEqual(metadata["scope_id"], scope.scope_id)
+        self.assertEqual(metadata["effective_source_count"], 9)
+        self.assertEqual(metadata["effective_passage_count"], 9)
+        self.assertFalse(metadata["coverage_evaluable"])
+        get_provenance.assert_called_once()
+        get_traces.assert_called_once()
 
     def test_per_run_quality_response_exposes_all_dimensions(self) -> None:
         self.db.add(

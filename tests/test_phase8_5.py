@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import MagicMock, Mock, patch
 
 from app.tools.base import ToolResult
 
@@ -423,3 +423,142 @@ class PipelineIntegrationTests(unittest.TestCase):
         self.assertIn("crossref_search", tool_names)
         # 10 original + 2 new = 12 total (not counting report_writer)
         self.assertGreaterEqual(len(tools), 11)
+
+
+class ImprovementFewShotTests(unittest.TestCase):
+    def test_excerpt_contains_only_bounded_final_answer(self):
+        from app.improvement.few_shot import extract_final_answer_excerpt
+
+        markdown = (
+            "# Report\n\n## 2. 运行摘要\nsecret plan\n\n"
+            "## 3. 最终回答\n" + ("结论" * 1000) + "\n\n"
+            "## 4. 执行计划\nsecret audit"
+        )
+        excerpt = extract_final_answer_excerpt(markdown, max_chars=1200)
+        self.assertEqual(len(excerpt), 1200)
+        self.assertNotIn("secret plan", excerpt)
+        self.assertNotIn("secret audit", excerpt)
+
+    def test_scope_strategy_summary_is_deterministic_and_bounded(self):
+        from types import SimpleNamespace
+
+        from app.improvement.few_shot import _research_strategy_summary
+
+        nodes = [
+            SimpleNamespace(
+                node_type="discovery" if index == 0 else "query",
+                topic=f"Topic {index}",
+                research_goal=f"Goal {index}",
+            )
+            for index in range(10)
+        ]
+        result = SimpleNamespace(is_scope=True, scope_id="scope-1")
+        with patch(
+            "app.improvement.few_shot.list_scope_nodes", return_value=nodes
+        ):
+            summary, node_count = _research_strategy_summary(None, result, {})
+
+        self.assertEqual(node_count, 10)
+        self.assertEqual(summary.split(" → ")[0], "Discovery")
+        self.assertEqual(len(summary.split(" → ")), 8)
+
+    def test_deep_v2_promotion_requires_both_quality_gates(self):
+        from types import SimpleNamespace
+
+        from app.improvement.few_shot import promote_to_few_shot
+
+        db = MagicMock()
+        db.scalars.return_value = ["root-run"]
+        db.get.return_value = SimpleNamespace(overall_score=9.0, citation_count=15)
+        session = MagicMock()
+        session.__enter__.return_value = db
+        result = SimpleNamespace(
+            root_run_id="root-run",
+            is_scope=True,
+            scope_id="scope-1",
+            engine_version="v2",
+        )
+        run = SimpleNamespace(
+            engine_version="v2",
+            plan_json=json.dumps(
+                {
+                    "execution_mode": "deep_research_v2",
+                    "research_outcome": {"status": "passed"},
+                    "report_integrity": {"status": "failed"},
+                }
+            ),
+        )
+        with (
+            patch("app.improvement.few_shot.SessionLocal", return_value=session),
+            patch(
+                "app.improvement.few_shot.resolve_research_result",
+                return_value=result,
+            ),
+            patch(
+                "app.improvement.few_shot.trace_store.get_agent_run",
+                return_value=run,
+            ),
+        ):
+            self.assertFalse(promote_to_few_shot("root-run"))
+
+    def test_promoted_scope_example_keeps_engine_scope_and_node_count(self):
+        from types import SimpleNamespace
+
+        from app.improvement.few_shot import promote_to_few_shot
+
+        log = SimpleNamespace(
+            overall_score=9.0,
+            citation_count=15,
+            question_category="deep_research",
+            skill_composition="systematic_review",
+        )
+        db = MagicMock()
+        db.scalars.return_value = ["root-run"]
+        db.get.return_value = log
+        session = MagicMock()
+        session.__enter__.return_value = db
+        result = SimpleNamespace(
+            root_run_id="root-run",
+            is_scope=True,
+            scope_id="scope-1",
+            engine_version="v2",
+        )
+        run = SimpleNamespace(
+            engine_version="v2",
+            plan_json=json.dumps(
+                {
+                    "execution_mode": "deep_research_v2",
+                    "research_outcome": {"status": "passed"},
+                    "report_integrity": {"status": "passed"},
+                }
+            ),
+            report_path=None,
+            task="Deep research task",
+        )
+        with (
+            patch("app.improvement.few_shot.SessionLocal", return_value=session),
+            patch(
+                "app.improvement.few_shot.resolve_research_result",
+                return_value=result,
+            ),
+            patch(
+                "app.improvement.few_shot.trace_store.get_agent_run",
+                return_value=run,
+            ),
+            patch(
+                "app.improvement.few_shot._research_strategy_summary",
+                return_value=("Discovery → Branch A → Branch B", 3),
+            ),
+            patch(
+                "app.improvement.few_shot._load_library",
+                return_value={"examples": []},
+            ),
+            patch("app.improvement.few_shot._save_library") as save_library,
+        ):
+            self.assertTrue(promote_to_few_shot("root-run"))
+
+        example = save_library.call_args.args[0]["examples"][0]
+        self.assertEqual(example["engine_version"], "v2")
+        self.assertEqual(example["scope_id"], "scope-1")
+        self.assertEqual(example["research_node_count"], 3)
+        self.assertEqual(example["plan_summary"], "Discovery → Branch A → Branch B")

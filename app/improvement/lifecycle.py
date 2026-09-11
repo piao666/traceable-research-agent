@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -59,6 +60,17 @@ def finalize_improvement_cycle(db: Session, run_id: str) -> Any | None:
     if log_entry is None and not errors:
         errors.append("evaluation:no_result")
 
+    evaluation_metadata: dict[str, Any] = {}
+    if log_entry is not None:
+        try:
+            parsed = json.loads(
+                getattr(log_entry, "evaluation_metadata_json", None) or "{}"
+            )
+            if isinstance(parsed, dict):
+                evaluation_metadata = parsed
+        except (TypeError, json.JSONDecodeError):
+            pass
+
     try:
         record_trace_event(
             db=db,
@@ -76,6 +88,7 @@ def finalize_improvement_cycle(db: Session, run_id: str) -> Any | None:
                 "overall_score": getattr(log_entry, "overall_score", None),
                 "weights_updated": weights_updated,
                 "few_shot_promoted": promoted,
+                "evaluation_metadata": evaluation_metadata,
                 "errors": errors,
             },
             error_message=", ".join(errors) if errors else None,

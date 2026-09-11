@@ -17,6 +17,15 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.add_column(
+        "improvement_logs",
+        sa.Column(
+            "evaluation_metadata_json",
+            sa.Text(),
+            nullable=False,
+            server_default="{}",
+        ),
+    )
     op.create_table(
         "scope_reasoning_runs",
         sa.Column("reasoning_run_id", sa.String(length=64), nullable=False),
@@ -287,3 +296,4 @@ def downgrade() -> None:
         table_name="scope_reasoning_runs",
     )
     op.drop_table("scope_reasoning_runs")
+    op.drop_column("improvement_logs", "evaluation_metadata_json")

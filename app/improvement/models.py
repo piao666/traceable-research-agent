@@ -36,6 +36,9 @@ class ImprovementLog(Base):
     tier_t0: Mapped[int] = mapped_column(Integer, default=0)
     tier_t1: Mapped[int] = mapped_column(Integer, default=0)
     tier_t2: Mapped[int] = mapped_column(Integer, default=0)
+    evaluation_metadata_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}"
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now

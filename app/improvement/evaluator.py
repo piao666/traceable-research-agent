@@ -13,8 +13,14 @@ from typing import Any
 from sqlalchemy.orm import Session
 from app.agent.outcome import trusted_run_ids
 
-from app.database import SessionLocal
+from app.evidence.scope_identity import build_scope_identity_projection
 from app.improvement.models import ImprovementLog
+from app.reporting.integrity import REPORT_INTEGRITY_VERSION
+from app.research.result_context import (
+    get_result_provenance_bundle,
+    list_result_traces,
+    resolve_research_result,
+)
 from app.trace import store as trace_store
 
 logger = logging.getLogger(__name__)
@@ -95,6 +101,87 @@ def _extract_content_basis(traces: list[Any]) -> dict[str, int]:
     return {"full_text": full_text, "partial": partial, "snippet_only": snippet}
 
 
+def _effective_entities(
+    provenance: dict[str, Any],
+    *,
+    entity_key: str,
+    alias_key: str,
+    representative_key: str,
+    entity_id_key: str,
+    root_run_id: str,
+) -> list[dict[str, Any]]:
+    """Return only the deterministic Scope Identity representatives."""
+
+    identity = provenance.get("scope_identity")
+    if not isinstance(identity, dict):
+        identity, _ = build_scope_identity_projection(
+            provenance,
+            {root_run_id: 0},
+        )
+    entities = {
+        str(item.get(entity_id_key) or ""): item
+        for item in provenance.get(entity_key) or []
+        if isinstance(item, dict)
+    }
+    return [
+        entities[representative_id]
+        for alias in identity.get(alias_key) or []
+        if isinstance(alias, dict)
+        and (representative_id := str(alias.get(representative_key) or "")) in entities
+    ]
+
+
+def _effective_source_tiers(
+    provenance: dict[str, Any], root_run_id: str
+) -> tuple[dict[str, int], int]:
+    documents = _effective_entities(
+        provenance,
+        entity_key="source_documents",
+        alias_key="source_aliases",
+        representative_key="representative_document_id",
+        entity_id_key="document_id",
+        root_run_id=root_run_id,
+    )
+    documents = [
+        document
+        for document in documents
+        if (document.get("metadata") or {}).get("research_eligible")
+        and not (document.get("metadata") or {}).get("is_mock")
+        and not (document.get("metadata") or {}).get("is_fallback")
+    ]
+    tiers = {
+        tier: sum(
+            (document.get("metadata") or {}).get("source_tier") == tier
+            for document in documents
+        )
+        for tier in ("T0", "T1", "T2")
+    }
+    return tiers, len(documents)
+
+
+def _effective_content_basis(
+    provenance: dict[str, Any], root_run_id: str
+) -> tuple[dict[str, int], dict[str, float], int]:
+    passages = _effective_entities(
+        provenance,
+        entity_key="passages",
+        alias_key="passage_aliases",
+        representative_key="representative_passage_id",
+        entity_id_key="passage_id",
+        root_run_id=root_run_id,
+    )
+    counts = {
+        basis: sum(passage.get("content_basis") == basis for passage in passages)
+        for basis in ("full_text", "partial", "snippet_only")
+    }
+    total = sum(counts.values())
+    ratios = {
+        basis: round(count / total, 2) if total else 0.0
+        for basis, count in counts.items()
+    }
+    return counts, ratios, len(passages)
+
+
 # ── Question classification (reuse routing signals) ────────────────────
 
 
@@ -127,40 +214,36 @@ def _classify_question(task: str) -> str:
 
 def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
     """Evaluate a completed run and persist to improvement_log."""
-    run = trace_store.get_agent_run(db, run_id)
+    try:
+        result = resolve_research_result(db, run_id)
+    except ValueError:
+        return None
+    run = trace_store.get_agent_run(db, result.root_run_id)
     if run is None or run.status != "completed":
         return None
-    if run_id not in set(db.scalars(trusted_run_ids())):
+    if result.root_run_id not in set(db.scalars(trusted_run_ids())):
         return None
 
     # Check if already logged (idempotent)
-    existing = db.get(ImprovementLog, run_id)
+    existing = db.get(ImprovementLog, result.root_run_id)
     if existing is not None:
         return existing
 
-    traces = trace_store.list_tool_traces(db, run_id)
+    provenance = get_result_provenance_bundle(db, result)
+    traces = list_result_traces(db, result)
     citations = getattr(run, "citation_total", 0) or 0
     accuracy = getattr(run, "citation_accuracy", 0.0) or 0.0
     verified = getattr(run, "citation_supported", 0) or 0
     unsupported = getattr(run, "citation_unsupported", 0) or 0
 
-    # Use the same eligible, de-duplicated sources/passages as the report, not audit summaries.
-    from app.evidence.service import get_provenance_bundle
-    try:
-        provenance = get_provenance_bundle(db, run_id)
-    except ValueError:
-        provenance = {}
-    documents = [doc for doc in provenance.get("source_documents", [])
-                 if (doc.get("metadata") or {}).get("research_eligible")
-                 and not (doc.get("metadata") or {}).get("is_mock")
-                 and not (doc.get("metadata") or {}).get("is_fallback")]
-    documents = list({doc["canonical_uri"]: doc for doc in documents}.values())
-    tiers = {tier: sum((doc.get("metadata") or {}).get("source_tier") == tier for doc in documents)
-             for tier in ("T0", "T1", "T2")}
-    cb = {basis: sum(p.get("content_basis") == basis for p in provenance.get("passages", []))
-          for basis in ("full_text", "partial", "snippet_only")}
-    total_content = cb["full_text"] + cb["partial"] + cb["snippet_only"]
-    full_text_ratio = round(cb["full_text"] / total_content, 2) if total_content > 0 else 0.0
+    # Keep every evaluation dimension on the same resolved result boundary.
+    tiers, effective_source_count = _effective_source_tiers(
+        provenance, result.root_run_id
+    )
+    content_basis, content_ratios, effective_passage_count = _effective_content_basis(
+        provenance, result.root_run_id
+    )
+    full_text_ratio = content_ratios["full_text"]
 
     # Deterministic 5-dimension scoring
     relevance = 6.0  # deterministic default (no LLM judge)
@@ -171,6 +254,7 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
     overall = _compute_overall(relevance, factual, coverage, source_quality, auditability)
 
     # Skill composition
+    plan: dict[str, Any] = {}
     try:
         plan = json.loads(run.plan_json or "{}")
         skill_routing = plan.get("skill_routing") or {}
@@ -181,9 +265,9 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
 
     execution_mode = None
     try:
-        plan = json.loads(run.plan_json or "{}")
-        execution_mode = plan.get("execution_mode") or "planned"
-        if plan.get("adaptive_upgrade"):
+        if plan.get("execution_mode") == "deep_research_v2" or run.engine_version == "v2":
+            execution_mode = "deep_research_v2"
+        elif plan.get("adaptive_upgrade"):
             execution_mode = "adaptive"
         elif plan.get("deepening_total_rounds") or plan.get("deepening_phase"):
             execution_mode = "react_deepening"
@@ -193,7 +277,7 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
         pass
 
     log_entry = ImprovementLog(
-        run_id=run_id,
+        run_id=result.root_run_id,
         question_category=_classify_question(run.task),
         skill_composition=str(skill_comp) if skill_comp else None,
         execution_mode=execution_mode,
@@ -207,8 +291,26 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
         tier_t0=tiers["T0"],
         tier_t1=tiers["T1"],
         tier_t2=tiers["T2"],
+        evaluation_metadata_json=json.dumps(
+            {
+                "result_scope": "research_scope" if result.is_scope else "run",
+                "scope_id": result.scope_id,
+                "engine_version": result.engine_version,
+                "effective_source_count": effective_source_count,
+                "effective_passage_count": effective_passage_count,
+                "coverage_evaluable": False,
+                "report_integrity_version": REPORT_INTEGRITY_VERSION,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
     )
     db.add(log_entry)
     db.commit()
-    logger.info("Improvement log written for run %s: overall=%.1f", run_id, overall)
+    logger.info(
+        "Improvement log written for result %s: overall=%.1f, traces=%d",
+        result.root_run_id,
+        overall,
+        len(traces),
+    )
     return log_entry

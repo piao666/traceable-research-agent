@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 
 from app.database import SessionLocal
 from app.improvement.models import ImprovementLog
@@ -32,6 +32,15 @@ _MIN_RUNS_FOR_WEIGHT = 3
 _DECAY_DAYS = 90
 # Default weight for cold-start categories
 _DEFAULT_WEIGHT = 0.5
+
+
+def _scope_consistent_logs():
+    return and_(
+        func.json_valid(ImprovementLog.evaluation_metadata_json),
+        func.json_extract(
+            ImprovementLog.evaluation_metadata_json, "$.result_scope"
+        ).in_(["run", "research_scope"]),
+    )
 
 
 def _parse_skill_name(skill_composition: str | None) -> str:
@@ -61,7 +70,10 @@ def update_routing_weights() -> dict:
                     func.avg(ImprovementLog.overall_score).label("avg_score"),
                     func.max(ImprovementLog.created_at).label("last_run"),
                 )
-                .where(ImprovementLog.run_id.in_(trusted_run_ids()))
+                .where(
+                    ImprovementLog.run_id.in_(trusted_run_ids()),
+                    _scope_consistent_logs(),
+                )
                 .group_by(
                     ImprovementLog.question_category,
                     ImprovementLog.skill_composition,
@@ -112,7 +124,10 @@ def _count_total_runs() -> int:
     with SessionLocal() as db:
         result = db.execute(
             select(func.count()).select_from(ImprovementLog)
-            .where(ImprovementLog.run_id.in_(trusted_run_ids()))
+            .where(
+                ImprovementLog.run_id.in_(trusted_run_ids()),
+                _scope_consistent_logs(),
+            )
         ).scalar()
         return int(result) if result else 0
 

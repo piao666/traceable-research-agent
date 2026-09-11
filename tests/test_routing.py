@@ -90,3 +90,34 @@ def test_skill_router_rejects_tools_outside_allowlist() -> None:
     )
 
     assert decision["selected_skill"] is None
+
+
+def test_weight_input_requires_scope_consistent_evaluation_metadata() -> None:
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
+
+    from app.database import Base
+    from app.improvement.models import ImprovementLog
+    from app.improvement.weight_updater import _scope_consistent_logs
+
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add_all(
+            [
+                ImprovementLog(
+                    run_id="scope-consistent",
+                    evaluation_metadata_json='{"result_scope":"research_scope"}',
+                ),
+                ImprovementLog(run_id="legacy-default"),
+            ]
+        )
+        db.commit()
+        run_ids = list(
+            db.scalars(
+                select(ImprovementLog.run_id).where(_scope_consistent_logs())
+            ).all()
+        )
+    engine.dispose()
+
+    assert run_ids == ["scope-consistent"]

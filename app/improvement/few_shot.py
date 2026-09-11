@@ -16,8 +16,11 @@ from pathlib import Path
 from typing import Any
 
 from app.database import SessionLocal
+from app.evidence.citation_validator import extract_final_answer_section
 from app.improvement.models import ImprovementLog
 from app.agent.outcome import trusted_run_ids, INTEGRITY_VERSION
+from app.research.result_context import resolve_research_result
+from app.research.scope import list_scope_nodes
 from app.trace import store as trace_store
 
 logger = logging.getLogger(__name__)
@@ -30,6 +33,33 @@ _MIN_OVERALL = 7.5
 _MIN_CITATIONS = 5
 _MAX_TOTAL = 20
 _MAX_PER_CATEGORY = 5
+
+
+def extract_final_answer_excerpt(markdown: str, max_chars: int = 1200) -> str:
+    """Return a bounded excerpt from only the rendered final-answer section."""
+
+    return extract_final_answer_section(markdown)[: max(0, int(max_chars))]
+
+
+def _research_strategy_summary(db, result, plan: dict[str, Any]) -> tuple[str, int]:
+    if result.is_scope and result.scope_id:
+        nodes = list_scope_nodes(db, result.scope_id)
+        labels = [
+            "Discovery"
+            if node.node_type == "discovery"
+            else (node.topic.strip() or node.research_goal.strip() or node.node_type)
+            for node in nodes[:8]
+        ]
+        return " → ".join(labels), len(nodes)
+    steps = plan.get("steps") or []
+    return (
+        " → ".join(
+            step.get("tool_name", "?")
+            for step in steps[:6]
+            if isinstance(step, dict)
+        ),
+        0,
+    )
 
 
 def _load_library() -> dict[str, Any]:
@@ -52,9 +82,14 @@ def _save_library(data: dict[str, Any]) -> None:
 def promote_to_few_shot(run_id: str) -> bool:
     """Promote a run to the few-shot library if it meets quality thresholds."""
     with SessionLocal() as db:
-        if run_id not in set(db.scalars(trusted_run_ids())):
+        try:
+            result = resolve_research_result(db, run_id)
+        except ValueError:
             return False
-        log = db.get(ImprovementLog, run_id)
+        root_run_id = result.root_run_id
+        if root_run_id not in set(db.scalars(trusted_run_ids())):
+            return False
+        log = db.get(ImprovementLog, root_run_id)
         if log is None:
             return False
         if log.overall_score < _MIN_OVERALL:
@@ -62,44 +97,40 @@ def promote_to_few_shot(run_id: str) -> bool:
         if log.citation_count < _MIN_CITATIONS:
             return False
 
-        run = trace_store.get_agent_run(db, run_id)
+        run = trace_store.get_agent_run(db, root_run_id)
         if run is None:
             return False
 
-        # Extract plan summary
-        plan_summary = ""
         try:
             plan = json.loads(run.plan_json or "{}")
-            steps = plan.get("steps") or []
-            plan_summary = " → ".join(
-                s.get("tool_name", "?") for s in steps[:6]
-                if isinstance(s, dict)
-            )
         except Exception:
-            pass
+            plan = {}
+        deep_v2 = (
+            plan.get("execution_mode") == "deep_research_v2"
+            or run.engine_version == "v2"
+        )
+        if deep_v2 and not (
+            (plan.get("research_outcome") or {}).get("status") == "passed"
+            and (plan.get("report_integrity") or {}).get("status") == "passed"
+        ):
+            return False
+        plan_summary, research_node_count = _research_strategy_summary(
+            db, result, plan
+        )
 
-        # Extract report excerpt (first 500 chars after the title)
+        # Extract only the final answer; planning and audit sections are excluded.
         report_excerpt = ""
         if run.report_path:
             rp = ROOT / run.report_path
             if rp.is_file():
                 text = rp.read_text(encoding="utf-8", errors="replace")
-                # Skip the title line, take next 500 chars
-                lines = text.split("\n")
-                excerpt_lines: list[str] = []
-                for line in lines:
-                    if line.startswith("#") and not excerpt_lines:
-                        continue
-                    excerpt_lines.append(line)
-                    if len("\n".join(excerpt_lines)) > 500:
-                        break
-                report_excerpt = "\n".join(excerpt_lines)[:500]
+                report_excerpt = extract_final_answer_excerpt(text, max_chars=1200)
 
     library = _load_library()
     examples: list[dict[str, Any]] = library.get("examples", [])
 
     # Check if already promoted
-    if any(e.get("run_id") == run_id for e in examples):
+    if any(e.get("run_id") == root_run_id for e in examples):
         return False
 
     category = log.question_category or "general"
@@ -116,13 +147,16 @@ def promote_to_few_shot(run_id: str) -> bool:
         examples.pop(0)
 
     examples.append({
-        "run_id": run_id,
+        "run_id": root_run_id,
         "category": category,
         "question": run.task,
         "skill_composition": log.skill_composition,
         "overall_score": log.overall_score,
         "plan_summary": plan_summary,
         "report_excerpt": report_excerpt,
+        "engine_version": result.engine_version,
+        "scope_id": result.scope_id,
+        "research_node_count": research_node_count,
         "promoted_at": datetime.now(timezone.utc).isoformat(),
     })
 
@@ -130,7 +164,7 @@ def promote_to_few_shot(run_id: str) -> bool:
     _save_library(library)
     logger.info(
         "Few-shot promoted run %s (score=%.1f, category=%s, total=%d)",
-        run_id[:8], log.overall_score, category, len(examples),
+        root_run_id[:8], log.overall_score, category, len(examples),
     )
     return True
 
