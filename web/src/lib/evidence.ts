@@ -1,4 +1,4 @@
-import type { ProvenanceBundleResponse } from "../api/client";
+import type { ResultEvidenceResponse } from "../api/client";
 
 export function safeExternalUrl(value: string): string | null {
   if (!/^https?:\/\//i.test(value.trim())) return null;
@@ -21,13 +21,16 @@ export interface CitationTarget {
   source: string;
   url: string;
   traceId: string;
+  originRunId?: string;
+  originTraceId?: string;
+  researchNodeId?: string;
   basis: string;
   relation: string;
   resolved: boolean;
 }
 
 /** Exact persisted identifiers only; no ordinal/nearest-number repair. */
-export function citationTargets(bundle: ProvenanceBundleResponse | null): Map<string, CitationTarget> {
+export function citationTargets(bundle: ResultEvidenceResponse | null): Map<string, CitationTarget> {
   const targets = new Map<string, CitationTarget>();
   if (!bundle) return targets;
   const index = (items: Record<string, unknown>[], key: string) => new Map(items.map((item) => [textValue(item[key]), item]));
@@ -49,6 +52,9 @@ export function citationTargets(bundle: ProvenanceBundleResponse | null): Map<st
       claim: textValue(claim?.claim_text), origin: textValue(claim?.origin), snapshotId: textValue(passage?.snapshot_id),
       source: textValue(source?.title), url: textValue(source?.canonical_uri),
       traceId: textValue(passage?.trace_id), basis: basisLabel(passage?.content_basis), relation: textValue(edge?.relation),
+      originRunId: textValue(citation.origin_run_id || passage?.origin_run_id) || undefined,
+      originTraceId: textValue(citation.origin_trace_id || passage?.origin_trace_id) || undefined,
+      researchNodeId: textValue(citation.research_node_id || passage?.research_node_id) || undefined,
       resolved: !!(passage && snapshot && source && claim && textValue(passage.text)),
     };
     // Conflicting repeated labels are ambiguous, not a valid citation target.

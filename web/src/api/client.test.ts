@@ -67,3 +67,16 @@ it("encodes R5 session filters and uses explicit memory mutation verbs", async (
   expect(fetch.mock.calls[4][0]).toBe("/api/memory");
   expect(fetch.mock.calls[4][1].method).toBe("DELETE");
 });
+
+it("uses the unified result endpoints for context evidence and trace", async () => {
+  const fetch = vi.fn().mockImplementation(async () => new Response("{}"));
+  vi.stubGlobal("fetch", fetch);
+  await api.getResultContext("root/child");
+  await api.getResultEvidence("root/child");
+  await api.getResultTrace("root/child");
+  expect(fetch.mock.calls.map((call) => call[0])).toEqual([
+    "/api/tasks/root%2Fchild/result/context",
+    "/api/tasks/root%2Fchild/result/evidence",
+    "/api/tasks/root%2Fchild/result/trace",
+  ]);
+});

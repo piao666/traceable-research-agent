@@ -81,7 +81,7 @@ export function useRun(runId: string) {
         setTask(snapshot); setError("");
         if (activeStatuses.has(status)) connect();
         else { closeStream(); setConnection(finalStatuses.has(status) ? "closed" : "paused"); }
-        const results = await Promise.allSettled([api.getPlan(runId, controller.signal), api.getTraces(runId, controller.signal)]);
+        const results = await Promise.allSettled([api.getPlan(runId, controller.signal), api.getResultTrace(runId, controller.signal)]);
         if (disposed) return;
         const errors: string[] = [];
         if (results[0].status === "fulfilled") setPlan(results[0].value);

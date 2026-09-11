@@ -18,6 +18,7 @@ export const planFixture: TaskPlanResponse = {
 };
 export const traceFixture: ToolTraceResponse = {
   trace_id: "trace-one", run_id: "fixture", step_no: 1, tool_name: "file_reader", status: "failed",
+  origin_run_id: "fixture", research_node_id: null,
   token_in: 0, token_out: 0, estimated_cost: 0,
   created_at: "2026-09-02T01:00:00", finished_at: "2026-09-02T01:00:01", error_message: "Fixture read failed",
 };

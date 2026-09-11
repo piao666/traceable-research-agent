@@ -40,8 +40,10 @@ from app.schemas import (
     PlanReviewResponse,
     PlanReviewStep,
     ProvenanceBundleResponse,
+    ResearchResultContextResponse,
     ResearchScopeResponse,
     ResearchTreeResponse,
+    ResultEvidenceResponse,
     ScopeEvidenceResponse,
     TaskCancelRequest,
     TaskCreateRequest,
@@ -58,6 +60,12 @@ from app.schemas import (
     ToolTraceResponse,
 )
 from app.security import require_api_key
+from app.research.result_context import (
+    ResearchResultContext,
+    get_result_provenance_bundle,
+    list_result_traces,
+    resolve_research_result,
+)
 from app.trace import store
 from app.trace.models import AgentRun, ToolTrace
 
@@ -409,7 +417,10 @@ def _run_task_in_background(run_id: str) -> None:
                 db.rollback()
 
 
-def _tool_trace_response(trace: ToolTrace) -> ToolTraceResponse:
+def _tool_trace_response(
+    trace: ToolTrace,
+    research_node_id: str | None = None,
+) -> ToolTraceResponse:
     output = _parse_trace_output(trace.output_json)
     return ToolTraceResponse(
         trace_id=trace.trace_id,
@@ -429,6 +440,8 @@ def _tool_trace_response(trace: ToolTrace) -> ToolTraceResponse:
         output=output,
         metadata=_extract_trace_metadata(output),
         sub_query=trace.sub_query,
+        origin_run_id=trace.run_id,
+        research_node_id=research_node_id,
     )
 
 
@@ -464,16 +477,23 @@ def _parse_run_plan(run: AgentRun) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _resolve_result_or_404(db: Session, run_id: str) -> ResearchResultContext:
+    try:
+        return resolve_research_result(db, run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 def _export_run_evidence(
     db: Session,
     run_id: str,
     export_format: str,
 ):
-    run = store.get_agent_run(db, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Task run not found")
-    traces = store.list_tool_traces(db, run_id)
-    bundle = build_evidence_bundle(run, _parse_run_plan(run), [], traces)
+    result = _resolve_result_or_404(db, run_id)
+    try:
+        bundle = get_result_provenance_bundle(db, result)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return export_evidence_bundle(bundle, export_format)
 
 
@@ -1022,6 +1042,65 @@ async def get_task_trace(
 
     traces = store.list_tool_traces(db, run_id)
     return [_tool_trace_response(trace) for trace in traces]
+
+
+@router.get("/{run_id}/result/context", response_model=ResearchResultContextResponse)
+async def get_task_result_context(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> ResearchResultContextResponse:
+    """Resolve the user-visible result boundary for a run or research scope."""
+
+    result = _resolve_result_or_404(db, run_id)
+    return ResearchResultContextResponse(
+        requested_run_id=result.requested_run_id,
+        root_run_id=result.root_run_id,
+        is_scope=result.is_scope,
+        scope_id=result.scope_id,
+        engine_version=result.engine_version,
+        member_run_ids=list(result.member_run_ids),
+    )
+
+
+@router.get("/{run_id}/result/evidence", response_model=ResultEvidenceResponse)
+async def get_task_result_evidence(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> ResultEvidenceResponse:
+    """Return provenance for the complete resolved research result."""
+
+    result = _resolve_result_or_404(db, run_id)
+    try:
+        payload = get_result_provenance_bundle(db, result)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    root = store.get_agent_run(db, result.root_run_id)
+    if root is not None:
+        payload.setdefault("integrity", {}).update(result_integrity(root))
+    return ResultEvidenceResponse(**payload)
+
+
+@router.get("/{run_id}/result/trace", response_model=list[ToolTraceResponse])
+async def get_task_result_trace(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> list[ToolTraceResponse]:
+    """Return every trace belonging to the resolved research result."""
+
+    result = _resolve_result_or_404(db, run_id)
+    node_by_run: dict[str, str] = {}
+    if result.scope_id is not None:
+        from app.research.scope import list_scope_nodes
+
+        node_by_run = {
+            node.run_id: node.node_id
+            for node in list_scope_nodes(db, result.scope_id)
+            if node.run_id
+        }
+    return [
+        _tool_trace_response(trace, node_by_run.get(trace.run_id))
+        for trace in list_result_traces(db, result)
+    ]
 
 
 @router.get("/{run_id}/evidence", response_model=EvidenceBundleResponse)

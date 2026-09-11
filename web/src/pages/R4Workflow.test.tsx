@@ -15,9 +15,10 @@ beforeEach(() => {
   HTMLDialogElement.prototype.close = function () { this.open = false; };
   vi.spyOn(api, "getTask").mockResolvedValue(taskFixture);
   vi.spyOn(api, "getPlan").mockResolvedValue(planFixture);
-  vi.spyOn(api, "getTraces").mockResolvedValue([traceFixture]);
+  vi.spyOn(api, "getResultTrace").mockResolvedValue([traceFixture]);
   vi.spyOn(api, "getEvidence").mockResolvedValue(evidenceFixture);
   vi.spyOn(api, "getProvenance").mockResolvedValue(graphFixture);
+  vi.spyOn(api, "getResultEvidence").mockResolvedValue(graphFixture);
   vi.spyOn(api, "getReport").mockResolvedValue({ run_id: "fixture", exists: true, availability: "available", markdown: "# 报告正文\n有依据的结论 [CIT-001-01]", requires_review: false, citation_evaluated: true });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -108,14 +109,16 @@ it("reports a download failure without pretending that a file was saved", async 
   await waitFor(() => expect(button).toBeEnabled()); fireEvent.click(button);
   await screen.findByText("下载失败：file missing");
 });
-it("shows an evidence API failure without claiming there are zero sources", async () => {
-  vi.mocked(api.getEvidence).mockRejectedValue(new Error("offline"));
+it("shows a complete-result evidence failure without falling back to root-only evidence", async () => {
+  vi.mocked(api.getResultEvidence).mockRejectedValue(new Error("offline"));
   show("/runs/fixture/evidence");
-  await screen.findByText(/这不等于零证据/);
+  await screen.findByText(/完整研究证据读取失败.*这不等于零证据/);
   expect(screen.queryByText(/当前没有有效来源证据/)).toBeNull();
+  expect(api.getEvidence).not.toHaveBeenCalled();
+  expect(api.getProvenance).not.toHaveBeenCalled();
 });
 it("keeps report readable but references unresolved when the graph is unavailable", async () => {
-  vi.mocked(api.getProvenance).mockRejectedValue(new Error("disabled"));
+  vi.mocked(api.getResultEvidence).mockRejectedValue(new Error("disabled"));
   show("/runs/fixture/report");
   await screen.findByText(/引用图谱读取失败/);
   expect(screen.getByText("[CIT-001-01]（未解析）")).toBeInTheDocument();
@@ -139,5 +142,29 @@ it("shows a missing Run as an error with reload instead of an empty workbench", 
   vi.mocked(api.getTask).mockRejectedValue(new Error("Task run not found"));
   show(); await screen.findByRole("heading", { name: "无法读取研究" });
   expect(screen.getByRole("button", { name: "重新加载" })).toBeEnabled();
-  expect(api.getTraces).not.toHaveBeenCalled();
+  expect(api.getResultTrace).not.toHaveBeenCalled();
+});
+
+it("navigates a child citation to its child Run and child Trace", async () => {
+  vi.mocked(api.getTask).mockResolvedValue({ ...taskFixture, status: "completed" });
+  vi.mocked(api.getResultEvidence).mockResolvedValue({
+    ...graphFixture,
+    passages: graphFixture.passages.map((passage) => ({
+      ...passage,
+      origin_run_id: "child-run",
+      origin_trace_id: "child-trace",
+      research_node_id: "child-node",
+    })),
+    citations: graphFixture.citations.map((citation) => ({
+      ...citation,
+      origin_run_id: "child-run",
+      origin_trace_id: "child-trace",
+      research_node_id: "child-node",
+    })),
+  });
+  show("/runs/fixture/report");
+  fireEvent.click(await screen.findByRole("link", { name: "[CIT-001-01]" }));
+  const traceLinks = await screen.findAllByRole("link", { name: "查看来源 Trace" });
+  expect(traceLinks).not.toHaveLength(0);
+  expect(traceLinks.every((link) => link.getAttribute("href") === "/runs/child-run?trace=child-trace")).toBe(true);
 });

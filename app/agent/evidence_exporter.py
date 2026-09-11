@@ -56,7 +56,7 @@ def normalize_export_format(value: str | None) -> str:
 
 
 def export_evidence_bundle(
-    bundle: EvidenceBundle,
+    bundle: EvidenceBundle | dict[str, Any],
     export_format: str = "json",
     export_root: Path = EXPORT_ROOT,
 ) -> EvidenceExportResult:
@@ -65,8 +65,10 @@ def export_evidence_bundle(
     normalized_format = normalize_export_format(export_format)
     created_at = datetime.now(timezone.utc).isoformat()
     export_root.mkdir(parents=True, exist_ok=True)
-    target = _export_path(export_root, bundle.run_id, normalized_format)
-    payload = sanitize_export_data(bundle.to_dict())
+    raw_payload = bundle.to_dict() if isinstance(bundle, EvidenceBundle) else dict(bundle)
+    payload = sanitize_export_data(raw_payload)
+    run_id = str(payload.get("run_id") or payload.get("root_run_id") or "unknown")
+    target = _export_path(export_root, run_id, normalized_format)
 
     if normalized_format == "json":
         target.write_text(
@@ -76,7 +78,7 @@ def export_evidence_bundle(
     elif normalized_format == "jsonl":
         lines = [
             json.dumps(item, ensure_ascii=False, default=str)
-            for item in payload.get("evidence_items", [])
+            for item in (payload.get("evidence_items") or payload.get("passages") or [])
             if isinstance(item, dict)
         ]
         target.write_text(("\n".join(lines) + "\n") if lines else "", encoding="utf-8")
@@ -84,10 +86,13 @@ def export_evidence_bundle(
         target.write_text(_render_markdown(payload, created_at), encoding="utf-8")
 
     return EvidenceExportResult(
-        run_id=bundle.run_id,
+        run_id=run_id,
         format=normalized_format,
         export_path=target.relative_to(ROOT).as_posix(),
-        item_count=int(payload.get("total_evidence_items") or 0),
+        item_count=int(
+            payload.get("total_evidence_items")
+            or len(payload.get("passages") or [])
+        ),
         created_at=created_at,
     )
 
@@ -170,6 +175,22 @@ def _render_markdown(bundle: dict[str, Any], created_at: str) -> str:
     _append_claims(lines, "未支持或受限结论", bundle.get("unsupported_claims") or [])
 
     items = [item for item in bundle.get("evidence_items") or [] if isinstance(item, dict)]
+    if not items and bundle.get("passages"):
+        passages = [item for item in bundle.get("passages") or [] if isinstance(item, dict)]
+        lines.extend(["## Scope Evidence Passages", ""])
+        for passage in passages:
+            lines.extend(
+                [
+                    f"### {passage.get('passage_id')}",
+                    "",
+                    f"* Origin Run (`origin_run_id`): `{passage.get('origin_run_id') or bundle.get('run_id')}`",
+                    f"* Origin Trace (`origin_trace_id`): `{passage.get('origin_trace_id') or passage.get('trace_id') or ''}`",
+                    "",
+                    str(passage.get("text") or ""),
+                    "",
+                ]
+            )
+        return "\n".join(lines)
     lines.extend(["## 证据条目", ""])
     if not items:
         lines.extend(["未抽取到结构化证据条目。", ""])

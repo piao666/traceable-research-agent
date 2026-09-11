@@ -15,9 +15,11 @@ beforeEach(() => {
   vi.stubGlobal("EventSource", undefined);
   vi.spyOn(api, "getTask").mockResolvedValue({ ...taskFixture, status: "completed", execution_mode: "react" });
   vi.spyOn(api, "getPlan").mockResolvedValue(planCopy());
-  vi.spyOn(api, "getTraces").mockResolvedValue([{ ...traceFixture, status: "success", error_message: null }]);
+  vi.spyOn(api, "getResultTrace").mockResolvedValue([{ ...traceFixture, status: "success", error_message: null }]);
   vi.spyOn(api, "getEvidence").mockResolvedValue(evidenceFixture);
   vi.spyOn(api, "getProvenance").mockResolvedValue({ ...graphFixture,
+    report_claims: graphFixture.report_claims.map((claim) => ({ ...claim, origin: "source_excerpt" })) });
+  vi.spyOn(api, "getResultEvidence").mockResolvedValue({ ...graphFixture,
     report_claims: graphFixture.report_claims.map((claim) => ({ ...claim, origin: "source_excerpt" })) });
   vi.spyOn(api, "getReport").mockResolvedValue({ run_id: "fixture", exists: true, availability: "available",
     markdown: "# 固定测试报告\n摘录 [CIT-001-01]", requires_review: false, citation_evaluated: true });

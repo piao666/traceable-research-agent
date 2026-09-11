@@ -56,6 +56,10 @@ class RuntimeCapability(BaseModel):
     error_type: str | None = None
     checked_at: datetime
     checks: dict[str, bool] = Field(default_factory=dict)
+    fetch_backend: str | None = None
+    provider: str | None = None
+    fallback_used: bool | None = None
+    attempted_backends: list[str] = Field(default_factory=list)
 
 
 class RuntimePreflightBlocker(BaseModel):
@@ -433,6 +437,8 @@ class ToolTraceResponse(BaseModel):
     output: Any | None = None
     metadata: dict[str, Any] | None = None
     sub_query: str | None = None
+    origin_run_id: str
+    research_node_id: str | None = None
 
 
 class EvidenceItemResponse(BaseModel):
@@ -498,6 +504,23 @@ class ProvenanceBundleResponse(BaseModel):
     reasoning: dict[str, Any] | None = None
     reliability_scores: list[dict[str, Any]] = Field(default_factory=list)
     resolutions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ResearchResultContextResponse(BaseModel):
+    requested_run_id: str
+    root_run_id: str
+    is_scope: bool
+    scope_id: str | None = None
+    engine_version: str
+    member_run_ids: list[str]
+
+
+class ResultEvidenceResponse(ProvenanceBundleResponse):
+    scope_id: str | None = None
+    root_run_id: str | None = None
+    engine_version: str | None = None
+    runs: list[dict[str, Any]] = Field(default_factory=list)
+    revisions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ResearchScopeResponse(BaseModel):

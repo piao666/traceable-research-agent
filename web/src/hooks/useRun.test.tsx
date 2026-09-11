@@ -17,7 +17,7 @@ beforeEach(() => {
   vi.useFakeTimers(); FakeEvents.instances = []; vi.stubGlobal("EventSource", FakeEvents);
   vi.spyOn(api, "getTask").mockResolvedValue({ ...taskFixture, status: "running" });
   vi.spyOn(api, "getPlan").mockResolvedValue(planFixture);
-  vi.spyOn(api, "getTraces").mockResolvedValue([traceFixture]);
+  vi.spyOn(api, "getResultTrace").mockResolvedValue([traceFixture]);
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -27,7 +27,7 @@ it("loads persisted snapshots and deduplicates replayed trace events", async () 
   const event = FakeEvents.instances[0];
   act(() => { event.emit("trace_finished", { trace_id: "trace-one", status: "failed", finished_at: "now" }); event.emit("trace_finished", { trace_id: "trace-one", status: "failed", finished_at: "now" }); });
   await flush(100);
-  expect(api.getTraces).toHaveBeenCalledTimes(2);
+  expect(api.getResultTrace).toHaveBeenCalledTimes(2);
   expect(result.current.traces).toHaveLength(1);
 });
 it("reconnects after an error using a persisted trace cursor", async () => {
@@ -68,7 +68,7 @@ it("falls back to polling without EventSource and cleans up on unmount", async (
   unmount(); await flush(10000); expect(api.getTask).toHaveBeenCalledTimes(2);
 });
 it("does not show a Trace failure as an empty successful response", async () => {
-  vi.mocked(api.getTraces).mockRejectedValue(new Error("trace unavailable"));
+  vi.mocked(api.getResultTrace).mockRejectedValue(new Error("trace unavailable"));
   const { result } = renderHook(() => useRun("fixture")); await flush();
   expect(result.current.detailErrors).toContain("Trace 读取失败：trace unavailable");
   expect(result.current.task?.run_id).toBe("fixture");

@@ -229,6 +229,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tasks/{run_id}/result/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Task Result Context
+         * @description Resolve the user-visible result boundary for a run or research scope.
+         */
+        get: operations["get_task_result_context_api_tasks__run_id__result_context_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tasks/{run_id}/result/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Task Result Evidence
+         * @description Return provenance for the complete resolved research result.
+         */
+        get: operations["get_task_result_evidence_api_tasks__run_id__result_evidence_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/tasks/{run_id}/result/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Task Result Trace
+         * @description Return every trace belonging to the resolved research result.
+         */
+        get: operations["get_task_result_trace_api_tasks__run_id__result_trace_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tasks/{run_id}/evidence": {
         parameters: {
             query?: never;
@@ -1977,6 +2037,21 @@ export interface components {
             /** Message */
             message?: string | null;
         };
+        /** ResearchResultContextResponse */
+        ResearchResultContextResponse: {
+            /** Requested Run Id */
+            requested_run_id: string;
+            /** Root Run Id */
+            root_run_id: string;
+            /** Is Scope */
+            is_scope: boolean;
+            /** Scope Id */
+            scope_id?: string | null;
+            /** Engine Version */
+            engine_version: string;
+            /** Member Run Ids */
+            member_run_ids: string[];
+        };
         /** ResearchScopeResponse */
         ResearchScopeResponse: {
             /** Scope Id */
@@ -2011,6 +2086,79 @@ export interface components {
             scope: components["schemas"]["ResearchScopeResponse"];
             /** Roots */
             roots: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** ResultEvidenceResponse */
+        ResultEvidenceResponse: {
+            /** Run Id */
+            run_id: string;
+            /** Schema Version */
+            schema_version: string;
+            /** Extractor Version */
+            extractor_version: string;
+            /** Status */
+            status: string;
+            /** Source Documents */
+            source_documents: {
+                [key: string]: unknown;
+            }[];
+            /** Source Snapshots */
+            source_snapshots: {
+                [key: string]: unknown;
+            }[];
+            /** Passages */
+            passages: {
+                [key: string]: unknown;
+            }[];
+            /** Assertions */
+            assertions: {
+                [key: string]: unknown;
+            }[];
+            /** Claims */
+            claims: {
+                [key: string]: unknown;
+            }[];
+            /** Edges */
+            edges: {
+                [key: string]: unknown;
+            }[];
+            /** Report Claims */
+            report_claims: {
+                [key: string]: unknown;
+            }[];
+            /** Citations */
+            citations: {
+                [key: string]: unknown;
+            }[];
+            /** Integrity */
+            integrity: {
+                [key: string]: unknown;
+            };
+            /** Reasoning */
+            reasoning?: {
+                [key: string]: unknown;
+            } | null;
+            /** Reliability Scores */
+            reliability_scores?: {
+                [key: string]: unknown;
+            }[];
+            /** Resolutions */
+            resolutions?: {
+                [key: string]: unknown;
+            }[];
+            /** Scope Id */
+            scope_id?: string | null;
+            /** Root Run Id */
+            root_run_id?: string | null;
+            /** Engine Version */
+            engine_version?: string | null;
+            /** Runs */
+            runs?: {
+                [key: string]: unknown;
+            }[];
+            /** Revisions */
+            revisions?: {
                 [key: string]: unknown;
             }[];
         };
@@ -2109,6 +2257,14 @@ export interface components {
             checks?: {
                 [key: string]: boolean;
             };
+            /** Fetch Backend */
+            fetch_backend?: string | null;
+            /** Provider */
+            provider?: string | null;
+            /** Fallback Used */
+            fallback_used?: boolean | null;
+            /** Attempted Backends */
+            attempted_backends?: string[];
         };
         /** RuntimeCheck */
         RuntimeCheck: {
@@ -3004,6 +3160,10 @@ export interface components {
             } | null;
             /** Sub Query */
             sub_query?: string | null;
+            /** Origin Run Id */
+            origin_run_id: string;
+            /** Research Node Id */
+            research_node_id?: string | null;
         };
         /** UserMemoryResponse */
         UserMemoryResponse: {
@@ -3411,6 +3571,99 @@ export interface operations {
         };
     };
     get_task_trace_api_tasks__run_id__trace_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolTraceResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_task_result_context_api_tasks__run_id__result_context_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResearchResultContextResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_task_result_evidence_api_tasks__run_id__result_evidence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResultEvidenceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_task_result_trace_api_tasks__run_id__result_trace_get: {
         parameters: {
             query?: never;
             header?: never;

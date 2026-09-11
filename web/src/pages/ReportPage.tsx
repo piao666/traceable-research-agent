@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, errorMessage, type ReportResponse, type ProvenanceBundleResponse } from "../api/client";
+import { api, errorMessage, type ReportResponse, type ResultEvidenceResponse } from "../api/client";
 import { useRunContext } from "../hooks/useRunContext";
 import { SafeMarkdown } from "../components/SafeMarkdown";
 import { Button, Panel } from "../components/primitives";
@@ -11,7 +11,7 @@ export function ReportPage() {
   const { task } = useRunContext();
   const runId = task!.run_id, revision = task!.updated_at;
   const [report, setReport] = useState<ReportResponse | null>(null);
-  const [graph, setGraph] = useState<ProvenanceBundleResponse | null>(null);
+  const [graph, setGraph] = useState<ResultEvidenceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [graphError, setGraphError] = useState("");
@@ -26,7 +26,7 @@ export function ReportPage() {
       if (!active) return;
       setReport(result); setGraph(null);
       if (result.exists) {
-        try { const graph = await api.getProvenance(runId, controller.signal); if (active) setGraph(graph); }
+        try { const graph = await api.getResultEvidence(runId, controller.signal); if (active) setGraph(graph); }
         catch (reason) { if (active) setGraphError(errorMessage(reason)); }
       }
     }).catch((reason: unknown) => { if (active) { setReport(null); setError(errorMessage(reason)); } }).finally(() => { if (active) setLoading(false); });
