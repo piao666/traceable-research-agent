@@ -77,6 +77,45 @@ def _safe_llm_probe(client: LLMClient) -> dict[str, Any]:
     }
 
 
+def _successful_fetch_page(output: dict[str, Any]) -> dict[str, Any] | None:
+    for page in output.get("pages") or []:
+        if not isinstance(page, dict):
+            continue
+        status = str(page.get("fetch_status") or "")
+        if status in {"success", "partial"} and str(page.get("content") or "").strip():
+            return page
+    return None
+
+
+def _fetch_backend_check(page: dict[str, Any]) -> dict[str, Any]:
+    raw_backend = str(page.get("fetch_backend") or "")
+    fetch_backend = "http" if raw_backend == "cache" else raw_backend
+    attempts = page.get("retrieval_attempts")
+    attempted_backends = [
+        str(attempt.get("backend"))
+        for attempt in attempts or []
+        if isinstance(attempt, dict) and attempt.get("backend")
+    ]
+    if not attempted_backends and fetch_backend:
+        attempted_backends = [fetch_backend]
+    fallback_used = fetch_backend in {"browser", "remote_extract"} or len(
+        dict.fromkeys(attempted_backends)
+    ) > 1
+    details = {
+        "http": "静态 HTTP 正文抽取验证通过",
+        "browser": "网页抓取验证通过；静态 HTTP 不足，使用 Browser fallback",
+        "remote_extract": "网页抓取验证通过；本地抓取不足，使用远端 Extract fallback",
+        "pdf": "网页抓取验证通过",
+    }
+    return {
+        "fetch_backend": fetch_backend,
+        "provider": str(page.get("provider") or ""),
+        "fallback_used": fallback_used,
+        "attempted_backends": attempted_backends,
+        "detail": details.get(fetch_backend, "网页抓取验证失败"),
+    }
+
+
 def run_runtime_preflight(
     settings: Settings,
     *,
@@ -164,15 +203,27 @@ def run_runtime_preflight(
                 metadata={"error_type": "provider_unavailable"},
             )
         fetch_output = fetch_result.output if isinstance(fetch_result.output, dict) else {}
-        fetched = bool(fetch_result.success and fetch_output.get("fetched_count"))
+        successful_page = _successful_fetch_page(fetch_output)
+        fetched = bool(fetch_result.success and fetch_output.get("fetched_count") and successful_page)
         fetch_error = None if fetched else fetch_result.metadata.get("error_type") or "malformed_response"
+        backend_check = _fetch_backend_check(successful_page) if successful_page else {
+            "fetch_backend": None,
+            "provider": None,
+            "fallback_used": False,
+            "attempted_backends": [],
+            "detail": "网页抓取验证失败",
+        }
         _replace(
             items,
             "web_fetcher",
             reachable=fetched,
             usable=fetched,
-            detail="静态 HTTP 与正文抽取验证通过" if fetched else "静态 HTTP 或正文抽取验证失败",
+            detail=backend_check["detail"] if fetched else "静态 HTTP 或正文抽取验证失败",
             error_type=fetch_error,
+            fetch_backend=backend_check["fetch_backend"],
+            provider=backend_check["provider"],
+            fallback_used=backend_check["fallback_used"],
+            attempted_backends=backend_check["attempted_backends"],
         )
         if not fetched:
             blockers.append({"capability": "web_fetcher", "error_type": str(fetch_error), "message": "网页抓取验证失败。"})

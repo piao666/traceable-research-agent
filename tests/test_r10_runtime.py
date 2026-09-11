@@ -331,13 +331,25 @@ class RuntimePreflightTests(unittest.TestCase):
                               metadata={"data_source": "tavily_api", "fallback_used": False})
 
         def fetcher(_arguments, **_kwargs):
-            return ToolResult(success=True, output={"fetched_count": 1, "pages": [{"content": "evidence"}]})
+            return ToolResult(success=True, output={"fetched_count": 1, "pages": [{
+                "content": "evidence",
+                "fetch_status": "success",
+                "fetch_backend": "http",
+                "provider": "local_http",
+                "retrieval_attempts": [{"backend": "http", "status": "success"}],
+            }]})
 
         result = run_runtime_preflight(self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher)
         self.assertTrue(result["ready"])
         self.assertTrue(result["verified"])
         self.assertEqual(llm.calls, 1)
         self.assertNotIn("private-key", json.dumps(result, default=str))
+        fetch = next(item for item in result["capabilities"] if item["name"] == "web_fetcher")
+        self.assertEqual(fetch["fetch_backend"], "http")
+        self.assertEqual(fetch["provider"], "local_http")
+        self.assertFalse(fetch["fallback_used"])
+        self.assertEqual(fetch["attempted_backends"], ["http"])
+        self.assertEqual(fetch["detail"], "静态 HTTP 正文抽取验证通过")
 
     def test_mock_search_cannot_pass_real_preflight(self):
         llm = FixtureLLM(LLMResponse(success=True, content='{"ok":true}', provider="fixture"))
@@ -387,11 +399,88 @@ class RuntimePreflightTests(unittest.TestCase):
                               metadata={"data_source": "tavily_api", "fallback_used": False})
 
         def fetcher(_arguments, **_kwargs):
-            return ToolResult(success=True, output={"fetched_count": 1})
+            return ToolResult(success=True, output={"fetched_count": 1, "pages": [{
+                "content": "evidence",
+                "fetch_status": "success",
+                "fetch_backend": "http",
+                "provider": "local_http",
+                "retrieval_attempts": [{"backend": "http", "status": "success"}],
+            }]})
 
         result = run_runtime_preflight(self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher)
         self.assertTrue(result["ready"])
         self.assertTrue(any("usage" in warning for warning in result["warnings"]))
+
+    def test_preflight_reports_browser_fallback_as_the_actual_backend(self):
+        llm = FixtureLLM(LLMResponse(success=True, content='{"ok":true}', provider="fixture"))
+
+        def searcher(_arguments, **_kwargs):
+            return ToolResult(
+                success=True,
+                output={"results": [{"url": "https://docs.example/page"}]},
+                metadata={"data_source": "tavily_api", "fallback_used": False},
+            )
+
+        def fetcher(_arguments, **_kwargs):
+            return ToolResult(success=True, output={"fetched_count": 1, "pages": [{
+                "content": "rendered evidence",
+                "fetch_status": "success",
+                "fetch_backend": "browser",
+                "provider": "local_playwright",
+                "retrieval_attempts": [
+                    {"backend": "http", "status": "javascript_required"},
+                    {"backend": "browser", "status": "success"},
+                ],
+            }]})
+
+        result = run_runtime_preflight(
+            self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher
+        )
+        fetch = next(item for item in result["capabilities"] if item["name"] == "web_fetcher")
+        self.assertTrue(result["ready"])
+        self.assertEqual(fetch["fetch_backend"], "browser")
+        self.assertTrue(fetch["fallback_used"])
+        self.assertEqual(fetch["attempted_backends"], ["http", "browser"])
+        self.assertEqual(
+            fetch["detail"],
+            "网页抓取验证通过；静态 HTTP 不足，使用 Browser fallback",
+        )
+
+    def test_preflight_reports_remote_extract_fallback_as_the_actual_backend(self):
+        llm = FixtureLLM(LLMResponse(success=True, content='{"ok":true}', provider="fixture"))
+
+        def searcher(_arguments, **_kwargs):
+            return ToolResult(
+                success=True,
+                output={"results": [{"url": "https://docs.example/page"}]},
+                metadata={"data_source": "tavily_api", "fallback_used": False},
+            )
+
+        def fetcher(_arguments, **_kwargs):
+            return ToolResult(success=True, output={"fetched_count": 1, "pages": [{
+                "content": "remote evidence",
+                "fetch_status": "partial",
+                "fetch_backend": "remote_extract",
+                "provider": "fixture_extract",
+                "retrieval_attempts": [
+                    {"backend": "http", "status": "blocked"},
+                    {"backend": "browser", "status": "blocked"},
+                    {"backend": "remote_extract", "status": "success"},
+                ],
+            }]})
+
+        result = run_runtime_preflight(
+            self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher
+        )
+        fetch = next(item for item in result["capabilities"] if item["name"] == "web_fetcher")
+        self.assertTrue(result["ready"])
+        self.assertEqual(fetch["fetch_backend"], "remote_extract")
+        self.assertTrue(fetch["fallback_used"])
+        self.assertEqual(fetch["attempted_backends"], ["http", "browser", "remote_extract"])
+        self.assertEqual(
+            fetch["detail"],
+            "网页抓取验证通过；本地抓取不足，使用远端 Extract fallback",
+        )
 
     def test_offline_preflight_makes_no_external_calls(self):
         settings = Settings(research_profile="offline", offline_mode=True, llm_provider="deterministic")

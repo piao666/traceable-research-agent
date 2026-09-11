@@ -56,6 +56,10 @@ def local_capability_items(settings: Settings) -> list[dict[str, Any]]:
             "mode": "local_http",
             "detail": "静态网页正文抽取可用；未执行外部连通性验证",
             "error_type": None,
+            "fetch_backend": None,
+            "provider": None,
+            "fallback_used": False,
+            "attempted_backends": [],
             "checked_at": checked_at,
         },
         {
