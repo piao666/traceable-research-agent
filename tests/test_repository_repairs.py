@@ -30,6 +30,16 @@ from app.improvement import models as improvement_models  # noqa: F401
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class GeneratedContractIntegrityTests(unittest.TestCase):
+    def test_openapi_types_do_not_contain_tool_output_markers(self) -> None:
+        schema_text = (ROOT / "web" / "src" / "api" / "schema.d.ts").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn("Warning: truncated output", schema_text)
+        self.assertNotIn("Total output lines:", schema_text)
+
+
 class SkillRunnerRepairTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
