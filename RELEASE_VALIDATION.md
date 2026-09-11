@@ -1,8 +1,34 @@
-# 修复发布与验收清单（R0–R12）
+# 修复发布与验收清单（R0–R12.1）
 
-## R12 Deep Research Engine V2：本地待提交记录
+## R12.1 Scope-first Research Result Governance：发布复核记录
 
-本轮以远端 `feature/improvements@b0edf9c` 与本地 R11 提交 `5a32482` 为基线，
+本轮以已发布的 `feature/improvements@8021aff` 为远端基线，并将提交包中的完整
+R12.1 原子提交链与该远端历史通过普通 Merge 汇合；没有重排或压缩原提交，也不需要
+Force Push。合并后的业务文件树与提交包末端 `5c2f2be` 完全一致。在此基础上修复了
+一个只在独立执行时暴露的取消回归测试顺序依赖，并同步 README、发布清单和交接状态。
+
+R12.1 将 Deep Research V2 从 Scope 执行内核收口为 Scope-first Research Result
+Runtime：统一 Result Resolver/API、Scope Evidence Identity 与有效计数、跨 Run
+Reasoning、最终 Claim／Citation Occurrence、双层完成 Gate、Final-cited Academic
+Reference Verification、Scope-aware Improvement，以及 Actor／Synthesizer 分角色
+可用性与有界证据上下文均已进入同一结果边界。迁移头为
+`0013_research_result_governance`；R13 Coverage／Gap／Python Runtime 未提前实现。
+
+| 验证 | 本轮结果与边界 |
+|---|---|
+| 后端完整回归 | `798 passed / 2 skipped / 1 xfailed / 102 subtests passed / 0 failed`；15 条第三方弃用警告 |
+| 官方离线入口 | 收集 793 项：`790 passed / 2 skipped / 1 xfailed / 0 failed`；Offline network guard 为 0 次外部尝试 |
+| 独立回归 | 取消期间工具返回不得覆盖 `cancelled` 状态；脱离全量测试顺序单独通过 |
+| 前端 | OpenAPI 契约同步；类型检查、Lint、11 个测试文件／106 项测试、生产构建通过 |
+| OpenAPI | 使用正式生成脚本连续生成两次，`web/src/api/schema.d.ts` 保持零差异 |
+| 迁移与 Smoke | Fresh `0001→0013`、Existing `0012→0013` 专项覆盖；四项 R12.1 强制 Smoke 通过 |
+| 真实环境 | 未配置 Actor／Reporter LLM 与 Tavily，真实 Deep Research Runtime 记为 `external runtime blocked`；不冒充真实验收通过 |
+| Docker／浏览器 | 静态配置检查可执行；实际镜像启动、Windows 浏览器与真实 Provider 仍需在具备相应环境时验收 |
+| 发布状态 | 精确发布提交以远端 `feature/improvements` HEAD 为准；只有该 HEAD 的 GitHub Actions Green 后才可标记 `R12.1 COMPLETE` |
+
+## R12 Deep Research Engine V2：已发布记录（8021aff）
+
+本轮以已发布的 R10 `feature/improvements@b0edf9c` 为基线，
 完成 R12 Engine V2 替换。Deep Profile 现在由持久化 Research Scope／Tree 统一编排，
 显式 AgentRun lineage 和数据库关系取代 `plan_json` 权威；节点继续复用 ReAct、只读
 工具注册表、恢复、Trace、Evidence Pipeline 与根 Run 共享预算。子 Evidence 不复制
@@ -17,14 +43,14 @@
 | 迁移 | 0001→0012、幂等升级、Alembic schema check、SQL parser 全部通过 |
 | 综合 Smoke | 18/18 通过；研究完整性与 Docker 静态配置 Smoke 通过 |
 | 真实环境 | 未运行 Docker、真实模型、搜索、抓取或 Windows 浏览器人工验收 |
-| 发布状态 | R11 已本地提交为 `5a32482` 但推送因缺少 HTTPS 凭据失败；R12 尚未提交或推送；`LICENSE` 未处理 |
+| 发布状态 | R12 已发布为 `feature/improvements@8021aff`；`LICENSE` 未处理 |
 
 R12 Definition of Done 已由自动回归覆盖：Deep Dispatcher 只走 V2；Scope／Node 与
 lineage 持久化；父子 Evidence 逻辑聚合；Child Evidence 可进入最终报告；Child
 Citation 可反查原 Trace；所有节点共享 root budget；Standard／Offline 旧路径无回归；
 旧 `run_deepening` 仅为带弃用告警的兼容 wrapper。
 
-## R11 Retrieval & Source Reliability：本地待提交记录
+## R11 Retrieval & Source Reliability：已发布记录（dc8919a）
 
 本轮以已发布的 `feature/improvements@b0edf9c` 为基线，按 R11–R15 Deep
 Research Engine V2 重构方案完成 R11。外部工具名仍为 `web_fetcher`，内部已经
@@ -46,7 +72,7 @@ Remote Extract 缺失配置只表示可选能力不可用，不会被提升为�
 | 综合 Smoke | 18/18 通过；本地评估 78/80 通过，2 项真实网络依赖按设计跳过，0 硬失败 |
 | Docker | 静态配置 Smoke 通过；镜像声明安装 `playwright==1.62.0` 及 Chromium，并为 API 配置 1 GB `/dev/shm`；当前环境没有 Docker CLI，未实际构建／启动 |
 | 真实 Fetch | 未执行；已提供受 `--confirm-real-calls --r11-fetch-smoke` 保护的静态／Browser／PDF／已配置 Remote smoke |
-| 发布状态 | R11 已本地提交为 `5a32482`；当前环境缺少 GitHub HTTPS 凭据，尚未推送；`LICENSE` 按用户要求未处理 |
+| 发布状态 | R11 已发布为 `feature/improvements@dc8919a`；`LICENSE` 按用户要求未处理 |
 
 两项严格 xfail 是在 R11 开始时冻结的后续阶段缺陷：旧 `deepening.py` 排除子 Run
 Observation（R12 替换）以及旧单次报告上下文 7000 字符硬截断（R14 分节 Composer

@@ -30,6 +30,22 @@ Scope 聚合层进入整体完成判定和最终报告，因此完整保留
 转入 Engine V2；Dispatcher 已不再调用旧 Round 引擎。Coverage／Gap Intelligence 与
 分章节长报告仍严格留在 R13／R14。
 
+### Scope-first 研究结果治理（R12.1）
+
+R12.1 只收口仍残留的 Run-centric 问题，不提前实现 R13 Research Intelligence。
+`ResearchResultContext` 会把普通 Run，或 Deep Research Scope 中任意成员 Run，统一
+解析为一个用户可见结果边界。正式 Result API、React 证据／报告页面与证据导出因此
+都能读取 Root、Child、Grandchild 的完整 Evidence，同时保留每个实体的
+`origin_run_id`、`origin_trace_id` 与 `research_node_id`。
+
+Scope Identity 在不删除原始溯源的前提下提供稳定的 Source／Passage Alias 和有效唯一
+计数；跨 Run Claim 归组、来源独立性与冲突判定会持久化并进入最终合成。最终回答会
+落为 Report Claim 与 Citation Occurrence，每个引用标记都独立校验；固定的 Report
+Integrity Gate 不通过时，Deep Research V2 不得标记完成。学术校验只处理最终回答
+实际引用的 Work，并计入 Root 共享预算。迁移 `0013_research_result_governance` 新增
+Scope Reasoning、Report Revision 与 Occurrence 记录。Actor／Synthesizer 可用性保持
+分角色判断，最终合成使用有界且兼顾各 Scope 分支的证据上下文。
+
 ### 自适应抓取与来源可靠性（R11）
 
 R11 保留外部 `web_fetcher` 工具契约，并将内部实现替换为自适应抓取路由。系统先使用
@@ -490,6 +506,9 @@ Bearer 凭据。
 | `POST /api/tasks/{run_id}/confirm` | 恢复或拒绝受保护的操作。 |
 | `GET /api/tasks/{run_id}/trace` | 查询持久化的工具 trace。 |
 | `GET /api/tasks/{run_id}/evidence/v2` | 查询溯源和引用。 |
+| `GET /api/tasks/{run_id}/result/context` | 解析用户可见的 Run／Scope 结果边界。 |
+| `GET /api/tasks/{run_id}/result/evidence` | 查询带来源 lineage 的完整结果 Evidence。 |
+| `GET /api/tasks/{run_id}/result/trace` | 查询带来源 Run／Node 信息的完整结果 Trace。 |
 | `GET /api/tasks/{run_id}/research-scope` | 查询 Scope lineage 与共享预算统计。 |
 | `GET /api/tasks/{run_id}/research-tree` | 查询任意 Scope 成员 Run 对应的嵌套 Research Tree。 |
 | `GET /api/tasks/{run_id}/scope-evidence` | 查询带来源 Run／Trace 链接的跨 Run 逻辑证据。 |
@@ -552,8 +571,9 @@ workspace/     本地数据库、报告、产物与 Skill
 
 ## 质量验证
 
-当前完整离线 pytest 共收集 651 项：649 项通过、2 项按条件跳过、0 项失败，
-外部网络尝试为零。前端最新基线为 104 项测试，类型检查、Lint、构建全部通过，
+当前完整 pytest 为 798 项通过、2 项按条件跳过、1 项预期失败、102 个子测试通过且
+无失败；隔离离线入口共收集 793 项（790 项通过、2 项跳过、1 项预期失败），记录的
+外网尝试为 0。前端最新基线为 106 项测试，类型检查、Lint、构建全部通过，
 隔离路由／固定数据检查 59 项通过；浏览器布局与真实服务验收仍需人工执行。
 剩余限制见[发布验证清单](RELEASE_VALIDATION.md)。
 
@@ -575,6 +595,7 @@ docker compose config --quiet
 - [x] R10.0a 研究到报告切换与技术比较覆盖稳定化
 - [x] R11 HTTP／Browser／PDF／远端自适应抓取基础与来源身份
 - [x] R12 Deep Research Engine V2、Research Scope／Tree 与跨 Run Evidence
+- [x] R12.1 Scope-first 结果、证据、推理、引用与报告治理收口
 - [ ] R10 真实 Docker 构建／重启与 Provider 预检／验收
 - [ ] R11 需确认的真实静态页／Browser／PDF／远端抓取验收
 - [ ] 在公开再分发前补充仓库许可证

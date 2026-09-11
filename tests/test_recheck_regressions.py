@@ -132,6 +132,14 @@ class ApiRegressionTests(unittest.TestCase):
 
     def test_cancel_during_a_tool_call_is_not_overwritten_by_completion(self) -> None:
         run = self._create_run()
+        tool_spec = ToolSpec(
+            name="file_reader",
+            description="Cancellation regression fixture.",
+            input_schema={},
+            risk_level=RiskLevel.LOW,
+            read_only=True,
+            side_effect_free=True,
+        )
 
         def cancel_during_call(_name, _arguments):
             store.update_agent_run_status(
@@ -145,7 +153,9 @@ class ApiRegressionTests(unittest.TestCase):
         from app.agent.executor import run_plan
 
         with (
+            patch("app.agent.executor.enforce_execution_readiness", return_value=True),
             patch("app.agent.executor.is_executable_tool", return_value=True),
+            patch("app.agent.execution_policy.get_tool", return_value=tool_spec),
             patch("app.agent.executor.execute_tool", side_effect=cancel_during_call),
         ):
             summary = run_plan(

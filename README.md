@@ -34,6 +34,27 @@ compatibility release as a deprecation-warning adapter to Engine V2; the
 Dispatcher no longer calls the legacy round engine. Research intelligence,
 coverage/gap policy and hierarchical long-report composition remain R13/R14.
 
+### Scope-first research result governance (R12.1)
+
+R12.1 closes the remaining Run-centric gaps without introducing R13 research
+intelligence. `ResearchResultContext` now resolves an ordinary Run or any
+member of a Deep Research Scope to one user-visible result boundary. The
+official result APIs, React evidence/report views and evidence exports therefore
+include root, child and grandchild Evidence while preserving every entity's
+`origin_run_id`, `origin_trace_id` and `research_node_id`.
+
+Scope identity projections retain raw provenance and expose deterministic
+source/passage aliases plus effective unique counts. Cross-run claim grouping,
+source independence and conflict resolution are materialized for final
+synthesis. The final-answer section is persisted as report-claim and citation
+occurrences; every citation marker is validated, and Deep Research V2 cannot be
+marked complete when the fixed report-integrity thresholds fail. Academic
+verification is limited to works actually cited in the final answer and shares
+the root budget. Migration `0013_research_result_governance` adds the associated
+scope-reasoning, report-revision and occurrence records. Actor and Synthesizer
+model availability remain role-specific, and final synthesis uses a bounded,
+scope-balanced evidence context.
+
 ### Adaptive retrieval and source reliability (R11)
 
 R11 keeps the public `web_fetcher` tool contract while replacing its internals
@@ -594,6 +615,9 @@ need them. When `AUTH_ENABLED=true`, send the configured key in the
 | `POST /api/tasks/{run_id}/confirm` | Resume or reject a guarded operation. |
 | `GET /api/tasks/{run_id}/trace` | Read persisted tool traces. |
 | `GET /api/tasks/{run_id}/evidence/v2` | Read provenance and citations. |
+| `GET /api/tasks/{run_id}/result/context` | Resolve the user-visible Run/Scope result boundary. |
+| `GET /api/tasks/{run_id}/result/evidence` | Read complete result Evidence with origin lineage. |
+| `GET /api/tasks/{run_id}/result/trace` | Read complete result traces with origin Run/Node metadata. |
 | `GET /api/tasks/{run_id}/research-scope` | Read persisted Scope lineage and shared-budget statistics. |
 | `GET /api/tasks/{run_id}/research-tree` | Read the nested Research Tree for any Scope member Run. |
 | `GET /api/tasks/{run_id}/scope-evidence` | Read logical cross-run Evidence with origin Run/Trace links. |
@@ -661,9 +685,11 @@ workspace/     local databases, reports, artifacts, and skills
 
 ## Quality Checks
 
-The current full offline pytest run collected 651 tests: 649 passed, 2 were
-conditionally skipped, none failed, and no external network attempt was made.
-The latest frontend baseline is 104 tests; typecheck, lint and build passed;
+The current full pytest run passed 798 tests, with 2 conditionally skipped,
+1 expected failure, 102 subtests passed, and no test failure. The isolated
+offline runner collected 793 tests (790 passed, 2 skipped, 1 expected failure)
+and recorded zero blocked external-network attempts.
+The latest frontend baseline is 106 tests; typecheck, lint and build passed;
 isolated route/fixture QA: 59 checks passed. Browser layout and live-provider
 acceptance remain separate manual checks. See
 [release validation](RELEASE_VALIDATION.md) for limits.
@@ -689,6 +715,7 @@ opens the deployment workspace database.
 - [x] R10.0a research-to-finalization handoff and comparison coverage stabilization
 - [x] R11 adaptive HTTP/Browser/PDF/remote retrieval foundation and source identity
 - [x] R12 Deep Research Engine V2, Research Scope/Tree and cross-run Evidence
+- [x] R12.1 Scope-first result, evidence, reasoning, citation and report governance
 - [ ] R10 real Docker build/restart and live provider preflight/acceptance
 - [ ] R11 confirmation-gated real static/Browser/PDF/remote fetch acceptance
 - [ ] Add a repository license before public redistribution
