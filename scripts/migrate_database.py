@@ -44,6 +44,15 @@ P4_TABLES = {
     "improvement_logs",
 }
 R12_TABLES = {"research_scopes", "research_nodes"}
+R12_RESULT_TABLES = {
+    "scope_reasoning_runs",
+    "scope_claim_groups",
+    "scope_claim_members",
+    "scope_claim_resolutions",
+    "report_revisions",
+    "report_claim_occurrences",
+    "citation_occurrences",
+}
 
 
 def bootstrap_revision_for_tables(
@@ -118,6 +127,29 @@ def bootstrap_revision_for_tables(
                                             "Legacy database has a partial R12 AgentRun schema; "
                                             f"missing columns: {missing}"
                                         )
+                                    improvement_columns = {
+                                        column["name"]
+                                        for column in inspector.get_columns("improvement_logs")
+                                    }
+                                    present_result = table_names & R12_RESULT_TABLES
+                                    if present_result or "evaluation_metadata_json" in improvement_columns:
+                                        if not R12_RESULT_TABLES.issubset(table_names):
+                                            missing = ", ".join(
+                                                sorted(R12_RESULT_TABLES - present_result)
+                                            )
+                                            raise RuntimeError(
+                                                "Legacy database has a partial R12 result schema; "
+                                                f"missing tables: {missing}"
+                                            )
+                                        if "evaluation_metadata_json" not in improvement_columns:
+                                            raise RuntimeError(
+                                                "Legacy database has a partial R12 result schema; "
+                                                "missing improvement_logs.evaluation_metadata_json"
+                                            )
+                                        return _required_stamp(
+                                            current_revision,
+                                            "0013_research_result_governance",
+                                        )
                                     return _required_stamp(
                                         current_revision, "0012_research_scope_and_lineage"
                                     )
@@ -148,6 +180,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0010_memory_audit": 10,
         "0011_run_budgets": 11,
         "0012_research_scope_and_lineage": 12,
+        "0013_research_result_governance": 13,
     }
     if current_revision is None:
         return schema_revision

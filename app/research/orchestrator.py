@@ -43,6 +43,7 @@ from app.research.scope import (
     list_scope_traces,
     resolve_research_scope,
     scope_summary,
+    update_node_metadata,
     update_scope_status,
 )
 from app.reporting.integrity import (
@@ -127,35 +128,47 @@ def run_deep_research_v2(
             settings_obj.react_llm_model,
         )
     )
-    try:
-        root_result = run_react_task(db, run_id, settings_obj, actor_client)
-    except BudgetExceeded:
-        root_node.status = "failed"
-        db.commit()
-        update_scope_status(db, scope.scope_id, "failed")
-        raise
+    if root_node.status == "completed":
+        root_result = _summary(
+            store.get_fresh_agent_run(db, run_id),
+            plan,
+            "Root discovery already completed; resuming Scope orchestration.",
+        )
+    else:
+        try:
+            root_result = run_react_task(db, run_id, settings_obj, actor_client)
+        except BudgetExceeded:
+            root_node.status = "failed"
+            db.commit()
+            update_scope_status(db, scope.scope_id, "failed")
+            raise
     root = store.get_fresh_agent_run(db, run_id)
     if root is None:
         raise ValueError("Task run not found")
-    root_node.status = root.status
-    db.commit()
     if root.status in {"failed", "cancelled", "waiting_human", "waiting_human_plan"}:
+        root_node.status = root.status
+        db.commit()
         update_scope_status(db, scope.scope_id, root.status)
         return root_result
 
     # The node pass is complete, but the public root stays running until the
     # scope outcome and single final report are persisted.
-    root = store.mark_agent_run_running_unless_cancelled(db, run_id)
-    if root.status == "cancelled":
-        update_scope_status(db, scope.scope_id, "cancelled")
-        return _summary(root, plan)
     root_node.status = "completed"
     db.commit()
 
     executor = node_executor or ResearchNodeExecutor()
-    frontier: deque[ResearchNode] = deque([root_node])
-    prior_queries = [root.task]
-    created_run_ids: list[str] = []
+    nodes = list_scope_nodes(db, scope.scope_id)
+    frontier: deque[ResearchNode] = deque(
+        node
+        for node in nodes
+        if node.status == "completed"
+        and _json_object(node.metadata_json).get("branch_planning_status", "pending")
+        == "pending"
+    )
+    prior_queries = [node.query for node in nodes]
+    created_run_ids = [
+        node.run_id for node in nodes if node.run_id and node.run_id != run_id
+    ]
     finalization_limited = False
     orchestration_incomplete = False
     root_state = (_json_object(root.plan_json).get("react_state") or {})
@@ -166,6 +179,14 @@ def run_deep_research_v2(
         if finalization_limited:
             break
         parent_node = frontier.popleft()
+        planning_status = _json_object(parent_node.metadata_json).get(
+            "branch_planning_status", "pending"
+        )
+        if planning_status == "completed":
+            continue
+        if planning_status == "failed":
+            orchestration_incomplete = True
+            break
         if store.is_agent_run_cancelled(db, run_id):
             update_scope_status(db, scope.scope_id, "cancelled")
             cancelled = store.get_fresh_agent_run(db, run_id)
@@ -197,6 +218,7 @@ def run_deep_research_v2(
             finalization_limited = True
             break
         if branch_plan.get("planner_failed"):
+            update_node_metadata(db, parent_node, branch_planning_status="failed")
             orchestration_incomplete = True
             record_trace_event(
                 db,
@@ -212,6 +234,7 @@ def run_deep_research_v2(
             break
         branches = list(branch_plan.get("branches") or [])
         if not branches and not branch_plan.get("is_comprehensive"):
+            update_node_metadata(db, parent_node, branch_planning_status="failed")
             orchestration_incomplete = True
             record_trace_event(
                 db,
@@ -240,6 +263,7 @@ def run_deep_research_v2(
                     error_message="Research depth boundary reached before completeness.",
                 )
                 break
+            update_node_metadata(db, parent_node, branch_planning_status="completed")
             continue
         for branch in branches:
             runtime = current_budget()
@@ -288,6 +312,7 @@ def run_deep_research_v2(
             if child_state.get("finish_reason") == "finalization_reserve_handoff":
                 finalization_limited = True
                 break
+        update_node_metadata(db, parent_node, branch_planning_status="completed")
         if orchestration_incomplete:
             break
         if finalization_limited:

@@ -17,6 +17,22 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    connection = op.get_bind()
+    connection.execute(
+        sa.text(
+            "UPDATE agent_runs SET research_scope_id = NULL "
+            "WHERE research_scope_id IS NOT NULL AND research_scope_id NOT IN "
+            "(SELECT scope_id FROM research_scopes)"
+        )
+    )
+    with op.batch_alter_table("agent_runs") as batch:
+        batch.create_foreign_key(
+            "fk_agent_runs_research_scope_id",
+            "research_scopes",
+            ["research_scope_id"],
+            ["scope_id"],
+            ondelete="SET NULL",
+        )
     op.add_column(
         "improvement_logs",
         sa.Column(
@@ -297,3 +313,7 @@ def downgrade() -> None:
     )
     op.drop_table("scope_reasoning_runs")
     op.drop_column("improvement_logs", "evaluation_metadata_json")
+    with op.batch_alter_table("agent_runs") as batch:
+        batch.drop_constraint(
+            "fk_agent_runs_research_scope_id", type_="foreignkey"
+        )

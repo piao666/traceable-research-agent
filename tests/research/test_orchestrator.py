@@ -9,7 +9,11 @@ from app.evidence.service import materialize_execution_provenance
 from app.evidence.scope_service import get_scope_provenance_bundle
 from app.research.node_executor import ResearchNodeExecutor
 from app.research.orchestrator import run_deep_research_v2
-from app.research.scope import resolve_research_scope
+from app.research.scope import (
+    create_research_node,
+    create_research_scope,
+    resolve_research_scope,
+)
 from app.trace import store
 
 from .conftest import add_web_trace, create_root
@@ -44,6 +48,8 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
             traces,
             settings,
         )
+        if run.run_role == "root":
+            return {"run_id": run_id, "status": "running"}
         store.update_agent_run_status(session, run_id, "completed", None)
         return {"run_id": run_id, "status": "completed"}
 
@@ -68,6 +74,7 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
     captured = {}
 
     def report_generator(_run, _plan, _observations, _traces, **kwargs):
+        assert store.get_fresh_agent_run(db, root.run_id).status == "running"
         captured["report_model"] = kwargs["llm_client"].describe()["model"]
         bundle = kwargs["provenance_bundle"]
         captured["bundle"] = bundle
@@ -129,8 +136,7 @@ def test_report_budget_failure_marks_root_and_scope_failed(db, r12_settings):
             traces,
             settings,
         )
-        store.update_agent_run_status(session, run_id, "completed", None)
-        return {"run_id": run_id, "status": "completed"}
+        return {"run_id": run_id, "status": "running"}
 
     def fail_report(*_args, **_kwargs):
         raise BudgetExceeded("tokens")
@@ -151,3 +157,65 @@ def test_report_budget_failure_marks_root_and_scope_failed(db, r12_settings):
     scope = resolve_research_scope(db, root.run_id)
     assert result["status"] == "failed"
     assert scope.status == "failed"
+
+
+def test_orchestrator_resume_skips_completed_branch_planning(db, r12_settings):
+    root = create_root(db)
+    scope = create_research_scope(db, root.run_id, {})
+    root_node = create_research_node(
+        db,
+        scope.scope_id,
+        parent_node_id=None,
+        run_id=root.run_id,
+        node_type="discovery",
+        topic="root",
+        query="root query",
+        research_goal="root",
+        depth=0,
+        priority=0,
+        status="completed",
+        metadata={"required": True, "branch_planning_status": "completed"},
+    )
+    child_run = store.create_agent_run(
+        db,
+        "child query",
+        "summary",
+        "real",
+        parent_run_id=root.run_id,
+        root_run_id=root.run_id,
+        run_role="research_branch",
+        research_scope_id=scope.scope_id,
+        engine_version="v2",
+    )
+    store.update_agent_run_status(db, child_run.run_id, "completed", None)
+    create_research_node(
+        db,
+        scope.scope_id,
+        parent_node_id=root_node.node_id,
+        run_id=child_run.run_id,
+        node_type="web_research",
+        topic="child",
+        query="child query",
+        research_goal="child",
+        depth=1,
+        priority=1,
+        status="completed",
+    )
+    planner_tasks = []
+
+    def planner(_client, **kwargs):
+        planner_tasks.append(kwargs["task"])
+        assert set(kwargs["prior_queries"]) == {"root query", "child query"}
+        return {"branches": [], "is_comprehensive": False, "finalization_limited": True}
+
+    with patch("app.research.orchestrator.run_react_task") as root_runner:
+        run_deep_research_v2(
+            db,
+            root.run_id,
+            r12_settings,
+            FakeReActLLMClient([]),
+            branch_planner=planner,
+        )
+
+    root_runner.assert_not_called()
+    assert planner_tasks == ["child query"]

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -120,6 +122,17 @@ def create_research_node(
     status: str = "pending",
     metadata: dict[str, Any] | None = None,
 ) -> ResearchNode:
+    normalized_query = normalize_research_query(query)
+    siblings = db.scalars(
+        select(ResearchNode).where(
+            ResearchNode.scope_id == scope_id,
+            ResearchNode.parent_node_id == parent_node_id,
+        )
+    ).all()
+    for sibling in siblings:
+        if normalize_research_query(sibling.query) == normalized_query:
+            return sibling
+    node_metadata = {"branch_planning_status": "pending", **(metadata or {})}
     node = ResearchNode(
         node_id=f"node_{uuid4().hex}",
         scope_id=scope_id,
@@ -132,9 +145,32 @@ def create_research_node(
         depth=max(0, int(depth)),
         priority=max(0, int(priority)),
         status=status,
-        metadata_json=json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True, default=str),
+        metadata_json=json.dumps(node_metadata, ensure_ascii=False, sort_keys=True, default=str),
     )
     db.add(node)
+    db.commit()
+    db.refresh(node)
+    return node
+
+
+def normalize_research_query(query: str) -> str:
+    """Normalize a query for sibling-node identity checks."""
+
+    normalized = unicodedata.normalize("NFKC", str(query or "")).lower().strip()
+    return re.sub(r"\s+", " ", normalized)
+
+
+def update_node_metadata(
+    db: Session,
+    node: ResearchNode,
+    **updates: Any,
+) -> ResearchNode:
+    metadata = _json_object(node.metadata_json)
+    metadata.update(updates)
+    node.metadata_json = json.dumps(
+        metadata, ensure_ascii=False, sort_keys=True, default=str
+    )
+    node.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(node)
     return node

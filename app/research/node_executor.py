@@ -40,58 +40,83 @@ class ResearchNodeExecutor:
         root = store.get_agent_run(db, scope.root_run_id)
         if root is None:
             raise ValueError("Research root run not found")
+        child = store.get_agent_run(db, node.run_id) if node.run_id else None
+        if child is not None and child.status in {
+            "completed",
+            "waiting_human",
+            "waiting_human_plan",
+            "failed",
+            "cancelled",
+        }:
+            node.status = child.status
+            node.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            return {
+                "node_id": node.node_id,
+                "run_id": child.run_id,
+                "status": child.status,
+            }
         parent_run_id = _parent_run_id(db, node) or scope.root_run_id
         parent = store.get_agent_run(db, parent_run_id) or root
         parent_plan = bind_run_policy(parent, _json_object(parent.plan_json))
         inherited_tools = allowed_tool_names(parent_plan)
-        child = store.create_agent_run(
-            db,
-            task=node.query,
-            report_type=root.report_type,
-            source_mode=root.source_mode,
-            allowed_tools=inherited_tools,
-            session_id=None,
-            run_config_snapshot=root.run_config_snapshot,
-            parent_run_id=parent_run_id,
-            root_run_id=scope.root_run_id,
-            run_role=_run_role(node.node_type),
-            research_scope_id=scope.scope_id,
-            engine_version=scope.engine_version,
-        )
-        node.run_id = child.run_id
-        node.status = "running"
-        node.updated_at = datetime.now(timezone.utc)
-        db.commit()
-        child_plan = {
-            "version": "research-node-v2",
-            "task": node.query,
-            "execution_mode": "react",
-            "requested_execution_mode": "react",
-            "source_mode": root.source_mode,
-            "allowed_tools": inherited_tools,
-            "task_contract": parent_plan.get("task_contract"),
-            "research_scope_id": scope.scope_id,
-            "research_node_id": node.node_id,
-            "parent_run_id": parent_run_id,
-            "root_run_id": scope.root_run_id,
-            "run_role": child.run_role,
-            "engine_version": scope.engine_version,
-            "defer_to_research_scope": True,
-            "steps": [],
-            "notes": ["Executed by Deep Research Engine V2 ResearchNodeExecutor."],
-        }
-        ensure_budget(db, child.run_id, settings, parent_run_id=parent_run_id)
-        store.update_agent_run_plan(db, child.run_id, child_plan)
-        record_trace_event(
-            db,
-            scope.root_run_id,
-            0,
-            "research_node_dispatch",
-            "success",
-            {"node_id": node.node_id},
-            "Research branch dispatched with explicit lineage.",
-            {"node_id": node.node_id, "child_run_id": child.run_id, "parent_run_id": parent_run_id},
-        )
+        if child is None:
+            child = store.create_agent_run(
+                db,
+                task=node.query,
+                report_type=root.report_type,
+                source_mode=root.source_mode,
+                allowed_tools=inherited_tools,
+                session_id=None,
+                run_config_snapshot=root.run_config_snapshot,
+                parent_run_id=parent_run_id,
+                root_run_id=scope.root_run_id,
+                run_role=_run_role(node.node_type),
+                research_scope_id=scope.scope_id,
+                engine_version=scope.engine_version,
+            )
+            node.run_id = child.run_id
+            node.status = "running"
+            node.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            child_plan = {
+                "version": "research-node-v2",
+                "task": node.query,
+                "execution_mode": "react",
+                "requested_execution_mode": "react",
+                "source_mode": root.source_mode,
+                "allowed_tools": inherited_tools,
+                "task_contract": parent_plan.get("task_contract"),
+                "research_scope_id": scope.scope_id,
+                "research_node_id": node.node_id,
+                "parent_run_id": parent_run_id,
+                "root_run_id": scope.root_run_id,
+                "run_role": child.run_role,
+                "engine_version": scope.engine_version,
+                "defer_to_research_scope": True,
+                "steps": [],
+                "notes": ["Executed by Deep Research Engine V2 ResearchNodeExecutor."],
+            }
+            ensure_budget(db, child.run_id, settings, parent_run_id=parent_run_id)
+            store.update_agent_run_plan(db, child.run_id, child_plan)
+            record_trace_event(
+                db,
+                scope.root_run_id,
+                0,
+                "research_node_dispatch",
+                "success",
+                {"node_id": node.node_id},
+                "Research branch dispatched with explicit lineage.",
+                {
+                    "node_id": node.node_id,
+                    "child_run_id": child.run_id,
+                    "parent_run_id": parent_run_id,
+                },
+            )
+        else:
+            node.status = "running"
+            node.updated_at = datetime.now(timezone.utc)
+            db.commit()
         try:
             result = self.runner(db, child.run_id, settings, llm_client)
         except BudgetExceeded:

@@ -69,6 +69,12 @@ class AgentRun(Base):
     run_role: Mapped[str] = mapped_column(String(32), nullable=False, default="root", index=True)
     research_scope_id: Mapped[str | None] = mapped_column(
         String(64),
+        ForeignKey(
+            "research_scopes.scope_id",
+            name="fk_agent_runs_research_scope_id",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
         nullable=True,
         index=True,
     )

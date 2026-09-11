@@ -25,8 +25,36 @@ def test_react_node_finalization_materializes_without_intermediate_report(db, r1
             db, root.run_id, plan, state, "node_complete", r12_settings
         )
     report.assert_not_called()
-    assert result["status"] == "completed"
+    assert result["status"] == "running"
     assert store.get_agent_run(db, root.run_id).report_path is None
+
+
+def test_child_node_finalization_completes_child_run(db, r12_settings):
+    root = create_root(db)
+    scope = create_research_scope(db, root.run_id, {})
+    child = store.create_agent_run(
+        db,
+        "child",
+        "summary",
+        "real",
+        parent_run_id=root.run_id,
+        root_run_id=root.run_id,
+        run_role="research_branch",
+        research_scope_id=scope.scope_id,
+        engine_version="v2",
+    )
+    plan = json.loads(child.plan_json or "{}")
+    plan["defer_to_research_scope"] = True
+    state = {"observation_history": [], "max_steps": 1, "step_limit": 1, "step_offset": 0}
+    store.replace_agent_run_plan(db, child.run_id, plan)
+    store.update_agent_run_status(db, child.run_id, "running", None)
+    add_web_trace(db, child.run_id, "Deferred child evidence.", "child")
+
+    result = _complete_report(
+        db, child.run_id, plan, state, "node_complete", r12_settings
+    )
+
+    assert result["status"] == "completed"
 
 
 def test_child_finalization_boundary_does_not_poison_root_budget(db, r12_settings):

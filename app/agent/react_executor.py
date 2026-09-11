@@ -502,6 +502,16 @@ def _complete_report(
             traces,
             settings_obj,
         )
+        if run.run_role == "root":
+            # Root discovery is a completed ResearchNode, not a completed
+            # AgentRun.  The orchestrator owns the root's sole terminal
+            # transition after scope evaluation and report persistence.
+            run = store.get_fresh_agent_run(db, run_id)
+            return _summary(
+                run,
+                plan,
+                "Root discovery completed; Scope finalization is deferred.",
+            )
         run = store.update_agent_run_status(db, run_id, "completed", None)
         return _summary(run, plan, "Research node completed; Scope finalization is deferred.")
     if not enforce_research_outcome(db, run, plan, observations, traces, settings_obj):
