@@ -65,6 +65,85 @@ class Phase7DatabaseTestCase(unittest.TestCase):
         self.engine.dispose()
 
 
+class BoundedProvenanceContextTests(unittest.TestCase):
+    def test_default_evidence_budget_is_seventy_percent_of_report_reserve(self) -> None:
+        from app.agent.budget import final_report_evidence_token_budget
+
+        self.assertEqual(final_report_evidence_token_budget(), 5600)
+
+    def test_context_contains_only_complete_json_claim_units(self) -> None:
+        from app.agent.budget import estimate_text_tokens
+        from app.agent.reporter import build_bounded_provenance_context
+
+        bundle = {
+            "schema_version": "fixture",
+            "claims": [
+                {"claim_id": "claim-1", "claim_text": "first", "research_node_id": "node-1"},
+                {"claim_id": "claim-2", "claim_text": "second", "research_node_id": "node-2"},
+            ],
+            "report_claims": [
+                {"report_claim_id": "report-1", "claim_id": "claim-1", "claim_text": "first"},
+                {"report_claim_id": "report-2", "claim_id": "claim-2", "claim_text": "second"},
+            ],
+            "passages": [
+                {"passage_id": "passage-1", "text": "A" * 2000, "research_node_id": "node-1"},
+                {"passage_id": "passage-2", "text": "B" * 2000, "research_node_id": "node-2"},
+            ],
+            "citations": [
+                {"report_claim_id": "report-1", "passage_id": "passage-1", "citation_label": "CIT-001-01"},
+                {"report_claim_id": "report-2", "passage_id": "passage-2", "citation_label": "CIT-002-01"},
+            ],
+        }
+
+        context = build_bounded_provenance_context(bundle, token_budget=600)
+        payload = json.loads(context)
+
+        self.assertLessEqual(estimate_text_tokens(context), 600)
+        self.assertTrue(payload["claims"])
+        self.assertTrue(all(item["citations"] for item in payload["claims"]))
+        self.assertTrue(all(
+            len(item["citations"][0]["text"]) <= 1200
+            for item in payload["claims"]
+        ))
+
+    def test_context_selects_highest_quality_citation_for_claim_group(self) -> None:
+        from app.agent.reporter import build_bounded_provenance_context
+
+        bundle = {
+            "claims": [{"claim_id": "claim-1", "claim_text": "claim", "research_node_id": "node"}],
+            "report_claims": [{"report_claim_id": "report-1", "claim_id": "claim-1"}],
+            "passages": [
+                {"passage_id": "low", "text": "low", "research_node_id": "node"},
+                {"passage_id": "high", "text": "high", "research_node_id": "node"},
+            ],
+            "citations": [
+                {"report_claim_id": "report-1", "passage_id": "low", "citation_label": "CIT-001-01"},
+                {"report_claim_id": "report-1", "passage_id": "high", "citation_label": "CIT-001-02"},
+            ],
+            "scope_claim_groups": [{
+                "group_id": "group-1",
+                "representative_claim_text": "claim",
+                "members": [{"claim_id": "claim-1", "origin_run_id": "run"}],
+            }],
+            "scope_resolutions": [{
+                "group_id": "group-1",
+                "status": "resolved",
+                "confidence": 0.9,
+                "rationale": {"relations": [
+                    {"passage_id": "low", "score": 0.2},
+                    {"passage_id": "high", "score": 0.95},
+                ]},
+            }],
+        }
+
+        payload = json.loads(build_bounded_provenance_context(bundle, 1000))
+
+        self.assertEqual(
+            payload["claims"][0]["citations"][0]["citation_id"],
+            "CIT-001-02",
+        )
+
+
 class PlanApprovalTests(Phase7DatabaseTestCase):
     @staticmethod
     def _plan() -> dict:

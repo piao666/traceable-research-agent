@@ -26,7 +26,11 @@ from app.agent.evidence import (
     _evidence_records as canonical_evidence_records,
 )
 from app.security.redaction import redact_text
-from app.agent.budget import report_budget
+from app.agent.budget import (
+    estimate_text_tokens,
+    final_report_evidence_token_budget,
+    report_budget,
+)
 
 
 # ── Phase 3: Sub-query grouping ───────────────────────────────────────
@@ -754,7 +758,10 @@ def _llm_synthesize_answer(
     if not has_useful_evidence(observations):
         return None
     evidence = (
-        _provenance_llm_context(provenance_bundle)
+        build_bounded_provenance_context(
+            provenance_bundle,
+            final_report_evidence_token_budget(),
+        )
         if provenance_bundle
         else compress_evidence(observations, max_total_chars=5000)
     )
@@ -825,43 +832,232 @@ def _llm_synthesize_answer(
     return None
 
 
-def _provenance_llm_context(bundle: dict[str, Any]) -> str:
+def build_bounded_provenance_context(
+    bundle: dict,
+    token_budget: int,
+) -> str:
+    """Select complete claim units fairly across Scope research nodes."""
+
     passages = {item["passage_id"]: item for item in bundle.get("passages") or []}
     report_claims = {
         item["report_claim_id"]: item for item in bundle.get("report_claims") or []
     }
-    resolutions = {
+    claim_resolutions = {
         item["claim_id"]: item for item in bundle.get("resolutions") or []
     }
-    grouped: dict[str, list[dict[str, Any]]] = {}
+    scope_resolutions = {
+        item["group_id"]: item for item in bundle.get("scope_resolutions") or []
+    }
+    claims = {item["claim_id"]: item for item in bundle.get("claims") or []}
+    report_claims_by_claim: dict[str, list[dict[str, Any]]] = {}
+    for report_claim in report_claims.values():
+        report_claims_by_claim.setdefault(
+            str(report_claim.get("claim_id") or ""), []
+        ).append(report_claim)
+    citations_by_report_claim: dict[str, list[dict[str, Any]]] = {}
     for citation in bundle.get("citations") or []:
-        claim = report_claims.get(citation.get("report_claim_id"))
-        passage = passages.get(citation.get("passage_id"))
-        if not claim or not passage:
-            continue
-        grouped.setdefault(claim["report_claim_id"], []).append(
+        citations_by_report_claim.setdefault(
+            str(citation.get("report_claim_id") or ""), []
+        ).append(citation)
+
+    quality_by_passage: dict[str, float] = {}
+    for resolution in bundle.get("scope_resolutions") or []:
+        for relation in (resolution.get("rationale") or {}).get("relations") or []:
+            passage_id = str(relation.get("passage_id") or "")
+            quality_by_passage[passage_id] = max(
+                quality_by_passage.get(passage_id, 0.0),
+                _float_value(relation.get("score")),
+            )
+    assertions_by_id = {
+        str(item.get("assertion_id") or ""): item
+        for item in bundle.get("assertions") or []
+    }
+    scores_by_edge = {
+        str(item.get("edge_id") or ""): _float_value(item.get("total_score"))
+        for item in bundle.get("reliability_scores") or []
+    }
+    for edge in bundle.get("edges") or []:
+        assertion = assertions_by_id.get(str(edge.get("assertion_id") or "")) or {}
+        passage_id = str(assertion.get("passage_id") or "")
+        quality_by_passage[passage_id] = max(
+            quality_by_passage.get(passage_id, 0.0),
+            scores_by_edge.get(str(edge.get("edge_id") or ""), 0.0),
+        )
+
+    groups = list(bundle.get("scope_claim_groups") or [])
+    if not groups:
+        groups = [
             {
-                "citation_id": citation.get("citation_label"),
-                "passage_id": passage.get("passage_id"),
-                "text": str(passage.get("text") or "")[:1200],
-                "locator": passage.get("locator"),
-                "trace_id": passage.get("trace_id"),
+                "group_id": f"report:{report_claim_id}",
+                "representative_claim_text": report_claim.get("claim_text"),
+                "members": [{
+                    "claim_id": report_claim.get("claim_id"),
+                    "origin_run_id": report_claim.get("origin_run_id"),
+                }],
+            }
+            for report_claim_id, report_claim in report_claims.items()
+        ]
+
+    candidates: list[dict[str, Any]] = []
+    for group in groups:
+        resolution = scope_resolutions.get(str(group.get("group_id") or "")) or {}
+        members = list(group.get("members") or [])
+        citation_options: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+        origin_run_ids: list[str] = []
+        research_node_ids: list[str] = []
+        for member in members:
+            claim_id = str(member.get("claim_id") or "")
+            claim = claims.get(claim_id) or {}
+            origin_run_id = str(
+                member.get("origin_run_id") or claim.get("origin_run_id") or ""
+            )
+            if origin_run_id and origin_run_id not in origin_run_ids:
+                origin_run_ids.append(origin_run_id)
+            node_id = str(claim.get("research_node_id") or "")
+            if node_id and node_id not in research_node_ids:
+                research_node_ids.append(node_id)
+            for report_claim in report_claims_by_claim.get(claim_id, []):
+                for citation in citations_by_report_claim.get(
+                    str(report_claim.get("report_claim_id") or ""), []
+                ):
+                    passage = passages.get(str(citation.get("passage_id") or ""))
+                    if not passage:
+                        continue
+                    passage_node_id = str(
+                        passage.get("research_node_id")
+                        or citation.get("research_node_id")
+                        or ""
+                    )
+                    if passage_node_id and passage_node_id not in research_node_ids:
+                        research_node_ids.append(passage_node_id)
+                    citation_options.append(
+                        (
+                            quality_by_passage.get(
+                                str(passage.get("passage_id") or ""), 0.0
+                            ),
+                            citation,
+                            passage,
+                        )
+                    )
+        if not citation_options:
+            continue
+        citation_options.sort(
+            key=lambda item: (
+                -item[0],
+                str(item[1].get("citation_label") or ""),
+                str(item[2].get("passage_id") or ""),
+            )
+        )
+        selected_options: list[tuple[float, dict[str, Any], dict[str, Any]]] = []
+        covered_nodes: set[str] = set()
+        for option in citation_options:
+            _, option_citation, option_passage = option
+            option_node = str(
+                option_passage.get("research_node_id")
+                or option_citation.get("research_node_id")
+                or "unassigned"
+            )
+            if option_node in covered_nodes:
+                continue
+            covered_nodes.add(option_node)
+            selected_options.append(option)
+        quality, citation, passage = selected_options[0]
+        primary_node_id = str(
+            passage.get("research_node_id")
+            or citation.get("research_node_id")
+            or (research_node_ids[0] if research_node_ids else "")
+        )
+        first_claim_id = str(members[0].get("claim_id") or "") if members else ""
+        status = str(
+            resolution.get("status")
+            or (claim_resolutions.get(first_claim_id) or {}).get("status")
+            or "unknown"
+        )
+        candidates.append(
+            {
+                "unit": {
+                    "claim": group.get("representative_claim_text"),
+                    "conflict_status": status,
+                    "confidence": _float_value(
+                        resolution.get("confidence")
+                        if resolution
+                        else (claim_resolutions.get(first_claim_id) or {}).get(
+                            "confidence"
+                        )
+                    ),
+                    "origin_run_ids": origin_run_ids,
+                    "research_node_ids": research_node_ids,
+                    "citations": [
+                        {
+                            "citation_id": selected_citation.get("citation_label"),
+                            "passage_id": selected_passage.get("passage_id"),
+                            "text": str(selected_passage.get("text") or "")[:1200],
+                            "locator": selected_passage.get("locator") or {},
+                            "origin_run_id": selected_citation.get("origin_run_id")
+                            or selected_passage.get("origin_run_id"),
+                            "origin_trace_id": selected_citation.get("origin_trace_id")
+                            or selected_passage.get("origin_trace_id")
+                            or selected_passage.get("trace_id"),
+                        }
+                        for _, selected_citation, selected_passage in selected_options
+                    ],
+                },
+                "node_id": primary_node_id or "unassigned",
+                "conflict_priority": 0
+                if status in {"unresolved", "requires_human"}
+                else 1,
+                "quality": quality,
+                "group_id": str(group.get("group_id") or ""),
             }
         )
-    payload = {
-        "schema_version": bundle.get("schema_version"),
-        "claims": [
-            {
-                "claim": claim.get("claim_text"),
-                "conflict_status": (resolutions.get(claim.get("claim_id")) or {}).get("status"),
-                "confidence": (resolutions.get(claim.get("claim_id")) or {}).get("confidence"),
-                "citations": grouped.get(claim_id, []),
-            }
-            for claim_id, claim in report_claims.items()
-            if grouped.get(claim_id)
-        ],
-    }
-    return json.dumps(payload, ensure_ascii=False, default=str)[:7000]
+
+    by_node: dict[str, list[dict[str, Any]]] = {}
+    for candidate in candidates:
+        by_node.setdefault(candidate["node_id"], []).append(candidate)
+    for node_candidates in by_node.values():
+        node_candidates.sort(
+            key=lambda item: (
+                item["conflict_priority"],
+                -item["quality"],
+                item["group_id"],
+            )
+        )
+    ordered: list[dict[str, Any]] = []
+    node_order = sorted(
+        by_node,
+        key=lambda node_id: (
+            by_node[node_id][0]["conflict_priority"],
+            -by_node[node_id][0]["quality"],
+        ),
+    )
+    for node_id in node_order:
+        if by_node[node_id]:
+            ordered.append(by_node[node_id].pop(0))
+    remaining = [item for items in by_node.values() for item in items]
+    remaining.sort(
+        key=lambda item: (
+            item["conflict_priority"],
+            -item["quality"],
+            item["group_id"],
+        )
+    )
+    ordered.extend(remaining)
+
+    payload = {"schema_version": bundle.get("schema_version"), "claims": []}
+    budget = max(1, int(token_budget))
+    for candidate in ordered:
+        proposed = {**payload, "claims": [*payload["claims"], candidate["unit"]]}
+        serialized = json.dumps(proposed, ensure_ascii=False, default=str)
+        if estimate_text_tokens(serialized) <= budget:
+            payload = proposed
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _float_value(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _valid_synthesis_citations(content: str, bundle: dict[str, Any]) -> bool:

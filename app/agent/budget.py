@@ -172,6 +172,16 @@ def current_budget():
     return _active.get()
 
 
+def final_report_evidence_token_budget() -> int:
+    """Return the fixed evidence share of the protected final-report budget."""
+
+    runtime = current_budget()
+    final_report_tokens = int(
+        runtime.limits.get("final_report_tokens", 8000) if runtime is not None else 8000
+    )
+    return min(12000, int(final_report_tokens * 0.7))
+
+
 def reserve_tool(name):
     runtime = current_budget()
     if runtime is not None:

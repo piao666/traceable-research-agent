@@ -4,6 +4,7 @@ from unittest.mock import patch
 from app.agent.outcome import load_observations
 from app.agent.outcome import result_integrity
 from app.agent.budget import BudgetExceeded
+from app.agent.reporter import build_bounded_provenance_context
 from app.eval.fake_react_llm import FakeReActLLMClient
 from app.evidence.service import materialize_execution_provenance
 from app.evidence.scope_service import get_scope_provenance_bundle
@@ -219,3 +220,70 @@ def test_orchestrator_resume_skips_completed_branch_planning(db, r12_settings):
 
     root_runner.assert_not_called()
     assert planner_tasks == ["child query"]
+
+
+def test_bounded_scope_context_round_robins_sparse_child_evidence():
+    bundle = {
+        "schema_version": "research-scope-evidence-v2",
+        "claims": [],
+        "report_claims": [],
+        "passages": [],
+        "citations": [],
+        "scope_claim_groups": [],
+        "scope_resolutions": [],
+    }
+
+    def add_claim(index, node_id, run_id, text, score):
+        claim_id = f"claim-{index}"
+        report_claim_id = f"report-{index}"
+        passage_id = f"passage-{index}"
+        group_id = f"group-{index}"
+        bundle["claims"].append({
+            "claim_id": claim_id,
+            "claim_text": text,
+            "origin_run_id": run_id,
+            "research_node_id": node_id,
+        })
+        bundle["report_claims"].append({
+            "report_claim_id": report_claim_id,
+            "claim_id": claim_id,
+            "claim_text": text,
+        })
+        bundle["passages"].append({
+            "passage_id": passage_id,
+            "text": text + " evidence " + ("x" * 700),
+            "origin_run_id": run_id,
+            "research_node_id": node_id,
+            "origin_trace_id": f"trace-{index}",
+        })
+        bundle["citations"].append({
+            "report_claim_id": report_claim_id,
+            "passage_id": passage_id,
+            "citation_label": f"CIT-{index:03d}-01",
+            "origin_run_id": run_id,
+        })
+        bundle["scope_claim_groups"].append({
+            "group_id": group_id,
+            "representative_claim_text": text,
+            "members": [{"claim_id": claim_id, "origin_run_id": run_id}],
+        })
+        bundle["scope_resolutions"].append({
+            "group_id": group_id,
+            "status": "resolved",
+            "confidence": score,
+            "rationale": {"relations": [{"passage_id": passage_id, "score": score}]},
+        })
+
+    for index in range(1, 7):
+        add_claim(index, "root-node", "root-run", f"root claim {index}", 0.9)
+    for index in range(7, 13):
+        add_claim(index, "child-a-node", "child-a-run", f"child A claim {index}", 0.8)
+    add_claim(13, "child-b-node", "child-b-run", "sparse high value child B", 0.99)
+
+    payload = json.loads(build_bounded_provenance_context(bundle, token_budget=900))
+
+    assert any(
+        "child-b-node" in claim["research_node_ids"]
+        and claim["citations"][0]["passage_id"] == "passage-13"
+        for claim in payload["claims"]
+    )
