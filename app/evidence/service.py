@@ -33,7 +33,7 @@ from app.evidence.normalizers import (
     source_organization,
     source_provider,
 )
-from app.evidence.policy import classify_tier, load_source_policy
+from app.evidence.policy import classify_evidence_role, classify_tier, load_source_policy
 from app.evidence.reasoning_service import get_reasoning_bundle, materialize_reasoning
 from app.trace.models import AgentRun, ToolTrace
 
@@ -356,10 +356,18 @@ def _materialize_item(
         },
     }
     # ── Phase 8.1: tier classification ──────────────────────────
+    evidence_role = "unknown"
     try:
         tier_policy = load_source_policy(_svc_settings.source_policy_path)
         tier_result = classify_tier(item.source_type, canonical_uri, item.metadata, tier_policy)
+        evidence_role = classify_evidence_role(
+            item.source_type,
+            canonical_uri,
+            item.metadata,
+            tier_policy,
+        )
         metadata_doc["source_tier"] = tier_result.tier
+        metadata_doc["evidence_role"] = evidence_role
         metadata_doc["source_class"] = tier_result.source_class
         metadata_doc["classification_rule"] = tier_result.classification_rule
         metadata_doc["classification_confidence"] = tier_result.classification_confidence
@@ -368,6 +376,7 @@ def _materialize_item(
         metadata_doc["source_class"] = "unknown"
         metadata_doc["classification_rule"] = "error_fallback"
         metadata_doc["classification_confidence"] = 0.30
+        metadata_doc["evidence_role"] = evidence_role
 
     document = SourceDocument(
         document_id=document_id,
@@ -415,6 +424,7 @@ def _materialize_item(
                     )
                     if key in item.metadata
                 },
+                "evidence_role": evidence_role,
             }
         ),
     )
@@ -426,7 +436,7 @@ def _materialize_item(
         content_hash=passage_hash,
         text=passage_text,
         locator_json=_json_dump(passage_locator(item, trace_input)),
-        metadata_json=_json_dump(item.metadata),
+        metadata_json=_json_dump({**item.metadata, "evidence_role": evidence_role}),
         content_basis=_infer_content_basis(item),
     )
     assertion = EvidenceAssertion(

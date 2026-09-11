@@ -296,6 +296,9 @@ def materialize_scope_reasoning(
                         "relation": decision.relation,
                         "score": breakdown.total_score,
                         "source_class": breakdown.source_class,
+                        "evidence_role": _mapping(
+                            item["document"].get("metadata")
+                        ).get("evidence_role", "unknown"),
                         "scope_difference": decision.scope_difference,
                         "relation_rationale": decision.rationale,
                         "reliability": {

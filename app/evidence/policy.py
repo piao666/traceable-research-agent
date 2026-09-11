@@ -26,6 +26,14 @@ DIMENSIONS = (
 T0 = "T0"  # primary / original source
 T1 = "T1"  # institutional / authoritative secondary
 T2 = "T2"  # community / personal
+EVIDENCE_ROLES = {
+    "primary_content",
+    "official_metadata",
+    "discovery_index",
+    "secondary_analysis",
+    "community_content",
+    "unknown",
+}
 
 
 @dataclass(frozen=True)
@@ -230,6 +238,109 @@ def classify_source(
         return "news"
     if canonical_uri.startswith(("http://", "https://")):
         return "blog"
+    return "unknown"
+
+
+def classify_evidence_role(
+    source_type: str,
+    canonical_uri: str,
+    metadata: dict[str, Any],
+    policy: SourcePolicy,
+) -> str:
+    """Classify what a source can prove independently from its authority tier."""
+
+    explicit = str(metadata.get("evidence_role") or "").casefold()
+    if explicit in EVIDENCE_ROLES:
+        return explicit
+    normalized_type = source_type.casefold()
+    parsed = urlsplit(canonical_uri)
+    hostname = (parsed.hostname or "").casefold()
+    provider = str(metadata.get("provider") or metadata.get("data_source") or "").casefold()
+    academic_identity = " ".join((normalized_type, hostname, provider))
+    if "crossref" in academic_identity:
+        return "official_metadata"
+    if any(
+        marker in academic_identity
+        for marker in ("openalex", "semanticscholar", "semantic_scholar")
+    ):
+        return "discovery_index"
+
+    if (
+        hostname == "github.com"
+        or hostname.endswith(".github.com")
+        or "github" in normalized_type
+    ):
+        path_parts = [part.casefold() for part in parsed.path.split("/") if part]
+        if len(path_parts) >= 3 and path_parts[2] in {
+            "issues",
+            "discussions",
+            "pull",
+            "pulls",
+        }:
+            return "community_content"
+        org_repo = _github_org_repo(hostname, canonical_uri)
+        verified = bool(
+            org_repo
+            and any(
+                org_repo == normalized_path
+                or org_repo.startswith(f"{normalized_path}/")
+                for normalized_path in (
+                    value.lower()
+                    .removeprefix("https://")
+                    .removeprefix("http://")
+                    .removeprefix("github.com/")
+                    .strip("/")
+                    for value in policy.tier_hints.org_verified_official_repos
+                )
+            )
+        ) or metadata.get("verified_official_owner") is True
+        if verified:
+            content_path = "/".join(path_parts[2:])
+            immutable_ref = bool(
+                metadata.get("commit_sha")
+                or metadata.get("commit")
+                or (
+                    len(path_parts) >= 4
+                    and re.fullmatch(r"[0-9a-f]{7,40}", path_parts[3])
+                )
+            )
+            readme = any(part.startswith("readme") for part in path_parts[2:])
+            release = bool(path_parts[2:3] and path_parts[2] in {"release", "releases"})
+            repository_landing = len(path_parts) == 2
+            if (
+                repository_landing
+                or readme
+                or release
+                or immutable_ref
+                or content_path.startswith("commit/")
+            ):
+                return "primary_content"
+        return "secondary_analysis"
+
+    if hostname in {
+        "api.crossref.org",
+        "openalex.org",
+        "api.openalex.org",
+        "api.semanticscholar.org",
+    }:
+        return "discovery_index"
+    if hostname == "arxiv.org" and "/abs/" in parsed.path:
+        return "official_metadata"
+    if normalized_type in {"file", "internal", "sql", "pdf"}:
+        return "primary_content"
+    if metadata.get("official") is True or classify_source(
+        source_type, canonical_uri, metadata, policy
+    ) in {"regulatory", "governed_sql", "official", "official_code", "internal_document"}:
+        return "primary_content"
+    if any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in ("reddit.com", "zhihu.com", "stackoverflow.com")
+    ):
+        return "community_content"
+    if "search" in normalized_type and metadata.get("content_basis") == "snippet_only":
+        return "discovery_index"
+    if canonical_uri.startswith(("http://", "https://")):
+        return "secondary_analysis"
     return "unknown"
 
 

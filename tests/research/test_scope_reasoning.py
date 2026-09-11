@@ -155,6 +155,7 @@ def test_root_100_and_child_130_form_one_cross_run_conflict_group(db, r12_settin
     assert len(result["scope_claim_groups"][0]["members"]) == 2
     relations = result["scope_resolutions"][0]["rationale"]["relations"]
     assert {item["relation"] for item in relations} == {"supports", "refutes"}
+    assert {item["evidence_role"] for item in relations} == {"secondary_analysis"}
 
 
 def test_three_syndicated_domains_count_as_one_independent_support(db, r12_settings):

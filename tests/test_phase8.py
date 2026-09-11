@@ -6,6 +6,43 @@ import io
 import unittest
 from unittest.mock import patch
 
+from app.evidence.policy import classify_evidence_role, classify_tier, load_source_policy
+
+
+class GithubEvidenceRoleTests(unittest.TestCase):
+    def setUp(self):
+        self.policy = load_source_policy("config/source_policy.v2.json")
+
+    def test_verified_content_and_community_surfaces_have_distinct_roles(self):
+        cases = (
+            ("https://github.com/openai/codex", "primary_content", "T0"),
+            (
+                "https://github.com/openai/codex/blob/abcdef1/README.md",
+                "primary_content",
+                "T0",
+            ),
+            (
+                "https://github.com/openai/codex/issues/1",
+                "community_content",
+                "T2",
+            ),
+            (
+                "https://github.com/unknown/repository",
+                "secondary_analysis",
+                "T2",
+            ),
+        )
+        for uri, expected_role, expected_tier in cases:
+            with self.subTest(uri=uri):
+                self.assertEqual(
+                    classify_evidence_role("mcp_github_search", uri, {}, self.policy),
+                    expected_role,
+                )
+                self.assertEqual(
+                    classify_tier("mcp_github_search", uri, {}, self.policy).tier,
+                    expected_tier,
+                )
+
 
 # ── Helper: create valid PDF bytes using PyMuPDF ─────────────────────────
 

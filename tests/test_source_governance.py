@@ -56,15 +56,15 @@ class TierPriorityTests(unittest.TestCase):
             "verified_repo:github.com/example-org/verified-repo",
         )
 
-    def test_unverified_repo_uses_generic_github_tier(self) -> None:
+    def test_unverified_repo_uses_conservative_tier(self) -> None:
         result = classify_tier(
             "mcp_github_search",
             "https://github.com/example-user/example-repo",
             {},
             self.policy,
         )
-        self.assertEqual(result.tier, "T1")
-        self.assertEqual(result.classification_rule, "domain_table:github.com")
+        self.assertEqual(result.tier, "T2")
+        self.assertEqual(result.classification_rule, "default_conservative")
 
     def test_known_org_does_not_make_unverified_repo_official_code(self) -> None:
         from app.evidence.policy import classify_source
@@ -101,7 +101,7 @@ class TierPriorityTests(unittest.TestCase):
                 self.policy,
             )
             with self.subTest(section=section):
-                self.assertEqual(result.tier, "T1")
+                self.assertEqual(result.tier, "T2")
 
     def test_user_content_hosts_do_not_inherit_official_tier(self) -> None:
         for uri in ("https://chatgpt.com/share/example", "https://claude.com/share/example"):

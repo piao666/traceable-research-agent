@@ -19,6 +19,7 @@ from app.database import Base
 from app.evidence.artifact_store import ArtifactStore
 from app.evidence.policy import (
     classify_claim,
+    classify_evidence_role,
     classify_source,
     load_source_policy,
     score_reliability,
@@ -55,6 +56,27 @@ class SourcePolicyTests(unittest.TestCase):
             classify_source("web", "https://example.net/blog", {}, self.policy),
             "blog",
         )
+
+    def test_academic_metadata_authority_does_not_become_primary_content(self) -> None:
+        cases = (
+            (
+                "crossref_search",
+                "https://api.crossref.org/works/10.1/test",
+                "official_metadata",
+            ),
+            ("openalex_search", "https://api.openalex.org/works/W1", "discovery_index"),
+            (
+                "semantic_scholar_search",
+                "https://api.semanticscholar.org/graph/v1/paper/1",
+                "discovery_index",
+            ),
+        )
+        for source_type, uri, expected_role in cases:
+            with self.subTest(source_type=source_type):
+                self.assertEqual(
+                    classify_evidence_role(source_type, uri, {}, self.policy),
+                    expected_role,
+                )
 
     def test_invalid_policy_fails_during_settings_validation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -454,6 +476,13 @@ class ReasoningPersistenceTests(unittest.TestCase):
         )
         self.assertEqual(reasoning_run_count, 2)
         self.assertEqual({edge["relation"] for edge in payload["edges"]}, {"supports", "refutes"})
+        self.assertEqual(
+            {
+                document["metadata"]["evidence_role"]
+                for document in payload["source_documents"]
+            },
+            {"primary_content", "secondary_analysis"},
+        )
         resolution = first["resolutions"][0]
         self.assertEqual(resolution["status"], "resolved_by_authority")
         self.assertFalse(resolution["rationale"]["quality_gate"]["passed"])
