@@ -29,6 +29,7 @@ from app.evidence.models import (
     SourceSnapshot,
 )
 from app.evidence.reasoning_service import get_claim_evidence_audit
+from app.research import models as research_models  # noqa: F401
 from app.trace.models import AgentRun, ToolTrace
 
 

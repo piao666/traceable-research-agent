@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+SMOKE_DATABASE_DIRECTORY = TemporaryDirectory(prefix="evidence-export-smoke-")
+os.environ["TRACE_DATABASE_PATH"] = str(
+    Path(SMOKE_DATABASE_DIRECTORY.name) / "evidence-export.sqlite"
+)
+
 from fastapi.testclient import TestClient
 
 from app.agent.executor import run_plan
+from app.agent.outcome import load_observations
 from app.config import settings
 from app.database import SessionLocal, init_db
+from app.evidence.service import materialize_execution_provenance
 from app.main import app
 from app.tools.base import ToolResult
 from app.tools.defaults import register_default_tools
@@ -27,6 +36,19 @@ from scripts.init_demo_db import init_demo_db
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def _document_metadata(document: dict[str, Any]) -> dict[str, Any]:
+    metadata = document.get("metadata") or {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _has_document_marker(bundle: dict[str, Any], marker: str) -> bool:
+    return any(
+        bool(_document_metadata(document).get(marker))
+        for document in bundle.get("source_documents") or []
+        if isinstance(document, dict)
+    )
 
 
 def prepare_runtime() -> None:
@@ -122,6 +144,18 @@ def create_run(db, plan: dict[str, Any]):
     return run
 
 
+def materialize_run(db, run, plan: dict[str, Any]) -> dict[str, Any]:
+    traces = store.list_tool_traces(db, run.run_id)
+    return materialize_execution_provenance(
+        db,
+        run,
+        plan,
+        load_observations(traces),
+        traces,
+        settings,
+    ) or {}
+
+
 def _get_evidence(client: TestClient, run_id: str) -> dict[str, Any]:
     response = client.get(f"/api/tasks/{run_id}/evidence")
     assert_true(response.status_code == 200, f"evidence endpoint failed: {response.status_code}")
@@ -167,6 +201,7 @@ def test_fallback_trace_bundle(client: TestClient, db) -> str:
         ),
         latency_ms=0,
     )
+    materialize_run(db, run, plan)
     evidence = _get_evidence(client, run.run_id)
     assert_true(any(item["is_fallback"] for item in evidence["evidence_items"]), "fallback evidence not marked")
     return run.run_id
@@ -203,13 +238,10 @@ def test_remote_failure_bundle(client: TestClient, db) -> str:
         ),
         latency_ms=0,
     )
+    materialize_run(db, run, plan)
     evidence = _get_evidence(client, run.run_id)
-    failed = [
-        item
-        for item in evidence["evidence_items"]
-        if item["tool_name"] == "fake_ea.unstable" and item["unsupported_reason"]
-    ]
-    assert_true(failed, "remote failure evidence missing")
+    assert_true(not evidence["evidence_items"], "failed tool output must not become evidence")
+    assert_true(evidence["unsupported_claims"], "remote failure limitation missing")
     return run.run_id
 
 
@@ -275,8 +307,8 @@ def test_completed_run_exports(client: TestClient, db) -> str:
     json_export = _export(client, run.run_id, "json")
     json_payload = json.loads(_read_export(json_export))
     assert_true(json_payload["run_id"] == run.run_id, "JSON export run_id mismatch")
-    assert_true(json_payload["evidence_items"], "JSON export missing evidence items")
-    assert_true(any(item["is_mock"] for item in json_payload["evidence_items"]), "mock marker lost")
+    assert_true(json_payload["passages"], "JSON export missing provenance passages")
+    assert_true(_has_document_marker(json_payload, "is_mock"), "mock marker lost")
     json_content = _content(client, run.run_id, "json")
     assert_true(json.loads(json_content["content"])["run_id"] == run.run_id, "JSON content invalid")
     assert_true(json_content["content_type"] == "application/json", "JSON content type mismatch")
@@ -284,7 +316,7 @@ def test_completed_run_exports(client: TestClient, db) -> str:
     jsonl_export = _export(client, run.run_id, "jsonl")
     jsonl_lines = [line for line in _read_export(jsonl_export).splitlines() if line.strip()]
     assert_true(len(jsonl_lines) == jsonl_export["item_count"], "JSONL item count mismatch")
-    assert_true(all(json.loads(line).get("evidence_id") for line in jsonl_lines), "invalid JSONL evidence")
+    assert_true(all(json.loads(line).get("passage_id") for line in jsonl_lines), "invalid JSONL passage")
     jsonl_content = _content(client, run.run_id, "jsonl")
     assert_true(jsonl_content["content_type"] == "application/x-ndjson", "JSONL content type mismatch")
     assert_true(
@@ -318,9 +350,10 @@ def test_empty_trace_export(client: TestClient, db) -> str:
         "mock",
         [],
     )
+    materialize_run(db, run, {})
     payload = _export(client, run.run_id, "json")
     exported = json.loads(_read_export(payload))
-    assert_true(exported["total_evidence_items"] == 0, "empty trace export should have zero items")
+    assert_true(not exported["passages"], "empty trace export should have zero passages")
     content = _content(client, run.run_id, "markdown")
     assert_true("未抽取到结构化证据条目" in content["content"], "empty trace content missing")
     return run.run_id
@@ -330,13 +363,10 @@ def test_fallback_export(client: TestClient, db) -> str:
     run_id = test_fallback_trace_bundle(client, db)
     payload = _export(client, run_id, "json")
     exported = json.loads(_read_export(payload))
-    assert_true(
-        any(item["is_fallback"] for item in exported["evidence_items"]),
-        "fallback marker lost in export",
-    )
+    assert_true(_has_document_marker(exported, "is_fallback"), "fallback marker lost in export")
     content = _content(client, run_id, "json")
     assert_true(
-        any(item["is_fallback"] for item in json.loads(content["content"])["evidence_items"]),
+        _has_document_marker(json.loads(content["content"]), "is_fallback"),
         "fallback marker lost in content",
     )
     return run_id
@@ -346,14 +376,21 @@ def test_remote_failure_export(client: TestClient, db) -> str:
     run_id = test_remote_failure_bundle(client, db)
     payload = _export(client, run_id, "json")
     exported = json.loads(_read_export(payload))
-    remote_failed = [
-        item
-        for item in exported["evidence_items"]
-        if item["metadata"].get("tool_source") == "mcp_remote" and item.get("unsupported_reason")
-    ]
-    assert_true(remote_failed, "remote MCP failure evidence missing from export")
-    content = _content(client, run_id, "markdown")
-    assert_true("mcp_remote" in content["content"], "remote MCP failure missing from content")
+    assert_true(not exported["passages"], "failed remote output must not become provenance evidence")
+    assert_true(
+        any("fake remote MCP failure" in str(item.get("qualifiers") or {}) for item in exported["claims"]),
+        "remote MCP failure limitation missing from export",
+    )
+    trace = client.get(f"/api/tasks/{run_id}/result/trace")
+    assert_true(trace.status_code == 200, f"result trace failed: {trace.status_code}")
+    assert_true(
+        any(
+            item.get("tool_name") == "fake_ea.unstable"
+            and item.get("status") == "failed"
+            for item in trace.json()
+        ),
+        "remote MCP failure missing from result trace",
+    )
     return run_id
 
 
@@ -407,6 +444,7 @@ def test_secret_filter_export(client: TestClient, db) -> str:
         ),
         latency_ms=0,
     )
+    materialize_run(db, run, plan)
     payload = _export(client, run.run_id, "json")
     text = _read_export(payload).lower()
     assert_true("api_key" not in text, "api_key field leaked into export")
@@ -436,12 +474,18 @@ def main() -> None:
         "parallel_execution_enabled": settings.parallel_execution_enabled,
         "llm_planner_enabled": settings.llm_planner_enabled,
         "llm_planner_mode": settings.llm_planner_mode,
+        "offline_mode": settings.offline_mode,
+        "external_tools_default_mode": settings.external_tools_default_mode,
+        "github_tool_default_mode": settings.github_tool_default_mode,
     }
     try:
         prepare_runtime()
         settings.parallel_execution_enabled = False
         settings.llm_planner_enabled = False
         settings.llm_planner_mode = "deterministic"
+        settings.offline_mode = True
+        settings.external_tools_default_mode = "mock"
+        settings.github_tool_default_mode = "mock"
         with TestClient(app) as client:
             with SessionLocal() as db:
                 test_completed_run_exports(client, db)
@@ -473,6 +517,10 @@ def main() -> None:
         settings.parallel_execution_enabled = original["parallel_execution_enabled"]
         settings.llm_planner_enabled = original["llm_planner_enabled"]
         settings.llm_planner_mode = original["llm_planner_mode"]
+        settings.offline_mode = original["offline_mode"]
+        settings.external_tools_default_mode = original["external_tools_default_mode"]
+        settings.github_tool_default_mode = original["github_tool_default_mode"]
+        SMOKE_DATABASE_DIRECTORY.cleanup()
 
 
 if __name__ == "__main__":

@@ -364,6 +364,43 @@ class CitationValidationTests(Phase7DatabaseTestCase):
         self.assertEqual(result.token_in, 12)
         self.assertEqual(result.details[0].judgment_source, "llm")
 
+    def test_metadata_role_only_supports_bibliographic_claims(self) -> None:
+        from app.evidence.citation_validator import validate_citations
+
+        bundle = {
+            "source_documents": [
+                {
+                    "document_id": "d1",
+                    "metadata": {"evidence_role": "official_metadata"},
+                }
+            ],
+            "source_snapshots": [{"snapshot_id": "s1", "document_id": "d1"}],
+            "passages": [
+                {
+                    "passage_id": "p1",
+                    "snapshot_id": "s1",
+                    "text": "Paper Alpha was published in 2024 with DOI 10.1000/alpha and reports 97% accuracy.",
+                }
+            ],
+            "citations": [{"citation_label": "CIT-001-01", "passage_id": "p1"}],
+        }
+
+        bibliographic = validate_citations(
+            "Paper Alpha was published in 2024 with DOI 10.1000/alpha [CIT-001-01].",
+            bundle,
+        )
+        performance = validate_citations(
+            "Paper Alpha reports 97% accuracy [CIT-001-01].",
+            bundle,
+            llm_client=_FakeCitationLLM(),
+            use_llm=True,
+        )
+
+        self.assertEqual(bibliographic.supported, 1)
+        self.assertEqual(performance.unsupported, 1)
+        self.assertEqual(performance.details[0].judgment_source, "evidence_role")
+        self.assertEqual(performance.details[0].evidence_role, "official_metadata")
+
     def test_no_citations_reports_not_evaluated(self) -> None:
         from app.evidence.citation_validator import (
             render_citation_validation_section,

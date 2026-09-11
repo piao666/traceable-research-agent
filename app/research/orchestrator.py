@@ -158,13 +158,6 @@ def run_deep_research_v2(
 
     executor = node_executor or ResearchNodeExecutor()
     nodes = list_scope_nodes(db, scope.scope_id)
-    frontier: deque[ResearchNode] = deque(
-        node
-        for node in nodes
-        if node.status == "completed"
-        and _json_object(node.metadata_json).get("branch_planning_status", "pending")
-        == "pending"
-    )
     prior_queries = [node.query for node in nodes]
     created_run_ids = [
         node.run_id for node in nodes if node.run_id and node.run_id != run_id
@@ -174,6 +167,58 @@ def run_deep_research_v2(
     root_state = (_json_object(root.plan_json).get("react_state") or {})
     if root_state.get("finish_reason") == "finalization_reserve_handoff":
         finalization_limited = True
+
+    # Resume persisted child work before planning any new branches.  The node
+    # executor is idempotent for an existing run_id; keeping recovery here
+    # closes the orchestration loop instead of merely making the executor
+    # recoverable in isolation.
+    if not finalization_limited:
+        for node in nodes:
+            if node.parent_node_id is None or node.status not in {"pending", "running"}:
+                continue
+            if store.is_agent_run_cancelled(db, run_id):
+                update_scope_status(db, scope.scope_id, "cancelled")
+                cancelled = store.get_fresh_agent_run(db, run_id)
+                return _summary(cancelled, _json_object(cancelled.plan_json if cancelled else None))
+            runtime = current_budget()
+            if runtime is not None:
+                try:
+                    if not runtime.can_deepen():
+                        finalization_limited = True
+                        break
+                except BudgetExceeded:
+                    update_scope_status(db, scope.scope_id, "failed")
+                    raise
+            try:
+                result = executor.execute(db, scope, node, settings_obj, actor_client)
+            except BudgetExceeded:
+                update_scope_status(db, scope.scope_id, "failed")
+                raise
+            child_run_id = str(result["run_id"])
+            created_run_ids.append(child_run_id)
+            _link_deepening_run(db, run_id, child_run_id)
+            if result.get("status") != "completed" and _json_object(
+                node.metadata_json
+            ).get("required", True):
+                orchestration_incomplete = True
+                break
+            child_run = store.get_fresh_agent_run(db, child_run_id)
+            child_state = (
+                _json_object(child_run.plan_json if child_run else None).get("react_state")
+                or {}
+            )
+            if child_state.get("finish_reason") == "finalization_reserve_handoff":
+                finalization_limited = True
+                break
+
+    nodes = list_scope_nodes(db, scope.scope_id)
+    frontier: deque[ResearchNode] = deque(
+        node
+        for node in nodes
+        if node.status == "completed"
+        and _json_object(node.metadata_json).get("branch_planning_status", "pending")
+        == "pending"
+    )
 
     while frontier:
         if finalization_limited:
@@ -297,12 +342,7 @@ def run_deep_research_v2(
                 update_scope_status(db, scope.scope_id, "failed")
                 raise
             created_run_ids.append(result["run_id"])
-            fresh_root = store.get_fresh_agent_run(db, run_id)
-            linked_plan = _json_object(fresh_root.plan_json if fresh_root else None)
-            linked_plan["deepening_sub_run_ids"] = list(
-                dict.fromkeys([*(linked_plan.get("deepening_sub_run_ids") or []), result["run_id"]])
-            )
-            store.replace_agent_run_plan(db, run_id, linked_plan)
+            _link_deepening_run(db, run_id, result["run_id"])
             if result.get("status") == "completed":
                 frontier.append(node)
             elif branch.get("required", True):
@@ -515,6 +555,15 @@ def _json_object(value: str | None) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _link_deepening_run(db: Session, root_run_id: str, child_run_id: str) -> None:
+    root = store.get_fresh_agent_run(db, root_run_id)
+    plan = _json_object(root.plan_json if root else None)
+    plan["deepening_sub_run_ids"] = list(
+        dict.fromkeys([*(plan.get("deepening_sub_run_ids") or []), child_run_id])
+    )
+    store.replace_agent_run_plan(db, root_run_id, plan)
 
 
 def _persist_report_integrity(

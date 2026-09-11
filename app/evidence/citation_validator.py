@@ -30,6 +30,57 @@ from app.llm.base import LLMClient, LLMMessage
 CITATION_PATTERN = re.compile(r"CIT-\d{3}-\d{2}")
 SENTENCE_BOUNDARIES = ".!?。！？\n"
 
+_METADATA_ONLY_ROLES = {"official_metadata", "discovery_index"}
+_BIBLIOGRAPHIC_TERMS = (
+    "doi",
+    "arxiv",
+    "pmid",
+    "author",
+    "authored",
+    "year",
+    "publication",
+    "published",
+    "publisher",
+    "journal",
+    "venue",
+    "title",
+    "indexed",
+    "exists",
+    "existence",
+    "文献存在",
+    "作者",
+    "年份",
+    "发表",
+    "出版",
+    "期刊",
+    "会议",
+    "标题",
+    "收录",
+)
+_RESEARCH_RESULT_TERMS = (
+    "experiment",
+    "experimental",
+    "result",
+    "performance",
+    "accuracy",
+    "benchmark",
+    "conclusion",
+    "demonstrate",
+    "outperform",
+    "improve",
+    "metric",
+    "实验",
+    "结果",
+    "性能",
+    "准确率",
+    "基准",
+    "结论",
+    "表明",
+    "优于",
+    "提升",
+    "指标",
+)
+
 
 @dataclass
 class CitationValidationDetail:
@@ -39,6 +90,7 @@ class CitationValidationDetail:
     passage_text: str  # the referenced passage text
     keyword_overlap: float  # Jaccard similarity score
     judgment_source: str = "rule"
+    evidence_role: str | None = None
     marker_start: int = 0
     marker_end: int = 0
     sentence_start: int = 0
@@ -131,6 +183,7 @@ class CitationValidationReport:
                     "passage_text": d.passage_text[:300],
                     "keyword_overlap": d.keyword_overlap,
                     "judgment_source": d.judgment_source,
+                    "evidence_role": d.evidence_role,
                     "marker_start": d.marker_start,
                     "marker_end": d.marker_end,
                     "sentence_start": d.sentence_start,
@@ -177,6 +230,17 @@ def _entity_co_occurrence(sentence: str, passage: str) -> int:
         "".join(re.findall(r"[一-鿿]+", passage))
     )
     return len(sent_entities & pass_entities) + len(shared_cjk)
+
+
+def _metadata_role_supports_claim(evidence_role: str, sentence: str) -> bool:
+    """Limit metadata indexes to bibliographic claims defined by R12.1.6-B."""
+
+    if evidence_role not in _METADATA_ONLY_ROLES:
+        return True
+    normalized = unicodedata.normalize("NFKC", sentence).casefold()
+    if any(term in normalized for term in _RESEARCH_RESULT_TERMS):
+        return False
+    return any(term in normalized for term in _BIBLIOGRAPHIC_TERMS)
 
 
 def _parse_llm_verdicts(
@@ -254,6 +318,8 @@ def _apply_llm_secondary_judgment(
     if not occurrence_verdicts and not legacy_verdicts:
         return report
     for detail in report.details:
+        if detail.judgment_source == "evidence_role":
+            continue
         verdict = occurrence_verdicts.get(
             (detail.citation_label, detail.marker_start)
         ) or legacy_verdicts.get(detail.citation_label)
@@ -345,14 +411,23 @@ def validate_citations(
     Returns:
         CitationValidationReport with counts and per-citation details.
     """
-    # Build citation_label → passage_text mapping
+    # Build citation_label → passage and evidence-role mappings.
     passages = {
         str(item.get("passage_id")): item
         for item in provenance_bundle.get("passages") or []
     }
     citations = provenance_bundle.get("citations") or []
+    snapshots = {
+        str(item.get("snapshot_id") or ""): item
+        for item in provenance_bundle.get("source_snapshots") or []
+    }
+    documents = {
+        str(item.get("document_id") or ""): item
+        for item in provenance_bundle.get("source_documents") or []
+    }
 
     label_to_passage: dict[str, str] = {}
+    label_to_evidence_role: dict[str, str] = {}
     for cit in citations:
         label = str(cit.get("citation_label") or "")
         passage_id = str(cit.get("passage_id") or "")
@@ -360,6 +435,16 @@ def validate_citations(
         passage_text = str(passage.get("text") or "")
         if label and passage_text:
             label_to_passage[label] = passage_text
+            passage_metadata = passage.get("metadata") or {}
+            snapshot = snapshots.get(str(passage.get("snapshot_id") or "")) or {}
+            document = documents.get(str(snapshot.get("document_id") or "")) or {}
+            document_metadata = document.get("metadata") or {}
+            role = str(
+                (passage_metadata if isinstance(passage_metadata, dict) else {}).get("evidence_role")
+                or (document_metadata if isinstance(document_metadata, dict) else {}).get("evidence_role")
+                or "unknown"
+            ).casefold()
+            label_to_evidence_role[label] = role
 
     # Find all CIT references in the report
     matches = list(CITATION_PATTERN.finditer(report_text))
@@ -374,6 +459,7 @@ def validate_citations(
     for match in matches:
         label = match.group(0)
         passage_text = label_to_passage.get(label, "")
+        evidence_role = label_to_evidence_role.get(label, "unknown")
         sentence, sentence_start, sentence_end = _find_citation_sentence(
             report_text, match.start()
         )
@@ -385,6 +471,7 @@ def validate_citations(
                 sentence=sentence[:300],
                 passage_text="",
                 keyword_overlap=0.0,
+                evidence_role=evidence_role,
                 marker_start=match.start(),
                 marker_end=match.end(),
                 sentence_start=sentence_start,
@@ -399,16 +486,23 @@ def validate_citations(
         overlap = _jaccard_overlap(sent_tokens, pass_tokens)
         entity_count = _entity_co_occurrence(sentence, passage_text)
 
-        if overlap >= min_supported_overlap and entity_count >= min_entity_co_occurrence:
+        if not _metadata_role_supports_claim(evidence_role, sentence):
+            verdict = "unsupported"
+            unsupported_count += 1
+            judgment_source = "evidence_role"
+        elif overlap >= min_supported_overlap and entity_count >= min_entity_co_occurrence:
             verdict = "supported"
             supported_count += 1
+            judgment_source = "rule"
         elif overlap >= min_weak_overlap or entity_count >= 1:
             # Lenient: either some keyword overlap OR at least one shared entity
             verdict = "weakly_supported"
             weak_count += 1
+            judgment_source = "rule"
         else:
             verdict = "unsupported"
             unsupported_count += 1
+            judgment_source = "rule"
 
         details.append(CitationValidationDetail(
             citation_label=label,
@@ -416,6 +510,8 @@ def validate_citations(
             sentence=sentence[:300],
             passage_text=passage_text[:300],
             keyword_overlap=round(overlap, 4),
+            judgment_source=judgment_source,
+            evidence_role=evidence_role,
             marker_start=match.start(),
             marker_end=match.end(),
             sentence_start=sentence_start,

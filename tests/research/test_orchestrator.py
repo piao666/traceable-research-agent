@@ -1,6 +1,8 @@
 import json
 from unittest.mock import patch
 
+import pytest
+
 from app.agent.outcome import load_observations
 from app.agent.outcome import result_integrity
 from app.agent.budget import BudgetExceeded
@@ -13,6 +15,7 @@ from app.research.orchestrator import run_deep_research_v2
 from app.research.scope import (
     create_research_node,
     create_research_scope,
+    list_scope_nodes,
     resolve_research_scope,
 )
 from app.trace import store
@@ -220,6 +223,130 @@ def test_orchestrator_resume_skips_completed_branch_planning(db, r12_settings):
 
     root_runner.assert_not_called()
     assert planner_tasks == ["child query"]
+
+
+@pytest.mark.parametrize("persisted_status", ["pending", "running"])
+def test_orchestrator_resume_executes_existing_unfinished_child(
+    db,
+    r12_settings,
+    persisted_status,
+):
+    root = create_root(db)
+    scope = create_research_scope(db, root.run_id, {})
+    root_node = create_research_node(
+        db,
+        scope.scope_id,
+        parent_node_id=None,
+        run_id=root.run_id,
+        node_type="discovery",
+        topic="root",
+        query="root query",
+        research_goal="root",
+        depth=0,
+        priority=0,
+        status="completed",
+        metadata={"required": True, "branch_planning_status": "completed"},
+    )
+    add_web_trace(db, root.run_id, "Verified root evidence for resumed research.", "resume-root")
+    root_traces = store.list_tool_traces(db, root.run_id)
+    materialize_execution_provenance(
+        db,
+        root,
+        json.loads(root.plan_json or "{}"),
+        load_observations(root_traces),
+        root_traces,
+        r12_settings,
+    )
+    child_run = store.create_agent_run(
+        db,
+        "resumable child query",
+        "summary",
+        "real",
+        parent_run_id=root.run_id,
+        root_run_id=root.run_id,
+        run_role="research_branch",
+        research_scope_id=scope.scope_id,
+        engine_version="v2",
+    )
+    store.update_agent_run_plan(
+        db,
+        child_run.run_id,
+        {
+            "version": "research-node-v2",
+            "task": "resumable child query",
+            "execution_mode": "react",
+            "allowed_tools": ["web_fetcher"],
+            "research_scope_id": scope.scope_id,
+            "root_run_id": root.run_id,
+            "defer_to_research_scope": True,
+            "steps": [],
+        },
+    )
+    if persisted_status == "running":
+        store.mark_agent_run_running_unless_cancelled(db, child_run.run_id)
+    child_node = create_research_node(
+        db,
+        scope.scope_id,
+        parent_node_id=root_node.node_id,
+        run_id=child_run.run_id,
+        node_type="web_research",
+        topic="resumable child",
+        query="resumable child query",
+        research_goal="resume existing child",
+        depth=1,
+        priority=1,
+        status=persisted_status,
+        metadata={"required": True},
+    )
+    resumed_run_ids = []
+
+    def resume_runner(session, run_id, settings, _client):
+        resumed_run_ids.append(run_id)
+        assert run_id == child_run.run_id
+        running = store.get_fresh_agent_run(session, run_id)
+        add_web_trace(session, run_id, "Verified evidence from the resumed child.", "resume-child")
+        traces = store.list_tool_traces(session, run_id)
+        materialize_execution_provenance(
+            session,
+            running,
+            json.loads(running.plan_json or "{}"),
+            load_observations(traces),
+            traces,
+            settings,
+        )
+        store.update_agent_run_status(session, run_id, "completed", None)
+        return {"run_id": run_id, "status": "completed"}
+
+    def report_generator(_run, _plan, _observations, _traces, **kwargs):
+        bundle = kwargs["provenance_bundle"]
+        citation = next(
+            item for item in bundle["citations"] if item["origin_run_id"] == child_run.run_id
+        )
+        passage = next(
+            item for item in bundle["passages"] if item["passage_id"] == citation["passage_id"]
+        )
+        return "# Resume report\n\n## 3. 最终回答\n\n" + (
+            f"{passage['text']} [{citation['citation_label']}]"
+        )
+
+    with patch("app.research.orchestrator.save_report", return_value="workspace/reports/resume.md"):
+        result = run_deep_research_v2(
+            db,
+            root.run_id,
+            r12_settings,
+            FakeReActLLMClient([]),
+            branch_planner=lambda *_args, **_kwargs: {
+                "branches": [],
+                "is_comprehensive": True,
+            },
+            node_executor=ResearchNodeExecutor(runner=resume_runner),
+            report_generator=report_generator,
+        )
+
+    assert result["status"] == "completed"
+    assert resumed_run_ids == [child_run.run_id]
+    assert child_node.status == "completed"
+    assert [node.run_id for node in list_scope_nodes(db, scope.scope_id)].count(child_run.run_id) == 1
 
 
 def test_bounded_scope_context_round_robins_sparse_child_evidence():
