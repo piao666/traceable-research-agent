@@ -19,6 +19,7 @@ import os
 import re
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -51,7 +52,7 @@ class _CacheEntry:
     identifier_type: str
     status: str
     data: dict[str, Any]
-    cached_at: float
+    cached_at_epoch: float
 
 
 class _ReferenceCache:
@@ -82,8 +83,13 @@ class _ReferenceCache:
                 raw = json.load(fh)
         except (json.JSONDecodeError, OSError):
             return None
-        entry = _CacheEntry(**raw)
-        if time.monotonic() - entry.cached_at > self.ttl_seconds:
+        if "cached_at_epoch" not in raw:
+            return None
+        try:
+            entry = _CacheEntry(**raw)
+        except TypeError:
+            return None
+        if time.time() - entry.cached_at_epoch > self.ttl_seconds:
             try:
                 os.remove(path)
             except OSError:
@@ -99,7 +105,7 @@ class _ReferenceCache:
             identifier_type=identifier_type,
             status=status,
             data=data,
-            cached_at=time.monotonic(),
+            cached_at_epoch=time.time(),
         )
         try:
             with open(path, "w", encoding="utf-8") as fh:
@@ -125,6 +131,9 @@ class ReferenceVerificationDetail:
     metadata_conflicts: list[str] = field(default_factory=list)
     failure_reason: str | None = None
     scores: dict[str, float] = field(default_factory=dict)
+    document_ids: list[str] = field(default_factory=list)
+    citation_labels: list[str] = field(default_factory=list)
+    origin_run_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -140,6 +149,9 @@ class ReferenceVerificationDetail:
             "metadata_conflicts": self.metadata_conflicts,
             "failure_reason": self.failure_reason,
             "scores": self.scores,
+            "document_ids": self.document_ids,
+            "citation_labels": self.citation_labels,
+            "origin_run_ids": self.origin_run_ids,
         }
 
 
@@ -499,6 +511,12 @@ class ReferenceVerifier:
                 identifier_type="unknown",
                 identifier_value="",
                 status="unresolved",
+                document_ids=list(
+                    ref.get("document_ids")
+                    or ([str(ref.get("document_id"))] if ref.get("document_id") else [])
+                ),
+                citation_labels=list(ref.get("citation_labels") or []),
+                origin_run_ids=list(ref.get("origin_run_ids") or []),
             )
 
             # Determine primary identifier
@@ -572,6 +590,7 @@ class ReferenceVerifier:
         venue: Any,
     ) -> ReferenceVerificationDetail:
         results: list[tuple[str, str, dict[str, Any]]] = []
+        failures: list[str] = []
 
         if "crossref" in self.allowed_indexes:
             status, data, err = _check_crossref_doi(doi, self.timeout, self.cache)
@@ -580,6 +599,7 @@ class ReferenceVerifier:
                 results.append(("crossref", status, data))
             elif err:
                 detail.scores["crossref"] = 0.0
+                failures.append(err)
 
         if "openalex" in self.allowed_indexes:
             status, data, err = _check_openalex_doi(doi, self.timeout, self.cache)
@@ -588,8 +608,12 @@ class ReferenceVerifier:
                 results.append(("openalex", status, data))
             elif err:
                 detail.scores["openalex"] = 0.0
+                failures.append(err)
 
-        return self._synthesize_verdict(detail, results)
+        detail = self._synthesize_verdict(detail, results)
+        if not results and "network_unavailable" in failures:
+            detail.failure_reason = "network_unavailable"
+        return detail
 
     def _verify_by_arxiv(
         self,
@@ -601,6 +625,7 @@ class ReferenceVerifier:
         venue: Any,
     ) -> ReferenceVerificationDetail:
         results: list[tuple[str, str, dict[str, Any]]] = []
+        failures: list[str] = []
 
         if "arxiv" in self.allowed_indexes:
             status, data, err = _check_arxiv_id(arxiv_id, self.timeout, self.cache)
@@ -609,8 +634,12 @@ class ReferenceVerifier:
                 results.append(("arxiv", status, data))
             elif err:
                 detail.scores["arxiv"] = 0.0
+                failures.append(err)
 
-        return self._synthesize_verdict(detail, results)
+        detail = self._synthesize_verdict(detail, results)
+        if not results and "network_unavailable" in failures:
+            detail.failure_reason = "network_unavailable"
+        return detail
 
     def _verify_by_title(
         self,
@@ -621,6 +650,7 @@ class ReferenceVerifier:
         venue: Any,
     ) -> ReferenceVerificationDetail:
         results: list[tuple[str, str, dict[str, Any]]] = []
+        failures: list[str] = []
 
         if "semantic_scholar" in self.allowed_indexes:
             status, data, err = _check_semantic_scholar_title(title, self.timeout, self.cache)
@@ -630,8 +660,12 @@ class ReferenceVerifier:
                 detail.scores["title_similarity"] = data.get("title_similarity", 0.0)
             elif err:
                 detail.scores["semantic_scholar"] = 0.0
+                failures.append(err)
 
-        return self._synthesize_verdict(detail, results)
+        detail = self._synthesize_verdict(detail, results)
+        if not results and "network_unavailable" in failures:
+            detail.failure_reason = "network_unavailable"
+        return detail
 
     def _synthesize_verdict(
         self,
@@ -732,49 +766,178 @@ class ReferenceVerifier:
 def extract_academic_references(provenance_bundle: dict[str, Any]) -> list[dict[str, Any]]:
     """Find SourceDocuments in provenance that look like academic references."""
     refs: list[dict[str, Any]] = []
-    docs = provenance_bundle.get("source_documents") or []
-
-    for doc in docs:
-        metadata = doc.get("metadata") or {}
-        source_type = str(doc.get("source_type") or metadata.get("source_type") or "")
-        external_ids = metadata.get("external_ids") or {}
-        doi = external_ids.get("DOI") or metadata.get("doi") or ""
-        arxiv_id = external_ids.get("ArXiv") or metadata.get("arxiv_id") or ""
-        title = str(doc.get("title") or metadata.get("title") or "")
-        canonical_uri = str(doc.get("canonical_uri") or "")
-        authors = metadata.get("authors") or []
-
-        # Determine if this looks like an academic reference
-        is_academic = bool(
-            doi
-            or arxiv_id
-            or source_type in {"arxiv_paper", "semantic_scholar_paper", "doi", "academic_paper"}
-            or "arxiv.org" in canonical_uri
-            or "doi.org" in canonical_uri
-        )
-        if not is_academic:
-            continue
-
-        refs.append({
-            "document_id": doc.get("document_id"),
-            "label": f"REF-{doc.get('document_id', '')[:8]}",
-            "title": title,
-            "authors": authors,
-            "year": metadata.get("year"),
-            "venue": metadata.get("venue"),
-            "doi": doi,
-            "arxiv_id": arxiv_id,
-            "source_type": source_type,
-            "canonical_uri": canonical_uri,
-        })
+    for doc in provenance_bundle.get("source_documents") or []:
+        reference = _academic_reference(doc)
+        if reference is not None:
+            refs.append(reference)
 
     return refs
+
+
+def academic_work_key(ref: dict[str, Any]) -> str:
+    """Return the fixed cross-document identity for one academic work."""
+
+    doi = _normalize_doi(ref.get("doi"))
+    if doi:
+        return f"doi:{doi}"
+    arxiv_id = _normalize_arxiv_id(ref.get("arxiv_id"))
+    if arxiv_id:
+        return f"arxiv:{arxiv_id}"
+    pmid = str(ref.get("pmid") or "").strip().lower()
+    if pmid:
+        return f"pmid:{pmid}"
+    title = _normalize_identity_text(ref.get("title"))
+    authors = ref.get("authors") or []
+    surname = _first_author_surname(authors)
+    year = str(ref.get("year") or "").strip()
+    if title:
+        return f"title:{title}|author:{surname}|year:{year}"
+    return f"document:{str(ref.get('document_id') or '').strip()}"
+
+
+def extract_cited_academic_references(
+    provenance_bundle: dict[str, Any],
+    citation_labels: set[str],
+) -> list[dict[str, Any]]:
+    """Resolve final citation labels to unique cited academic works."""
+
+    passages = {
+        str(item.get("passage_id") or ""): item
+        for item in provenance_bundle.get("passages") or []
+    }
+    snapshots = {
+        str(item.get("snapshot_id") or ""): item
+        for item in provenance_bundle.get("source_snapshots") or []
+    }
+    documents = {
+        str(item.get("document_id") or ""): item
+        for item in provenance_bundle.get("source_documents") or []
+    }
+    grouped: dict[str, dict[str, Any]] = {}
+    for citation in provenance_bundle.get("citations") or []:
+        label = str(citation.get("citation_label") or "")
+        if label not in citation_labels:
+            continue
+        passage = passages.get(str(citation.get("passage_id") or "")) or {}
+        snapshot = snapshots.get(str(passage.get("snapshot_id") or "")) or {}
+        document = documents.get(str(snapshot.get("document_id") or "")) or {}
+        reference = _academic_reference(document)
+        if reference is None:
+            continue
+        key = academic_work_key(reference)
+        document_id = str(reference.get("document_id") or "")
+        origin_run_id = str(
+            citation.get("origin_run_id")
+            or passage.get("origin_run_id")
+            or document.get("origin_run_id")
+            or ""
+        )
+        current = grouped.setdefault(
+            key,
+            {
+                **reference,
+                "academic_work_key": key,
+                "document_ids": [],
+                "citation_labels": [],
+                "origin_run_ids": [],
+            },
+        )
+        _append_unique(current["document_ids"], document_id)
+        _append_unique(current["citation_labels"], label)
+        _append_unique(current["origin_run_ids"], origin_run_id)
+
+    return list(grouped.values())
 
 
 def extract_scope_academic_references(scope_bundle: dict[str, Any]) -> list[dict[str, Any]]:
     """Extract academic references from a cross-run Scope projection."""
 
     return extract_academic_references(scope_bundle)
+
+
+def _academic_reference(doc: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = doc.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    source_type = str(doc.get("source_type") or metadata.get("source_type") or "")
+    external_ids = metadata.get("external_ids") or {}
+    if not isinstance(external_ids, dict):
+        external_ids = {}
+    canonical_uri = str(doc.get("canonical_uri") or "")
+    doi = _normalize_doi(external_ids.get("DOI") or metadata.get("doi"))
+    if not doi and "doi.org/" in canonical_uri.lower():
+        doi = _normalize_doi(re.split(r"doi\.org/", canonical_uri, flags=re.I)[-1])
+    arxiv_id = _normalize_arxiv_id(
+        external_ids.get("ArXiv") or metadata.get("arxiv_id")
+    )
+    if not arxiv_id and "arxiv.org/" in canonical_uri.lower():
+        arxiv_id = _normalize_arxiv_id(canonical_uri)
+    pmid = str(
+        external_ids.get("PMID")
+        or metadata.get("pmid")
+        or ""
+    ).strip()
+    is_academic = bool(
+        doi
+        or arxiv_id
+        or pmid
+        or source_type
+        in {"arxiv_paper", "semantic_scholar_paper", "doi", "academic_paper"}
+        or "arxiv.org" in canonical_uri.lower()
+        or "doi.org" in canonical_uri.lower()
+    )
+    if not is_academic:
+        return None
+    document_id = str(doc.get("document_id") or "")
+    return {
+        "document_id": document_id,
+        "label": f"REF-{document_id[:8]}",
+        "title": str(doc.get("title") or metadata.get("title") or ""),
+        "authors": metadata.get("authors") or [],
+        "year": metadata.get("year"),
+        "venue": metadata.get("venue"),
+        "doi": doi,
+        "arxiv_id": arxiv_id,
+        "pmid": pmid,
+        "source_type": source_type,
+        "canonical_uri": canonical_uri,
+    }
+
+
+def _normalize_doi(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)", "", text)
+    return text.rstrip(".,; ")
+
+
+def _normalize_arxiv_id(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"^https?://arxiv\.org/(?:abs|pdf)/", "", text)
+    text = re.sub(r"^arxiv:\s*", "", text)
+    text = re.sub(r"\.pdf$", "", text)
+    return re.sub(r"v\d+$", "", text).rstrip("/ ")
+
+
+def _normalize_identity_text(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return " ".join(re.findall(r"[\w]+", text, flags=re.UNICODE))
+
+
+def _first_author_surname(authors: list[Any]) -> str:
+    if not authors:
+        return ""
+    author = authors[0]
+    if isinstance(author, dict):
+        author = author.get("family") or author.get("name") or author.get("display_name") or ""
+    if "," in str(author):
+        author = str(author).split(",", 1)[0]
+    normalized = _normalize_identity_text(author)
+    return normalized.split()[-1] if normalized else ""
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value and value not in values:
+        values.append(value)
 
 
 # ── Report rendering ──────────────────────────────────────────────────────

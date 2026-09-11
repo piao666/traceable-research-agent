@@ -25,6 +25,11 @@ from app.evidence.citation_validator import (
     validate_scope_citations,
 )
 from app.evidence.scope_service import get_scope_provenance_bundle
+from app.evidence.reference_verifier import (
+    ReferenceVerificationReport,
+    ReferenceVerifier,
+    extract_cited_academic_references,
+)
 from app.llm.base import LLMClient
 from app.llm.providers import create_llm_client
 from app.research.branch_planner import plan_research_branches
@@ -391,7 +396,33 @@ def run_deep_research_v2(
             report_path=expected_report_path,
             validation_report=citation_validation,
         )
-        report_integrity = assess_report_integrity(occurrence_bundle)
+        citation_labels = {
+            str(item.get("citation_label") or "")
+            for item in occurrence_bundle["citation_occurrences"]
+            if item.get("citation_label")
+        }
+        cited_academic_references = extract_cited_academic_references(
+            scope_evidence,
+            citation_labels,
+        )
+        reference_report = ReferenceVerificationReport()
+        if settings_obj.reference_verification_enabled and cited_academic_references:
+            reference_report = ReferenceVerifier(
+                allowed_indexes=[
+                    item.strip()
+                    for item in settings_obj.reference_verifier_allowed_indexes.split(",")
+                    if item.strip()
+                ],
+                timeout=settings_obj.reference_verifier_timeout_seconds,
+                cache_dir=settings_obj.reference_verifier_cache_dir,
+                cache_ttl=settings_obj.reference_verifier_cache_ttl_seconds,
+            ).verify(cited_academic_references)
+        reference_reports = [reference_report]
+        report_integrity = assess_report_integrity(
+            occurrence_bundle,
+            reference_report=reference_report,
+            enforce_reference_consistency=_requires_strict_reference_gate(plan),
+        )
     except Exception:
         citation_validation = None
         report_integrity = ReportIntegrityResult(
@@ -489,3 +520,16 @@ def _persist_report_integrity(
         ),
     )
     return plan
+
+
+def _requires_strict_reference_gate(plan: dict[str, Any]) -> bool:
+    routing = plan.get("skill_routing") or {}
+    selected_skill = str(
+        plan.get("skill_name")
+        or (routing.get("selected_skill") if isinstance(routing, dict) else "")
+        or ""
+    )
+    return bool(
+        selected_skill == "systematic_review"
+        or plan.get("retrieval_profile") == "academic_literature"
+    )

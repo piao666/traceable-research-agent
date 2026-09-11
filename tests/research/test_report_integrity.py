@@ -5,13 +5,14 @@ from app.agent.outcome import report_block_reason, result_integrity, trusted_run
 from app.agent.outcome import load_observations
 from app.agent.reporter import generate_markdown_report
 from app.evidence.service import materialize_execution_provenance
+from app.evidence.reference_verifier import ReferenceVerificationReport
 from app.eval.fake_react_llm import FakeReActLLMClient
 from app.reporting.integrity import (
     REPORT_INTEGRITY_VERSION,
     append_report_integrity_warnings,
     assess_report_integrity,
 )
-from app.research.orchestrator import run_deep_research_v2
+from app.research.orchestrator import _requires_strict_reference_gate, run_deep_research_v2
 from app.research.scope import resolve_research_scope
 from app.trace import store
 
@@ -76,6 +77,44 @@ def test_low_strict_support_rate_is_warning_only():
     markdown = append_report_integrity_warnings("# Report", result)
     assert "## 13. 报告完整性警告" in markdown
     assert result.warnings[0] in markdown
+
+
+def test_systematic_review_inconsistent_cited_work_fails():
+    references = ReferenceVerificationReport(
+        total=1,
+        inconsistent=1,
+    )
+    result = assess_report_integrity(
+        _occurrences("supported"),
+        reference_report=references,
+        enforce_reference_consistency=True,
+    )
+    assert result.status == "failed"
+    assert result.error_code == "reference_metadata_inconsistent"
+
+
+def test_normal_web_reference_problems_are_warning_only():
+    references = ReferenceVerificationReport(
+        total=2,
+        inconsistent=1,
+        unresolved=1,
+        network_failures=1,
+    )
+    result = assess_report_integrity(
+        _occurrences("supported"),
+        reference_report=references,
+        enforce_reference_consistency=False,
+    )
+    assert result.status == "passed"
+    assert len(result.warnings) == 2
+
+
+def test_strict_reference_gate_is_limited_to_academic_reviews():
+    assert _requires_strict_reference_gate({"skill_name": "systematic_review"})
+    assert _requires_strict_reference_gate(
+        {"retrieval_profile": "academic_literature"}
+    )
+    assert not _requires_strict_reference_gate({"retrieval_profile": "generic"})
 
 
 def test_validator_exception_fails_deep_v2_and_keeps_audit_report(

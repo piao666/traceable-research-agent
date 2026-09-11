@@ -62,6 +62,9 @@ def append_report_integrity_warnings(
 
 def assess_report_integrity(
     occurrence_bundle: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+    *,
+    reference_report: Any | None = None,
+    enforce_reference_consistency: bool = False,
 ) -> ReportIntegrityResult:
     """Apply the fixed Deep Research V2 final-report citation thresholds."""
 
@@ -97,6 +100,26 @@ def assess_report_integrity(
         warnings.append("Supported and weakly supported occurrences are below 90%.")
     elif strict_support_rate < 0.60:
         warnings.append("Strictly supported final citation occurrences are below 60%.")
+
+    if reference_report is not None:
+        inconsistent = int(getattr(reference_report, "inconsistent", 0) or 0)
+        unresolved_refs = int(getattr(reference_report, "unresolved", 0) or 0)
+        reference_total = int(getattr(reference_report, "total", 0) or 0)
+        network_failures = int(getattr(reference_report, "network_failures", 0) or 0)
+        if inconsistent:
+            warnings.append(
+                f"{inconsistent} final cited academic work(s) have inconsistent metadata."
+            )
+            if enforce_reference_consistency and error_code is None:
+                error_code = "reference_metadata_inconsistent"
+        if network_failures:
+            warnings.append(
+                f"{network_failures} final cited academic work(s) could not be checked due to network failures."
+            )
+        elif reference_total and unresolved_refs / reference_total > 0.25:
+            warnings.append(
+                "More than 25% of final cited academic works remain unresolved."
+            )
 
     return ReportIntegrityResult(
         version=REPORT_INTEGRITY_VERSION,

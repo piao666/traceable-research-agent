@@ -1809,7 +1809,7 @@ def generate_markdown_report(
             pass  # Citation validation failure must not block report generation
 
     # ── Phase 8.4: Reference existence gate ──────────────────────────────
-    if provenance_bundle:
+    if provenance_bundle and execution_mode != "deep_research_v2":
         try:
             from app.config import settings as _ref_settings
             if _ref_settings.reference_verification_enabled:

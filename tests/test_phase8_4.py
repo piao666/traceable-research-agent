@@ -7,19 +7,25 @@ serialization, cache configuration, metadata conflict detection, and rate limiti
 
 from __future__ import annotations
 
+import json
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from app.evidence.reference_verifier import (
     ReferenceVerifier,
     ReferenceVerificationDetail,
     ReferenceVerificationReport,
+    _ReferenceCache,
     _authors_match,
     _respect_rate_limit,
     _title_similarity,
     _tokenize_title,
+    academic_work_key,
     extract_academic_references,
+    extract_cited_academic_references,
     render_reference_verification_section,
 )
 
@@ -164,6 +170,28 @@ class ReferenceVerifierBasicTests(unittest.TestCase):
         ])
         self.assertEqual(report.details[0].identifier_type, "title_author")
 
+    def test_network_failure_is_preserved_in_aggregate(self):
+        verifier = ReferenceVerifier(
+            allowed_indexes=["crossref", "openalex"],
+            timeout=5,
+            cache_dir=None,
+        )
+        with (
+            patch(
+                "app.evidence.reference_verifier._check_crossref_doi",
+                return_value=("unresolved", {}, "network_unavailable"),
+            ),
+            patch(
+                "app.evidence.reference_verifier._check_openalex_doi",
+                return_value=("unresolved", {}, "not_found"),
+            ),
+        ):
+            report = verifier.verify(
+                [{"document_id": "d1", "doi": "10.1000/network"}]
+            )
+        self.assertEqual(report.network_failures, 1)
+        self.assertEqual(report.details[0].failure_reason, "network_unavailable")
+
 
 # ── Provenance extraction ───────────────────────────────────────────────────
 
@@ -257,6 +285,113 @@ class ExtractAcademicReferencesTests(unittest.TestCase):
         }
         refs = extract_academic_references(provenance)
         self.assertEqual(len(refs), 1)
+
+    @staticmethod
+    def _cited_bundle():
+        documents = []
+        snapshots = []
+        passages = []
+        citations = []
+        for index, doi in enumerate(
+            ["10.1000/A", "10.1000/B", "10.1000/C"],
+            1,
+        ):
+            documents.append(
+                {
+                    "document_id": f"doc-{index}",
+                    "title": f"Paper {index}",
+                    "source_type": "academic_paper",
+                    "metadata": {
+                        "doi": doi,
+                        "authors": [f"Author {index}"],
+                        "year": 2024,
+                    },
+                    "origin_run_id": "root" if index < 3 else "child",
+                }
+            )
+            snapshots.append(
+                {"snapshot_id": f"snap-{index}", "document_id": f"doc-{index}"}
+            )
+            passages.append(
+                {
+                    "passage_id": f"pass-{index}",
+                    "snapshot_id": f"snap-{index}",
+                    "origin_run_id": "root" if index < 3 else "child",
+                }
+            )
+            citations.append(
+                {
+                    "citation_label": f"CIT-{index:03d}-01",
+                    "passage_id": f"pass-{index}",
+                    "origin_run_id": "root" if index < 3 else "child",
+                }
+            )
+        return {
+            "source_documents": documents,
+            "source_snapshots": snapshots,
+            "passages": passages,
+            "citations": citations,
+        }
+
+    def test_only_final_cited_academic_work_is_extracted(self):
+        refs = extract_cited_academic_references(
+            self._cited_bundle(),
+            {"CIT-003-01"},
+        )
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0]["doi"], "10.1000/c")
+        self.assertEqual(refs[0]["document_ids"], ["doc-3"])
+        self.assertEqual(refs[0]["citation_labels"], ["CIT-003-01"])
+        self.assertEqual(refs[0]["origin_run_ids"], ["child"])
+
+    def test_root_and_child_doi_variants_are_one_work(self):
+        bundle = self._cited_bundle()
+        bundle["source_documents"][1]["metadata"]["doi"] = "10.1000/A"
+        bundle["source_documents"][1]["origin_run_id"] = "child"
+        bundle["passages"][1]["origin_run_id"] = "child"
+        bundle["citations"][1]["origin_run_id"] = "child"
+        refs = extract_cited_academic_references(
+            bundle,
+            {"CIT-001-01", "CIT-002-01"},
+        )
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0]["document_ids"], ["doc-1", "doc-2"])
+        self.assertEqual(
+            refs[0]["citation_labels"],
+            ["CIT-001-01", "CIT-002-01"],
+        )
+        self.assertEqual(refs[0]["origin_run_ids"], ["root", "child"])
+
+    def test_academic_work_key_follows_identifier_priority(self):
+        self.assertEqual(
+            academic_work_key(
+                {
+                    "doi": "HTTPS://DOI.ORG/10.1000/ABC",
+                    "arxiv_id": "2401.12345v2",
+                    "pmid": "99",
+                }
+            ),
+            "doi:10.1000/abc",
+        )
+        self.assertEqual(
+            academic_work_key({"arxiv_id": "arXiv:2401.12345v2"}),
+            "arxiv:2401.12345",
+        )
+        self.assertEqual(academic_work_key({"pmid": "12345"}), "pmid:12345")
+        self.assertEqual(
+            academic_work_key(
+                {
+                    "title": "  A Study: Of Tests! ",
+                    "authors": ["Ada Lovelace"],
+                    "year": 2024,
+                }
+            ),
+            "title:a study of tests|author:lovelace|year:2024",
+        )
+        self.assertEqual(
+            academic_work_key({"document_id": "doc-only"}),
+            "document:doc-only",
+        )
 
 
 # ── Report rendering ────────────────────────────────────────────────────────
@@ -388,12 +523,18 @@ class DataModelSerializationTests(unittest.TestCase):
             status="verified",
             indexes_checked=["crossref"],
             scores={"crossref": 1.0},
+            document_ids=["doc-1", "doc-2"],
+            citation_labels=["CIT-001-01"],
+            origin_run_ids=["root", "child"],
         )
         dd = d.to_dict()
         self.assertEqual(dd["ref_label"], "REF-1")
         self.assertEqual(dd["identifier_type"], "doi")
         self.assertEqual(dd["status"], "verified")
         self.assertEqual(dd["scores"]["crossref"], 1.0)
+        self.assertEqual(dd["document_ids"], ["doc-1", "doc-2"])
+        self.assertEqual(dd["citation_labels"], ["CIT-001-01"])
+        self.assertEqual(dd["origin_run_ids"], ["root", "child"])
 
     def test_report_to_dict(self):
         d = ReferenceVerificationDetail(
@@ -537,6 +678,25 @@ class CacheConfigTests(unittest.TestCase):
             set(v.allowed_indexes),
             {"crossref", "openalex", "arxiv", "semantic_scholar"},
         )
+
+    def test_cache_restart_ttl_uses_epoch_time_and_rejects_legacy_clock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("app.evidence.reference_verifier.time.time", return_value=1000.0):
+                _ReferenceCache(directory, ttl_seconds=60).put(
+                    "10.1000/test",
+                    "doi",
+                    "verified",
+                    {"index": "crossref"},
+                )
+            restarted = _ReferenceCache(directory, ttl_seconds=60)
+            with patch("app.evidence.reference_verifier.time.time", return_value=1050.0):
+                self.assertIsNotNone(restarted.get("10.1000/test", "doi"))
+            cache_file = next(Path(directory).glob("*.json"))
+            payload = json.loads(cache_file.read_text(encoding="utf-8"))
+            self.assertEqual(payload["cached_at_epoch"], 1000.0)
+            payload["cached_at"] = payload.pop("cached_at_epoch")
+            cache_file.write_text(json.dumps(payload), encoding="utf-8")
+            self.assertIsNone(restarted.get("10.1000/test", "doi"))
 
 
 # ── Rate limiting ───────────────────────────────────────────────────────────
