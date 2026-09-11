@@ -521,6 +521,8 @@ class ResultEvidenceResponse(ProvenanceBundleResponse):
     engine_version: str | None = None
     runs: list[dict[str, Any]] = Field(default_factory=list)
     revisions: list[dict[str, Any]] = Field(default_factory=list)
+    scope_identity: dict[str, Any] | None = None
+    metrics: dict[str, int] | None = None
 
 
 class ResearchScopeResponse(BaseModel):
@@ -561,6 +563,8 @@ class ScopeEvidenceResponse(BaseModel):
     citations: list[dict[str, Any]]
     reliability_scores: list[dict[str, Any]] = Field(default_factory=list)
     resolutions: list[dict[str, Any]] = Field(default_factory=list)
+    scope_identity: dict[str, Any]
+    metrics: dict[str, int]
     integrity: dict[str, Any]
 
 

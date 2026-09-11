@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.evidence.scope_identity import build_scope_identity_projection
 from app.evidence.service import get_provenance_bundle
 from app.research.models import ResearchScope
 from app.research.scope import list_scope_nodes, list_scope_runs, list_scope_traces
@@ -65,6 +66,7 @@ def get_scope_provenance_bundle(db: Session, scope: ResearchScope | str) -> dict
 
     _sort_entities(combined, run_rank)
     _assign_scope_citation_labels(combined)
+    scope_identity, metrics = build_scope_identity_projection(combined, run_rank)
     trace_ids = {trace.trace_id for trace in list_scope_traces(db, scope_obj.scope_id)}
     integrity = _scope_integrity(combined, scope_obj.root_run_id, trace_ids)
     projection_status = (
@@ -97,6 +99,8 @@ def get_scope_provenance_bundle(db: Session, scope: ResearchScope | str) -> dict
         ],
         "revisions": revisions,
         **combined,
+        "scope_identity": scope_identity,
+        "metrics": metrics,
         "integrity": integrity,
     }
 

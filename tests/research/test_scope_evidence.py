@@ -47,6 +47,10 @@ def test_scope_bundle_contains_parent_and_child_without_copying_rows(db, r12_set
     assert bundle["integrity"]["all_citations_resolve"] is True
     assert bundle["integrity"]["all_traceability_resolves"] is True
     assert all(item["origin_trace_id"] for item in bundle["passages"])
+    assert bundle["metrics"]["raw_source_count"] == len(bundle["source_documents"])
+    assert bundle["metrics"]["raw_passage_count"] == len(bundle["passages"])
+    assert bundle["scope_identity"]["source_aliases"]
+    assert bundle["scope_identity"]["passage_aliases"]
 
 
 def test_scope_citation_labels_are_stable_and_child_traceable(db, r12_settings):

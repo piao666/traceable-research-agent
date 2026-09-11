@@ -2161,6 +2161,14 @@ export interface components {
             revisions?: {
                 [key: string]: unknown;
             }[];
+            /** Scope Identity */
+            scope_identity?: {
+                [key: string]: unknown;
+            } | null;
+            /** Metrics */
+            metrics?: {
+                [key: string]: number;
+            } | null;
         };
         /** RoutingStateResponse */
         RoutingStateResponse: {
@@ -2390,6 +2398,14 @@ export interface components {
             resolutions?: {
                 [key: string]: unknown;
             }[];
+            /** Scope Identity */
+            scope_identity: {
+                [key: string]: unknown;
+            };
+            /** Metrics */
+            metrics: {
+                [key: string]: number;
+            };
             /** Integrity */
             integrity: {
                 [key: string]: unknown;

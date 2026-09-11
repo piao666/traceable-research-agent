@@ -88,13 +88,29 @@ def assess_scope_outcome(
             "Research stopped at the protected report boundary; the final report must state its limitations."
         )
     errors = list(dict.fromkeys(errors))
+    metrics = scope_evidence.get("metrics") or {}
+    raw_evidence_count = int(
+        metrics.get("raw_passage_count", len(scope_evidence.get("passages") or []))
+    )
+    effective_evidence_count = int(
+        metrics.get("effective_unique_passage_count", raw_evidence_count)
+    )
+    raw_source_count = int(
+        metrics.get("raw_source_count", len(scope_evidence.get("source_documents") or []))
+    )
+    effective_source_count = int(
+        metrics.get("effective_unique_source_count", raw_source_count)
+    )
     return {
         "version": SCOPE_OUTCOME_VERSION,
         "status": "failed" if errors else "passed",
         "error_code": errors[0] if errors else None,
         "errors": errors,
         "warnings": list(dict.fromkeys(warnings)),
-        "effective_evidence_count": len(scope_evidence.get("passages") or []),
+        "raw_evidence_count": raw_evidence_count,
+        "effective_evidence_count": effective_evidence_count,
+        "raw_source_count": raw_source_count,
+        "effective_source_count": effective_source_count,
         "run_count": len(scope_evidence.get("runs") or []),
         "node_count": len(nodes),
         "message": (

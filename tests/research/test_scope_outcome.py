@@ -34,6 +34,10 @@ def test_scope_outcome_passes_completed_evidence_node(db, r12_settings):
     materialize_run(db, root, r12_settings)
     outcome = assess_scope_outcome(db, scope, get_scope_provenance_bundle(db, scope), {})
     assert outcome["status"] == "passed"
+    assert outcome["raw_evidence_count"] == 1
+    assert outcome["effective_evidence_count"] == 1
+    assert outcome["raw_source_count"] == 1
+    assert outcome["effective_source_count"] == 1
 
 
 def test_scope_outcome_rejects_required_node_that_admits_goal_failure(db, r12_settings):
