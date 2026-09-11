@@ -27,7 +27,11 @@ from app.retrieval.contracts import (
 from app.retrieval.html_extractor import extract_html
 from app.retrieval.source_identity import source_lineage
 from app.retrieval.url_normalizer import canonicalize_url, resolve_canonical_hint
-from app.tools.fetch_cache import FetchCache, FetchCacheEntry
+from app.tools.fetch_cache import (
+    FETCH_CACHE_MAX_SOURCE_CHARS,
+    FetchCache,
+    FetchCacheEntry,
+)
 from app.tools.ssrf import validate_url
 from app.tools.web_content_cleaner import clean_web_snippet
 
@@ -98,6 +102,13 @@ class HttpBackend:
         cache_status = "disabled" if not self.cache_enabled else "miss"
         if self.cache_enabled and self.cache is not None:
             cached_entry, cache_status = self.cache.lookup(normalized.normalized_url, cache_params)
+            if (
+                cached_entry is not None
+                and cached_entry.legacy_unknown_completeness
+                and request.max_chars > cached_entry.source_content_length
+            ):
+                cached_entry = None
+                cache_status = "miss"
             if cache_status == "hit" and cached_entry is not None:
                 return self._from_cache(
                     request,
@@ -331,8 +342,16 @@ class HttpBackend:
                 tables = []
             chain = [{"method": method, "success": bool(extracted), "output_length": len(extracted)}]
 
-        truncated = len(extracted) > request.max_chars
-        content = extracted[: request.max_chars]
+        source_truncated_at_cache_limit = len(extracted) > FETCH_CACHE_MAX_SOURCE_CHARS
+        source_content = extracted[:FETCH_CACHE_MAX_SOURCE_CHARS]
+        source_content_hash = (
+            hashlib.sha256(source_content.encode("utf-8")).hexdigest()
+            if source_content
+            else None
+        )
+        view_truncated = len(source_content) > request.max_chars
+        truncated = view_truncated or source_truncated_at_cache_limit
+        content = source_content[: request.max_chars]
         quality, failure = assess_page_quality(
             content,
             title=title,
@@ -343,10 +362,19 @@ class HttpBackend:
             minimum_score=self.quality_min_score,
             structured_data=bool(tables),
         )
+        source_quality, _ = assess_page_quality(
+            source_content,
+            title=title,
+            raw_html=text if is_html else "",
+            extraction_method=method,
+            extraction_confidence=confidence,
+            truncated=source_truncated_at_cache_limit,
+            minimum_score=self.quality_min_score,
+            structured_data=bool(tables),
+        )
         canonical_url = _trusted_canonical(final_url, canonical_hint)
         normalized_final = canonicalize_url(canonical_url or final_url).normalized_url
-        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest() if content else None
-        lineage = source_lineage(normalized_final, content, {"title": title})
+        lineage = source_lineage(normalized_final, source_content, {"title": title})
         metadata: dict[str, Any] = {
             "tables": tables,
             "extraction_chain": chain,
@@ -354,6 +382,8 @@ class HttpBackend:
             "cache_status": cache_status,
             "cache_hit": cache_status in {"hit", "revalidated"},
             "raw_length": len(text),
+            "source_content_length": len(source_content),
+            "source_truncated_at_cache_limit": source_truncated_at_cache_limit,
             "source_identity": lineage.to_dict(),
         }
         status = failure_status(failure) if failure is not None else (
@@ -376,24 +406,33 @@ class HttpBackend:
             quality=quality,
             failure=failure,
             failure_reason=failure.message if failure else None,
-            content_hash=content_hash,
+            content_hash=source_content_hash,
+            source_content_hash=source_content_hash,
             canonical_url=normalized_final,
             canonical_hint=canonical_hint,
             fragment_locator=fragment_locator,
             redirect_chain=redirect_chain,
             metadata=metadata,
         )
-        if self.cache_enabled and self.cache is not None and result.usable and content_hash:
+        if self.cache_enabled and self.cache is not None and result.usable and source_content_hash:
             entry = FetchCacheEntry(
                 cache_key=self.cache._compute_key(
                     canonicalize_url(request.url).normalized_url,
                     self._cache_params(),
                 ),
-                url=canonicalize_url(request.url).normalized_url,
-                content_hash=content_hash,
-                content=content,
+                canonical_url=normalized_final,
+                final_url=final_url,
+                source_content=source_content,
+                source_content_length=len(source_content),
+                source_content_hash=source_content_hash,
+                source_truncated_at_cache_limit=source_truncated_at_cache_limit,
+                content_basis=(
+                    "partial"
+                    if source_truncated_at_cache_limit
+                    else source_quality.content_basis
+                ),
                 content_type=result.content_type,
-                fetched_at=time.time(),
+                cached_at_epoch=time.time(),
                 ttl_seconds=self.cache_ttl_seconds,
                 etag=response.headers.get("etag"),
                 extraction_method=method,
@@ -406,7 +445,7 @@ class HttpBackend:
                     "canonical_hint": canonical_hint,
                     "published_at": published_at,
                     "redirect_chain": redirect_chain,
-                    "quality": quality.to_dict(),
+                    "quality": source_quality.to_dict(),
                     "tables": tables,
                     "extraction_chain": chain,
                     "source_identity": lineage.to_dict(),
@@ -425,11 +464,18 @@ class HttpBackend:
         status: str,
     ) -> FetchResult:
         meta = dict(entry.metadata)
-        content = entry.content[: request.max_chars]
-        truncated = len(entry.content) > request.max_chars
+        source_content = entry.source_content
+        content = source_content[: request.max_chars]
+        view_truncated = len(source_content) > request.max_chars
+        truncated = (
+            view_truncated
+            or entry.source_truncated_at_cache_limit
+            or entry.content_basis == "partial"
+            or entry.legacy_unknown_completeness
+        )
         quality, failure = assess_page_quality(
             content,
-            title=str(meta.get("title") or entry.url),
+            title=str(meta.get("title") or entry.canonical_url),
             extraction_method=entry.extraction_method,
             extraction_confidence=entry.extraction_confidence,
             truncated=truncated,
@@ -441,8 +487,8 @@ class HttpBackend:
         return FetchResult(
             requested_url=request.url,
             transport_url=str(meta.get("transport_url") or transport_url),
-            final_url=str(meta.get("final_url") or entry.url),
-            title=str(meta.get("title") or entry.url),
+            final_url=str(meta.get("final_url") or entry.final_url),
+            title=str(meta.get("title") or entry.canonical_url),
             content=content,
             published_at=meta.get("published_at"),
             content_type=entry.content_type,
@@ -455,8 +501,9 @@ class HttpBackend:
             quality=quality,
             failure=failure,
             failure_reason=failure.message if failure else None,
-            content_hash=entry.content_hash,
-            canonical_url=str(meta.get("canonical_url") or entry.url),
+            content_hash=entry.source_content_hash,
+            source_content_hash=entry.source_content_hash,
+            canonical_url=str(meta.get("canonical_url") or entry.canonical_url),
             canonical_hint=meta.get("canonical_hint"),
             fragment_locator=fragment_locator,
             redirect_chain=list(meta.get("redirect_chain") or []),
@@ -468,7 +515,10 @@ class HttpBackend:
                 "cache_status": status,
                 "cache_hit": True,
                 "cache_age_seconds": round(entry.age_seconds, 3),
-                "cache_fetched_at": entry.fetched_at,
+                "cache_fetched_at": entry.cached_at_epoch,
+                "source_content_length": entry.source_content_length,
+                "source_truncated_at_cache_limit": entry.source_truncated_at_cache_limit,
+                "legacy_unknown_completeness": entry.legacy_unknown_completeness,
             },
         )
 

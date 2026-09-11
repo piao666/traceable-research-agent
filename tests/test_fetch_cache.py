@@ -41,9 +41,15 @@ class WebFetcherCacheTests(unittest.TestCase):
     def _client(self, handler) -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(handler))
 
-    def _fetch(self, client: httpx.Client, cache: FetchCache | None = None):
+    def _fetch(
+        self,
+        client: httpx.Client,
+        cache: FetchCache | None = None,
+        *,
+        max_chars: int = 2000,
+    ):
         return web_fetch(
-            {"urls": [URL], "max_chars": 2000},
+            {"urls": [URL], "max_chars": max_chars},
             settings_obj=self.settings,
             cache=cache or self.cache,
             client=client,
@@ -51,7 +57,7 @@ class WebFetcherCacheTests(unittest.TestCase):
 
     def _expire_entry(self) -> None:
         cache_key = next(iter(self.cache._index))
-        self.cache._index[cache_key]["fetched_at"] = time.time() - 120
+        self.cache._index[cache_key]["cached_at_epoch"] = time.time() - 120
         self.cache._index[cache_key]["ttl_seconds"] = 1
         self.cache._save_index()
 
@@ -156,7 +162,7 @@ class WebFetcherCacheTests(unittest.TestCase):
 
         client = self._client(handler)
         self._fetch(client)
-        content_hash = next(iter(self.cache._index.values()))["content_hash"]
+        content_hash = next(iter(self.cache._index.values()))["source_content_hash"]
         Path(self.temp_dir.name, f"{content_hash}.txt").write_text("tampered", encoding="utf-8")
         recovered = self._fetch(client)
 
@@ -182,17 +188,97 @@ class WebFetcherCacheTests(unittest.TestCase):
         self.assertEqual(second.output["pages"][0]["cache_status"], "miss")
         self.assertEqual(self.cache.stats()["total_entries"], 0)
 
+    def test_small_view_then_large_cache_read_returns_full_source_extraction(self) -> None:
+        calls = 0
+        source = ("Reliable source extraction with distinct facts and context. " * 800).strip()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                200,
+                text=source,
+                headers={"content-type": "text/plain"},
+                request=request,
+            )
+
+        client = self._client(handler)
+        first = self._fetch(client, max_chars=8000)
+        second = self._fetch(client, max_chars=50000)
+
+        first_page = first.output["pages"][0]
+        second_page = second.output["pages"][0]
+        entry = next(iter(self.cache._index.values()))
+        self.assertEqual(calls, 1)
+        self.assertEqual(len(first_page["content"]), 8000)
+        self.assertEqual(first_page["content_basis"], "partial")
+        self.assertEqual(entry["schema_version"], "fetch-cache-v2")
+        self.assertEqual(entry["source_content_length"], len(source))
+        self.assertEqual(second_page["cache_status"], "hit")
+        self.assertEqual(second_page["content"], source)
+        self.assertEqual(second_page["content_basis"], "full_text")
+        self.assertEqual(second_page["source_content_hash"], entry["source_content_hash"])
+
+    def test_legacy_unknown_cache_is_bypassed_for_larger_request(self) -> None:
+        legacy_content = "L" * 8000
+        legacy_hash = hashlib.sha256(legacy_content.encode("utf-8")).hexdigest()
+        params = {
+            "extractor_version": "retrieval-r11-v1",
+            "trafilatura_enabled": False,
+            "max_response_bytes": self.settings.web_fetcher_max_response_bytes,
+        }
+        cache_key = self.cache._compute_key(URL, params)
+        Path(self.temp_dir.name, f"{legacy_hash}.txt").write_text(
+            legacy_content, encoding="utf-8"
+        )
+        self.cache._index[cache_key] = {
+            "url": URL,
+            "content_hash": legacy_hash,
+            "content_type": "text/plain",
+            "fetched_at": time.time(),
+            "ttl_seconds": 60,
+            "extraction_method": "plain_text",
+            "extraction_confidence": 0.8,
+            "metadata": {},
+        }
+        self.assertTrue(self.cache._save_index())
+        calls = 0
+        fresh_source = ("Fresh complete extraction with verifiable detail. " * 900).strip()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                200,
+                text=fresh_source,
+                headers={"content-type": "text/plain"},
+                request=request,
+            )
+
+        result = self._fetch(self._client(handler), max_chars=50000)
+
+        page = result.output["pages"][0]
+        self.assertEqual(calls, 1)
+        self.assertEqual(page["content"], fresh_source)
+        self.assertEqual(page["content_basis"], "full_text")
+        self.assertFalse(page.get("legacy_unknown_completeness", False))
+
     def test_multiple_cache_instances_merge_index_updates(self) -> None:
         second_cache = FetchCache(self.temp_dir.name, default_ttl=60)
 
         def entry(cache: FetchCache, url: str, content: str) -> FetchCacheEntry:
+            content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
             return FetchCacheEntry(
                 cache_key=cache._compute_key(url),
-                url=url,
-                content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                content=content,
+                canonical_url=url,
+                final_url=url,
+                source_content=content,
+                source_content_length=len(content),
+                source_content_hash=content_hash,
+                source_truncated_at_cache_limit=False,
+                content_basis="full_text",
                 content_type="text/html",
-                fetched_at=time.time(),
+                cached_at_epoch=time.time(),
                 ttl_seconds=60,
             )
 

@@ -436,13 +436,18 @@ def run_extractor_case(db, case: dict[str, Any]) -> dict[str, Any]:
             with tempfile.TemporaryDirectory() as cache_dir:
                 cache = FetchCache(cache_dir, default_ttl=int(arguments.get("ttl") or 60))
                 params = {"extractor_version": "eval"}
+                content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
                 entry = FetchCacheEntry(
                     cache_key=cache._compute_key("https://example.com", params),
-                    url="https://example.com",
-                    content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
-                    content=content,
+                    canonical_url="https://example.com",
+                    final_url="https://example.com",
+                    source_content=content,
+                    source_content_length=len(content),
+                    source_content_hash=content_hash,
+                    source_truncated_at_cache_limit=False,
+                    content_basis="full_text",
                     content_type="text/html",
-                    fetched_at=time.time() - float(arguments.get("age_seconds") or 0),
+                    cached_at_epoch=time.time() - float(arguments.get("age_seconds") or 0),
                     ttl_seconds=int(arguments.get("ttl") or 60),
                     extraction_method="beautifulsoup",
                     extraction_confidence=0.7,

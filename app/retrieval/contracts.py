@@ -167,6 +167,7 @@ class FetchResult(BaseModel):
     failure: FetchFailure | None = None
     failure_reason: str | None = None
     content_hash: str | None = None
+    source_content_hash: str | None = None
     canonical_url: str | None = None
     canonical_hint: str | None = None
     fragment_locator: str | None = None
@@ -203,6 +204,8 @@ class FetchResult(BaseModel):
         }
         if self.content_hash:
             page["content_hash"] = self.content_hash
+        if self.source_content_hash:
+            page["source_content_hash"] = self.source_content_hash
         if self.canonical_hint:
             page["canonical_hint"] = self.canonical_hint
         if self.fragment_locator:
