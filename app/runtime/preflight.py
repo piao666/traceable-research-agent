@@ -77,6 +77,41 @@ def _safe_llm_probe(client: LLMClient) -> dict[str, Any]:
     }
 
 
+def _llm_role_identity(settings: Settings, role: str) -> tuple[str, str | None]:
+    provider = (
+        settings.react_llm_provider or settings.llm_provider
+        if role == "actor"
+        else settings.llm_provider
+    )
+    configured = settings.get_llm_provider_config(provider)
+    model = (
+        settings.react_llm_model or configured.get("model")
+        if role == "actor"
+        else settings.llm_model or configured.get("model")
+    )
+    return provider, str(model) if model else None
+
+
+def _llm_capability(
+    template: dict[str, Any],
+    name: str,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        **template,
+        "name": name,
+        "reachable": result["success"],
+        "usable": result["success"],
+        "detail": result["detail"],
+        "error_type": result["error_type"],
+        "checks": {
+            "usage_parsed": result["usage_parsed"],
+            "structured_output": result["structured_output"],
+        },
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _successful_fetch_page(output: dict[str, Any]) -> dict[str, Any] | None:
     for page in output.get("pages") or []:
         if not isinstance(page, dict):
@@ -120,6 +155,8 @@ def run_runtime_preflight(
     settings: Settings,
     *,
     llm_client: LLMClient | None = None,
+    actor_client: LLMClient | None = None,
+    synthesizer_client: LLMClient | None = None,
     searcher: Callable[..., ToolResult] = tavily_search,
     fetcher: Callable[..., ToolResult] = web_fetch,
 ) -> dict[str, Any]:
@@ -141,20 +178,67 @@ def run_runtime_preflight(
             "warnings": warnings,
         }
 
-    llm_result = _safe_llm_probe(llm_client or create_llm_client(settings))
-    _replace(
-        items,
-        "llm",
-        reachable=llm_result["success"],
-        usable=llm_result["success"],
-        detail=llm_result["detail"],
-        error_type=llm_result["error_type"],
-        checks={"usage_parsed": llm_result["usage_parsed"], "structured_output": llm_result["structured_output"]},
+    actor_identity = _llm_role_identity(settings, "actor")
+    synthesizer_identity = _llm_role_identity(settings, "synthesizer")
+    same_role_model = actor_identity == synthesizer_identity
+    legacy_client = llm_client
+    actor_probe_client = actor_client or legacy_client
+    synthesizer_probe_client = synthesizer_client or legacy_client
+    if same_role_model:
+        shared_client = (
+            actor_probe_client
+            or synthesizer_probe_client
+            or create_llm_client(settings, actor_identity[0], actor_identity[1])
+        )
+        actor_result = synthesizer_result = _safe_llm_probe(shared_client)
+    else:
+        actor_client_for_probe = actor_probe_client or create_llm_client(
+            settings, actor_identity[0], actor_identity[1]
+        )
+        synthesizer_client_for_probe = synthesizer_probe_client or create_llm_client(
+            settings, synthesizer_identity[0], synthesizer_identity[1]
+        )
+        actor_result = _safe_llm_probe(actor_client_for_probe)
+        synthesizer_result = _safe_llm_probe(synthesizer_client_for_probe)
+
+    llm_template = next(
+        (item for item in items if item.get("name") == "llm"),
+        {"category": "llm", "mode": "real"},
     )
-    if not llm_result["success"]:
-        blockers.append({"capability": "llm", "error_type": str(llm_result["error_type"]), "message": str(llm_result["detail"])})
-    elif not llm_result["usage_parsed"]:
-        warnings.append("模型响应可用，但未返回可解析的 usage；Token 预算将采用本地保守估算。")
+    items = [item for item in items if item.get("name") != "llm"]
+    if same_role_model:
+        items.insert(0, _llm_capability(llm_template, "llm", actor_result))
+    else:
+        items[0:0] = [
+            _llm_capability(llm_template, "llm_actor", actor_result),
+            _llm_capability(
+                llm_template,
+                "llm_synthesizer",
+                synthesizer_result,
+            ),
+        ]
+
+    actor_required = settings.execution_mode == "react" or settings.deep_research_enabled
+    synthesizer_required = settings.report_generation_mode == "llm"
+    if actor_required and not actor_result["success"]:
+        blockers.append(
+            {
+                "capability": "llm_actor",
+                "error_type": str(actor_result["error_type"]),
+                "message": str(actor_result["detail"]),
+            }
+        )
+    if synthesizer_required and not synthesizer_result["success"]:
+        blockers.append(
+            {
+                "capability": "report_synthesis",
+                "error_type": str(synthesizer_result["error_type"]),
+                "message": str(synthesizer_result["detail"]),
+            }
+        )
+    for role_result in {id(actor_result): actor_result, id(synthesizer_result): synthesizer_result}.values():
+        if role_result["success"] and not role_result["usage_parsed"]:
+            warnings.append("模型响应可用，但未返回可解析的 usage；Token 预算将采用本地保守估算。")
 
     try:
         search_result = searcher(

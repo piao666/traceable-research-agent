@@ -646,5 +646,5 @@ def run_deepening(
         db,
         run_id,
         settings_obj,
-        llm_client=llm_client,
+        actor_client=llm_client,
     )

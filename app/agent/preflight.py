@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -12,6 +13,12 @@ from app.trace import store
 from app.trace.logger import record_trace_event
 from app.agent.execution_policy import allowed_tool_names, bind_run_policy, real_sources
 from app.tools.registry import get_tool
+
+
+@dataclass(frozen=True)
+class RoleAvailability:
+    actor: bool = False
+    synthesizer: bool = False
 
 
 def capability_summary(settings: Settings) -> dict[str, Any]:
@@ -54,10 +61,18 @@ def readiness_error_code(result: dict) -> str:
 
 
 def check_plan_readiness(
-    plan: dict[str, Any], settings: Settings, *, llm_available: bool = False,
+    plan: dict[str, Any],
+    settings: Settings,
+    *,
+    role_availability: RoleAvailability | None = None,
+    llm_available: bool = False,
 ) -> dict[str, Any]:
     blockers: list[dict[str, str]] = []
     warnings: list[str] = []
+    roles = role_availability or RoleAvailability(
+        actor=llm_available,
+        synthesizer=llm_available,
+    )
     tools = {str(step.get("tool_name") or "") for step in plan.get("steps", [])
              if step.get("required") is not False}
     tools.update(plan.get("required_tools") or [])
@@ -108,13 +123,13 @@ def check_plan_readiness(
         provider = settings.react_llm_provider or settings.llm_provider
         if not settings.react_enabled:
             missing("capability_disabled", "react", "REACT_ENABLED", "ReAct execution is disabled.")
-        elif not llm_available and not settings.get_llm_api_key(provider):
+        elif not roles.actor and not settings.get_llm_api_key(provider):
             variable = settings.get_llm_provider_config(provider).get("api_key_env_name") or "LLM_PROVIDER"
             missing("missing_configuration", "react", variable,
                     f"{variable} is not configured; selected ReAct provider is unavailable.")
-    elif settings.react_enabled and not settings.get_llm_api_key(settings.react_llm_provider or settings.llm_provider) and not llm_available:
+    elif settings.react_enabled and not settings.get_llm_api_key(settings.react_llm_provider or settings.llm_provider) and not roles.actor:
         warnings.append("Optional adaptive ReAct upgrade is unavailable; planned research remains available.")
-    if settings.report_generation_mode == "llm" and not llm_available and not settings.get_llm_api_key(settings.llm_provider):
+    if settings.report_generation_mode == "llm" and not roles.synthesizer and not settings.get_llm_api_key(settings.llm_provider):
         variable = settings.get_llm_provider_config(settings.llm_provider).get("api_key_env_name") or "LLM_PROVIDER"
         missing("missing_configuration", "report_synthesis", variable,
                 f"{variable} is not configured; selected LLM report mode is unavailable.")
@@ -126,7 +141,10 @@ def check_plan_readiness(
 
 def enforce_execution_readiness(
     db: Session, run_id: str, plan: dict[str, Any], settings: Settings,
-    *, llm_available: bool = False, decision_tool: str | None = None,
+    *,
+    role_availability: RoleAvailability | None = None,
+    llm_available: bool = False,
+    decision_tool: str | None = None,
 ) -> bool:
     """Last-line guard for workers/direct executors (HTTP preflight preserves drafts)."""
     run = store.get_fresh_agent_run(db, run_id)
@@ -137,7 +155,12 @@ def enforce_execution_readiness(
         plan["task_contract"] = build_task_contract(run.task, run.created_at)
     bind_run_policy(run, plan)
     checked_plan = {**plan, "steps": [{"tool_name": decision_tool}], "required_tools": []} if decision_tool else plan
-    result = check_plan_readiness(checked_plan, settings, llm_available=llm_available)
+    result = check_plan_readiness(
+        checked_plan,
+        settings,
+        role_availability=role_availability,
+        llm_available=llm_available,
+    )
     plan["preflight"] = result
     store.replace_agent_run_plan(db, run_id, plan)
     run = store.get_fresh_agent_run(db, run_id)

@@ -144,6 +144,29 @@ class ProviderAdapterTests(unittest.TestCase):
         self.assertEqual(description["provider"], "openai_compatible")
         self.assertNotIn("private-key", json.dumps(description))
 
+    def test_report_resolver_uses_only_synthesizer_provider_and_model(self):
+        from app.agent.report_generation import resolve_report_llm_client
+
+        settings = Settings(
+            report_generation_mode="llm",
+            react_llm_provider="qwen",
+            react_llm_model="actor-A",
+            llm_provider="deepseek",
+            llm_model="synthesizer-B",
+            deepseek_api_key="report-key",
+        )
+        synthesizer = FixtureLLM(
+            LLMResponse(success=True, content="report", provider="deepseek")
+        )
+        with patch(
+            "app.agent.report_generation.create_llm_client",
+            return_value=synthesizer,
+        ) as create:
+            resolved = resolve_report_llm_client(settings)
+
+        self.assertIs(resolved, synthesizer)
+        create.assert_called_once_with(settings, "deepseek", "synthesizer-B")
+
     def test_qwen_and_deepseek_aliases_keep_legacy_defaults(self):
         qwen = create_llm_client(Settings(llm_provider="qwen", qwen_api_key="q"))
         deepseek = create_llm_client(Settings(llm_provider="deepseek", deepseek_api_key="d"))
@@ -342,7 +365,7 @@ class RuntimePreflightTests(unittest.TestCase):
         result = run_runtime_preflight(self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher)
         self.assertTrue(result["ready"])
         self.assertTrue(result["verified"])
-        self.assertEqual(llm.calls, 1)
+        self.assertEqual(llm.calls, 2)
         self.assertNotIn("private-key", json.dumps(result, default=str))
         fetch = next(item for item in result["capabilities"] if item["name"] == "web_fetcher")
         self.assertEqual(fetch["fetch_backend"], "http")
@@ -490,6 +513,132 @@ class RuntimePreflightTests(unittest.TestCase):
         self.assertFalse(result["verified"])
         create.assert_not_called()
         search.assert_not_called()
+
+    def test_distinct_actor_and_synthesizer_are_probed_and_displayed(self):
+        actor = FixtureLLM(
+            LLMResponse(success=True, content='{"ok":true}', provider="actor", model="A")
+        )
+        synthesizer = FixtureLLM(
+            LLMResponse(success=True, content='{"ok":true}', provider="report", model="B")
+        )
+        settings = self.real_settings().model_copy(
+            update={
+                "react_llm_provider": "qwen",
+                "react_llm_model": "A",
+                "llm_provider": "openai_compatible",
+                "llm_model": "B",
+            }
+        )
+
+        def searcher(_arguments, **_kwargs):
+            return ToolResult(
+                success=True,
+                output={"results": [{"url": "https://docs.example/page"}]},
+                metadata={"data_source": "tavily_api", "fallback_used": False},
+            )
+
+        def fetcher(_arguments, **_kwargs):
+            return ToolResult(
+                success=True,
+                output={
+                    "fetched_count": 1,
+                    "pages": [
+                        {
+                            "content": "evidence",
+                            "fetch_status": "success",
+                            "fetch_backend": "http",
+                            "provider": "local_http",
+                        }
+                    ],
+                },
+            )
+
+        result = run_runtime_preflight(
+            settings,
+            actor_client=actor,
+            synthesizer_client=synthesizer,
+            searcher=searcher,
+            fetcher=fetcher,
+        )
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(actor.calls, 1)
+        self.assertEqual(synthesizer.calls, 1)
+        names = {item["name"] for item in result["capabilities"]}
+        self.assertIn("llm_actor", names)
+        self.assertIn("llm_synthesizer", names)
+
+    def test_matching_actor_and_synthesizer_reuse_one_probe(self):
+        settings = self.real_settings().model_copy(
+            update={
+                "react_llm_provider": "openai_compatible",
+                "react_llm_model": "shared-model",
+                "llm_provider": "openai_compatible",
+                "llm_model": "shared-model",
+            }
+        )
+        probe_result = {
+            "success": True,
+            "error_type": None,
+            "detail": "模型最小 JSON 响应验证通过",
+            "usage_parsed": True,
+            "structured_output": True,
+        }
+        with (
+            patch(
+                "app.runtime.preflight.create_llm_client",
+                return_value=Mock(),
+            ) as create,
+            patch(
+                "app.runtime.preflight._safe_llm_probe",
+                return_value=probe_result,
+            ) as probe,
+        ):
+            result = run_runtime_preflight(
+                settings,
+                searcher=Mock(
+                    return_value=ToolResult(
+                        success=False,
+                        metadata={"error_type": "provider_unavailable"},
+                    )
+                ),
+            )
+
+        create.assert_called_once_with(
+            settings,
+            "openai_compatible",
+            "shared-model",
+        )
+        probe.assert_called_once()
+        self.assertIn(
+            "llm",
+            {item["name"] for item in result["capabilities"]},
+        )
+
+    def test_deep_preflight_blocks_unavailable_report_synthesizer(self):
+        from app.agent.preflight import RoleAvailability, check_plan_readiness
+
+        settings = Settings(
+            research_profile="deep",
+            execution_mode="react",
+            react_enabled=True,
+            react_llm_provider="qwen",
+            react_llm_model="A",
+            report_generation_mode="llm",
+            llm_provider="deepseek",
+            llm_model="B",
+        )
+        result = check_plan_readiness(
+            {"execution_mode": "react", "steps": []},
+            settings,
+            role_availability=RoleAvailability(actor=True, synthesizer=False),
+        )
+
+        self.assertFalse(result["ready"])
+        self.assertEqual(
+            [item["capability"] for item in result["blockers"]],
+            ["report_synthesis"],
+        )
 
 
 class RealRuntimeValidatorTests(unittest.TestCase):

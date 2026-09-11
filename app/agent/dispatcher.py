@@ -13,7 +13,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.agent.executor import run_plan
-from app.agent.preflight import enforce_execution_readiness
+from app.agent.preflight import RoleAvailability, enforce_execution_readiness
 from app.agent.outcome import fail_execution, result_integrity
 from app.config import Settings, settings
 from app.llm.base import LLMClient
@@ -133,8 +133,31 @@ def run_task_by_mode(
         from app.agent.executor import _summary
         return _refresh_result(db, run_id, _summary(run))
     if run is not None and run.status not in {"failed", "cancelled", "completed", "waiting_human", "waiting_human_plan"}:
+        injected_actor_available = bool(
+            llm_client and llm_client.is_available()
+        )
+        actor_provider = settings_obj.react_llm_provider or settings_obj.llm_provider
+        actor_model = settings_obj.react_llm_model or settings_obj.get_llm_provider_config(
+            actor_provider
+        ).get("model")
+        synthesizer_model = settings_obj.llm_model or settings_obj.get_llm_provider_config(
+            settings_obj.llm_provider
+        ).get("model")
+        same_llm_role = (
+            actor_provider,
+            actor_model,
+        ) == (
+            settings_obj.llm_provider,
+            synthesizer_model,
+        )
         if not enforce_execution_readiness(db, run_id, plan, settings_obj,
-                                          llm_available=bool(llm_client and llm_client.is_available())):
+                                          role_availability=RoleAvailability(
+                                              actor=injected_actor_available,
+                                              synthesizer=(
+                                                  injected_actor_available
+                                                  and same_llm_role
+                                              ),
+                                          )):
             from app.agent.executor import _summary
             return _refresh_result(db, run_id, _summary(_store.get_fresh_agent_run(db, run_id)))
     if effective_mode == "react" and not settings_obj.react_enabled:
@@ -156,7 +179,7 @@ def run_task_by_mode(
                 from app.research.orchestrator import run_deep_research_v2
 
                 result = run_deep_research_v2(
-                    db, run_id, settings_obj, llm_client=llm_client
+                    db, run_id, settings_obj, actor_client=llm_client
                 )
             else:
                 result = run_react_task(db, run_id, settings_obj, llm_client=llm_client)

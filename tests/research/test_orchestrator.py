@@ -17,8 +17,21 @@ from .conftest import add_web_trace, create_root
 
 def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_settings):
     root = create_root(db)
+    actor_client = FakeReActLLMClient([])
+    actor_client.describe = lambda: {
+        "provider": "fixture",
+        "model": "actor-A",
+        "available": True,
+    }
+    synthesizer_client = FakeReActLLMClient([])
+    synthesizer_client.describe = lambda: {
+        "provider": "fixture",
+        "model": "synthesizer-B",
+        "available": True,
+    }
 
     def fake_node_runner(session, run_id, settings, _client):
+        assert _client.describe()["model"] == "actor-A"
         run = store.mark_agent_run_running_unless_cancelled(session, run_id)
         suffix = "root" if run_id == root.run_id else "child"
         add_web_trace(session, run_id, f"Verified {suffix} evidence for final synthesis.", suffix)
@@ -35,6 +48,7 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
         return {"run_id": run_id, "status": "completed"}
 
     def branch_planner(_client, **kwargs):
+        assert _client.describe()["model"] == "actor-A"
         if kwargs["depth"] == 1:
             return {
                 "branches": [
@@ -54,6 +68,7 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
     captured = {}
 
     def report_generator(_run, _plan, _observations, _traces, **kwargs):
+        captured["report_model"] = kwargs["llm_client"].describe()["model"]
         bundle = kwargs["provenance_bundle"]
         captured["bundle"] = bundle
         child_citation = next(
@@ -74,8 +89,9 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
         result = run_deep_research_v2(
             db,
             root.run_id,
-            r12_settings,
-            FakeReActLLMClient([]),
+            r12_settings.model_copy(update={"report_generation_mode": "llm"}),
+            actor_client,
+            report_llm_client=synthesizer_client,
             branch_planner=branch_planner,
             node_executor=ResearchNodeExecutor(runner=fake_node_runner),
             report_generator=report_generator,
@@ -84,6 +100,7 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
     assert result["status"] == "completed"
     assert result["execution_mode"] == "deep_research_v2"
     assert result["research_node_count"] == 2
+    assert captured["report_model"] == "synthesizer-B"
     origin_run_ids = {item["origin_run_id"] for item in captured["bundle"]["passages"]}
     assert root.run_id in origin_run_ids
     assert len(origin_run_ids) == 2

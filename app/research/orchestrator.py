@@ -64,8 +64,9 @@ def run_deep_research_v2(
     db: Session,
     run_id: str,
     settings_obj: Settings = _settings,
-    llm_client: LLMClient | None = None,
+    actor_client: LLMClient | None = None,
     *,
+    report_llm_client: LLMClient | None = None,
     branch_planner: BranchPlanner = plan_research_branches,
     node_executor: ResearchNodeExecutor | None = None,
     report_generator: ReportGenerator = generate_markdown_report,
@@ -118,8 +119,16 @@ def run_deep_research_v2(
         }
     )
     store.replace_agent_run_plan(db, run_id, plan)
+    actor_client = budget_client(
+        actor_client
+        or create_llm_client(
+            settings_obj,
+            settings_obj.react_llm_provider,
+            settings_obj.react_llm_model,
+        )
+    )
     try:
-        root_result = run_react_task(db, run_id, settings_obj, llm_client)
+        root_result = run_react_task(db, run_id, settings_obj, actor_client)
     except BudgetExceeded:
         root_node.status = "failed"
         db.commit()
@@ -143,14 +152,6 @@ def run_deep_research_v2(
     root_node.status = "completed"
     db.commit()
 
-    client = budget_client(
-        llm_client
-        or create_llm_client(
-            settings_obj,
-            settings_obj.react_llm_provider,
-            settings_obj.react_llm_model,
-        )
-    )
     executor = node_executor or ResearchNodeExecutor()
     frontier: deque[ResearchNode] = deque([root_node])
     prior_queries = [root.task]
@@ -181,7 +182,7 @@ def run_deep_research_v2(
         parent_traces = store.list_tool_traces(db, parent_node.run_id or run_id)
         try:
             branch_plan = branch_planner(
-                client,
+                actor_client,
                 task=parent_node.query,
                 observations=load_observations(parent_traces),
                 prior_queries=prior_queries,
@@ -265,7 +266,9 @@ def run_deep_research_v2(
             )
             prior_queries.append(node.query)
             try:
-                result = executor.execute(db, scope, node, settings_obj, client)
+                result = executor.execute(
+                    db, scope, node, settings_obj, actor_client
+                )
             except BudgetExceeded:
                 update_scope_status(db, scope.scope_id, "failed")
                 raise
@@ -340,7 +343,7 @@ def run_deep_research_v2(
 
     traces = list_scope_traces(db, scope.scope_id)
     observations = load_observations(traces)
-    report_client = resolve_report_llm_client(settings_obj, client)
+    report_client = resolve_report_llm_client(settings_obj, report_llm_client)
     report_responses: list[Any] = []
     citation_reports: list[Any] = []
     reference_reports: list[Any] = []
