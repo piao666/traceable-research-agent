@@ -998,7 +998,7 @@ def _render_tier_distribution(
         lines.append("")
 
     # T2-only claims detection
-    t2_only_claims: list[str] = []
+    tiers_by_claim: dict[str, set[str]] = {}
     report_claims = {rc["report_claim_id"]: rc for rc in bundle.get("report_claims") or []}
     passages = {p["passage_id"]: p for p in bundle.get("passages") or []}
     for citation in bundle.get("citations") or []:
@@ -1012,11 +1012,15 @@ def _render_tier_distribution(
             except Exception:
                 pmeta = {}
         tier = pmeta.get("source_tier", "T2") if isinstance(pmeta, dict) else "T2"
-        if tier == "T2" and claim_id and claim_id not in t2_only_claims:
-            claim = report_claims.get(claim_id) or {}
-            claim_text = str(claim.get("claim_text") or "")[:120]
-            if claim_text:
-                t2_only_claims.append(claim_text)
+        if claim_id:
+            tiers_by_claim.setdefault(claim_id, set()).add(tier)
+
+    t2_only_claims = [
+        str((report_claims.get(claim_id) or {}).get("claim_text") or "")[:120]
+        for claim_id, tiers in tiers_by_claim.items()
+        if tiers == {"T2"}
+        and str((report_claims.get(claim_id) or {}).get("claim_text") or "")
+    ]
 
     if t2_only_claims:
         lines.append("### 仅由 T2 来源支撑的结论")

@@ -44,6 +44,42 @@ class GithubEvidenceRoleTests(unittest.TestCase):
                 )
 
 
+class TierOnlyClaimTests(unittest.TestCase):
+    def test_mixed_tier_claim_is_not_reported_as_t2_only(self):
+        from app.agent.reporter import _render_tier_distribution
+
+        bundle = {
+            "source_documents": [
+                {
+                    "canonical_uri": "https://example.com/source",
+                    "metadata": {
+                        "research_eligible": True,
+                        "source_tier": "T0",
+                    },
+                }
+            ],
+            "report_claims": [
+                {"report_claim_id": "mixed", "claim_text": "Mixed support"},
+                {"report_claim_id": "t2-only", "claim_text": "Only community support"},
+            ],
+            "passages": [
+                {"passage_id": "p-t0", "metadata": {"source_tier": "T0"}},
+                {"passage_id": "p-t2-a", "metadata": {"source_tier": "T2"}},
+                {"passage_id": "p-t2-b", "metadata": {"source_tier": "T2"}},
+            ],
+            "citations": [
+                {"report_claim_id": "mixed", "passage_id": "p-t0"},
+                {"report_claim_id": "mixed", "passage_id": "p-t2-a"},
+                {"report_claim_id": "t2-only", "passage_id": "p-t2-b"},
+            ],
+        }
+
+        rendered = "\n".join(_render_tier_distribution(bundle, {}))
+
+        self.assertNotIn("Mixed support", rendered)
+        self.assertIn("Only community support", rendered)
+
+
 # ── Helper: create valid PDF bytes using PyMuPDF ─────────────────────────
 
 def _make_minimal_pdf(pages: int = 2) -> bytes:
