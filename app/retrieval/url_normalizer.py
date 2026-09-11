@@ -29,6 +29,12 @@ class CanonicalUrl:
 
 
 def canonicalize_url(url: str) -> CanonicalUrl:
+    """Return a stable identity URL without making transport or safety decisions.
+
+    The normalized value is suitable for cache keys, deduplication, lineage,
+    and display. Callers must never replace the URL sent over the network with
+    this identity projection.
+    """
     raw = str(url or "").strip()
     try:
         parsed = urlsplit(raw)

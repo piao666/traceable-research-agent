@@ -104,6 +104,7 @@ def test_source_snapshot_persists_fetch_and_extraction_metadata() -> None:
     )
     metadata = {
         "requested_url": "https://example.com/raw?utm_source=x",
+        "transport_url": "https://example.com/raw?utm_source=x",
         "final_url": "https://example.com/final",
         "canonical_url": "https://example.com/canonical",
         "provider": "local_http",
@@ -146,6 +147,7 @@ def test_source_snapshot_persists_fetch_and_extraction_metadata() -> None:
     assert document_metadata["source_identity"]["independence_group"] == "srcgrp_fixture"
     for key in (
         "requested_url",
+        "transport_url",
         "final_url",
         "canonical_url",
         "provider",

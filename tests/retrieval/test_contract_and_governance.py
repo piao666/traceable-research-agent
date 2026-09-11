@@ -24,6 +24,7 @@ class RetrievalContractTests(unittest.TestCase):
         failure = classify_http_status(403)
         page = PageFetchResult(
             requested_url="https://example.com/a",
+            transport_url="https://example.com/a?sig=abc&id=123",
             final_url="https://example.com/a",
             failure=failure,
         ).to_page_dict()
@@ -32,6 +33,7 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertEqual(page["error_detail"]["recommended_next_strategy"], "browser")
         self.assertFalse(page["error_detail"]["retryable"])
         self.assertEqual(page["fetch_backend"], "http")
+        self.assertEqual(page["transport_url"], "https://example.com/a?sig=abc&id=123")
 
 
 class FetchFailureClassifierTests(unittest.TestCase):

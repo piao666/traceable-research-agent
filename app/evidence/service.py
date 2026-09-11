@@ -396,6 +396,7 @@ def _materialize_item(
                     key: item.metadata[key]
                     for key in (
                         "requested_url",
+                        "transport_url",
                         "final_url",
                         "canonical_url",
                         "canonical_hint",

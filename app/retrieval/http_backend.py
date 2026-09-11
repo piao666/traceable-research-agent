@@ -84,22 +84,28 @@ class HttpBackend:
                 tool_scoped=True,
             )
             return self._failed(requested, failure, started)
-        validated = _validated_url(requested)
-        if validated is None:
+        transport_url = _validated_url(requested)
+        if transport_url is None:
             failure = make_failure(
                 FetchFailureCode.SSRF_BLOCKED,
                 "URL failed validation (non-http scheme, credentials, or private/reserved host).",
             )
             return self._failed(requested, failure, started)
 
-        normalized = canonicalize_url(validated)
+        normalized = canonicalize_url(transport_url)
         cache_params = self._cache_params()
         cached_entry: FetchCacheEntry | None = None
         cache_status = "disabled" if not self.cache_enabled else "miss"
         if self.cache_enabled and self.cache is not None:
             cached_entry, cache_status = self.cache.lookup(normalized.normalized_url, cache_params)
             if cache_status == "hit" and cached_entry is not None:
-                return self._from_cache(request, normalized.fragment_locator, cached_entry, cache_status)
+                return self._from_cache(
+                    request,
+                    transport_url,
+                    normalized.fragment_locator,
+                    cached_entry,
+                    cache_status,
+                )
 
         owned_client = None
         if self.client is None:
@@ -117,7 +123,7 @@ class HttpBackend:
                     headers["If-None-Match"] = cached_entry.etag
                 response, redirect_chain, redirect_failure = self._request(
                     client,
-                    normalized.normalized_url,
+                    transport_url,
                     headers,
                 )
                 if redirect_failure is not None:
@@ -125,7 +131,8 @@ class HttpBackend:
                         requested,
                         redirect_failure,
                         started,
-                        final_url=redirect_chain[-1] if redirect_chain else normalized.normalized_url,
+                        transport_url=transport_url,
+                        final_url=redirect_chain[-1] if redirect_chain else transport_url,
                         redirect_chain=redirect_chain,
                         cache_status=cache_status,
                     )
@@ -137,6 +144,7 @@ class HttpBackend:
                         self.cache.put(cached_entry)
                     return self._from_cache(
                         request,
+                        transport_url,
                         normalized.fragment_locator,
                         cached_entry,
                         "revalidated",
@@ -147,6 +155,7 @@ class HttpBackend:
                         requested,
                         failure,
                         started,
+                        transport_url=transport_url,
                         final_url=str(response.url),
                         redirect_chain=redirect_chain,
                         cache_status=cache_status,
@@ -163,6 +172,7 @@ class HttpBackend:
                         requested,
                         failure,
                         started,
+                        transport_url=transport_url,
                         final_url=str(response.url),
                         redirect_chain=redirect_chain,
                         cache_status=cache_status,
@@ -178,6 +188,7 @@ class HttpBackend:
                         requested,
                         failure,
                         started,
+                        transport_url=transport_url,
                         final_url=str(response.url),
                         redirect_chain=redirect_chain,
                         cache_status=cache_status,
@@ -193,6 +204,7 @@ class HttpBackend:
                         requested,
                         failure,
                         started,
+                        transport_url=transport_url,
                         final_url=str(response.url),
                         redirect_chain=redirect_chain,
                         cache_status=cache_status,
@@ -207,6 +219,7 @@ class HttpBackend:
                         requested,
                         failure,
                         started,
+                        transport_url=transport_url,
                         final_url=str(response.url),
                         redirect_chain=redirect_chain,
                         cache_status=cache_status,
@@ -214,6 +227,7 @@ class HttpBackend:
                     )
                 return self._extract_response(
                     request,
+                    transport_url,
                     response,
                     body,
                     content_type,
@@ -226,7 +240,13 @@ class HttpBackend:
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
-            return self._failed(requested, classify_exception(exc), started, cache_status=cache_status)
+            return self._failed(
+                requested,
+                classify_exception(exc),
+                started,
+                transport_url=transport_url,
+                cache_status=cache_status,
+            )
 
     def _request(
         self,
@@ -266,6 +286,7 @@ class HttpBackend:
     def _extract_response(
         self,
         request: FetchRequest,
+        transport_url: str,
         response: httpx.Response,
         body: bytes,
         content_type: str,
@@ -340,6 +361,7 @@ class HttpBackend:
         )
         result = FetchResult(
             requested_url=request.url,
+            transport_url=transport_url,
             final_url=final_url,
             title=title,
             content=content,
@@ -378,6 +400,7 @@ class HttpBackend:
                 extraction_confidence=confidence,
                 metadata={
                     "title": title,
+                    "transport_url": transport_url,
                     "final_url": final_url,
                     "canonical_url": normalized_final,
                     "canonical_hint": canonical_hint,
@@ -396,6 +419,7 @@ class HttpBackend:
     def _from_cache(
         self,
         request: FetchRequest,
+        transport_url: str,
         fragment_locator: str | None,
         entry: FetchCacheEntry,
         status: str,
@@ -416,6 +440,7 @@ class HttpBackend:
         )
         return FetchResult(
             requested_url=request.url,
+            transport_url=str(meta.get("transport_url") or transport_url),
             final_url=str(meta.get("final_url") or entry.url),
             title=str(meta.get("title") or entry.url),
             content=content,
@@ -453,6 +478,7 @@ class HttpBackend:
         failure: Any,
         started: float,
         *,
+        transport_url: str | None = None,
         final_url: str | None = None,
         redirect_chain: list[str] | None = None,
         cache_status: str = "not_applicable",
@@ -461,6 +487,7 @@ class HttpBackend:
     ) -> FetchResult:
         return FetchResult(
             requested_url=requested_url,
+            transport_url=transport_url,
             final_url=final_url,
             content_type=content_type,
             fetch_status=failure_status(failure),

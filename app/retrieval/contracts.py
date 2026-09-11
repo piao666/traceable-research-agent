@@ -151,6 +151,7 @@ class FetchResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     requested_url: str
+    transport_url: str | None = None
     final_url: str | None = None
     title: str = ""
     content: str = ""
@@ -185,6 +186,7 @@ class FetchResult(BaseModel):
         page: dict[str, Any] = {
             "url": self.requested_url,
             "requested_url": self.requested_url,
+            "transport_url": self.transport_url,
             "final_url": self.final_url,
             "canonical_url": self.canonical_url or self.final_url or self.requested_url,
             "title": self.title,

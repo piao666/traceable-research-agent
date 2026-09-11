@@ -41,6 +41,7 @@ def test_http_backend_extracts_audited_page_contract() -> None:
     assert result.usable
     assert result.fetch_status == FetchStatus.SUCCESS
     assert result.fetch_backend == FetchBackend.HTTP
+    assert result.transport_url == "https://EXAMPLE.com/article?utm_campaign=x"
     assert result.canonical_url == "https://example.com/canonical"
     assert result.published_at == "2026-09-09T00:00:00Z"
     assert result.content_basis == "full_text"
@@ -48,6 +49,89 @@ def test_http_backend_extracts_audited_page_contract() -> None:
     assert result.quality and result.quality.quality_score > 0.5
     assert result.metadata["extraction_chain"]
     assert result.metadata["source_identity"]["independence_group"].startswith("srcgrp_")
+
+
+def test_http_backend_keeps_tracking_parameters_on_transport_url() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            200,
+            text=f"<html><title>Article</title><main>{ARTICLE}</main></html>",
+            headers={"content-type": "text/html"},
+            request=request,
+        )
+
+    requested = "https://example.com/article?id=123&utm_source=x"
+    with patch("app.tools.ssrf.socket.getaddrinfo", return_value=SAFE_DNS):
+        result = HttpBackend(
+            client=_client(handler), cache_enabled=False, trafilatura_enabled=False
+        ).fetch(FetchRequest(url=requested, max_chars=4000))
+
+    assert calls == [requested]
+    assert result.transport_url == requested
+    assert result.final_url == requested
+    assert result.canonical_url == "https://example.com/article?id=123"
+
+
+def test_http_backend_preserves_query_order_and_trailing_slash_for_transport() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            200,
+            text=ARTICLE,
+            headers={"content-type": "text/plain"},
+            request=request,
+        )
+
+    backend = HttpBackend(client=_client(handler), cache_enabled=False, quality_min_score=0.0)
+    with patch("app.tools.ssrf.socket.getaddrinfo", return_value=SAFE_DNS):
+        signed = backend.fetch(
+            FetchRequest(url="https://example.com/file?sig=abc&id=123", max_chars=4000)
+        )
+        trailing = backend.fetch(FetchRequest(url="https://example.com/api/", max_chars=4000))
+
+    assert calls == [
+        "https://example.com/file?sig=abc&id=123",
+        "https://example.com/api/",
+    ]
+    assert signed.transport_url == calls[0]
+    assert trailing.transport_url == calls[1]
+
+
+def test_http_backend_builds_canonical_identity_from_safe_redirect_target() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if len(calls) == 1:
+            return httpx.Response(
+                302,
+                headers={"location": "/final/?id=123&utm_source=redirect"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            text=ARTICLE,
+            headers={"content-type": "text/plain"},
+            request=request,
+        )
+
+    with patch("app.tools.ssrf.socket.getaddrinfo", return_value=SAFE_DNS):
+        result = HttpBackend(
+            client=_client(handler), cache_enabled=False, quality_min_score=0.0
+        ).fetch(FetchRequest(url="https://example.com/start?sig=abc", max_chars=4000))
+
+    assert calls == [
+        "https://example.com/start?sig=abc",
+        "https://example.com/final/?id=123&utm_source=redirect",
+    ]
+    assert result.transport_url == calls[0]
+    assert result.final_url == calls[1]
+    assert result.canonical_url == "https://example.com/final?id=123"
 
 
 def test_http_backend_rejects_credentials_without_network() -> None:
