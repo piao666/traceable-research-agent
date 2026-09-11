@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.agent.evidence import build_evidence_bundle
 from app.config import Settings
+from app.reporting.integrity import REPORT_INTEGRITY_VERSION
 from app.trace import store
 from app.trace.logger import record_trace_event
 
@@ -161,22 +162,41 @@ def result_integrity(run) -> dict[str, Any]:
     try:
         plan = json.loads(run.plan_json or "{}")
         outcome = plan.get("research_outcome") or {}
+        report_integrity = plan.get("report_integrity") or {}
     except (ValueError, TypeError, AttributeError):
         plan = {}
         outcome = {}
+        report_integrity = {}
+    deep_v2 = (
+        plan.get("execution_mode") == "deep_research_v2"
+        or getattr(run, "engine_version", None) == "v2"
+    )
+    report_gate_passed = bool(
+        report_integrity.get("version") == REPORT_INTEGRITY_VERSION
+        and report_integrity.get("status") == "passed"
+    )
     legacy = run.status == "completed" and outcome.get("version") not in {
         INTEGRITY_VERSION,
         SCOPE_INTEGRITY_VERSION,
     }
+    legacy = legacy or bool(run.status == "completed" and deep_v2 and not report_gate_passed)
     mapping_review = bool(run.status == "completed" and plan.get("execution_mode") == "react"
                           and plan.get("steps") and plan.get("evidence_mapping_version") != "trace-source-v2")
     legacy = legacy or mapping_review
-    warnings = list(outcome.get("warnings") or [])
+    warnings = [
+        *list(outcome.get("warnings") or []),
+        *list(report_integrity.get("warnings") or []),
+    ]
     if outcome.get("status") == "failed" and outcome.get("message"):
         warnings.append(outcome["message"])
     return {"research_outcome": outcome or None, "requires_review": legacy,
-            "citation_evaluated": bool(run.citation_total and not legacy and run.status == "completed"
-                                       and outcome.get("status") == "passed"),
+            "citation_evaluated": bool(
+                run.citation_total
+                and not legacy
+                and run.status == "completed"
+                and outcome.get("status") == "passed"
+                and (not deep_v2 or report_gate_passed)
+            ),
             "quality_warnings": (["Historical result predates current integrity or trace-to-source mapping checks; re-run before relying on its quality metrics."]
                                  if legacy else warnings)}
 
@@ -190,10 +210,22 @@ def report_block_reason(run) -> str | None:
     if not isinstance(plan, dict):
         plan = {}
     outcome = result_integrity(run)["research_outcome"]
+    report_integrity = plan.get("report_integrity") or {}
+    deep_v2 = (
+        plan.get("execution_mode") == "deep_research_v2"
+        or getattr(run, "engine_version", None) == "v2"
+    )
     if (run.status in {"failed", "cancelled"}
         or plan.get("adaptive_gate_pending") or plan.get("deepening_pending")
         or (run.report_path and run.status != "completed")
-        or (outcome and (run.status != "completed" or outcome.get("status") != "passed"))):
+        or (outcome and (run.status != "completed" or outcome.get("status") != "passed"))
+        or (
+            deep_v2
+            and (
+                report_integrity.get("version") != REPORT_INTEGRITY_VERSION
+                or report_integrity.get("status") != "passed"
+            )
+        )):
         return "Research has not passed final completion; any intermediate report is retained only as an audit artifact."
     return None
 
@@ -231,9 +263,18 @@ def fail_execution(db: Session, run_id: str, exc: Exception):
 
 def trusted_run_ids():
     """SQL subquery shared by quality aggregates; invalid/legacy JSON is excluded."""
-    from sqlalchemy import case, func, select
+    from sqlalchemy import and_, case, func, or_, select
     from app.trace.models import AgentRun
     safe_plan = case((func.json_valid(AgentRun.plan_json), AgentRun.plan_json), else_="{}")
+    execution_mode = func.coalesce(
+        func.json_extract(safe_plan, "$.execution_mode"), "planned"
+    )
+    deep_v2 = or_(AgentRun.engine_version == "v2", execution_mode == "deep_research_v2")
+    report_gate_passed = and_(
+        func.json_extract(safe_plan, "$.report_integrity.version")
+        == REPORT_INTEGRITY_VERSION,
+        func.json_extract(safe_plan, "$.report_integrity.status") == "passed",
+    )
     return select(AgentRun.run_id).where(
         AgentRun.status == "completed",
         func.json_extract(safe_plan, "$.research_outcome.version").in_(
@@ -241,7 +282,8 @@ def trusted_run_ids():
         ),
         func.json_extract(safe_plan, "$.research_outcome.status") == "passed",
         func.json_extract(safe_plan, "$.research_outcome.effective_evidence_count") > 0,
-        ~((func.coalesce(func.json_extract(safe_plan, "$.execution_mode"), "planned") == "react")
+        or_(~deep_v2, report_gate_passed),
+        ~((execution_mode == "react")
           & (func.coalesce(func.json_array_length(safe_plan, "$.steps"), 0) > 0)
           & (func.coalesce(func.json_extract(safe_plan, "$.evidence_mapping_version"), "legacy") != "trace-source-v2")),
     )

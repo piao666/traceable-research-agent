@@ -19,7 +19,11 @@ from app.agent.react_executor import _summary, run_react_task
 from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings as _settings
-from app.evidence.citation_validator import materialize_final_report_occurrences
+from app.evidence.citation_validator import (
+    extract_final_answer_section,
+    materialize_final_report_occurrences,
+    validate_scope_citations,
+)
 from app.evidence.scope_service import get_scope_provenance_bundle
 from app.llm.base import LLMClient
 from app.llm.providers import create_llm_client
@@ -35,6 +39,12 @@ from app.research.scope import (
     resolve_research_scope,
     scope_summary,
     update_scope_status,
+)
+from app.reporting.integrity import (
+    REPORT_INTEGRITY_VERSION,
+    ReportIntegrityResult,
+    append_report_integrity_warnings,
+    assess_report_integrity,
 )
 from app.trace import store
 from app.trace.logger import record_trace_event
@@ -350,20 +360,85 @@ def run_deep_research_v2(
         return _summary(fail_execution(db, run_id, exc), plan)
     if report_responses:
         record_report_synthesis_trace(db, run_id, traces, report_responses[-1], success=True)
+    expected_report_path = f"workspace/reports/{run_id}.md"
+    try:
+        citation_validation = (
+            citation_reports[-1]
+            if citation_reports
+            else validate_scope_citations(
+                extract_final_answer_section(markdown),
+                scope_evidence,
+                min_supported_overlap=0.15,
+                min_weak_overlap=0.05,
+            )
+        )
+        preview_integrity = assess_report_integrity(
+            [
+                {
+                    "passage_id": "resolved" if detail.passage_text else None,
+                    "verdict": detail.verdict,
+                }
+                for detail in citation_validation.details
+            ]
+        )
+        markdown = append_report_integrity_warnings(markdown, preview_integrity)
+        occurrence_bundle = materialize_final_report_occurrences(
+            db,
+            root_run_id=run_id,
+            scope_id=scope.scope_id,
+            markdown=markdown,
+            provenance_bundle=scope_evidence,
+            report_path=expected_report_path,
+            validation_report=citation_validation,
+        )
+        report_integrity = assess_report_integrity(occurrence_bundle)
+    except Exception:
+        citation_validation = None
+        report_integrity = ReportIntegrityResult(
+            version=REPORT_INTEGRITY_VERSION,
+            status="failed",
+            error_code="citation_validation_failed",
+            warnings=["Final citation occurrence validation could not be completed."],
+            occurrence_total=0,
+            supported=0,
+            weakly_supported=0,
+            unsupported=0,
+            support_rate=0.0,
+            strict_support_rate=0.0,
+        )
+
+    root_traces = store.list_tool_traces(db, run_id)
+    _persist_citation_validation(
+        db,
+        run_id,
+        [citation_validation] if citation_validation is not None else [],
+        root_traces,
+    )
+    if citation_validation is None:
+        store.update_agent_run_citation_validation(
+            db,
+            run_id,
+            total=0,
+            supported=0,
+            weakly_supported=0,
+            unsupported=0,
+            accuracy=0.0,
+        )
+    root_traces = store.list_tool_traces(db, run_id)
+    _persist_reference_verification(db, run_id, reference_reports, root_traces)
+    plan = _persist_report_integrity(db, run_id, report_integrity)
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
+    if report_integrity.status == "failed":
+        message = (
+            "Report integrity gate failed: "
+            f"{report_integrity.error_code}. The report is retained only as an audit artifact."
+        )
+        update_scope_status(db, scope.scope_id, "failed")
+        failed = store.update_agent_run_status(db, run_id, "failed", message)
+        return _summary(failed, plan, message)
+
     root_traces = store.list_tool_traces(db, run_id)
-    _persist_citation_validation(db, run_id, citation_reports, root_traces)
-    _persist_reference_verification(db, run_id, reference_reports, root_traces)
-    materialize_final_report_occurrences(
-        db,
-        root_run_id=run_id,
-        scope_id=scope.scope_id,
-        markdown=markdown,
-        provenance_bundle=scope_evidence,
-        report_path=report_path,
-        validation_report=citation_reports[-1] if citation_reports else None,
-    )
     _after_run_completed(db, root, markdown, step_no=max((t.step_no for t in root_traces), default=0) + 1)
     update_scope_status(db, scope.scope_id, "completed")
     root = store.update_agent_run_status(db, run_id, "completed", None)
@@ -381,3 +456,36 @@ def _json_object(value: str | None) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _persist_report_integrity(
+    db: Session,
+    run_id: str,
+    result: ReportIntegrityResult,
+) -> dict[str, Any]:
+    """Persist and trace the report gate without overwriting research_outcome."""
+
+    run = store.get_fresh_agent_run(db, run_id)
+    plan = _json_object(run.plan_json if run else None)
+    plan["report_integrity"] = result.to_plan_dict()
+    store.replace_agent_run_plan(db, run_id, plan)
+    traces = store.list_tool_traces(db, run_id)
+    record_trace_event(
+        db,
+        run_id,
+        max((trace.step_no for trace in traces), default=0) + 1,
+        "report_integrity_gate",
+        "success" if result.status == "passed" else "failed",
+        {"version": result.version},
+        (
+            f"Report integrity {result.status}: "
+            f"{result.supported}/{result.occurrence_total} strictly supported."
+        ),
+        result.to_plan_dict(),
+        error_message=(
+            f"Report integrity failed: {result.error_code}."
+            if result.status == "failed"
+            else None
+        ),
+    )
+    return plan

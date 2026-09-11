@@ -544,8 +544,9 @@ def materialize_final_report_occurrences(
             )
             for detail in sorted(details, key=lambda item: item.marker_start):
                 citation = citation_by_label.get(detail.citation_label) or {}
-                passage_id = str(citation.get("passage_id") or "") or None
-                passage = passage_by_id.get(passage_id or "") or {}
+                requested_passage_id = str(citation.get("passage_id") or "")
+                passage = passage_by_id.get(requested_passage_id) or {}
+                passage_id = requested_passage_id if passage else None
                 origin_run_id = (
                     str(
                         citation.get("origin_run_id")

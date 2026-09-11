@@ -62,7 +62,10 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
         child_passage = next(
             item for item in bundle["passages"] if item["passage_id"] == child_citation["passage_id"]
         )
-        return f"# Scope report\n\n{child_passage['text']} [{child_citation['citation_label']}]"
+        return (
+            "# Scope report\n\n## 3. 最终回答\n\n"
+            f"{child_passage['text']} [{child_citation['citation_label']}]"
+        )
 
     with (
         patch("app.research.orchestrator.run_react_task", side_effect=fake_node_runner),
@@ -86,7 +89,11 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
     assert len(origin_run_ids) == 2
     scope = resolve_research_scope(db, root.run_id)
     assert scope.status == "completed"
-    assert result_integrity(store.get_agent_run(db, root.run_id))["requires_review"] is False
+    completed_root = store.get_agent_run(db, root.run_id)
+    completed_plan = json.loads(completed_root.plan_json)
+    assert completed_plan["research_outcome"]["status"] == "passed"
+    assert completed_plan["report_integrity"]["status"] == "passed"
+    assert result_integrity(completed_root)["requires_review"] is False
     assert get_scope_provenance_bundle(db, scope)["integrity"]["child_citation_count"] >= 1
 
 
