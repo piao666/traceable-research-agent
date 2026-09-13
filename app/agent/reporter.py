@@ -775,7 +775,8 @@ def _llm_synthesize_answer(
                 "When CIT-* identifiers are present, every factual conclusion must cite one or more "
                 "of those exact identifiers in square brackets. Never invent a citation identifier. "
                 "When conflict_status is unresolved or requires_human, state the conflict explicitly "
-                "and do not select one side as a definitive fact."
+                "and do not select one side as a definitive fact. Internal scope_group_id values are "
+                "lineage metadata and must never be shown to the user."
             ),
         ),
     ]
@@ -976,6 +977,7 @@ def build_bounded_provenance_context(
         candidates.append(
             {
                 "unit": {
+                    "scope_group_id": group.get("group_id"),
                     "claim": group.get("representative_claim_text"),
                     "conflict_status": status,
                     "confidence": _float_value(

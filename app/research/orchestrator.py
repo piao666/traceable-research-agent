@@ -53,6 +53,7 @@ from app.reporting.integrity import (
     append_report_integrity_warnings,
     assess_report_integrity,
 )
+from app.reporting.claim_occurrence import segment_final_answer_claims
 from app.trace import store
 from app.trace.logger import record_trace_event
 
@@ -471,6 +472,7 @@ def run_deep_research_v2(
         occurrence_preview = _validation_occurrence_preview(
             citation_validation,
             extract_final_answer_section(markdown),
+            scope_evidence,
         )
         report_integrity = assess_report_integrity(
             occurrence_preview,
@@ -500,6 +502,10 @@ def run_deep_research_v2(
             status="failed",
             error_code="citation_validation_failed",
             warnings=["Final citation occurrence validation could not be completed."],
+            claim_total=0,
+            claim_with_citation=0,
+            claim_without_citation=0,
+            claim_citation_coverage_rate=0.0,
             occurrence_total=0,
             supported=0,
             weakly_supported=0,
@@ -562,31 +568,75 @@ def _json_object(value: str | None) -> dict[str, Any]:
 def _validation_occurrence_preview(
     validation: Any,
     final_answer: str,
+    scope_bundle: dict[str, Any],
 ) -> dict[str, list[dict[str, Any]]]:
     """Build the final-answer-only gate input before persisting its revision."""
 
-    claims: dict[tuple[int, int], dict[str, Any]] = {}
+    from app.evidence.scope_reasoning import scope_claim_group_key
+
+    report_claims = {
+        str(item.get("report_claim_id") or ""): item
+        for item in scope_bundle.get("report_claims") or []
+    }
+    citations_by_label = {
+        str(item.get("citation_label") or ""): item
+        for item in scope_bundle.get("citations") or []
+    }
+    groups = list(scope_bundle.get("scope_claim_groups") or [])
+    groups_by_claim_id: dict[str, set[str]] = {}
+    groups_by_normalized_key: dict[str, set[str]] = {}
+    for group in groups:
+        group_id = str(group.get("group_id") or "")
+        normalized_key = str(group.get("normalized_key") or "")
+        if group_id and normalized_key:
+            groups_by_normalized_key.setdefault(normalized_key, set()).add(group_id)
+        for member in group.get("members") or []:
+            claim_id = str(member.get("claim_id") or "")
+            if group_id and claim_id:
+                groups_by_claim_id.setdefault(claim_id, set()).add(group_id)
+
+    claims: list[dict[str, Any]] = []
+    for span in segment_final_answer_claims(final_answer):
+        if not span.is_claim_candidate:
+            continue
+        group_ids: set[str] = set()
+        for label in span.citation_labels:
+            citation = citations_by_label.get(label) or {}
+            report_claim = report_claims.get(
+                str(citation.get("report_claim_id") or "")
+            ) or {}
+            group_ids.update(
+                groups_by_claim_id.get(str(report_claim.get("claim_id") or ""), set())
+            )
+        mapping_source = "citation_lineage" if group_ids else "none"
+        if not group_ids:
+            fallback_key = scope_claim_group_key({"claim_text": span.claim_text})
+            group_ids.update(groups_by_normalized_key.get(fallback_key, set()))
+            if group_ids:
+                mapping_source = "text_fallback"
+        claims.append(
+            {
+                "claim_text": span.claim_text,
+                "sentence_start": span.sentence_start,
+                "sentence_end": span.sentence_end,
+                "normalized_claim_text": span.normalized_claim_text,
+                "citation_count": len(span.citation_labels),
+                "scope_group_ids": sorted(group_ids),
+                "mapping_source": mapping_source,
+            }
+        )
+
     citations: list[dict[str, Any]] = []
     for detail in validation.details:
-        sentence_key = (detail.sentence_start, detail.sentence_end)
-        claims.setdefault(
-            sentence_key,
-            {
-                "claim_text": final_answer[
-                    detail.sentence_start : detail.sentence_end
-                ],
-                "sentence_start": detail.sentence_start,
-                "sentence_end": detail.sentence_end,
-            },
-        )
         citations.append(
             {
+                "citation_label": detail.citation_label,
                 "passage_id": "resolved" if detail.passage_text else None,
                 "verdict": detail.verdict,
             }
         )
     return {
-        "claim_occurrences": list(claims.values()),
+        "claim_occurrences": claims,
         "citation_occurrences": citations,
     }
 
