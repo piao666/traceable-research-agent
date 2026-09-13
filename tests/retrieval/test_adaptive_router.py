@@ -20,6 +20,7 @@ from app.retrieval.remote_extract import RemoteExtractBackend, normalize_remote_
 from app.retrieval.router import RetrievalRouter
 from app.tools.base import ToolResult
 from app.tools.web_fetcher import web_fetch
+from app.mcp_bridge.providers.exa import _normalize_exa_result
 
 
 SAFE_DNS = [(2, 1, 6, "", ("93.184.216.34", 443))]
@@ -219,6 +220,33 @@ def test_remote_identity_uses_source_not_requested_view() -> None:
     assert small.metadata["source_identity"] == large.metadata["source_identity"]
 
 
+def test_remote_provider_truncation_propagates_partial_source_basis() -> None:
+    raw_content = ("Remote provider evidence sentence. " * 2500)[:79_999] + "."
+
+    @dataclass
+    class TruncatingRemoteProvider(FixtureRemoteProvider):
+        def extract(self, request: FetchRequest):
+            page = _normalize_exa_result(
+                {"url": request.url, "title": "Remote", "text": raw_content},
+                50_000,
+            )
+            return {"success": True, "output": {"results": [page]}}
+
+    with patch("app.tools.ssrf.socket.getaddrinfo", return_value=SAFE_DNS):
+        result = RemoteExtractBackend(
+            [TruncatingRemoteProvider()], enabled=True
+        ).fetch(FetchRequest(url="https://example.com/a", max_chars=8_000))
+
+    assert result.metadata["provider_content_original_length"] == 80_000
+    assert result.metadata["provider_content_returned_length"] == 50_000
+    assert result.metadata["provider_content_limit"] == 50_000
+    assert result.metadata["provider_content_truncated"] is True
+    assert result.metadata["source_content_length"] == 50_000
+    assert result.metadata["source_truncated_at_backend_limit"] is True
+    assert result.metadata["view_truncated"] is True
+    assert result.content_basis == "partial"
+
+
 def test_router_falls_back_http_to_browser_and_stops_on_success() -> None:
     http = StubBackend(_failure(FetchBackend.HTTP, FetchFailureCode.JAVASCRIPT_REQUIRED))
     browser = StubBackend(_success(FetchBackend.BROWSER))
@@ -241,6 +269,83 @@ def test_router_does_not_escalate_terminal_404() -> None:
     )
     assert not result.usable
     assert http.calls == 1 and browser.calls == 0
+
+
+def test_router_returns_structured_failure_when_only_browser_is_disallowed() -> None:
+    result = RetrievalRouter(
+        http_backend=StubBackend(_success(FetchBackend.HTTP)),
+        browser_backend=StubBackend(_success(FetchBackend.BROWSER)),
+    ).fetch(
+        FetchRequest(
+            url="https://example.com/a",
+            preferred_backends=[FetchBackend.BROWSER],
+            allow_browser=False,
+        )
+    )
+
+    assert result.fetch_status == FetchStatus.PROVIDER_ERROR
+    assert result.failure and result.failure.code == FetchFailureCode.BACKEND_UNAVAILABLE
+    assert result.failure.tool_scoped is True
+    assert result.failure.page_scoped is False
+    assert result.failure.message == "No permitted retrieval backend was available for this request."
+    assert result.metadata == {
+        "retrieval_attempts": [],
+        "retrieval_attempt_count": 0,
+        "requested_backends": ["browser"],
+        "browser_allowed": False,
+        "remote_extract_allowed": True,
+    }
+
+
+def test_router_returns_structured_failure_when_only_remote_is_disallowed() -> None:
+    result = RetrievalRouter(
+        http_backend=StubBackend(_success(FetchBackend.HTTP)),
+        remote_backend=StubBackend(_success(FetchBackend.REMOTE_EXTRACT)),
+    ).fetch(
+        FetchRequest(
+            url="https://example.com/a",
+            preferred_backends=[FetchBackend.REMOTE_EXTRACT],
+            allow_remote_extract=False,
+        )
+    )
+
+    assert result.failure and result.failure.code == FetchFailureCode.BACKEND_UNAVAILABLE
+    assert result.metadata["requested_backends"] == ["remote_extract"]
+    assert result.metadata["remote_extract_allowed"] is False
+
+
+def test_router_returns_structured_failure_when_preferred_backend_is_unconfigured() -> None:
+    result = RetrievalRouter(
+        http_backend=StubBackend(_success(FetchBackend.HTTP)),
+        browser_backend=None,
+    ).fetch(
+        FetchRequest(
+            url="https://example.com/a",
+            preferred_backends=[FetchBackend.BROWSER],
+        )
+    )
+
+    assert result.failure and result.failure.code == FetchFailureCode.BACKEND_UNAVAILABLE
+    assert result.metadata["retrieval_attempt_count"] == 0
+
+
+def test_router_returns_structured_failure_when_all_requested_backends_are_disabled() -> None:
+    result = RetrievalRouter(
+        http_backend=StubBackend(_success(FetchBackend.HTTP)),
+        browser_backend=StubBackend(_success(FetchBackend.BROWSER)),
+        remote_backend=StubBackend(_success(FetchBackend.REMOTE_EXTRACT)),
+    ).fetch(
+        FetchRequest(
+            url="https://example.com/a",
+            preferred_backends=[FetchBackend.BROWSER, FetchBackend.REMOTE_EXTRACT],
+            allow_browser=False,
+            allow_remote_extract=False,
+        )
+    )
+
+    assert result.failure and result.failure.code == FetchFailureCode.BACKEND_UNAVAILABLE
+    assert result.metadata["requested_backends"] == ["browser", "remote_extract"]
+    assert result.metadata["retrieval_attempts"] == []
 
 
 def test_pdf_backend_preserves_page_locators() -> None:

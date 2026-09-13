@@ -4,6 +4,10 @@ from unittest.mock import patch
 from app.agent.outcome import report_block_reason, result_integrity, trusted_run_ids
 from app.agent.outcome import load_observations
 from app.agent.reporter import generate_markdown_report
+from app.evidence.citation_validator import (
+    CitationValidationDetail,
+    CitationValidationReport,
+)
 from app.evidence.service import materialize_execution_provenance
 from app.evidence.reference_verifier import ReferenceVerificationReport
 from app.eval.fake_react_llm import FakeReActLLMClient
@@ -12,7 +16,11 @@ from app.reporting.integrity import (
     append_report_integrity_warnings,
     assess_report_integrity,
 )
-from app.research.orchestrator import _requires_strict_reference_gate, run_deep_research_v2
+from app.research.orchestrator import (
+    _requires_strict_reference_gate,
+    _validation_occurrence_preview,
+    run_deep_research_v2,
+)
 from app.research.scope import resolve_research_scope
 from app.trace import store
 
@@ -37,6 +45,51 @@ def test_zero_citations_fails_report_gate():
     assert result.version == REPORT_INTEGRITY_VERSION
     assert result.status == "failed"
     assert result.error_code == "no_citation_occurrences"
+
+
+def test_explicit_empty_claim_universe_fails_with_claim_error():
+    result = assess_report_integrity(
+        {"claim_occurrences": [], "citation_occurrences": []}
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "no_final_claim_occurrences"
+    assert result.claim_total == 0
+
+
+def test_claim_coverage_metrics_include_uncited_claims():
+    result = assess_report_integrity(
+        {
+            "claim_occurrences": [
+                {"claim_text": "Supported claim.", "citation_count": 1},
+                {"claim_text": "A further observation.", "citation_count": 0},
+            ],
+            "citation_occurrences": [
+                {"passage_id": "pass-1", "verdict": "supported"}
+            ],
+        }
+    )
+
+    assert result.status == "passed"
+    assert result.claim_total == 2
+    assert result.claim_with_citation == 1
+    assert result.claim_without_citation == 1
+    assert result.claim_citation_coverage_rate == 0.5
+    assert "require review" in result.warnings[-1]
+
+
+def test_uncited_numeric_claim_fails_without_weakening_citation_gate():
+    result = assess_report_integrity(
+        {
+            "claim_occurrences": [
+                {"claim_text": "Market size reached 100 USD.", "citation_count": 0}
+            ],
+            "citation_occurrences": [],
+        }
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "uncited_deterministic_claim"
 
 
 def test_five_percent_unsupported_passes_report_gate():
@@ -126,7 +179,9 @@ def test_deterministic_claim_mapped_to_open_scope_conflict_fails():
             ],
         }
         occurrences = _occurrences("supported")
-        occurrences["claim_occurrences"] = [{"claim_text": claim_text}]
+        occurrences["claim_occurrences"] = [
+            {"claim_text": claim_text, "citation_count": 0}
+        ]
 
         result = assess_report_integrity(occurrences, scope_bundle=scope_bundle)
 
@@ -151,11 +206,61 @@ def test_uncertain_claim_mapped_to_unresolved_scope_group_is_not_asserted():
         ],
     }
     occurrences = _occurrences("supported")
-    occurrences["claim_occurrences"] = [{"claim_text": qualified_claim}]
+    occurrences["claim_occurrences"] = [
+        {"claim_text": qualified_claim, "citation_count": 0}
+    ]
 
     result = assess_report_integrity(occurrences, scope_bundle=scope_bundle)
 
     assert result.status == "passed"
+
+
+def test_paraphrased_claim_maps_to_conflict_by_citation_lineage():
+    final_answer = "The 2025 market was worth $100. [CIT-001-01]"
+    validation = CitationValidationReport(
+        occurrence_total=1,
+        unique_citation_count=1,
+        supported_occurrences=1,
+        details=[
+            CitationValidationDetail(
+                citation_label="CIT-001-01",
+                verdict="supported",
+                sentence=final_answer,
+                passage_text="Market size in 2025 is 100 USD.",
+                keyword_overlap=0.5,
+                marker_start=final_answer.index("CIT-001-01"),
+                marker_end=final_answer.index("CIT-001-01") + len("CIT-001-01"),
+                sentence_start=0,
+                sentence_end=len(final_answer),
+            )
+        ],
+    )
+    scope_bundle = {
+        "report_claims": [{"report_claim_id": "report-1", "claim_id": "claim-1"}],
+        "citations": [
+            {"citation_label": "CIT-001-01", "report_claim_id": "report-1"}
+        ],
+        "scope_claim_groups": [
+            {
+                "group_id": "group-1",
+                "normalized_key": "different-from-final-paraphrase",
+                "members": [{"claim_id": "claim-1"}],
+            }
+        ],
+        "scope_resolutions": [{"group_id": "group-1", "status": "unresolved"}],
+    }
+
+    preview = _validation_occurrence_preview(
+        validation,
+        final_answer,
+        scope_bundle,
+    )
+    result = assess_report_integrity(preview, scope_bundle=scope_bundle)
+
+    assert preview["claim_occurrences"][0]["scope_group_ids"] == ["group-1"]
+    assert preview["claim_occurrences"][0]["mapping_source"] == "citation_lineage"
+    assert result.status == "failed"
+    assert result.error_code == "unresolved_scope_claim_asserted"
 
 
 def test_strict_reference_gate_is_limited_to_academic_reviews():

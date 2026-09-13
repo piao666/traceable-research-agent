@@ -184,6 +184,13 @@ def test_integrated_scope_result_governance_chain(db, r12_settings):
             citation = next(
                 item for item in bundle["citations"] if item["passage_id"] == passage["passage_id"]
             )
+            if "Market size in 2025" in passage["text"]:
+                uncertain_text = passage["text"].replace(" is ", " may be ")
+                lines.append(
+                    f"{uncertain_text.rstrip('.')} [{citation['citation_label']}]. "
+                    "The conflict remains unresolved."
+                )
+                continue
             lines.append(f"{passage['text']} [{citation['citation_label']}]")
             if passage["origin_run_id"] == child_run_ids["Child C academic DOI"]:
                 lines.append(f"{passage['text']} [{citation['citation_label']}]")

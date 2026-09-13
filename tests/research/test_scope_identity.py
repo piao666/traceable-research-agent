@@ -3,6 +3,7 @@ from copy import deepcopy
 from app.evidence.scope_identity import (
     build_scope_identity_projection,
     passage_identity_key,
+    source_independence_key,
     source_identity_key,
 )
 
@@ -82,15 +83,29 @@ def test_source_identity_uses_the_fixed_priority_order():
     assert source_identity_key(document) == "story:story-a"
 
     del document["metadata"]["source_identity"]["canonical_story_hash"]
-    assert source_identity_key(document) == (
-        "independence:group-a|url:https://example.com/metadata"
-    )
+    assert source_identity_key(document) == "independence:group-a"
     del document["metadata"]["source_identity"]["independence_group"]
     assert source_identity_key(document) == "url:https://example.com/canonical"
 
     document["canonical_uri"] = ""
     document["metadata"].pop("canonical_url")
     assert source_identity_key(document) == "origin:root|document:doc-a"
+
+
+def test_resource_identity_precedes_backend_specific_story_hash():
+    document = _document(
+        "doc-a", "root", "https://example.com/canonical", story_hash="story-a"
+    )
+    document["metadata"]["source_identity"].update(
+        {
+            "resource_identity_kind": "canonical_url",
+            "resource_identity": "https://example.com/canonical",
+        }
+    )
+
+    assert source_independence_key(document) == (
+        "resource:canonical_url:https://example.com/canonical"
+    )
 
 
 def test_root_and_child_duplicate_rows_become_aliases_without_losing_raw_provenance():
