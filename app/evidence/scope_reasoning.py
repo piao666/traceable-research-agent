@@ -10,7 +10,6 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,6 +25,7 @@ from app.evidence.policy import (
     load_source_policy,
     score_reliability,
 )
+from app.evidence.scope_identity import source_independence_key
 from app.evidence.reasoning import (
     RelationDecision,
     ScoredRelation,
@@ -76,25 +76,7 @@ def scope_source_cluster_id(
 ) -> str:
     """Return a stable source cluster using fixed lineage precedence."""
 
-    metadata = _mapping(document.get("metadata"))
-    source_identity = _mapping(metadata.get("source_identity"))
-    ordered_candidates = (
-        ("independence_group", source_identity.get("independence_group")),
-        ("canonical_story_hash", source_identity.get("canonical_story_hash")),
-        ("organization", document.get("organization")),
-        (
-            "hostname",
-            metadata.get("hostname")
-            or (urlsplit(_text(document.get("canonical_uri"))).hostname or ""),
-        ),
-        ("canonical_uri", document.get("canonical_uri")),
-        ("passage_hash", passage.get("content_hash")),
-    )
-    kind, value = next(
-        ((kind, _text(value).casefold()) for kind, value in ordered_candidates if _text(value)),
-        ("passage_hash", ""),
-    )
-    seed = f"{kind}:{value}"
+    seed = source_independence_key(document, passage)
     return f"scope_cluster_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:32]}"
 
 

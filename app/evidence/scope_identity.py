@@ -6,32 +6,61 @@ from datetime import datetime
 from typing import Any
 
 
-def source_identity_key(document: dict) -> str:
-    """Return the fixed-priority identity key for a source document."""
+def source_independence_key(
+    document: dict,
+    passage: dict | None = None,
+) -> str:
+    """Return the central Resource/Story independence key.
+
+    Explicit syndication candidates may share one story-level independence
+    key. All other newly materialized web sources prefer their stable Resource
+    identity, so backend-specific Snapshot text never changes independence.
+    """
 
     metadata = _mapping(document.get("metadata"))
     source_identity = _mapping(metadata.get("source_identity"))
+    original = _text(
+        source_identity.get("original_publisher")
+        or source_identity.get("syndication_source")
+    )
+    independence_group = _text(source_identity.get("independence_group"))
+    if original and independence_group:
+        return f"syndication:{original.casefold()}|group:{independence_group}"
+
+    resource_kind = _text(source_identity.get("resource_identity_kind"))
+    resource_identity = _text(source_identity.get("resource_identity"))
+    if resource_identity:
+        return f"resource:{resource_kind or 'unknown'}:{resource_identity}"
+
     story_hash = _text(source_identity.get("canonical_story_hash"))
     if story_hash:
         return f"story:{story_hash}"
 
-    independence_group = _text(source_identity.get("independence_group"))
-    canonical_url = _text(
-        source_identity.get("canonical_url")
-        or metadata.get("canonical_url")
-        or document.get("canonical_uri")
-    )
-    if independence_group and canonical_url:
-        return f"independence:{independence_group}|url:{canonical_url}"
+    if independence_group:
+        return f"independence:{independence_group}"
 
-    canonical_uri = _text(document.get("canonical_uri"))
+    canonical_uri = _text(
+        document.get("canonical_uri")
+        or source_identity.get("canonical_url")
+        or metadata.get("canonical_url")
+    )
     if canonical_uri:
         return f"url:{canonical_uri}"
+
+    passage_hash = _text((passage or {}).get("content_hash"))
+    if passage_hash:
+        return f"passage:{passage_hash}"
 
     return (
         f"origin:{_text(document.get('origin_run_id'))}"
         f"|document:{_text(document.get('document_id'))}"
     )
+
+
+def source_identity_key(document: dict) -> str:
+    """Compatibility name for the central source-independence key."""
+
+    return source_independence_key(document)
 
 
 def passage_identity_key(
@@ -285,5 +314,6 @@ def _timestamp(value: Any) -> float:
 __all__ = [
     "build_scope_identity_projection",
     "passage_identity_key",
+    "source_independence_key",
     "source_identity_key",
 ]

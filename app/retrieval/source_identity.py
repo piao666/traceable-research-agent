@@ -21,6 +21,8 @@ _WIRE_SERVICES = {
 
 @dataclass(frozen=True)
 class SourceLineage:
+    resource_identity_kind: str
+    resource_identity: str
     normalized_title: str | None
     publisher: str | None
     organization: str | None
@@ -31,6 +33,8 @@ class SourceLineage:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "resource_identity_kind": self.resource_identity_kind,
+            "resource_identity": self.resource_identity,
             "normalized_title": self.normalized_title,
             "publisher": self.publisher,
             "organization": self.organization,
@@ -50,6 +54,7 @@ def source_lineage(
 ) -> SourceLineage:
     meta = dict(metadata or {})
     canonical = canonicalize_url(url).normalized_url
+    resource_kind, resource_identity = _resource_identity(canonical, meta)
     host = (urlsplit(canonical).hostname or "").casefold()
     publisher = _clean(meta.get("publisher") or meta.get("organization") or host)
     normalized_title = _clean(meta.get("title"))
@@ -64,16 +69,83 @@ def source_lineage(
                 syndication = syndication or name
                 break
     story_hash = canonical_story_hash(content)
-    root = original or organization or publisher or host or "unknown"
-    group_seed = f"{root}|{story_hash}" if original else root
+    syndication_fingerprint = _syndication_fingerprint(
+        normalized_title,
+        story_hash,
+        meta,
+    )
+    if original or syndication:
+        group_seed = (
+            f"syndication:{original or syndication}|{syndication_fingerprint}"
+        )
+    else:
+        group_seed = f"resource:{resource_kind}|{resource_identity}"
     group = "srcgrp_" + hashlib.sha256(group_seed.encode("utf-8")).hexdigest()[:24]
-    return SourceLineage(normalized_title, publisher, organization, original, syndication, story_hash, group)
+    return SourceLineage(
+        resource_kind,
+        resource_identity,
+        normalized_title,
+        publisher,
+        organization,
+        original,
+        syndication,
+        story_hash,
+        group,
+    )
 
 
 def canonical_story_hash(content: str) -> str:
     normalized = re.sub(r"\W+", " ", str(content or "").casefold(), flags=re.UNICODE)
     normalized = " ".join(normalized.split())
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _resource_identity(canonical_url: str, metadata: dict[str, Any]) -> tuple[str, str]:
+    identifiers = metadata.get("identifiers")
+    identifiers = identifiers if isinstance(identifiers, dict) else {}
+    candidates = (
+        ("doi", metadata.get("doi") or metadata.get("DOI") or identifiers.get("doi")),
+        ("arxiv_id", metadata.get("arxiv_id") or identifiers.get("arxiv_id")),
+        ("pmid", metadata.get("pmid") or identifiers.get("pmid")),
+    )
+    for kind, value in candidates:
+        normalized = _normalize_identifier(kind, value)
+        if normalized:
+            return kind, normalized
+    if canonical_url.startswith("file://"):
+        return "local_file", canonical_url
+    return "canonical_url", canonical_url
+
+
+def _normalize_identifier(kind: str, value: Any) -> str:
+    normalized = str(value or "").strip().casefold()
+    if not normalized:
+        return ""
+    if kind == "doi":
+        normalized = re.sub(r"^(?:https?://)?(?:dx\.)?doi\.org/", "", normalized)
+        normalized = normalized.removeprefix("doi:").strip()
+    elif kind == "arxiv_id":
+        normalized = re.sub(r"^(?:https?://)?arxiv\.org/(?:abs|pdf)/", "", normalized)
+        normalized = normalized.removesuffix(".pdf")
+    elif kind == "pmid":
+        normalized = normalized.removeprefix("pmid:").strip()
+    return normalized
+
+
+def _syndication_fingerprint(
+    normalized_title: str | None,
+    story_hash: str,
+    metadata: dict[str, Any],
+) -> str:
+    """Return a bounded fingerprint only for explicit syndication candidates."""
+
+    title = re.sub(r"\W+", " ", str(normalized_title or ""), flags=re.UNICODE)
+    title = " ".join(title.split())
+    published = str(metadata.get("published_at") or "")[:10]
+    if len(title) >= 12:
+        seed = f"{title}|{published}"
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    return story_hash
 
 
 def _marker_present(text: str, marker: str) -> bool:
