@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from app.mcp_bridge.providers.base import SourcePackProvider, trim_text
+from app.mcp_bridge.providers.base import SourcePackProvider, trim_text_with_metadata
 from app.mcp_bridge.schemas import BridgeTool, BridgeToolResult, json_schema
 
 
@@ -147,12 +147,16 @@ class FirecrawlProvider(SourcePackProvider):
             return failure
         page = (data or {}).get("data") if isinstance((data or {}).get("data"), dict) else {}
         metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
+        bounded = trim_text_with_metadata(
+            page.get("markdown") or page.get("summary") or page.get("html"),
+            self.max_content_chars,
+        )
         output = {
             "title": metadata.get("title") or page.get("title") or url,
             "url": metadata.get("sourceURL") or metadata.get("url") or url,
-            "markdown": trim_text(page.get("markdown") or page.get("summary") or page.get("html"), self.max_content_chars),
+            "markdown": bounded.text,
             "links": page.get("links") or [],
-            "metadata": metadata,
+            "metadata": {**metadata, **bounded.metadata()},
             "raw": data,
         }
         return BridgeToolResult(
@@ -225,12 +229,16 @@ class FirecrawlProvider(SourcePackProvider):
             page = (data or {}).get("data") if isinstance((data or {}).get("data"), dict) else {}
             metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
             raw_results.append(data or {})
+            bounded = trim_text_with_metadata(
+                page.get("markdown") or page.get("summary") or page.get("html"),
+                self.max_content_chars,
+            )
             pages.append(
                 {
                     "title": metadata.get("title") or page.get("title") or url,
                     "url": metadata.get("sourceURL") or metadata.get("url") or url,
-                    "content": trim_text(page.get("markdown") or page.get("summary") or page.get("html"), self.max_content_chars),
-                    "metadata": metadata,
+                    "content": bounded.text,
+                    "metadata": {**metadata, **bounded.metadata()},
                 }
             )
         return BridgeToolResult(
@@ -319,15 +327,18 @@ def _firecrawl_search_results(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _normalize_result(item: dict[str, Any], max_chars: int) -> dict[str, Any]:
+    bounded = trim_text_with_metadata(
+        item.get("markdown")
+        or item.get("content")
+        or item.get("description")
+        or item.get("summary"),
+        max_chars,
+    )
+    provider_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     return {
         "title": item.get("title") or item.get("name") or item.get("url"),
         "url": item.get("url") or item.get("sourceURL") or item.get("sourceUrl"),
-        "content": trim_text(
-            item.get("markdown")
-            or item.get("content")
-            or item.get("description")
-            or item.get("summary"),
-            max_chars,
-        ),
+        "content": bounded.text,
         "score": item.get("score"),
+        "metadata": {**provider_metadata, **bounded.metadata()},
     }

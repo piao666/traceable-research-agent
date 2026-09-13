@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from app.mcp_bridge.providers.base import SourcePackProvider, trim_text
+from app.mcp_bridge.providers.base import SourcePackProvider, trim_text_with_metadata
 from app.mcp_bridge.schemas import BridgeTool, BridgeToolResult, json_schema
 
 
@@ -188,12 +188,14 @@ def _normalize_exa_result(item: dict[str, Any], max_chars: int) -> dict[str, Any
         or " ".join(str(part) for part in highlights[:3])
         or item.get("description")
     )
+    bounded = trim_text_with_metadata(content, max_chars)
+    provider_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
     return {
         "title": item.get("title") or item.get("url") or item.get("id"),
         "url": item.get("url") or item.get("id"),
-        "content": trim_text(content, max_chars),
+        "content": bounded.text,
         "publishedDate": item.get("publishedDate"),
         "author": item.get("author"),
         "score": item.get("score"),
+        "metadata": {**provider_metadata, **bounded.metadata()},
     }
-

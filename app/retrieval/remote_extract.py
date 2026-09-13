@@ -128,8 +128,18 @@ class RemoteExtractBackend:
                 )
                 if page is None:
                     continue
+                page_metadata = (
+                    page.get("metadata")
+                    if isinstance(page.get("metadata"), dict)
+                    else {}
+                )
+                provider_content_truncated = bool(
+                    page_metadata.get("provider_content_truncated", False)
+                )
                 source_view = build_source_view(
-                    str(page.get("content") or ""), request.max_chars
+                    str(page.get("content") or ""),
+                    request.max_chars,
+                    source_truncated=provider_content_truncated,
                 )
                 title = str(page.get("title") or request.url)[:300]
                 final_url = str(page.get("url") or request.url)
@@ -171,15 +181,23 @@ class RemoteExtractBackend:
                     metadata={
                         "provider_attempts": attempts,
                         **source_view.metadata(),
-                        "remote_metadata": dict(page.get("metadata") or {}),
+                        **{
+                            key: page_metadata[key]
+                            for key in (
+                                "provider_content_original_length",
+                                "provider_content_returned_length",
+                                "provider_content_limit",
+                                "provider_content_truncated",
+                            )
+                            if key in page_metadata
+                        },
+                        "remote_metadata": dict(page_metadata),
                         "source_identity": source_lineage(
                             canonical,
                             source_view.source_content,
                             {
                                 **(
-                                    page.get("metadata")
-                                    if isinstance(page.get("metadata"), dict)
-                                    else {}
+                                    page_metadata
                                 ),
                                 "title": title,
                             },

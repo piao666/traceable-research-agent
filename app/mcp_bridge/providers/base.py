@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
 import requests
@@ -93,6 +94,37 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
-def trim_text(value: Any, max_chars: int) -> str:
+@dataclass(frozen=True)
+class TrimmedText:
+    text: str
+    original_length: int
+    returned_length: int
+    truncated: bool
+    limit: int
+
+    def metadata(self) -> dict[str, int | bool]:
+        return {
+            "provider_content_original_length": self.original_length,
+            "provider_content_returned_length": self.returned_length,
+            "provider_content_limit": self.limit,
+            "provider_content_truncated": self.truncated,
+        }
+
+
+def trim_text_with_metadata(value: Any, max_chars: int) -> TrimmedText:
     text = str(value or "").strip()
-    return text[:max_chars]
+    limit = max(0, int(max_chars))
+    returned = text[:limit]
+    return TrimmedText(
+        text=returned,
+        original_length=len(text),
+        returned_length=len(returned),
+        truncated=len(text) > limit,
+        limit=limit,
+    )
+
+
+def trim_text(value: Any, max_chars: int) -> str:
+    """Compatibility wrapper for callers that only need the bounded text."""
+
+    return trim_text_with_metadata(value, max_chars).text
