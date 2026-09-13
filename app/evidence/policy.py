@@ -9,6 +9,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -36,18 +37,71 @@ EVIDENCE_ROLES = {
     "unknown",
 }
 METADATA_ONLY_EVIDENCE_ROLES = frozenset({"official_metadata", "discovery_index"})
-_BIBLIOGRAPHIC_CLAIM_TERMS = (
-    "doi", "arxiv", "pmid", "author", "authored", "year", "publication",
-    "published", "publisher", "journal", "venue", "title", "indexed",
-    "exists", "existence", "文献存在", "作者", "年份", "发表", "出版",
-    "期刊", "会议", "标题", "收录",
-)
 _SUBSTANTIVE_RESEARCH_TERMS = (
     "experiment", "experimental", "result", "performance", "accuracy",
-    "benchmark", "conclusion", "demonstrate", "outperform", "improve",
-    "metric", "实验", "结果", "性能", "准确率", "基准", "结论", "表明",
-    "优于", "提升", "指标",
+    "benchmark", "conclusion", "demonstrate", "demonstrates", "show",
+    "shows", "find", "finds", "achieve", "achieves", "outperform",
+    "improve", "improvement", "effectiveness", "latency", "throughput",
+    "cost reduction", "safety", "quality", "metric", "实验", "结果",
+    "性能", "准确率", "基准", "结论", "表明", "显示", "发现", "达到",
+    "优于", "提升", "改进", "有效性", "延迟", "吞吐", "成本降低",
+    "安全性", "质量", "指标",
 )
+_NUMERIC_EXPERIMENTAL_METRIC_RE = re.compile(
+    r"(?:\b\d+(?:\.\d+)?\s*(?:%|percent\b|ms\b|milliseconds?\b|qps\b|tokens?/s\b|usd\b)|"
+    r"\d+(?:\.\d+)?\s*(?:%|毫秒|元|美元))",
+    re.IGNORECASE,
+)
+_CITATION_MARKER_RE = re.compile(r"\s*\[CIT-[^\]]+\]\s*", re.IGNORECASE)
+_BIBLIOGRAPHIC_IDENTITY_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:the\s+)?(?:paper|article|work|study|publication)(?:\s+[\w'’.-]+){0,12}\s+exists",
+        r"(?:the\s+)?(?:paper|article|work|study|publication)(?:\s+[\w'’.-]+){0,12}\s+(?:was\s+)?published\s+in\s+\d{4}(?:\s+(?:with|and)\s+(?:the\s+)?doi(?:\s+(?:is|of|:))?\s+\S+)?",
+        r".+\s+was\s+published\s+in\s+\d{4}(?:\s+(?:with|and)\s+(?:the\s+)?doi(?:\s+(?:is|of|:))?\s+\S+)?",
+        r"(?:the\s+)?(?:title\s+(?:is|of\s+(?:the\s+)?(?:paper|article|work|study)\s+is)|(?:the\s+)?(?:paper|article|work|study)\s+(?:is\s+)?(?:titled|entitled|called))\s+.+",
+        r".+\s+is\s+an?\s+author\s+of\s+(?:the\s+)?(?:paper|article|work|study)",
+        r"(?:the\s+)?(?:paper|article|work|study)\s+(?:was\s+)?authored\s+by\s+.+",
+        r"(?:the\s+)?(?:paper|article|work|study)(?:\s+[\w'’.-]+){0,12}\s+(?:was\s+)?published\s+(?:in|at)\s+(?:the\s+)?(?:journal|conference|venue)\s+.+",
+        r"(?:the\s+)?doi(?:\s+(?:is|of\s+(?:the\s+)?(?:paper|article|work|study)\s+is)|\s*:)\s*10\.\S+",
+        r"(?:the\s+)?(?:arxiv|pmid)(?:\s+(?:id|identifier|number))?(?:\s+(?:is|:))\s*\S+",
+        r"(?:the\s+)?(?:paper|article|work|study)(?:'s|\s+)(?:arxiv|pmid)(?:\s+(?:id|identifier|number))?\s+(?:is|:)\s*\S+",
+        r"(?:the\s+)?(?:publisher\s+(?:is|of\s+(?:the\s+)?(?:paper|article|work|study)\s+is)|(?:the\s+)?(?:paper|article|work|study)\s+(?:was\s+)?published\s+by)\s+.+",
+        r"(?:the\s+)?(?:paper|article|work|study)\s+(?:is|was)\s+indexed\s+(?:in|by)\s+.+",
+        r"(?:该|此)?(?:论文|文章|文献|研究)存在",
+        r"(?:该|此)?(?:论文|文章|文献|研究)(?:于|发布于|发表于)\s*\d{4}\s*年?(?:\s*(?:，|,|并|且|以及)?\s*(?:doi|数字对象标识符)(?:为|是|:|：)\s*\S+)?",
+        r"(?:该|此)?(?:论文|文章|文献|研究)(?:的)?标题(?:为|是|:|：).+",
+        r".+(?:是|为)(?:该|此)?(?:论文|文章|文献|研究)(?:的)?作者",
+        r"(?:该|此)?(?:论文|文章|文献|研究)(?:的)?作者(?:是|为|包括|:|：).+",
+        r"(?:该|此)?(?:论文|文章|文献|研究)(?:发表于|发布于)(?:期刊|会议|出版社).+",
+        r"(?:该|此)?(?:论文|文章|文献|研究)(?:的)?(?:doi|arxiv|pmid|数字对象标识符)(?:为|是|:|：)\s*\S+",
+        r"(?:该|此)?(?:论文|文章|文献|研究)(?:由.+出版|出版社(?:是|为|:|：).+)",
+        r"(?:该|此)?(?:论文|文章|文献|研究)(?:被|已被)?(?:.+)?收录",
+    )
+)
+
+
+class MetadataClaimKind(str, Enum):
+    BIBLIOGRAPHIC = "bibliographic"
+    SUBSTANTIVE = "substantive"
+    AMBIGUOUS = "ambiguous"
+
+
+def classify_metadata_claim_kind(claim_text: str) -> MetadataClaimKind:
+    """Classify only explicit bibliographic identities; uncertainty fails closed."""
+
+    normalized = unicodedata.normalize("NFKC", str(claim_text or "")).casefold()
+    normalized = _CITATION_MARKER_RE.sub(" ", normalized).strip()
+    normalized = normalized.rstrip("。.!！?？").strip()
+    if not normalized:
+        return MetadataClaimKind.AMBIGUOUS
+    if any(term in normalized for term in _SUBSTANTIVE_RESEARCH_TERMS):
+        return MetadataClaimKind.SUBSTANTIVE
+    if _NUMERIC_EXPERIMENTAL_METRIC_RE.search(normalized):
+        return MetadataClaimKind.SUBSTANTIVE
+    if any(pattern.fullmatch(normalized) for pattern in _BIBLIOGRAPHIC_IDENTITY_PATTERNS):
+        return MetadataClaimKind.BIBLIOGRAPHIC
+    return MetadataClaimKind.AMBIGUOUS
 
 
 def evidence_role_supports_claim(evidence_role: str, claim_text: str) -> bool:
@@ -60,10 +114,7 @@ def evidence_role_supports_claim(evidence_role: str, claim_text: str) -> bool:
 
     if str(evidence_role or "").casefold() not in METADATA_ONLY_EVIDENCE_ROLES:
         return True
-    normalized = unicodedata.normalize("NFKC", str(claim_text or "")).casefold()
-    if any(term in normalized for term in _SUBSTANTIVE_RESEARCH_TERMS):
-        return False
-    return any(term in normalized for term in _BIBLIOGRAPHIC_CLAIM_TERMS)
+    return classify_metadata_claim_kind(claim_text) == MetadataClaimKind.BIBLIOGRAPHIC
 
 
 @dataclass(frozen=True)
