@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from app.retrieval.classifier import failure_status, make_failure
 from app.retrieval.contracts import FetchBackend, FetchFailureCode, FetchRequest, FetchResult
+from app.retrieval.url_normalizer import canonicalize_url
 
 
 class Backend(Protocol):
@@ -62,7 +64,29 @@ class RetrievalRouter:
                 return self._finalize(pdf_result, attempts)
             if not self._should_continue(result, backend_name):
                 break
-        assert last is not None, "RetrievalRouter requires at least one configured backend"
+        if last is None:
+            failure = make_failure(
+                FetchFailureCode.BACKEND_UNAVAILABLE,
+                "No permitted retrieval backend was available for this request.",
+                tool_scoped=True,
+            )
+            selected_backend = order[0] if order else FetchBackend.HTTP
+            return FetchResult(
+                requested_url=request.url,
+                canonical_url=canonicalize_url(request.url).normalized_url,
+                fetch_status=failure_status(failure),
+                fetch_backend=selected_backend,
+                provider="retrieval_router",
+                failure=failure,
+                failure_reason=failure.message,
+                metadata={
+                    "retrieval_attempts": [],
+                    "retrieval_attempt_count": 0,
+                    "requested_backends": [item.value for item in order],
+                    "browser_allowed": request.allow_browser,
+                    "remote_extract_allowed": request.allow_remote_extract,
+                },
+            )
         return self._finalize(last, attempts)
 
     def _backend(self, name: FetchBackend) -> Backend | None:
