@@ -39,15 +39,17 @@ R12.1 只收口仍残留的 Run-centric 问题，不提前实现 R13 Research In
 `origin_run_id`、`origin_trace_id` 与 `research_node_id`。
 
 Scope Identity 在不删除原始溯源的前提下提供稳定的 Source／Passage Alias 和有效唯一
-计数；跨 Run Claim 归组、来源独立性与冲突判定会持久化并进入最终合成。最终回答会
-落为 Report Claim 与 Citation Occurrence，每个引用标记都独立校验；固定的 Report
-Integrity Gate 不通过时，Deep Research V2 不得标记完成。学术校验只处理最终回答
-实际引用的 Work，并计入 Root 共享预算；校验告警与明细追加在最终回答之后，不会
-成为最终回答的 Citation Occurrence。完整重试不继承旧 Scope、Gate 与引擎状态，
-只有 Dispatcher 实际进入 Deep V2 Orchestrator 后才赋值 V2。迁移
-`0013_research_result_governance` 新增
-Scope Reasoning、Report Revision 与 Occurrence 记录。Actor／Synthesizer 可用性保持
-分角色判断，最终合成使用有界且兼顾各 Scope 分支的证据上下文。
+计数；跨 Run Claim 归组、来源独立性与冲突判定会持久化并进入最终合成。最终回答中的
+每个确定性 Claim candidate 都会落为 Report Claim，包括零引用 Claim；
+Citation Occurrence 是 Claim 的子关系，而不是 Claim 存在的前提。Report Integrity
+持久化 Claim 引用覆盖率，并优先用 Citation lineage、再用规范化文本回退映射 Scope
+Conflict，因此 unresolved group 中被确定性陈述的 Claim 不能靠省略引用或改写绕过
+Gate；原有 Citation support 阈值保持不变。学术校验只处理最终回答实际引用的 Work，
+并计入 Root 共享预算；校验告警与明细追加在最终回答之后，不会成为最终回答的
+Citation Occurrence。完整重试不继承旧 Scope、Gate 与引擎状态，只有 Dispatcher
+实际进入 Deep V2 Orchestrator 后才赋值 V2。迁移 `0013_research_result_governance`
+新增 Scope Reasoning、Report Revision 与 Occurrence 记录。Actor／Synthesizer
+可用性保持分角色判断，最终合成使用有界且兼顾各 Scope 分支的证据上下文。
 
 ### 自适应抓取与来源可靠性（R11）
 
@@ -60,11 +62,15 @@ Cloudflare／Bot challenge、CAPTCHA、Cookie／登录墙、软 404／429、付�
 
 HTTP、Browser、PDF 与 Remote Extract 统一返回 `FetchResult`，保存请求／最终／
 Canonical URL、稳定状态、Provider、提取方法与置信度、重定向链、正文范围、内容哈希
-和来源身份。HTTP、Browser、Remote Extract 与 PDF 统一采用 Source／View 双层模型：
-hash、story identity 与 independence group 只由有界 Source 生成，`max_chars` 只裁剪
-返回 View。缓存 key 只规范 scheme／host 大小写，保留大小写敏感的 path／query。
-Canonical URL 与内容哈希两级去重，防止等价页面被重复请求或作为多个
-独立证据入库。上述元数据同时进入 Trace、`SourceDocument` 与 `SourceSnapshot`；
+和来源身份。Resource Identity（DOI／arXiv／PMID 或 Canonical URL）、Snapshot 内容
+哈希、Passage Identity 与调用方 View 明确分层。HTTP、Browser、Remote Extract 与
+PDF 统一采用 Source／View 双层模型：hash、story identity 与 independence group
+只由 Resource-bearing Source 生成，`max_chars` 只裁剪返回 View。共享 independence
+helper 会合并同一资源的跨 Backend View，但不会把同一 hostname 的不同 path 合并；
+近重复转载只有在存在明确 original／syndication 信号时才归组。Remote Provider 在
+SourceView 前发生的截断会显式传播并强制标记 partial；没有任何获准 Backend 的路由
+会返回 tool-scoped `BACKEND_UNAVAILABLE`，不会断言或静默调用已禁用 Backend。
+缓存 key 只规范 scheme／host 大小写，保留大小写敏感的 path／query。上述元数据同时进入 Trace、`SourceDocument` 与 `SourceSnapshot`；
 Agent Recovery 只处理最终的 URL 级结果，不再反复调用静态 HTTP。
 
 高级开关、阈值和 Provider 顺序仅记录在 `.env.example.full`；Docker 会安装固定版本的
@@ -77,6 +83,11 @@ Playwright Chromium。真实静态页、Browser、PDF 与已配置远端提取�
 
 离线测试使用注入的 HTTP／Browser／Provider fixture，不会发起真实外网请求。R11
 自身仍只是抓取层；R12 直接消费统一 Fetch 结果，不与具体抓取 Backend 耦合。
+
+`official_metadata` 与 `discovery_index` 等 metadata-only Evidence Role 在 Citation
+Validator 与 Scope Reasoning 中共用 fail-closed 策略：只能独立证明明确的 DOI、作者、
+标题、Venue、发表年份等 bibliographic identity；歧义句或混合 substantive Claim 只能
+contextualize，不能计入独立 supports／refutes。
 
 ### 真实运行档位与预检（R10）
 
@@ -579,8 +590,8 @@ workspace/     本地数据库、报告、产物与 Skill
 
 ## 质量验证
 
-当前完整 pytest 为 798 项通过、2 项按条件跳过、1 项预期失败、102 个子测试通过且
-无失败；隔离离线入口共收集 793 项（790 项通过、2 项跳过、1 项预期失败），记录的
+当前完整 pytest 为 834 项通过、2 项按条件跳过、1 项预期失败、102 个子测试通过且
+无失败；隔离离线入口共收集 829 项（826 项通过、2 项跳过、1 项预期失败），记录的
 外网尝试为 0。前端最新基线为 106 项测试，类型检查、Lint、构建全部通过，
 隔离路由／固定数据检查 59 项通过；浏览器布局与真实服务验收仍需人工执行。
 剩余限制见[发布验证清单](RELEASE_VALIDATION.md)。

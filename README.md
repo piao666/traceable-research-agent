@@ -46,9 +46,15 @@ include root, child and grandchild Evidence while preserving every entity's
 Scope identity projections retain raw provenance and expose deterministic
 source/passage aliases plus effective unique counts. Cross-run claim grouping,
 source independence and conflict resolution are materialized for final
-synthesis. The final-answer section is persisted as report-claim and citation
-occurrences; every citation marker is validated, and Deep Research V2 cannot be
-marked complete when the fixed report-integrity thresholds fail. Academic
+synthesis. Every deterministic claim candidate in the final-answer section is
+persisted as a report-claim occurrence, including claims with zero citations;
+citation occurrences are child links rather than a prerequisite for claim
+existence. Report Integrity persists claim citation-coverage metrics and maps
+scope conflicts by citation lineage before using normalized-text fallback, so
+an asserted deterministic claim in an unresolved group cannot evade the gate
+merely by omitting or paraphrasing its citation. Every citation marker is still
+validated under the existing support thresholds, and Deep Research V2 cannot
+be marked complete when the fixed report-integrity thresholds fail. Academic
 verification is limited to works actually cited in the final answer and shares
 the root budget. Its warnings and verification table are appended after the
 final-answer section, so they cannot become final-answer citation occurrences.
@@ -73,11 +79,18 @@ are delegated to the existing page-aware PDF reader.
 
 Every backend returns one `FetchResult` shape with requested/final/canonical
 URLs, stable status, provider, extraction method and confidence, redirect
-chain, content basis/hash and source identity. Canonical URL and content-hash
-deduplication prevent equivalent pages from being fetched or materialized as
-independent evidence more than once. HTTP, Browser, Remote Extract and PDF use
-a Source/View split: hashes, story identity and independence groups are derived
-from the bounded Source, while `max_chars` changes only the returned View.
+chain, content basis/hash and source identity. Resource identity (DOI/arXiv/
+PMID or canonical URL), snapshot content hash, passage identity and caller View
+are separate layers. HTTP, Browser, Remote Extract and PDF use a Source/View
+split: hashes, story identity and independence groups are derived from the
+resource-bearing Source, while `max_chars` changes only the returned View.
+The shared independence helper merges cross-backend views of one resource but
+does not collapse different paths on the same hostname; near-duplicate
+syndication is merged only when an explicit original/syndication signal exists.
+Remote providers expose any pre-SourceView truncation, which forces partial
+content basis, and a route with no permitted backend returns a structured
+tool-scoped `BACKEND_UNAVAILABLE` result rather than asserting or silently
+using a disabled backend.
 Cache keys normalize scheme/host case but preserve case-sensitive path/query
 components. The same metadata is retained in Trace,
 `SourceDocument` and `SourceSnapshot`; Agent recovery sees the final URL-level
@@ -94,6 +107,12 @@ PDF and configured remote-extractor checks are deliberately confirmation-gated:
 The offline suite uses injected HTTP/browser/provider fixtures and never makes
 these real calls. R11 itself remains the retrieval layer; R12 consumes its
 uniform Fetch results without coupling the Engine to an individual backend.
+
+Metadata-only evidence roles (`official_metadata` and `discovery_index`) use a
+shared fail-closed policy in citation validation and scope reasoning. They may
+independently establish only explicit bibliographic identity (for example DOI,
+author, title, venue or publication year); ambiguous or mixed substantive
+claims only contextualize and cannot count as independent support/refutation.
 
 ### Real Runtime profiles and preflight (R10)
 
@@ -696,9 +715,9 @@ workspace/     local databases, reports, artifacts, and skills
 
 ## Quality Checks
 
-The current full pytest run passed 798 tests, with 2 conditionally skipped,
+The current full pytest run passed 834 tests, with 2 conditionally skipped,
 1 expected failure, 102 subtests passed, and no test failure. The isolated
-offline runner collected 793 tests (790 passed, 2 skipped, 1 expected failure)
+offline runner collected 829 tests (826 passed, 2 skipped, 1 expected failure)
 and recorded zero blocked external-network attempts.
 The latest frontend baseline is 106 tests; typecheck, lint and build passed;
 isolated route/fixture QA: 59 checks passed. Browser layout and live-provider

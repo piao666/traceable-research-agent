@@ -1,4 +1,24 @@
-# 修复发布与验收清单（R0–R12.2）
+# 修复发布与验收清单（R0–Pre-R13.1）
+
+## Pre-R13.1 Integrity Patch：本地复核记录
+
+本轮严格基于已发布的 `feature/improvements@2fd534e970a6294b22ceaafccb894443ff9c4ef9`
+实施指定修复，不提前引入 R13 Coverage／Gap／Evidence Gain、Python Runtime、Embedding、
+Vector DB 或 Orchestrator 重写。最终 Claim Universe、Scope Conflict lineage Gate、
+Resource-level Source Identity、Remote Provider 截断传播、Router 结构化无 Backend 失败，
+以及 metadata-only Evidence Role fail-closed 策略均已进入现有治理链；无新增 Migration。
+
+| 验证 | 本轮结果与边界 |
+|---|---|
+| 后端完整回归 | `834 passed / 2 skipped / 1 xfailed / 102 subtests passed / 0 failed`；15 条第三方弃用警告 |
+| 官方离线入口 | 收集 829 项：`826 passed / 2 skipped / 1 xfailed / 0 failed`；Offline network guard 为 0 次外部尝试 |
+| 方案专项 | 完整 Claim Universe、lineage conflict、跨 Backend Resource Identity、50k→8k Remote truncation、Router 禁用组合、metadata mixed claim 等回归全部通过 |
+| 前端／OpenAPI | OpenAPI 正式连续生成两次且 `schema.d.ts` 零差异；类型检查、Lint、11 个测试文件／106 项测试、生产构建通过 |
+| Migration／Smoke | 无新 Migration；Fresh `0001→0014`、幂等升级与无待生成操作通过；18/18 综合 Smoke 及隔离 Live API smoke 通过 |
+| 启动检查 | Streamlit 1.60.0 实际启动并通过 `/_stcore/health`，随后正常停止 |
+| Docker | 18 项综合 Smoke 中静态 Docker 配置检查通过；当前环境无 Docker CLI，未执行 Compose 或镜像启动 |
+| 真实 Provider | 未执行真实 LLM、搜索、Browser、PDF 或 Remote Provider 请求；不得视为真实环境验收 |
+| 发布目标 | 原子提交发布至远端 `feature/improvements`；最终状态以该分支 HEAD 与 GitHub Actions 为准 |
 
 ## R12.2 Pre-R13 Correctness Repairs：本地复核记录
 
