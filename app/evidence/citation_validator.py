@@ -15,7 +15,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,8 +26,12 @@ from app.agent.budget import BudgetExceeded
 from app.evidence.models import CitationOccurrence, ReportClaimOccurrence, ReportRevision
 from app.evidence.policy import evidence_role_supports_claim
 from app.llm.base import LLMClient, LLMMessage
+from app.reporting.claim_occurrence import (
+    CITATION_PATTERN,
+    claim_span_for_offset,
+    segment_final_answer_claims,
+)
 
-CITATION_PATTERN = re.compile(r"CIT-\d{3}-\d{2}")
 SENTENCE_BOUNDARIES = ".!?。！？\n"
 
 @dataclass
@@ -280,6 +283,12 @@ def _apply_llm_secondary_judgment(
 
 def _find_citation_sentence(text: str, match_start: int) -> tuple[str, int, int]:
     """Extract the sentence containing a citation match."""
+    span = claim_span_for_offset(segment_final_answer_claims(text), match_start)
+    if span is not None:
+        return span.raw_text, span.sentence_start, span.sentence_end
+
+    # Preserve validation for malformed citation-only text. Such text is not a
+    # final Claim candidate, but its marker must still be reported unsupported.
     # Search backward for sentence boundary
     start = match_start
     def boundary(index: int) -> bool:
@@ -551,29 +560,32 @@ def materialize_final_report_occurrences(
         if existing is not None:
             _clear_report_occurrences(db, report_revision_id)
 
-        details_by_sentence: dict[tuple[int, int], list[CitationValidationDetail]] = {}
-        for detail in validation.details:
-            details_by_sentence.setdefault(
-                (detail.sentence_start, detail.sentence_end), []
-            ).append(detail)
-        for (sentence_start, sentence_end), details in sorted(details_by_sentence.items()):
-            sentence = final_answer[sentence_start:sentence_end]
-            claim_text = _claim_text(sentence)
+        claim_spans = [
+            span
+            for span in segment_final_answer_claims(final_answer)
+            if span.is_claim_candidate
+        ]
+        for span in claim_spans:
+            details = [
+                detail
+                for detail in validation.details
+                if span.sentence_start <= detail.marker_start < span.sentence_end
+            ]
             claim_occurrence_id = _stable_id(
                 "report_claim_occurrence",
                 report_revision_id,
-                str(sentence_start),
-                str(sentence_end),
+                str(span.sentence_start),
+                str(span.sentence_end),
             )
             db.add(
                 ReportClaimOccurrence(
                     claim_occurrence_id=claim_occurrence_id,
                     report_revision_id=report_revision_id,
                     section="3. 最终回答",
-                    claim_text=claim_text,
-                    sentence_start=sentence_start,
-                    sentence_end=sentence_end,
-                    normalized_claim_text=_normalized_claim_text(claim_text),
+                    claim_text=span.claim_text,
+                    sentence_start=span.sentence_start,
+                    sentence_end=span.sentence_end,
+                    normalized_claim_text=span.normalized_claim_text,
                 )
             )
             for detail in sorted(details, key=lambda item: item.marker_start):
@@ -653,6 +665,11 @@ def get_report_occurrence_bundle(
         if claim_ids
         else []
     )
+    citation_counts: dict[str, int] = {}
+    for citation in citations:
+        citation_counts[citation.claim_occurrence_id] = (
+            citation_counts.get(citation.claim_occurrence_id, 0) + 1
+        )
     return {
         "report_revision": {
             "report_revision_id": revision.report_revision_id,
@@ -671,6 +688,7 @@ def get_report_occurrence_bundle(
                 "sentence_start": claim.sentence_start,
                 "sentence_end": claim.sentence_end,
                 "normalized_claim_text": claim.normalized_claim_text,
+                "citation_count": citation_counts.get(claim.claim_occurrence_id, 0),
             }
             for claim in claims
         ],
@@ -712,20 +730,6 @@ def _clear_report_occurrences(db: Session, report_revision_id: str) -> None:
     for claim in claims:
         db.delete(claim)
     db.flush()
-
-
-def _claim_text(sentence: str) -> str:
-    without_markers = CITATION_PATTERN.sub("", sentence)
-    without_empty_brackets = re.sub(r"\[\s*\]", "", without_markers)
-    compact = " ".join(without_empty_brackets.split()).strip()
-    compact = re.sub(r"\s+([,.;:!?，。；：！？])", r"\1", compact)
-    return re.sub(r"([.!?。！？])(?:\s*[.!?。！？])+$", r"\1", compact)
-
-
-def _normalized_claim_text(claim_text: str) -> str:
-    normalized = unicodedata.normalize("NFKC", claim_text).casefold()
-    normalized = re.sub(r"[*_`#>]", " ", normalized)
-    return " ".join(normalized.split())
 
 
 def _stable_id(prefix: str, *parts: str) -> str:
