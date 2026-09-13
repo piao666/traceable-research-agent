@@ -131,6 +131,7 @@ class RunBudget(Base):
     deadline: Mapped[float] = mapped_column(Float, nullable=False)
     tool_calls: Mapped[int] = mapped_column(Integer, default=0)
     llm_calls: Mapped[int] = mapped_column(Integer, default=0)
+    provider_attempts: Mapped[int] = mapped_column(Integer, default=0)
     reserved_tokens: Mapped[int] = mapped_column(Integer, default=0)
     estimated_cost: Mapped[float] = mapped_column(Float, default=0)
     stop_reason: Mapped[str | None] = mapped_column(String, nullable=True)

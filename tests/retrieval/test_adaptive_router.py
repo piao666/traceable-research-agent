@@ -15,7 +15,7 @@ from app.retrieval.contracts import (
     FetchResult,
     FetchStatus,
 )
-from app.retrieval.pdf_backend import PdfBackend
+from app.retrieval.pdf_backend import PDF_SOURCE_MAX_CHARS, PdfBackend
 from app.retrieval.remote_extract import RemoteExtractBackend, normalize_remote_payload
 from app.retrieval.router import RetrievalRouter
 from app.tools.base import ToolResult
@@ -118,6 +118,42 @@ def test_browser_backend_uses_isolated_loader_contract() -> None:
     assert result.metadata["downloads_allowed"] is False
 
 
+def test_browser_source_identity_is_invariant_across_8k_and_50k_views() -> None:
+    source = "<p>" + ("Stable browser source identity evidence. " * 2200) + "</p>"
+
+    class LargeFixtureLoader:
+        def load(self, request: FetchRequest) -> RenderedPage:
+            return RenderedPage(
+                final_url="https://example.com/CaseSensitive/Story",
+                html=f"<html><title>Stable story</title><main>{source}</main></html>",
+                title="Stable story",
+                redirect_chain=(request.url, "https://example.com/CaseSensitive/Story"),
+            )
+
+    backend = BrowserBackend(LargeFixtureLoader(), enabled=True)
+    with patch("app.tools.ssrf.socket.getaddrinfo", return_value=SAFE_DNS):
+        small = backend.fetch(
+            FetchRequest(url="https://example.com/app", max_chars=8000)
+        )
+        large = backend.fetch(
+            FetchRequest(url="https://example.com/app", max_chars=50000)
+        )
+
+    assert len(small.content) == 8000
+    assert len(large.content) == 50000
+    assert small.content_hash == large.content_hash
+    assert small.source_content_hash == large.source_content_hash
+    assert small.metadata["source_content_length"] == large.metadata["source_content_length"]
+    assert small.metadata["source_identity"]["canonical_story_hash"] == (
+        large.metadata["source_identity"]["canonical_story_hash"]
+    )
+    assert small.metadata["source_identity"]["independence_group"] == (
+        large.metadata["source_identity"]["independence_group"]
+    )
+    assert small.metadata["view_truncated"] is True
+    assert large.metadata["view_truncated"] is True
+
+
 def test_disabled_browser_is_nonfatal_backend_unavailable() -> None:
     result = BrowserBackend(FixtureLoader(), enabled=False).fetch(
         FetchRequest(url="https://example.com/app")
@@ -158,6 +194,31 @@ def test_remote_backend_returns_provider_identity_and_attempts() -> None:
     assert result.metadata["provider_attempts"][0]["status"] == "success"
 
 
+def test_remote_identity_uses_source_not_requested_view() -> None:
+    source = "Remote source identity evidence. " * 2200
+
+    @dataclass
+    class LargeRemoteProvider(FixtureRemoteProvider):
+        def extract(self, request: FetchRequest):
+            return {
+                "success": True,
+                "output": {
+                    "results": [
+                        {"url": request.url, "title": "Remote", "content": source}
+                    ]
+                },
+            }
+
+    backend = RemoteExtractBackend([LargeRemoteProvider()], enabled=True)
+    with patch("app.tools.ssrf.socket.getaddrinfo", return_value=SAFE_DNS):
+        small = backend.fetch(FetchRequest(url="https://example.com/a", max_chars=8000))
+        large = backend.fetch(FetchRequest(url="https://example.com/a", max_chars=50000))
+
+    assert small.content_hash == large.content_hash
+    assert small.source_content_hash == large.source_content_hash
+    assert small.metadata["source_identity"] == large.metadata["source_identity"]
+
+
 def test_router_falls_back_http_to_browser_and_stops_on_success() -> None:
     http = StubBackend(_failure(FetchBackend.HTTP, FetchFailureCode.JAVASCRIPT_REQUIRED))
     browser = StubBackend(_success(FetchBackend.BROWSER))
@@ -183,7 +244,10 @@ def test_router_does_not_escalate_terminal_404() -> None:
 
 
 def test_pdf_backend_preserves_page_locators() -> None:
+    reader_arguments = []
+
     def reader(arguments):
+        reader_arguments.append(arguments)
         return ToolResult(
             success=True,
             output={
@@ -208,10 +272,52 @@ def test_pdf_backend_preserves_page_locators() -> None:
     result = PdfBackend(reader).fetch(FetchRequest(url="https://example.com/evidence.pdf"))
     assert result.usable
     assert result.provider == "local_pdf_reader"
+    assert reader_arguments[0]["max_chars"] == PDF_SOURCE_MAX_CHARS
     assert result.metadata["page_locators"] == [
         {"page_number": 1, "char_count": len(CONTENT)},
         {"page_number": 2, "char_count": len(CONTENT)},
     ]
+
+
+def test_pdf_identity_uses_fixed_source_extraction_for_different_views() -> None:
+    source = "PDF source identity evidence. " * 2200
+
+    def reader(arguments):
+        assert arguments["max_chars"] == PDF_SOURCE_MAX_CHARS
+        return ToolResult(
+            success=True,
+            output={
+                "documents": [
+                    {
+                        "path": arguments["paths"][0],
+                        "title": "PDF evidence",
+                        "pages": [
+                            {
+                                "page_number": 1,
+                                "text": source,
+                                "char_count": len(source),
+                            }
+                        ],
+                        "integrity": {"truncated": False, "actual_pages": 1},
+                        "metadata": {"author": "Researcher"},
+                        "content_basis": "full_text",
+                        "extraction_method": "native",
+                    }
+                ]
+            },
+        )
+
+    backend = PdfBackend(reader)
+    small = backend.fetch(
+        FetchRequest(url="https://example.com/evidence.pdf", max_chars=8000)
+    )
+    large = backend.fetch(
+        FetchRequest(url="https://example.com/evidence.pdf", max_chars=50000)
+    )
+
+    assert small.content_hash == large.content_hash
+    assert small.source_content_hash == large.source_content_hash
+    assert small.metadata["source_identity"] == large.metadata["source_identity"]
 
 
 def test_web_fetcher_deduplicates_canonical_and_content_identities() -> None:

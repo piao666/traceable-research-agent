@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Iterable, Literal, Mapping
 
 
@@ -45,9 +46,9 @@ def append_report_integrity_warnings(
     markdown: str,
     result: ReportIntegrityResult,
 ) -> str:
-    """Render non-blocking report-gate warnings into the final audit artifact."""
+    """Render report-gate warnings into the final audit artifact."""
 
-    if result.status != "passed" or not result.warnings:
+    if not result.warnings:
         return markdown
     lines = [
         markdown.rstrip(),
@@ -65,6 +66,7 @@ def assess_report_integrity(
     *,
     reference_report: Any | None = None,
     enforce_reference_consistency: bool = False,
+    scope_bundle: Mapping[str, Any] | None = None,
 ) -> ReportIntegrityResult:
     """Apply the fixed Deep Research V2 final-report citation thresholds."""
 
@@ -121,6 +123,15 @@ def assess_report_integrity(
                 "More than 25% of final cited academic works remain unresolved."
             )
 
+    asserted_conflicts = _asserted_scope_conflicts(occurrence_bundle, scope_bundle)
+    if asserted_conflicts:
+        warnings.append(
+            f"{len(asserted_conflicts)} deterministic final claim(s) map to unresolved "
+            "or requires-human Scope conflicts."
+        )
+        if error_code is None:
+            error_code = "unresolved_scope_claim_asserted"
+
     return ReportIntegrityResult(
         version=REPORT_INTEGRITY_VERSION,
         status="failed" if error_code else "passed",
@@ -133,3 +144,48 @@ def assess_report_integrity(
         support_rate=support_rate,
         strict_support_rate=strict_support_rate,
     )
+
+
+_ENGLISH_UNCERTAINTY_RE = re.compile(
+    r"\b(?:might|uncertain|unresolved|disputed|conflicting|possibly)\b"
+    r"|\brequires[- ]human\b"
+    r"|\bmay\s+(?:be|have|indicate|suggest|reflect|represent|reach|exceed|fall)\b",
+    re.IGNORECASE,
+)
+_CJK_UNCERTAINTY_TERMS = (
+    "可能", "或许", "不确定", "尚未解决", "存在冲突", "有待核实",
+    "无法确定", "需人工",
+)
+
+
+def _asserted_scope_conflicts(
+    occurrence_bundle: Mapping[str, Any] | Iterable[Mapping[str, Any]],
+    scope_bundle: Mapping[str, Any] | None,
+) -> list[str]:
+    if not isinstance(occurrence_bundle, Mapping) or not scope_bundle:
+        return []
+    from app.evidence.scope_reasoning import scope_claim_group_key
+
+    groups = {
+        str(item.get("group_id") or ""): item
+        for item in scope_bundle.get("scope_claim_groups") or []
+    }
+    disputed_keys = {
+        str((groups.get(str(item.get("group_id") or "")) or {}).get("normalized_key") or "")
+        for item in scope_bundle.get("scope_resolutions") or []
+        if item.get("status") in {"unresolved", "requires_human"}
+    }
+    disputed_keys.discard("")
+    matches: list[str] = []
+    for claim in occurrence_bundle.get("claim_occurrences") or []:
+        claim_text = str(claim.get("claim_text") or "").strip()
+        normalized = re.sub(r"\s+", " ", claim_text).casefold()
+        if (
+            not claim_text
+            or _ENGLISH_UNCERTAINTY_RE.search(normalized)
+            or any(term in normalized for term in _CJK_UNCERTAINTY_TERMS)
+        ):
+            continue
+        if scope_claim_group_key({"claim_text": claim_text}) in disputed_keys:
+            matches.append(claim_text)
+    return matches

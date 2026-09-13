@@ -458,6 +458,57 @@ class SharedBudgetTests(unittest.TestCase):
         finally:
             _active.reset(token)
 
+    def test_budget_client_preserves_429_retry_and_counts_one_logical_call(self):
+        from io import BytesIO
+        from urllib.error import HTTPError
+
+        from app.agent.budget import BudgetClient, _active
+        from app.llm.base import LLMMessage
+        from app.llm.providers import OpenAICompatibleLLMClient
+        from tests.test_r10_runtime import JsonResponse
+
+        runtime = self.runtime(research_max_llm_calls=1)
+        provider = OpenAICompatibleLLMClient(
+            "openai_compatible",
+            "fixture-model",
+            "https://gateway.example/v1",
+            "private-key",
+            max_retries=1,
+        )
+        limited = HTTPError(
+            "https://gateway.example",
+            429,
+            "limited",
+            {"Retry-After": "1"},
+            BytesIO(),
+        )
+        recovered = JsonResponse(
+            {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        )
+        token = _active.set(runtime)
+        try:
+            with (
+                patch(
+                    "app.llm.providers.urlopen",
+                    side_effect=[limited, recovered],
+                ) as opener,
+                patch("app.llm.providers.sleep"),
+            ):
+                response = BudgetClient(provider).complete(
+                    [LLMMessage(role="user", content="retry")],
+                    max_tokens=20,
+                )
+        finally:
+            _active.reset(token)
+
+        snapshot = runtime.snapshot()
+        self.assertTrue(response.success)
+        self.assertEqual(opener.call_count, 2)
+        self.assertEqual(provider.max_retries, 1)
+        self.assertEqual(snapshot["llm_calls"], 1)
+        self.assertEqual(snapshot["provider_attempts"], 2)
+        self.assertEqual(response.metadata["provider_attempts"], 2)
+
     def test_exhausted_budget_does_not_create_more_deepening_children(self):
         from app.agent.budget import _active, BudgetExceeded
         from app.agent.deepening import _run_single_round

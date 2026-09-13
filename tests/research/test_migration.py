@@ -38,7 +38,7 @@ def test_migration_0012_backfills_nested_legacy_lineage(tmp_path):
             "FROM agent_runs ORDER BY run_id"
         )).fetchall()
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0013_research_result_governance"
+    assert revision == "0014_budget_provider_attempts"
     assert {row[0]: row[2] for row in rows} == {
         "root": "root", "child": "root", "grandchild": "root"
     }
@@ -54,6 +54,9 @@ def test_migration_0012_backfills_nested_legacy_lineage(tmp_path):
         "report_claim_occurrences",
         "citation_occurrences",
     }.issubset(inspect(engine).get_table_names())
+    assert "provider_attempts" in {
+        column["name"] for column in inspect(engine).get_columns("run_budgets")
+    }
     engine.dispose()
 
 

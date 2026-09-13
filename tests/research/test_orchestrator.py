@@ -9,6 +9,11 @@ from app.agent.budget import BudgetExceeded
 from app.agent.reporter import build_bounded_provenance_context
 from app.eval.fake_react_llm import FakeReActLLMClient
 from app.evidence.service import materialize_execution_provenance
+from app.evidence.citation_validator import extract_final_answer_section
+from app.evidence.reference_verifier import (
+    ReferenceVerificationDetail,
+    ReferenceVerificationReport,
+)
 from app.evidence.scope_service import get_scope_provenance_bundle
 from app.research.node_executor import ResearchNodeExecutor
 from app.research.orchestrator import run_deep_research_v2
@@ -77,6 +82,10 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
 
     captured = {}
 
+    def save_report(_run_id, markdown):
+        captured["markdown"] = markdown
+        return "workspace/reports/r12.md"
+
     def report_generator(_run, _plan, _observations, _traces, **kwargs):
         assert store.get_fresh_agent_run(db, root.run_id).status == "running"
         captured["report_model"] = kwargs["llm_client"].describe()["model"]
@@ -95,7 +104,30 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
 
     with (
         patch("app.research.orchestrator.run_react_task", side_effect=fake_node_runner),
-        patch("app.research.orchestrator.save_report", return_value="workspace/reports/r12.md"),
+        patch("app.research.orchestrator.save_report", side_effect=save_report),
+        patch(
+            "app.research.orchestrator.extract_cited_academic_references",
+            return_value=[{"title": "Unresolved cited work"}],
+        ),
+        patch(
+            "app.research.orchestrator.ReferenceVerifier.verify",
+            return_value=ReferenceVerificationReport(
+                total=1,
+                unresolved=1,
+                network_failures=1,
+                indexes_available=["crossref"],
+                details=[
+                    ReferenceVerificationDetail(
+                        ref_label="REF-001",
+                        identifier_type="title_author",
+                        identifier_value="Unresolved cited work",
+                        status="unresolved",
+                        indexes_checked=["crossref"],
+                        failure_reason="network_unavailable",
+                    )
+                ],
+            ),
+        ),
     ):
         result = run_deep_research_v2(
             db,
@@ -121,6 +153,11 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
     completed_plan = json.loads(completed_root.plan_json)
     assert completed_plan["research_outcome"]["status"] == "passed"
     assert completed_plan["report_integrity"]["status"] == "passed"
+    assert "## 12. 文献存在性校验" in captured["markdown"]
+    assert "网络失败: 1" in captured["markdown"]
+    assert "## 12. 文献存在性校验" not in extract_final_answer_section(
+        captured["markdown"]
+    )
     assert result_integrity(completed_root)["requires_review"] is False
     assert get_scope_provenance_bundle(db, scope)["integrity"]["child_citation_count"] >= 1
 

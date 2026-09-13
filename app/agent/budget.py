@@ -5,7 +5,6 @@ this is not an interruptible process sandbox or a provider billing guarantee.
 """
 from __future__ import annotations
 
-import copy
 import inspect
 import json
 import math
@@ -84,9 +83,21 @@ def ensure_budget(db, run_id, settings, *, parent_run_id=None):
     if parent_run_id is not None:
         parent = ensure_budget(db, parent_run_id, settings)
         root_id, config, deadline = parent.root_run_id, json.loads(parent.limits_json), parent.deadline
-    db.execute(insert(RunBudget).values(run_id=run_id, root_run_id=root_id,
-        limits_json=json.dumps(config, sort_keys=True), deadline=deadline, tool_calls=0, llm_calls=0,
-        reserved_tokens=0, estimated_cost=0).on_conflict_do_nothing(index_elements=["run_id"]))
+    db.execute(
+        insert(RunBudget)
+        .values(
+            run_id=run_id,
+            root_run_id=root_id,
+            limits_json=json.dumps(config, sort_keys=True),
+            deadline=deadline,
+            tool_calls=0,
+            llm_calls=0,
+            provider_attempts=0,
+            reserved_tokens=0,
+            estimated_cost=0,
+        )
+        .on_conflict_do_nothing(index_elements=["run_id"])
+    )
     db.commit()
     row = db.get(RunBudget, run_id, populate_existing=True)
     return db.get(RunBudget, row.root_run_id, populate_existing=True)
@@ -145,6 +156,19 @@ class BudgetRuntime:
             self.stop("tool_price_unconfigured")
         self.reserve(tool=1, cost=cost or 0)
 
+    def record_provider_attempts(self, attempts: int) -> None:
+        """Record physical provider attempts separately from logical LLM calls."""
+
+        count = max(0, int(attempts))
+        if not count:
+            return
+        self.db.execute(
+            update(RunBudget)
+            .where(RunBudget.run_id == self.root_id)
+            .values(provider_attempts=RunBudget.provider_attempts + count)
+        )
+        self.db.commit()
+
     def snapshot(self):
         return budget_snapshot(self.db, self.run_id)
 
@@ -162,7 +186,9 @@ def budget_snapshot(db, run_id):
     row = db.get(RunBudget, member.root_run_id, populate_existing=True)
     config = json.loads(row.limits_json)
     return {"version": "shared-budget-v1", "root_run_id": member.root_run_id, "limits": config,
-        "tool_calls": row.tool_calls, "llm_calls": row.llm_calls, "accounted_tokens": row.reserved_tokens,
+        "tool_calls": row.tool_calls, "llm_calls": row.llm_calls,
+        "provider_attempts": row.provider_attempts,
+        "accounted_tokens": row.reserved_tokens,
         "estimated_cost": row.estimated_cost, "cost_currency": "CNY",
         "cost_evaluable": config["tool_cost_estimate"] is not None and config["llm_cost_per_million_tokens"] is not None,
         "deadline": row.deadline, "stop_reason": row.stop_reason}
@@ -190,9 +216,9 @@ def reserve_tool(name):
 
 class BudgetClient(LLMClient):
     def __init__(self, client):
-        self.client = copy.copy(client)
-        if hasattr(self.client, "max_retries"):
-            self.client.max_retries = 0  # A reservation covers one provider attempt.
+        # Provider retries are an adapter concern.  The budget reserves one
+        # logical call and records the adapter's bounded physical attempts.
+        self.client = client
 
     def is_available(self):
         return self.client.is_available()
@@ -213,6 +239,7 @@ class BudgetClient(LLMClient):
         cost = reserved * (rate or 0) / 1_000_000
         runtime.reserve(llm=1, tokens=reserved, cost=cost)
         response = self.client.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        runtime.record_provider_attempts(_provider_attempt_count(response))
         actual = max(0, response.usage.total_tokens,
                      max(0, response.usage.prompt_tokens) + max(0, response.usage.completion_tokens)) if response.usage else 0
         if actual > 0:
@@ -227,6 +254,21 @@ class BudgetClient(LLMClient):
             if runtime.limits["max_estimated_cost"] and snapshot["estimated_cost"] > runtime.limits["max_estimated_cost"]:
                 runtime.stop("estimated_cost")
         return response
+
+
+def _provider_attempt_count(response) -> int:
+    response_metadata = getattr(response, "metadata", None)
+    metadata = response_metadata if isinstance(response_metadata, dict) else {}
+    explicit = metadata.get("provider_attempts")
+    if isinstance(explicit, int) and not isinstance(explicit, bool):
+        return max(1, explicit)
+    attempt = metadata.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool):
+        return max(1, attempt)
+    retry_count = metadata.get("retry_count")
+    if isinstance(retry_count, int) and not isinstance(retry_count, bool):
+        return max(1, retry_count + 1)
+    return 1
 
 
 def budget_client(client):

@@ -94,6 +94,7 @@ def _set_fact(
     time_scope: str = "2025",
     independence_group: str | None = None,
     passage_hash: str | None = None,
+    evidence_role: str | None = None,
 ) -> None:
     claim = db.scalars(select(ResearchClaim).where(ResearchClaim.run_id == run_id)).first()
     assertion = db.scalars(
@@ -119,6 +120,8 @@ def _set_fact(
     if passage_hash is not None:
         passage.content_hash = passage_hash
     metadata = json.loads(document.metadata_json or "{}")
+    if evidence_role is not None:
+        metadata["evidence_role"] = evidence_role
     source_identity = dict(metadata.get("source_identity") or {})
     source_identity.pop("canonical_story_hash", None)
     if independence_group is not None:
@@ -186,6 +189,30 @@ def test_three_syndicated_domains_count_as_one_independent_support(db, r12_setti
             {"content_hash": "same-passage"},
         )
     }
+
+
+def test_metadata_evidence_only_contextualizes_substantive_scope_claim(db, r12_settings):
+    scope, runs = _scope_runs(db, r12_settings)
+    for run, value, role in (
+        (runs[0], 100, "official_metadata"),
+        (runs[1], 130, "discovery_index"),
+    ):
+        _set_fact(
+            db,
+            run.run_id,
+            value=value,
+            independence_group=f"metadata-{value}",
+            evidence_role=role,
+        )
+
+    result = materialize_scope_reasoning(db, scope.scope_id, POLICY_PATH)
+    resolution = result["scope_resolutions"][0]
+
+    assert {
+        item["relation"] for item in resolution["rationale"]["relations"]
+    } == {"contextualizes"}
+    assert resolution["independent_support_count"] == 0
+    assert resolution["independent_refute_count"] == 0
 
 
 def test_different_time_scopes_are_scope_differences_not_plain_conflicts(db, r12_settings):

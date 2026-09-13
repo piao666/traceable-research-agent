@@ -109,6 +109,55 @@ def test_normal_web_reference_problems_are_warning_only():
     assert len(result.warnings) == 2
 
 
+def test_deterministic_claim_mapped_to_open_scope_conflict_fails():
+    from app.evidence.scope_reasoning import scope_claim_group_key
+
+    claim_text = "Market size in 2025 is 100 USD."
+    for conflict_status in ("unresolved", "requires_human"):
+        scope_bundle = {
+            "scope_claim_groups": [
+                {
+                    "group_id": "group-1",
+                    "normalized_key": scope_claim_group_key({"claim_text": claim_text}),
+                }
+            ],
+            "scope_resolutions": [
+                {"group_id": "group-1", "status": conflict_status}
+            ],
+        }
+        occurrences = _occurrences("supported")
+        occurrences["claim_occurrences"] = [{"claim_text": claim_text}]
+
+        result = assess_report_integrity(occurrences, scope_bundle=scope_bundle)
+
+        assert result.status == "failed"
+        assert result.error_code == "unresolved_scope_claim_asserted"
+        assert "deterministic final claim" in result.warnings[-1]
+
+
+def test_uncertain_claim_mapped_to_unresolved_scope_group_is_not_asserted():
+    from app.evidence.scope_reasoning import scope_claim_group_key
+
+    qualified_claim = "Market size in 2025 may be 100 USD."
+    scope_bundle = {
+        "scope_claim_groups": [
+            {
+                "group_id": "group-1",
+                "normalized_key": scope_claim_group_key({"claim_text": qualified_claim}),
+            }
+        ],
+        "scope_resolutions": [
+            {"group_id": "group-1", "status": "unresolved"}
+        ],
+    }
+    occurrences = _occurrences("supported")
+    occurrences["claim_occurrences"] = [{"claim_text": qualified_claim}]
+
+    result = assess_report_integrity(occurrences, scope_bundle=scope_bundle)
+
+    assert result.status == "passed"
+
+
 def test_strict_reference_gate_is_limited_to_academic_reviews():
     assert _requires_strict_reference_gate({"skill_name": "systematic_review"})
     assert _requires_strict_reference_gate(

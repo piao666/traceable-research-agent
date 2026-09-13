@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import time
 from collections.abc import Callable
 from typing import Any
@@ -17,8 +16,12 @@ from app.retrieval.contracts import (
     FetchStatus,
 )
 from app.retrieval.source_identity import source_lineage
+from app.retrieval.source_view import build_source_view
 from app.retrieval.url_normalizer import canonicalize_url
 from app.tools.base import ToolResult
+
+
+PDF_SOURCE_MAX_CHARS = 100_000
 
 
 class PdfBackend:
@@ -46,7 +49,9 @@ class PdfBackend:
         if not self.enabled:
             failure = make_failure(FetchFailureCode.BACKEND_UNAVAILABLE, "PDF reader is disabled.", tool_scoped=True)
             return self._failed(request, failure, started)
-        result = self.reader({"paths": [request.url], "max_chars": request.max_chars})
+        result = self.reader(
+            {"paths": [request.url], "max_chars": PDF_SOURCE_MAX_CHARS}
+        )
         documents = (result.output or {}).get("documents") if isinstance(result.output, dict) else []
         document = documents[0] if isinstance(documents, list) and documents else None
         if not isinstance(document, dict) or document.get("error"):
@@ -57,34 +62,40 @@ class PdfBackend:
             return self._failed(request, failure, started)
 
         pages = [page for page in document.get("pages") or [] if isinstance(page, dict)]
-        content = "\n\n".join(
+        source_content = "\n\n".join(
             f"[Page {page.get('page_number')}] {str(page.get('text') or '').strip()}"
             for page in pages
             if str(page.get("text") or "").strip()
-        )[: request.max_chars]
+        )
         method = str(document.get("extraction_method") or "native")
         basis = str(document.get("content_basis") or "partial")
+        integrity = dict(document.get("integrity") or {})
+        source_view = build_source_view(
+            source_content,
+            request.max_chars,
+            source_max_chars=None,
+            source_truncated=basis == "partial" or bool(integrity.get("truncated")),
+        )
         confidence = 0.85 if method == "native" else 0.65 if method in {"ocr", "mixed"} else 0.0
         quality, quality_failure = assess_page_quality(
-            content,
+            source_view.content,
             title=str(document.get("title") or request.url),
             extraction_method=f"pdf_{method}",
             extraction_confidence=confidence,
-            truncated=basis == "partial",
+            truncated=source_view.truncated,
             minimum_score=self.quality_min_score,
         )
         canonical = canonicalize_url(request.url).normalized_url
-        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest() if content else None
         status = failure_status(quality_failure) if quality_failure else (
-            FetchStatus.PARTIAL if basis == "partial" else FetchStatus.SUCCESS
+            FetchStatus.PARTIAL if source_view.truncated else FetchStatus.SUCCESS
         )
         return FetchResult(
             requested_url=request.url,
             final_url=request.url,
             title=str(document.get("title") or request.url),
-            content=content,
+            content=source_view.content,
             content_type="application/pdf",
-            content_basis=basis,
+            content_basis=quality.content_basis,
             extraction_method=f"pdf_{method}",
             extraction_confidence=confidence,
             fetch_status=status,
@@ -93,7 +104,8 @@ class PdfBackend:
             quality=quality,
             failure=quality_failure,
             failure_reason=quality_failure.message if quality_failure else None,
-            content_hash=content_hash,
+            content_hash=source_view.source_content_hash,
+            source_content_hash=source_view.source_content_hash,
             canonical_url=canonical,
             fragment_locator=canonicalize_url(request.url).fragment_locator,
             metadata={
@@ -101,9 +113,15 @@ class PdfBackend:
                     {"page_number": page.get("page_number"), "char_count": page.get("char_count", 0)}
                     for page in pages
                 ],
-                "pdf_integrity": dict(document.get("integrity") or {}),
+                "pdf_integrity": integrity,
                 "pdf_metadata": dict(document.get("metadata") or {}),
-                "source_identity": source_lineage(canonical, content, document.get("metadata")).to_dict(),
+                "source_content_basis": basis,
+                **source_view.metadata(),
+                "source_identity": source_lineage(
+                    canonical,
+                    source_view.source_content,
+                    document.get("metadata"),
+                ).to_dict(),
                 "fetched_at_ms": int((time.monotonic() - started) * 1000),
             },
         )
@@ -123,4 +141,4 @@ class PdfBackend:
         )
 
 
-__all__ = ["PdfBackend"]
+__all__ = ["PDF_SOURCE_MAX_CHARS", "PdfBackend"]

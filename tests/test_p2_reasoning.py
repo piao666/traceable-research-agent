@@ -513,6 +513,29 @@ class ReasoningPersistenceTests(unittest.TestCase):
         self.assertIn("冲突尚未解决", limitation_section)
         self.assertIn("not_passed", limitation_section)
 
+    def test_scope_unresolved_conflict_is_visible_in_final_answer_alert(self) -> None:
+        bundle = {
+            "scope_claim_groups": [
+                {
+                    "group_id": "scope-group-1",
+                    "representative_claim_text": "Revenue reached 100 USD",
+                }
+            ],
+            "scope_resolutions": [
+                {
+                    "group_id": "scope-group-1",
+                    "status": "requires_human",
+                    "confidence": 0.45,
+                }
+            ],
+        }
+
+        alert = "\n".join(_conflict_alert_lines(bundle))
+
+        self.assertIn("Revenue reached 100 USD", alert)
+        self.assertIn("requires_human", alert)
+        self.assertIn("不得作为确定性事实", alert)
+
 
 if __name__ == "__main__":
     unittest.main()

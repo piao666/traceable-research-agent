@@ -23,6 +23,7 @@ from app.agent.evidence import ClaimEvidenceMap, EvidenceBundle, EvidenceItem
 from app.database import Base
 from app.evidence.artifact_store import ArtifactStore
 from app.evidence.service import get_provenance_bundle, materialize_provenance_bundle
+from app.research import models as research_models  # noqa: F401
 from app.trace.models import AgentRun, ToolTrace
 
 

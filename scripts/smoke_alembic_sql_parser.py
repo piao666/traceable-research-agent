@@ -24,6 +24,7 @@ REQUIRED_FILES = (
     ROOT / "migrations" / "versions" / "0002_claim_provenance_schema.py",
     ROOT / "migrations" / "versions" / "0003_evidence_reasoning.py",
     ROOT / "migrations" / "versions" / "0012_research_scope_and_lineage.py",
+    ROOT / "migrations" / "versions" / "0014_budget_provider_attempts.py",
 )
 
 ALLOWED_QUERIES = (

@@ -21,8 +21,13 @@ from app.evidence.models import (
     ScopeClaimResolution,
     ScopeReasoningRun,
 )
-from app.evidence.policy import load_source_policy, score_reliability
+from app.evidence.policy import (
+    evidence_role_supports_claim,
+    load_source_policy,
+    score_reliability,
+)
 from app.evidence.reasoning import (
+    RelationDecision,
     ScoredRelation,
     classify_relation,
     normalize_fact,
@@ -261,6 +266,19 @@ def materialize_scope_reasoning(
                     prior_relation=_text(item["edge"].get("relation")) or "supports",
                 )
                 passage_metadata = _mapping(item["passage"].get("metadata"))
+                document_metadata = _mapping(item["document"].get("metadata"))
+                evidence_role = _text(
+                    document_metadata.get("evidence_role")
+                    or passage_metadata.get("evidence_role")
+                    or "unknown"
+                ).casefold()
+                if not evidence_role_supports_claim(
+                    evidence_role, _text(representative.get("claim_text"))
+                ):
+                    decision = RelationDecision(
+                        "contextualizes",
+                        "metadata/discovery evidence cannot independently prove a substantive claim",
+                    )
                 scored.append(
                     ScoredRelation(
                         relation=decision.relation,
@@ -296,9 +314,7 @@ def materialize_scope_reasoning(
                         "relation": decision.relation,
                         "score": breakdown.total_score,
                         "source_class": breakdown.source_class,
-                        "evidence_role": _mapping(
-                            item["document"].get("metadata")
-                        ).get("evidence_role", "unknown"),
+                        "evidence_role": evidence_role,
                         "scope_difference": decision.scope_difference,
                         "relation_rationale": decision.rationale,
                         "reliability": {

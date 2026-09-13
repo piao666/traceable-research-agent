@@ -289,6 +289,25 @@ class WebFetcherCacheTests(unittest.TestCase):
         self.assertEqual(self.cache.lookup("https://example.com/b")[1], "hit")
         self.assertEqual(self.cache.stats()["total_entries"], 2)
 
+    def test_cache_key_normalizes_only_scheme_and_host_case(self) -> None:
+        upper_host = "HTTPS://EXAMPLE.COM/CaseSensitive?Token=AbC"
+        lower_host = "https://example.com/CaseSensitive?Token=AbC"
+        different_path = "https://example.com/casesensitive?Token=AbC"
+        different_query = "https://example.com/CaseSensitive?Token=abc"
+
+        self.assertEqual(
+            self.cache._compute_key(upper_host),
+            self.cache._compute_key(lower_host),
+        )
+        self.assertNotEqual(
+            self.cache._compute_key(lower_host),
+            self.cache._compute_key(different_path),
+        )
+        self.assertNotEqual(
+            self.cache._compute_key(lower_host),
+            self.cache._compute_key(different_query),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

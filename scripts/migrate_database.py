@@ -146,9 +146,17 @@ def bootstrap_revision_for_tables(
                                                 "Legacy database has a partial R12 result schema; "
                                                 "missing improvement_logs.evaluation_metadata_json"
                                             )
+                                        budget_columns = {
+                                            column["name"]
+                                            for column in inspector.get_columns("run_budgets")
+                                        }
                                         return _required_stamp(
                                             current_revision,
-                                            "0013_research_result_governance",
+                                            (
+                                                "0014_budget_provider_attempts"
+                                                if "provider_attempts" in budget_columns
+                                                else "0013_research_result_governance"
+                                            ),
                                         )
                                     return _required_stamp(
                                         current_revision, "0012_research_scope_and_lineage"
@@ -181,6 +189,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0011_run_budgets": 11,
         "0012_research_scope_and_lineage": 12,
         "0013_research_result_governance": 13,
+        "0014_budget_provider_attempts": 14,
     }
     if current_revision is None:
         return schema_revision

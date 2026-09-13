@@ -1399,14 +1399,9 @@ def retry_task(
             ),
             skill_name="auto",
         )
-    # A retry is a fresh execution.  Never inherit an approval token or a
-    # partially consumed ReAct state from the original run.
-    plan.pop("confirmation", None)
-    plan.pop("react_state", None)
-    plan.pop("execution_budget", None)
-    for key in list(plan):
-        if key.startswith(("adaptive_", "deepening_")) or key in {"research_outcome", "preflight", "evidence_revision"}:
-            plan.pop(key, None)
+    # A retry is a fresh execution. Never inherit approval, runtime, Scope,
+    # Gate, lineage, or finalization state from the failed Run.
+    _clear_retry_derived_state(plan)
     plan["execution_mode"] = plan.get("requested_execution_mode") or "planned"
     plan["parent_run_id"] = run_id
     plan["notes"] = list(plan.get("notes") or []) + [
@@ -1422,7 +1417,7 @@ def retry_task(
         run_config_snapshot=json.dumps(settings.get_safe_runtime_config_summary(), ensure_ascii=False, sort_keys=True),
         parent_run_id=run_id,
         run_role="root",
-        engine_version=original.engine_version or "legacy",
+        engine_version="legacy",
     )
     store.update_agent_run_plan(db, new_run.run_id, plan)
     _persist_plan_config_snapshot(db, new_run.run_id, settings.get_safe_runtime_config_summary(), plan)
@@ -1439,3 +1434,34 @@ def retry_task(
         plan_url=f"/api/tasks/{new_run.run_id}/plan",
         run_url=f"/api/tasks/{new_run.run_id}/run",
     )
+
+
+def _clear_retry_derived_state(plan: dict[str, Any]) -> None:
+    """Remove state that can only be assigned by a concrete execution."""
+
+    exact = {
+        "confirmation",
+        "react_state",
+        "execution_budget",
+        "research_outcome",
+        "preflight",
+        "evidence_revision",
+        "research_node_id",
+        "root_run_id",
+        "run_role",
+        "engine_version",
+        "defer_to_research_scope",
+        "report_integrity",
+        "reference_verification",
+        "citation_validation",
+    }
+    for key in list(plan):
+        if (
+            key in exact
+            or key.startswith("research_scope")
+            or key.startswith("adaptive_")
+            or key.startswith("deepening_")
+        ):
+            plan.pop(key, None)
+    if plan.get("version") == "deep-research-engine-v2":
+        plan["version"] = "retry-plan-v1"

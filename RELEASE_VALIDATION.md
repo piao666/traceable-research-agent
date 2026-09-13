@@ -1,4 +1,25 @@
-# 修复发布与验收清单（R0–R12.1）
+# 修复发布与验收清单（R0–R12.2）
+
+## R12.2 Pre-R13 Correctness Repairs：本地复核记录
+
+本轮基于已发布的 `feature/improvements@7689b5447322b24e7a6e32c42e309028c55abac4`
+修复 R10–R12 的七组正确性问题，不引入 R13 Coverage／Gap 功能。Browser、Remote
+Extract、PDF 统一采用 Source／View 身份模型；Budget 按 logical LLM call 记账并另记
+Provider Attempts；完整 Retry 清除旧 Scope／Gate／V2 状态；Metadata Evidence Role、
+Scope Conflict、Report Integrity 与 Deep V2 Reference Verification 进入同一确定性治理链。
+迁移头新增为 `0014_budget_provider_attempts`。
+
+| 验证 | 本轮结果与边界 |
+|---|---|
+| 后端完整回归 | `807 passed / 2 skipped / 1 xfailed / 102 subtests passed / 0 failed`；15 条第三方弃用警告 |
+| 官方离线入口 | 收集 802 项：`799 passed / 2 skipped / 1 xfailed / 0 failed`；Offline network guard 为 0 次外部尝试 |
+| 跨模块聚焦回归 | Browser 8k／50k Source identity、BudgetClient 429 Retry、V2 failed→standard/deep-off freshness 均通过 |
+| 前端 | OpenAPI 连续生成、类型检查、Lint、11 个测试文件／106 项测试、生产构建通过 |
+| Migration／Smoke | Fresh migration 到 `0014`、幂等启动、18/18 综合 Smoke、80 项 Eval（78 通过、2 个真实网络项按设计跳过）通过 |
+| 启动检查 | 隔离 Live API 检查通过且外部调用为 0；Streamlit 实际启动及 `/_stcore/health` 通过 |
+| Docker | 静态配置 Smoke 通过；当前环境无 Docker CLI，未执行 `docker compose config --quiet` 或镜像启动 |
+| 真实 Provider | 未执行真实 LLM、搜索、Browser、PDF 或 Remote Provider 请求；不得视为真实环境验收 |
+| 发布目标 | 本轮修复作为单一提交发布至远端 `feature/improvements` 分支 |
 
 ## R12.1 Scope-first Research Result Governance：发布复核记录
 

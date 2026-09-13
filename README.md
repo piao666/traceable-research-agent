@@ -50,7 +50,11 @@ synthesis. The final-answer section is persisted as report-claim and citation
 occurrences; every citation marker is validated, and Deep Research V2 cannot be
 marked complete when the fixed report-integrity thresholds fail. Academic
 verification is limited to works actually cited in the final answer and shares
-the root budget. Migration `0013_research_result_governance` adds the associated
+the root budget. Its warnings and verification table are appended after the
+final-answer section, so they cannot become final-answer citation occurrences.
+Retries start with fresh Scope, Gate and engine state; V2 is assigned only when
+the dispatcher actually enters the Deep V2 orchestrator. Migration
+`0013_research_result_governance` adds the associated
 scope-reasoning, report-revision and occurrence records. Actor and Synthesizer
 model availability remain role-specific, and final synthesis uses a bounded,
 scope-balanced evidence context.
@@ -71,7 +75,11 @@ Every backend returns one `FetchResult` shape with requested/final/canonical
 URLs, stable status, provider, extraction method and confidence, redirect
 chain, content basis/hash and source identity. Canonical URL and content-hash
 deduplication prevent equivalent pages from being fetched or materialized as
-independent evidence more than once. The same metadata is retained in Trace,
+independent evidence more than once. HTTP, Browser, Remote Extract and PDF use
+a Source/View split: hashes, story identity and independence groups are derived
+from the bounded Source, while `max_chars` changes only the returned View.
+Cache keys normalize scheme/host case but preserve case-sensitive path/query
+components. The same metadata is retained in Trace,
 `SourceDocument` and `SourceSnapshot`; Agent recovery sees the final URL-level
 outcome instead of repeatedly retrying static HTTP.
 
@@ -278,6 +286,9 @@ new ledger. Limits are checked before new operations, including parallel tool
 admission and report LLM calls. Budget exhaustion fails explicitly while keeping
 existing evidence/Trace; it cannot expose an intermediate report as final.
 `GET /api/tasks/{run_id}/plan` exposes the current shared `execution_budget`.
+The ledger counts one logical `llm_calls` admission while separately exposing
+bounded adapter retries as `provider_attempts`; migration
+`0014_budget_provider_attempts` adds that counter.
 
 The optional estimated-cost cap is in CNY and disabled by default. A nonzero cap
 requires deployment-provided conservative tool/token price estimates; unknown

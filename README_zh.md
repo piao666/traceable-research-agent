@@ -42,7 +42,10 @@ Scope Identity 在不删除原始溯源的前提下提供稳定的 Source／Pass
 计数；跨 Run Claim 归组、来源独立性与冲突判定会持久化并进入最终合成。最终回答会
 落为 Report Claim 与 Citation Occurrence，每个引用标记都独立校验；固定的 Report
 Integrity Gate 不通过时，Deep Research V2 不得标记完成。学术校验只处理最终回答
-实际引用的 Work，并计入 Root 共享预算。迁移 `0013_research_result_governance` 新增
+实际引用的 Work，并计入 Root 共享预算；校验告警与明细追加在最终回答之后，不会
+成为最终回答的 Citation Occurrence。完整重试不继承旧 Scope、Gate 与引擎状态，
+只有 Dispatcher 实际进入 Deep V2 Orchestrator 后才赋值 V2。迁移
+`0013_research_result_governance` 新增
 Scope Reasoning、Report Revision 与 Occurrence 记录。Actor／Synthesizer 可用性保持
 分角色判断，最终合成使用有界且兼顾各 Scope 分支的证据上下文。
 
@@ -57,7 +60,10 @@ Cloudflare／Bot challenge、CAPTCHA、Cookie／登录墙、软 404／429、付�
 
 HTTP、Browser、PDF 与 Remote Extract 统一返回 `FetchResult`，保存请求／最终／
 Canonical URL、稳定状态、Provider、提取方法与置信度、重定向链、正文范围、内容哈希
-和来源身份。Canonical URL 与内容哈希两级去重，防止等价页面被重复请求或作为多个
+和来源身份。HTTP、Browser、Remote Extract 与 PDF 统一采用 Source／View 双层模型：
+hash、story identity 与 independence group 只由有界 Source 生成，`max_chars` 只裁剪
+返回 View。缓存 key 只规范 scheme／host 大小写，保留大小写敏感的 path／query。
+Canonical URL 与内容哈希两级去重，防止等价页面被重复请求或作为多个
 独立证据入库。上述元数据同时进入 Trace、`SourceDocument` 与 `SourceSnapshot`；
 Agent Recovery 只处理最终的 URL 级结果，不再反复调用静态 HTTP。
 
@@ -206,6 +212,8 @@ Run／Trace 身份、抓取状态、内容范围与未完成抓取项。队列�
 审批恢复保留计数，完整重试建立新账本；并行工具调度与报告模型调用也必须先
 取得额度。预算耗尽明确失败并保留已有证据和 Trace，不把中间报告提供为最终报告。
 计划接口 `GET /api/tasks/{run_id}/plan` 返回实时共享预算 `execution_budget`。
+账本的 `llm_calls` 按 logical call 计数，Provider 内部有界重试另记为
+`provider_attempts`；迁移 `0014_budget_provider_attempts` 增加该计数列。
 
 可选估算费用上限以人民币计，默认关闭。启用后需在部署端配置保守的工具单次
 费用及每百万 token 费用；未知价格阻止外部调用。缺少实际 token 用量时保留

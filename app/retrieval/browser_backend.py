@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import threading
 import time
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ from app.retrieval.contracts import (
 )
 from app.retrieval.html_extractor import extract_html
 from app.retrieval.source_identity import source_lineage
+from app.retrieval.source_view import build_source_view
 from app.retrieval.url_normalizer import canonicalize_url, resolve_canonical_hint
 from app.tools.ssrf import validate_url
 
@@ -159,28 +159,28 @@ class BrowserBackend:
                 return self._failure(request, failure, started)
             extraction = extract_html(rendered.html, rendered.final_url)
             title = rendered.title.strip() or extraction.title
-            truncated = len(extraction.content) > request.max_chars
-            content = extraction.content[: request.max_chars]
+            source_view = build_source_view(extraction.content, request.max_chars)
             quality, quality_failure = assess_page_quality(
-                content,
+                source_view.content,
                 title=title,
                 raw_html=rendered.html,
                 extraction_method=extraction.extraction_method,
                 extraction_confidence=extraction.extraction_confidence,
-                truncated=truncated,
+                truncated=source_view.truncated,
                 minimum_score=self.quality_min_score,
             )
             canonical_url = _trusted_canonical(rendered.final_url, extraction.canonical_hint)
             canonical_url = canonicalize_url(canonical_url or rendered.final_url).normalized_url
-            content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest() if content else None
             status = failure_status(quality_failure) if quality_failure else (
-                FetchStatus.PARTIAL if truncated or quality.content_basis == "partial" else FetchStatus.SUCCESS
+                FetchStatus.PARTIAL
+                if source_view.truncated or quality.content_basis == "partial"
+                else FetchStatus.SUCCESS
             )
             return FetchResult(
                 requested_url=request.url,
                 final_url=rendered.final_url,
                 title=title,
-                content=content,
+                content=source_view.content,
                 published_at=extraction.published_at,
                 content_type="text/html",
                 content_basis=quality.content_basis,
@@ -192,7 +192,8 @@ class BrowserBackend:
                 quality=quality,
                 failure=quality_failure,
                 failure_reason=quality_failure.message if quality_failure else None,
-                content_hash=content_hash,
+                content_hash=source_view.source_content_hash,
+                source_content_hash=source_view.source_content_hash,
                 canonical_url=canonical_url,
                 canonical_hint=extraction.canonical_hint,
                 fragment_locator=canonicalize_url(request.url).fragment_locator,
@@ -200,7 +201,12 @@ class BrowserBackend:
                 metadata={
                     "tables": list(extraction.tables),
                     "extraction_chain": list(extraction.extraction_chain),
-                    "source_identity": source_lineage(canonical_url, content, {"title": title}).to_dict(),
+                    **source_view.metadata(),
+                    "source_identity": source_lineage(
+                        canonical_url,
+                        source_view.source_content,
+                        {"title": title},
+                    ).to_dict(),
                     "fetched_at_ms": int((time.monotonic() - started) * 1000),
                     "browser_context": "isolated_non_persistent",
                     "downloads_allowed": False,

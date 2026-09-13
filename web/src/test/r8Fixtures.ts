@@ -9,7 +9,7 @@ export const r8PlanFixture: TaskPlanResponse = {
     version: "shared-budget-v1", root_run_id: "fixture", limits: { max_tool_calls: 40, max_llm_calls: 40,
       max_tokens: 100000, max_seconds: 900, max_estimated_cost: 0, tool_cost_estimate: null, llm_cost_per_million_tokens: null,
       final_report_tokens: 8000, final_report_llm_calls: 2 },
-    tool_calls: 3, llm_calls: 4, accounted_tokens: 12000, estimated_cost: 0, cost_currency: "CNY", cost_evaluable: false,
+    tool_calls: 3, llm_calls: 4, provider_attempts: 5, accounted_tokens: 12000, estimated_cost: 0, cost_currency: "CNY", cost_evaluable: false,
     deadline: 1788398100, stop_reason: null,
   },
   execution_insights: {

@@ -25,62 +25,11 @@ from sqlalchemy.orm import Session
 
 from app.agent.budget import BudgetExceeded
 from app.evidence.models import CitationOccurrence, ReportClaimOccurrence, ReportRevision
+from app.evidence.policy import evidence_role_supports_claim
 from app.llm.base import LLMClient, LLMMessage
 
 CITATION_PATTERN = re.compile(r"CIT-\d{3}-\d{2}")
 SENTENCE_BOUNDARIES = ".!?。！？\n"
-
-_METADATA_ONLY_ROLES = {"official_metadata", "discovery_index"}
-_BIBLIOGRAPHIC_TERMS = (
-    "doi",
-    "arxiv",
-    "pmid",
-    "author",
-    "authored",
-    "year",
-    "publication",
-    "published",
-    "publisher",
-    "journal",
-    "venue",
-    "title",
-    "indexed",
-    "exists",
-    "existence",
-    "文献存在",
-    "作者",
-    "年份",
-    "发表",
-    "出版",
-    "期刊",
-    "会议",
-    "标题",
-    "收录",
-)
-_RESEARCH_RESULT_TERMS = (
-    "experiment",
-    "experimental",
-    "result",
-    "performance",
-    "accuracy",
-    "benchmark",
-    "conclusion",
-    "demonstrate",
-    "outperform",
-    "improve",
-    "metric",
-    "实验",
-    "结果",
-    "性能",
-    "准确率",
-    "基准",
-    "结论",
-    "表明",
-    "优于",
-    "提升",
-    "指标",
-)
-
 
 @dataclass
 class CitationValidationDetail:
@@ -230,17 +179,6 @@ def _entity_co_occurrence(sentence: str, passage: str) -> int:
         "".join(re.findall(r"[一-鿿]+", passage))
     )
     return len(sent_entities & pass_entities) + len(shared_cjk)
-
-
-def _metadata_role_supports_claim(evidence_role: str, sentence: str) -> bool:
-    """Limit metadata indexes to bibliographic claims defined by R12.1.6-B."""
-
-    if evidence_role not in _METADATA_ONLY_ROLES:
-        return True
-    normalized = unicodedata.normalize("NFKC", sentence).casefold()
-    if any(term in normalized for term in _RESEARCH_RESULT_TERMS):
-        return False
-    return any(term in normalized for term in _BIBLIOGRAPHIC_TERMS)
 
 
 def _parse_llm_verdicts(
@@ -486,7 +424,7 @@ def validate_citations(
         overlap = _jaccard_overlap(sent_tokens, pass_tokens)
         entity_count = _entity_co_occurrence(sentence, passage_text)
 
-        if not _metadata_role_supports_claim(evidence_role, sentence):
+        if not evidence_role_supports_claim(evidence_role, sentence):
             verdict = "unsupported"
             unsupported_count += 1
             judgment_source = "evidence_role"

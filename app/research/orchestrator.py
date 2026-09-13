@@ -29,6 +29,7 @@ from app.evidence.reference_verifier import (
     ReferenceVerificationReport,
     ReferenceVerifier,
     extract_cited_academic_references,
+    render_reference_verification_section,
 )
 from app.llm.base import LLMClient
 from app.llm.providers import create_llm_client
@@ -445,29 +446,10 @@ def run_deep_research_v2(
                 min_weak_overlap=0.05,
             )
         )
-        preview_integrity = assess_report_integrity(
-            [
-                {
-                    "passage_id": "resolved" if detail.passage_text else None,
-                    "verdict": detail.verdict,
-                }
-                for detail in citation_validation.details
-            ]
-        )
-        markdown = append_report_integrity_warnings(markdown, preview_integrity)
-        occurrence_bundle = materialize_final_report_occurrences(
-            db,
-            root_run_id=run_id,
-            scope_id=scope.scope_id,
-            markdown=markdown,
-            provenance_bundle=scope_evidence,
-            report_path=expected_report_path,
-            validation_report=citation_validation,
-        )
         citation_labels = {
-            str(item.get("citation_label") or "")
-            for item in occurrence_bundle["citation_occurrences"]
-            if item.get("citation_label")
+            str(detail.citation_label or "")
+            for detail in citation_validation.details
+            if detail.citation_label
         }
         cited_academic_references = extract_cited_academic_references(
             scope_evidence,
@@ -486,10 +468,30 @@ def run_deep_research_v2(
                 cache_ttl=settings_obj.reference_verifier_cache_ttl_seconds,
             ).verify(cited_academic_references)
         reference_reports = [reference_report]
+        occurrence_preview = _validation_occurrence_preview(
+            citation_validation,
+            extract_final_answer_section(markdown),
+        )
         report_integrity = assess_report_integrity(
-            occurrence_bundle,
+            occurrence_preview,
             reference_report=reference_report,
             enforce_reference_consistency=_requires_strict_reference_gate(plan),
+            scope_bundle=scope_evidence,
+        )
+        reference_lines = render_reference_verification_section(reference_report)
+        if reference_lines:
+            markdown = "\n".join(
+                [markdown.rstrip(), "", *reference_lines]
+            ).rstrip() + "\n"
+        markdown = append_report_integrity_warnings(markdown, report_integrity)
+        materialize_final_report_occurrences(
+            db,
+            root_run_id=run_id,
+            scope_id=scope.scope_id,
+            markdown=markdown,
+            provenance_bundle=scope_evidence,
+            report_path=expected_report_path,
+            validation_report=citation_validation,
         )
     except Exception:
         citation_validation = None
@@ -555,6 +557,38 @@ def _json_object(value: str | None) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _validation_occurrence_preview(
+    validation: Any,
+    final_answer: str,
+) -> dict[str, list[dict[str, Any]]]:
+    """Build the final-answer-only gate input before persisting its revision."""
+
+    claims: dict[tuple[int, int], dict[str, Any]] = {}
+    citations: list[dict[str, Any]] = []
+    for detail in validation.details:
+        sentence_key = (detail.sentence_start, detail.sentence_end)
+        claims.setdefault(
+            sentence_key,
+            {
+                "claim_text": final_answer[
+                    detail.sentence_start : detail.sentence_end
+                ],
+                "sentence_start": detail.sentence_start,
+                "sentence_end": detail.sentence_end,
+            },
+        )
+        citations.append(
+            {
+                "passage_id": "resolved" if detail.passage_text else None,
+                "verdict": detail.verdict,
+            }
+        )
+    return {
+        "claim_occurrences": list(claims.values()),
+        "citation_occurrences": citations,
+    }
 
 
 def _link_deepening_run(db: Session, root_run_id: str, child_run_id: str) -> None:

@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,35 @@ EVIDENCE_ROLES = {
     "community_content",
     "unknown",
 }
+METADATA_ONLY_EVIDENCE_ROLES = frozenset({"official_metadata", "discovery_index"})
+_BIBLIOGRAPHIC_CLAIM_TERMS = (
+    "doi", "arxiv", "pmid", "author", "authored", "year", "publication",
+    "published", "publisher", "journal", "venue", "title", "indexed",
+    "exists", "existence", "文献存在", "作者", "年份", "发表", "出版",
+    "期刊", "会议", "标题", "收录",
+)
+_SUBSTANTIVE_RESEARCH_TERMS = (
+    "experiment", "experimental", "result", "performance", "accuracy",
+    "benchmark", "conclusion", "demonstrate", "outperform", "improve",
+    "metric", "实验", "结果", "性能", "准确率", "基准", "结论", "表明",
+    "优于", "提升", "指标",
+)
+
+
+def evidence_role_supports_claim(evidence_role: str, claim_text: str) -> bool:
+    """Return whether this role may independently prove this kind of claim.
+
+    Metadata and discovery indexes can establish bibliographic identity only.
+    For substantive findings they are contextual evidence, irrespective of
+    authority or lexical overlap.
+    """
+
+    if str(evidence_role or "").casefold() not in METADATA_ONLY_EVIDENCE_ROLES:
+        return True
+    normalized = unicodedata.normalize("NFKC", str(claim_text or "")).casefold()
+    if any(term in normalized for term in _SUBSTANTIVE_RESEARCH_TERMS):
+        return False
+    return any(term in normalized for term in _BIBLIOGRAPHIC_CLAIM_TERMS)
 
 
 @dataclass(frozen=True)

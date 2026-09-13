@@ -118,6 +118,7 @@ class OpenAICompatibleLLMClient(LLMClient):
                     model=self.model,
                     metadata={
                         "attempt": attempt + 1,
+                        "provider_attempts": attempt + 1,
                         "available": True,
                         "finish_reason": response_payload["choices"][0].get("finish_reason"),
                     },
@@ -169,6 +170,7 @@ class OpenAICompatibleLLMClient(LLMClient):
                 continue
             break
 
+        last_metadata["provider_attempts"] = int(last_metadata.get("retry_count", 0)) + 1
         return LLMResponse(
             success=False,
             provider=self.provider,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -17,6 +16,7 @@ from app.retrieval.contracts import (
     FetchStatus,
 )
 from app.retrieval.source_identity import source_lineage
+from app.retrieval.source_view import build_source_view
 from app.retrieval.url_normalizer import canonicalize_url
 from app.tools.ssrf import validate_url
 
@@ -128,31 +128,31 @@ class RemoteExtractBackend:
                 )
                 if page is None:
                     continue
-                content = str(page.get("content") or "")[: request.max_chars]
+                source_view = build_source_view(
+                    str(page.get("content") or ""), request.max_chars
+                )
                 title = str(page.get("title") or request.url)[:300]
                 final_url = str(page.get("url") or request.url)
                 if validate_url(final_url) is None:
                     attempts[-1]["status"] = "unsafe_result_url"
                     continue
-                truncated = len(str(page.get("content") or "")) > request.max_chars
                 quality, quality_failure = assess_page_quality(
-                    content,
+                    source_view.content,
                     title=title,
                     extraction_method=f"remote_{provider.name}",
                     extraction_confidence=0.82,
-                    truncated=truncated,
+                    truncated=source_view.truncated,
                     minimum_score=self.quality_min_score,
                 )
                 canonical = canonicalize_url(final_url).normalized_url
-                content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest() if content else None
                 status = failure_status(quality_failure) if quality_failure else (
-                    FetchStatus.PARTIAL if truncated else FetchStatus.SUCCESS
+                    FetchStatus.PARTIAL if source_view.truncated else FetchStatus.SUCCESS
                 )
                 return FetchResult(
                     requested_url=request.url,
                     final_url=final_url,
                     title=title,
-                    content=content,
+                    content=source_view.content,
                     published_at=page.get("published_at"),
                     content_type=str(page.get("content_type") or "text/markdown"),
                     content_basis=quality.content_basis,
@@ -164,15 +164,17 @@ class RemoteExtractBackend:
                     quality=quality,
                     failure=quality_failure,
                     failure_reason=quality_failure.message if quality_failure else None,
-                    content_hash=content_hash,
+                    content_hash=source_view.source_content_hash,
+                    source_content_hash=source_view.source_content_hash,
                     canonical_url=canonical,
                     fragment_locator=canonicalize_url(request.url).fragment_locator,
                     metadata={
                         "provider_attempts": attempts,
+                        **source_view.metadata(),
                         "remote_metadata": dict(page.get("metadata") or {}),
                         "source_identity": source_lineage(
                             canonical,
-                            content,
+                            source_view.source_content,
                             {
                                 **(
                                     page.get("metadata")

@@ -176,6 +176,27 @@ class ApiRegressionTests(unittest.TestCase):
         failed_plan = _plan()
         failed_plan["confirmation"] = {"approved": True}
         failed_plan["react_state"] = {"observation_history": [{"secret": "stale"}]}
+        failed_plan.update(
+            {
+                "version": "deep-research-engine-v2",
+                "execution_mode": "react",
+                "requested_execution_mode": "react",
+                "research_scope_id": "scope-stale",
+                "research_scope": {"status": "failed"},
+                "research_scope_quality_gate": {"status": "failed"},
+                "research_node_id": "node-stale",
+                "root_run_id": failed.run_id,
+                "run_role": "root",
+                "engine_version": "v2",
+                "defer_to_research_scope": True,
+                "report_integrity": {"status": "failed"},
+                "research_outcome": {"status": "failed"},
+                "adaptive_gate_pending": True,
+                "deepening_pending": True,
+            }
+        )
+        failed.engine_version = "v2"
+        self.db.commit()
         store.replace_agent_run_plan(self.db, failed.run_id, failed_plan)
 
         retried = retry_task(failed.run_id, TaskRetryRequest(), self.db)
@@ -184,6 +205,26 @@ class ApiRegressionTests(unittest.TestCase):
         self.assertEqual(new_plan["parent_run_id"], failed.run_id)
         self.assertNotIn("confirmation", new_plan)
         self.assertNotIn("react_state", new_plan)
+        for stale_key in (
+            "research_scope_id",
+            "research_scope",
+            "research_scope_quality_gate",
+            "research_node_id",
+            "root_run_id",
+            "run_role",
+            "engine_version",
+            "defer_to_research_scope",
+            "report_integrity",
+            "research_outcome",
+            "adaptive_gate_pending",
+            "deepening_pending",
+        ):
+            self.assertNotIn(stale_key, new_plan)
+        self.assertEqual(new_plan["version"], "retry-plan-v1")
+        self.assertEqual(new_run.engine_version, "legacy")
+        self.assertIsNone(new_run.research_scope_id)
+        self.assertEqual(new_run.root_run_id, new_run.run_id)
+        self.assertEqual(new_run.run_role, "root")
 
         with self.assertRaises(HTTPException) as unsupported:
             retry_task(
@@ -192,6 +233,55 @@ class ApiRegressionTests(unittest.TestCase):
                 self.db,
             )
         self.assertEqual(unsupported.exception.status_code, 400)
+
+        def standard_runner(session, retried_run_id, settings_obj, llm_client=None):
+            retried_run = store.get_fresh_agent_run(session, retried_run_id)
+            retried_plan = json.loads(retried_run.plan_json)
+            self.assertFalse(settings_obj.deep_research_enabled)
+            self.assertEqual(retried_run.engine_version, "legacy")
+            self.assertIsNone(retried_run.research_scope_id)
+            self.assertFalse(
+                any(
+                    key.startswith("research_scope")
+                    or key
+                    in {
+                        "research_node_id",
+                        "engine_version",
+                        "defer_to_research_scope",
+                        "report_integrity",
+                    }
+                    for key in retried_plan
+                )
+            )
+            return {"run_id": retried_run_id, "status": "completed"}
+
+        from app.agent.dispatcher import run_task_by_mode
+
+        with (
+            patch(
+                "app.agent.dispatcher.enforce_execution_readiness",
+                return_value=True,
+            ),
+            patch(
+                "app.agent.react_executor.run_react_task",
+                side_effect=standard_runner,
+            ) as standard,
+            patch(
+                "app.agent.dispatcher._finalize_result",
+                side_effect=lambda _db, _run_id, result: result,
+            ),
+        ):
+            result = run_task_by_mode(
+                self.db,
+                new_run.run_id,
+                Settings(
+                    research_profile="standard",
+                    react_enabled=True,
+                    deep_research_enabled=False,
+                ),
+            )
+        self.assertEqual(result["status"], "completed")
+        standard.assert_called_once()
 
     def test_background_failure_is_persisted(self) -> None:
         run = self._create_run()

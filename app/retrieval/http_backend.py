@@ -384,6 +384,7 @@ class HttpBackend:
             "raw_length": len(text),
             "source_content_length": len(source_content),
             "source_truncated_at_cache_limit": source_truncated_at_cache_limit,
+            "view_truncated": view_truncated,
             "source_identity": lineage.to_dict(),
         }
         status = failure_status(failure) if failure is not None else (
@@ -518,6 +519,7 @@ class HttpBackend:
                 "cache_fetched_at": entry.cached_at_epoch,
                 "source_content_length": entry.source_content_length,
                 "source_truncated_at_cache_limit": entry.source_truncated_at_cache_limit,
+                "view_truncated": view_truncated,
                 "legacy_unknown_completeness": entry.legacy_unknown_completeness,
             },
         )

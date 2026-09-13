@@ -1286,18 +1286,39 @@ def _conflict_alert_lines(bundle: dict[str, Any] | None) -> list[str]:
     if not bundle:
         return []
     claims = {item.get("claim_id"): item for item in bundle.get("claims") or []}
-    disputed = [
-        item
+    disputed: list[tuple[dict[str, Any], str]] = [
+        (
+            item,
+            str(
+                (claims.get(item.get("claim_id")) or {}).get("claim_text")
+                or item.get("claim_id")
+            ),
+        )
         for item in bundle.get("resolutions") or []
         if item.get("status") in {"unresolved", "requires_human"}
     ]
+    scope_groups = {
+        item.get("group_id"): item for item in bundle.get("scope_claim_groups") or []
+    }
+    disputed.extend(
+        (
+            item,
+            str(
+                (scope_groups.get(item.get("group_id")) or {}).get(
+                    "representative_claim_text"
+                )
+                or item.get("group_id")
+            ),
+        )
+        for item in bundle.get("scope_resolutions") or []
+        if item.get("status") in {"unresolved", "requires_human"}
+    )
     if not disputed:
         return []
     lines = ["> **冲突提示：** 以下结论存在未解决的高影响证据冲突，不得作为确定性事实使用："]
-    for resolution in disputed:
-        claim = claims.get(resolution.get("claim_id")) or {}
+    for resolution, claim_text in disputed:
         lines.append(
-            f"> * {claim.get('claim_text') or resolution.get('claim_id')} "
+            f"> * {claim_text} "
             f"(status=`{resolution.get('status')}`, confidence=`{resolution.get('confidence')}`)"
         )
     return [*lines, ""]

@@ -14,6 +14,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from app.retrieval.url_normalizer import canonicalize_url
+
 
 _CACHE_LOCK = RLock()
 FETCH_CACHE_SCHEMA_VERSION = "fetch-cache-v2"
@@ -129,7 +131,9 @@ class FetchCache:
 
     @staticmethod
     def _compute_key(url: str, params: dict[str, Any] | None = None) -> str:
-        normalized = url.strip().lower()
+        # Scheme and host are case-insensitive, but path and query values are
+        # not.  Never lowercase the complete URL or distinct resources collide.
+        normalized = canonicalize_url(url).normalized_url
         if params:
             sorted_params = json.dumps(params, sort_keys=True, ensure_ascii=False)
             normalized += "|" + sorted_params

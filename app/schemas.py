@@ -236,6 +236,7 @@ class ExecutionBudgetResponse(BaseModel):
     limits: ExecutionBudgetLimits
     tool_calls: int
     llm_calls: int
+    provider_attempts: int
     accounted_tokens: int
     estimated_cost: float
     cost_currency: str

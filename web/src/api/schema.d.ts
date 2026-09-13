@@ -1352,6 +1352,8 @@ export interface components {
             tool_calls: number;
             /** Llm Calls */
             llm_calls: number;
+            /** Provider Attempts */
+            provider_attempts: number;
             /** Accounted Tokens */
             accounted_tokens: number;
             /** Estimated Cost */
