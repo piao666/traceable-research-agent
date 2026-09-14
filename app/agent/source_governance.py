@@ -39,6 +39,84 @@ DISCOVERY_LIMIT_FIELDS = {
 }
 REFETCH_SUB_QUERY_PATTERN = re.compile(r"source_refetch_round:(\d+)")
 
+# ── Phase 8.x: Official-source discovery queries ──────────────────────
+_TECHNICAL_QUERY_SUFFIXES = (
+    " documentation",
+    " github official repository",
+    " reference",
+)
+_OFFICIAL_QUERY_SUFFIXES = (
+    " official documentation",
+    " official site",
+    " official repository",
+    " primary source",
+)
+
+
+def build_official_source_queries(query: str) -> list[str]:
+    """Generate targeted queries for official-source discovery.
+
+    Technical queries get extra suffixes targeting docs and repos.
+    """
+    base = str(query or "").strip()
+    if not base:
+        return []
+    technical_indicators = any(
+        indicator in base.casefold()
+        for indicator in ("api", "sdk", "code", "framework", "library", "tool", "platform",
+                           "protocol", "format", "standard", "cli", "syntax", "benchmark")
+    )
+    suffixes = (
+        (_OFFICIAL_QUERY_SUFFIXES + _TECHNICAL_QUERY_SUFFIXES)
+        if technical_indicators
+        else _OFFICIAL_QUERY_SUFFIXES
+    )
+    seen: set[str] = {base}
+    queries: list[str] = []
+    for suffix in suffixes:
+        full = f"{base}{suffix}"
+        if full not in seen:
+            seen.add(full)
+            queries.append(full)
+    return queries
+
+
+# ── Phase 8.x: Per-run discovered official sources ────────────────────
+
+def discovered_official_sources(plan: dict[str, Any]) -> dict[str, list[str]]:
+    """Return per-run discovered official domains and repos from source_context."""
+    ctx = (plan.get("react_state") or {}).get("source_context") or {}
+    return {
+        "domains": [str(d) for d in (ctx.get("discovered_official_domains") or []) if d],
+        "repos": [str(r) for r in (ctx.get("discovered_official_repos") or []) if r],
+    }
+
+
+def record_discovered_official(
+    plan: dict[str, Any],
+    *,
+    domains: list[str] | None = None,
+    repos: list[str] | None = None,
+) -> dict[str, Any]:
+    """Record dynamically discovered official sources into the Run's source_context."""
+    state = dict(plan.get("react_state") or {})
+    ctx = dict(state.get("source_context") or {})
+    if domains:
+        existing = {d.casefold() for d in ctx.get("discovered_official_domains", [])}
+        for d in domains:
+            if d.casefold() not in existing:
+                existing.add(d.casefold())
+                ctx.setdefault("discovered_official_domains", []).append(d)
+    if repos:
+        existing = {r.casefold() for r in ctx.get("discovered_official_repos", [])}
+        for r in repos:
+            if r.casefold() not in existing:
+                existing.add(r.casefold())
+                ctx.setdefault("discovered_official_repos", []).append(r)
+    state["source_context"] = ctx
+    plan["react_state"] = state
+    return plan
+
 
 @dataclass(frozen=True)
 class GovernedRefetch:
@@ -100,14 +178,15 @@ def prepare_tool_arguments(
     prepared[limit_field] = min(requested, settings_obj.max_discovery_candidates)
 
     if refetch_round > 0 and tool_name == "tavily_search":
-        preferred = list((plan.get("profile_constraints") or {}).get("prefer_domains") or [])
-        if preferred:
-            prepared["include_domains"] = preferred
+        discovered = discovered_official_sources(plan)
+        if discovered["domains"]:
+            # Second+ round: narrow search to verified official domains
+            prepared["include_domains"] = discovered["domains"]
         elif int((plan.get("profile_constraints") or {}).get("min_t0_sources") or 0) > 0:
+            # First round: broaden search to discover official sources
             query = str(prepared.get("query") or "").strip()
-            marker = "official documentation primary source"
-            if query and marker not in query.casefold():
-                prepared["query"] = f"{query} {marker}"
+            if query:
+                prepared["query"] = build_official_source_queries(query)[0]
     return prepared
 
 
@@ -479,3 +558,136 @@ def _positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, parsed)
+
+
+# ── Phase 8.x: T0 shortfall recovery orchestration ────────────────────
+
+def recover_t0_shortfall(
+    tool_name: str,
+    arguments: dict[str, Any],
+    initial_result: ToolResult,
+    plan: dict[str, Any],
+    settings_obj: Settings,
+    *,
+    execute: Callable[[str, dict[str, Any]], tuple[ToolResult, int]],
+    task_entities: list[str] | None = None,
+    max_rounds: int | None = None,
+) -> tuple[ToolResult, list[GovernedRefetch]]:
+    """Full T0 recovery: discover → verify → refetch → reclassify.
+
+    Returns (final_aggregate, history) where final_aggregate has updated
+    governance metadata reflecting the post-recovery tier distribution.
+    """
+    if not needs_targeted_refetch(initial_result):
+        return initial_result, []
+
+    from app.evidence.policy import infer_official_source
+
+    entities = task_entities or _extract_entities_from_plan(plan)
+    discovered_domains: set[str] = set()
+    discovered_repos: set[str] = set()
+    refetches: list[GovernedRefetch] = []
+    accumulated = initial_result
+    allowed_rounds = min(
+        settings_obj.max_refetch_rounds,
+        settings_obj.max_refetch_rounds if max_rounds is None else max(0, max_rounds),
+    )
+
+    for offset in range(1, allowed_rounds + 1):
+        round_no = offset
+        # Phase 1: Broaden search for official sources
+        queries = build_official_source_queries(str(arguments.get("query") or ""))
+        if not queries:
+            break
+        # Round-robin through queries across rounds
+        query_idx = (round_no - 1) % len(queries)
+        prepared = dict(arguments or {})
+        prepared["query"] = queries[query_idx]
+        prepared["max_results"] = min(
+            _positive_int(arguments.get("max_results"), 5) * settings_obj.oversample_factor,
+            settings_obj.max_discovery_candidates,
+        )
+
+        raw_result, latency_ms = execute(tool_name, prepared)
+
+        # Phase 2: Classify newly discovered candidates
+        field = DISCOVERY_RESULT_FIELDS.get(tool_name, "results")
+        raw_items = [
+            item for item in (raw_result.output or {}).get(field, [])
+            if isinstance(item, dict)
+        ] if isinstance(raw_result.output, dict) else []
+
+        # Phase 3: Verify official candidates
+        for item in raw_items:
+            candidate = _candidate_from_item(tool_name, item)
+            if candidate is None:
+                continue
+            if candidate.hostname in discovered_domains or candidate.uri in discovered_repos:
+                continue
+            if infer_official_source(candidate, task_entities=entities):
+                if candidate.hostname:
+                    discovered_domains.add(candidate.hostname)
+                org_repo = _github_org_repo(candidate.hostname, candidate.uri)
+                if org_repo:
+                    discovered_repos.add(f"github.com/{org_repo}")
+                # Assign T0 in the candidate's metadata so re-classification picks it up
+                item["metadata"] = dict(item.get("metadata") or {})
+                item["metadata"]["official"] = True
+                item["metadata"]["source_tier"] = "T0"
+
+        # Phase 4: Persist discovered sources into run context
+        if discovered_domains or discovered_repos:
+            plan = record_discovered_official(
+                plan,
+                domains=sorted(discovered_domains),
+                repos=sorted(discovered_repos),
+            )
+
+        # Phase 5: Combine and re-classify
+        combined = _combine_discovery_results(tool_name, accumulated, raw_result)
+        aggregate = govern_tool_result(
+            tool_name,
+            combined,
+            plan,
+            settings_obj,
+            refetch_round=round_no,
+        )
+        governed = _round_result_with_aggregate_governance(
+            tool_name, raw_result, aggregate,
+        )
+        refetches.append(
+            GovernedRefetch(
+                round_no=round_no,
+                arguments=prepared,
+                result=governed,
+                latency_ms=latency_ms,
+            )
+        )
+        accumulated = aggregate
+
+        # Phase 6: Check if shortfall is resolved
+        if not needs_targeted_refetch(aggregate):
+            break
+
+    return accumulated, refetches
+
+
+def _extract_entities_from_plan(plan: dict[str, Any]) -> list[str]:
+    """Extract task entities from the plan for official-source matching."""
+    task = str(plan.get("task") or "")
+    # Simple entity extraction: capitalized words and known product names
+    entities: list[str] = []
+    import re as _re
+    # Product/tech names: Capitalized words of 2+ chars
+    for match in _re.finditer(r"\b([A-Z][a-zA-Z]{1,}(?:\s+[A-Z][a-zA-Z]{1,}){0,2})\b", task):
+        name = match.group(1).strip()
+        if name.lower() not in {"The", "A", "An", "Compare", "Research", "Explain",
+                                  "Describe", "Analyze", "How", "What", "Why",
+                                  "List", "Find", "Show", "Tell", "And", "Or"}:
+            entities.append(name)
+    # Also extract known all-caps acronyms
+    for match in _re.finditer(r"\b([A-Z]{2,})\b", task):
+        acronym = match.group(1)
+        if acronym not in {"HTTP", "API", "SDK", "URL", "JSON", "SQL", "SSH"}:
+            entities.append(acronym)
+    return list(dict.fromkeys(entities))  # deduplicate while preserving order

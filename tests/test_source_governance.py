@@ -305,6 +305,105 @@ class ExecutionGovernanceTests(unittest.TestCase):
         ):
             self.assertIn(key, snapshot)
 
+    # ── Phase 8.x: official-source discovery regression ──────────────
+
+    def test_official_source_queries_are_not_empty_for_technical_topic(self):
+        from app.agent.source_governance import build_official_source_queries
+        queries = build_official_source_queries("FastAPI framework")
+        self.assertGreater(len(queries), 3)
+        self.assertIn("FastAPI framework official documentation", queries)
+        self.assertIn("FastAPI framework github official repository", queries)
+
+    def test_basic_query_generates_no_technical_suffixes(self):
+        from app.agent.source_governance import build_official_source_queries
+        queries = build_official_source_queries("GDP growth rate")
+        for q in queries:
+            self.assertNotIn("github", q)
+
+    def test_infer_official_flags_fastapi_official_docs(self):
+        from app.evidence.policy import infer_official_source
+        candidate = SourceCandidate(
+            uri="https://fastapi.tiangolo.com/",
+            hostname="fastapi.tiangolo.com",
+            organization="tiangolo",
+            title="FastAPI",
+            snippet="FastAPI framework, high performance, easy to learn, fast to code",
+            metadata={"official": True, "source_class": "official"},
+        )
+        self.assertTrue(infer_official_source(candidate, task_entities=["FastAPI"]))
+        # domain match alone insufficient
+        domain_only = SourceCandidate(
+            uri="https://fastapi.tiangolo.com/",
+            hostname="fastapi.tiangolo.com",
+            organization=None,
+            title="Some blog about FastAPI",
+            snippet="Community blog",
+        )
+        self.assertFalse(infer_official_source(domain_only, task_entities=["FastAPI"]))
+
+    def test_infer_official_flags_docs_title_with_entity_match(self):
+        from app.evidence.policy import infer_official_source
+        candidate = SourceCandidate(
+            uri="https://pytorch.org/docs/stable/",
+            hostname="pytorch.org",
+            organization="PyTorch",
+            title="PyTorch documentation",
+            snippet="PyTorch is an optimized tensor library",
+            metadata={"official": True},
+        )
+        self.assertTrue(infer_official_source(candidate, task_entities=["PyTorch"]))
+
+    def test_infer_official_flags_github_org_match_plus_signal(self):
+        from app.evidence.policy import infer_official_source
+        candidate = SourceCandidate(
+            uri="https://github.com/kubernetes/kubernetes",
+            hostname="github.com",
+            organization="kubernetes",
+            title="kubernetes/kubernetes: Production-Grade Container Scheduling and Management",
+            snippet="Kubernetes is an open-source system",
+            metadata={"source_class": "official_code"},
+        )
+        self.assertTrue(infer_official_source(candidate, task_entities=["Kubernetes"]))
+
+    def test_infer_official_rejects_spoofed_domain_alone(self):
+        from app.evidence.policy import infer_official_source
+        candidate = SourceCandidate(
+            uri="https://kubernetes.fake-site.io/docs",
+            hostname="kubernetes.fake-site.io",
+            organization=None,
+            title="Kubernetes Documentation",
+            snippet="Kubernetes docs and tutorials",
+        )
+        self.assertFalse(infer_official_source(candidate, task_entities=["Kubernetes"]))
+
+    def test_infer_official_flags_gov_domain(self):
+        from app.evidence.policy import infer_official_source
+        candidate = SourceCandidate(
+            uri="https://www.census.gov/data",
+            hostname="www.census.gov",
+            organization="US Census Bureau",
+            title="Census Data",
+            snippet="Official US Census data",
+            metadata={"official": True},
+        )
+        self.assertTrue(infer_official_source(candidate, task_entities=["Census"]))
+
+    def test_discovered_official_sources_persisted_per_run(self):
+        from app.agent.source_governance import discovered_official_sources, record_discovered_official
+        plan: dict = {"react_state": {}}
+        plan = record_discovered_official(
+            plan, domains=["fastapi.tiangolo.com"], repos=["github.com/fastapi/fastapi"],
+        )
+        sources = discovered_official_sources(plan)
+        self.assertIn("fastapi.tiangolo.com", sources["domains"])
+        self.assertIn("github.com/fastapi/fastapi", sources["repos"])
+        # Record again idempotent
+        plan = record_discovered_official(
+            plan, domains=["fastapi.tiangolo.com"], repos=["github.com/fastapi/fastapi"],
+        )
+        sources = discovered_official_sources(plan)
+        self.assertEqual(len([d for d in sources["domains"] if d == "fastapi.tiangolo.com"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

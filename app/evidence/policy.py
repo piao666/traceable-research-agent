@@ -822,6 +822,101 @@ def _count_domain(selected: list[SourceCandidate], hostname: str) -> int:
     return sum(1 for s in selected if s.hostname.casefold() == target)
 
 
+# ── Phase 8.x: Dynamic official-source inference ─────────────────────────
+
+def infer_official_source(
+    candidate: SourceCandidate,
+    *,
+    task_entities: list[str],
+) -> bool:
+    """Infer whether a candidate is an official primary source for the task.
+
+    Requires at least TWO independent signals to avoid false positives.
+    Domain/org name overlap alone is insufficient.
+    """
+    if not task_entities:
+        return False
+
+    signals: list[str] = []
+    entities_lower = [e.casefold() for e in task_entities]
+
+    # Signal 1: metadata.official == true
+    if candidate.metadata.get("official") is True:
+        signals.append("metadata:official")
+
+    # Signal 2: globally classified as official/official_code/regulatory
+    source_class = str(candidate.metadata.get("source_class") or "")
+    if source_class in ("official", "official_code", "regulatory", "governed_sql"):
+        signals.append(f"source_class:{source_class}")
+
+    # Signal 3: domain classes match (global rules only, not per-company)
+    hostname_lower = candidate.hostname.casefold()
+
+    # Signal 4: .gov / standards body academic domains
+    if hostname_lower.endswith(".gov") or ".gov." in hostname_lower:
+        signals.append("domain:government")
+    if any(hostname_lower.endswith(s) for s in (".edu", ".ac.cn", ".edu.cn")):
+        if any(entity in hostname_lower for entity in entities_lower):
+            signals.append("domain:academic_entity_match")
+
+    # Signal 5: title/metadata signals official docs
+    title_lower = str(candidate.title or "").casefold()
+    snippet_lower = str(candidate.snippet or "").casefold()
+    official_doc_indicators = (
+        "official documentation", "official site", "official website",
+        "documentation", "reference", "api reference", "api documentation",
+    )
+    for indicator in official_doc_indicators:
+        if indicator in title_lower or indicator in snippet_lower:
+            if indicator in ("documentation", "reference", "api reference", "api documentation"):
+                if any(entity in (candidate.hostname + candidate.title + candidate.snippet).casefold()
+                       for entity in entities_lower):
+                    signals.append(f"title:official_doc")
+                    break
+            else:
+                signals.append(f"title:{indicator}")
+                break
+
+    # Signal 6: hostname contains a task entity and has subdomain depth
+    host_parts = hostname_lower.split(".")
+    for entity in entities_lower:
+        entity_clean = entity.replace(" ", "").replace("-", "")
+        if entity_clean and entity_clean in hostname_lower.replace(".", ""):
+            if len(host_parts) >= 2:
+                signals.append(f"hostname:entity_match:{entity}")
+                break
+
+    # Signal 7: GitHub repo owner matches entity
+    org_repo = _github_org_repo(candidate.hostname, candidate.uri)
+    if org_repo:
+        org = org_repo.split("/")[0]
+        for entity in entities_lower:
+            if entity.replace(" ", "") == org:
+                signals.append(f"github:org_match:{entity}")
+                break
+
+    # Deduplicate
+    signals = list(dict.fromkeys(signals))
+
+    # Require at least 2 signals; domain/org string match alone is never sufficient.
+    # Additionally, when the hostname is not a known official pattern (.gov, .edu etc.),
+    # at least one signal must come from a non-hostname source to prevent spoofing.
+    domain_only_signals = [s for s in signals if s.startswith("domain:") or s.startswith("hostname:")]
+    other_signals = [s for s in signals if s not in domain_only_signals]
+    hostname_official = any(
+        hostname_lower.endswith(suffix) or f".{suffix}" in hostname_lower
+        for suffix in (".gov", ".gov.cn", ".edu", ".ac.cn", ".edu.cn")
+    )
+    if hostname_official and len(signals) >= 2:
+        return True
+    if hostname_official and len(signals) == 1 and len(other_signals) >= 1:
+        return True
+    # Non-official hostname: require stronger evidence (2+ non-hostname signals)
+    if len(other_signals) >= 2:
+        return True
+    return False
+
+
 # ── Source clustering (existing) ────────────────────────────────────────
 
 def source_cluster_id(
