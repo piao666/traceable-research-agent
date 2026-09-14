@@ -1,4 +1,29 @@
-# 修复发布与验收清单（R0–Pre-R13.1）
+# 修复发布与验收清单（R0–Pre-R13.2）
+
+## Pre-R13.2 Freeze Patch：本地复核记录
+
+本轮严格基于已发布的
+`feature/improvements@57d665d02b155c5a334f928c8da430b07a5098a7` 实施修复方案限定的
+六项补丁，不引入 R13 Coverage／Gap／Evidence Gain／Research Requirement、Python
+Runtime、Embedding／Vector DB 或 Orchestrator 重写，也不改动 R10–R12 已稳定的
+Budget Retry、Retry Freshness、Result API 与 Gate 阈值。Final Report Claim 到
+`ScopeClaimGroup` 的 lineage 现已持久化；Resource Identity 与 Independence Identity
+分别建模和计数；wire-service 近重复只在显式、同 wire、有界候选集合内归并；独立成行
+的 citation marker 与行内引用共用同一确定性 attachment helper。迁移头新增为
+`0015_report_claim_scope_lineage`。
+
+| 验证 | 本轮结果与边界 |
+|---|---|
+| 后端完整回归 | `848 passed / 2 skipped / 1 xfailed / 102 subtests passed / 0 failed`；24 条第三方弃用警告 |
+| 官方离线入口 | 收集 843 项：`840 passed / 2 skipped / 1 xfailed / 0 failed`；Offline network guard 为 0 次外部尝试 |
+| 方案专项 | Final Claim→Scope Group 持久 lineage、Resource／Independence 拆分、受控 wire 近重复、三类 source metrics 与 standalone citation 回归全部通过 |
+| 前端／OpenAPI | OpenAPI 连续正式生成两次且 `schema.d.ts` 哈希不变；typecheck、lint、11 个测试文件／106 项测试、production build、59 项 QA fixture isolation 检查通过 |
+| Migration | 单一 head `0015`；Fresh `0001→0015`、Existing DB 升级、数据保留、二次启动幂等与 `alembic check` 通过 |
+| Smoke | 18/18 综合 Smoke、隔离 Live API、Evidence Export、Research Integrity、Provenance V2 与 Reasoning Capacity 通过；外部 API 调用为 0 |
+| 启动检查 | Streamlit 实际启动并通过 `/_stcore/health`，随后正常停止 |
+| Docker | 静态 Docker 配置 Smoke 通过；当前环境无 Docker CLI，未执行 Compose、镜像 build 或容器启动 |
+| 真实 Provider | 未执行真实 LLM、搜索、Browser、PDF 或 Remote Provider 请求；不得视为真实环境验收 |
+| 发布目标 | 原子提交发布至远端 `feature/improvements`；最终状态以该分支 HEAD 与 GitHub Actions 为准 |
 
 ## Pre-R13.1 Integrity Patch：本地复核记录
 
