@@ -53,6 +53,7 @@ R12_RESULT_TABLES = {
     "report_claim_occurrences",
     "citation_occurrences",
 }
+REPORT_CLAIM_SCOPE_LINEAGE_TABLE = "report_claim_scope_group_links"
 
 
 def bootstrap_revision_for_tables(
@@ -150,6 +151,16 @@ def bootstrap_revision_for_tables(
                                             column["name"]
                                             for column in inspector.get_columns("run_budgets")
                                         }
+                                        if REPORT_CLAIM_SCOPE_LINEAGE_TABLE in table_names:
+                                            if "provider_attempts" not in budget_columns:
+                                                raise RuntimeError(
+                                                    "Legacy database has report claim scope lineage "
+                                                    "without run_budgets.provider_attempts"
+                                                )
+                                            return _required_stamp(
+                                                current_revision,
+                                                "0015_report_claim_scope_lineage",
+                                            )
                                         return _required_stamp(
                                             current_revision,
                                             (
@@ -190,6 +201,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0012_research_scope_and_lineage": 12,
         "0013_research_result_governance": 13,
         "0014_budget_provider_attempts": 14,
+        "0015_report_claim_scope_lineage": 15,
     }
     if current_revision is None:
         return schema_revision

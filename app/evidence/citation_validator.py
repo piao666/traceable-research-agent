@@ -23,11 +23,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agent.budget import BudgetExceeded
-from app.evidence.models import CitationOccurrence, ReportClaimOccurrence, ReportRevision
+from app.evidence.models import (
+    CitationOccurrence,
+    ReportClaimOccurrence,
+    ReportClaimScopeGroupLink,
+    ReportRevision,
+)
 from app.evidence.policy import evidence_role_supports_claim
 from app.llm.base import LLMClient, LLMMessage
 from app.reporting.claim_occurrence import (
     CITATION_PATTERN,
+    claim_span_for_citation_detail,
     claim_span_for_offset,
     segment_final_answer_claims,
 )
@@ -509,6 +515,7 @@ def materialize_final_report_occurrences(
     report_path: str | Path,
     scope_id: str | None = None,
     validation_report: CitationValidationReport | None = None,
+    occurrence_preview: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Persist one idempotent final-report revision and every citation marker."""
 
@@ -518,7 +525,9 @@ def materialize_final_report_occurrences(
     report_revision_id = _stable_id("report_revision", root_run_id, content_hash)
     existing = db.get(ReportRevision, report_revision_id)
     if existing is not None and existing.status == "complete":
-        return get_report_occurrence_bundle(db, report_revision_id)
+        existing_bundle = get_report_occurrence_bundle(db, report_revision_id)
+        if _scope_lineage_is_complete(existing_bundle, occurrence_preview):
+            return existing_bundle
     validation = validation_report or validate_scope_citations(
         final_answer,
         provenance_bundle,
@@ -565,12 +574,16 @@ def materialize_final_report_occurrences(
             for span in segment_final_answer_claims(final_answer)
             if span.is_claim_candidate
         ]
+        preview_by_span = {
+            (
+                int(item.get("sentence_start", -1)),
+                int(item.get("sentence_end", -1)),
+            ): item
+            for item in (occurrence_preview or {}).get("claim_occurrences") or []
+            if isinstance(item, dict)
+        }
+        claim_ids_by_span: dict[tuple[int, int], str] = {}
         for span in claim_spans:
-            details = [
-                detail
-                for detail in validation.details
-                if span.sentence_start <= detail.marker_start < span.sentence_end
-            ]
             claim_occurrence_id = _stable_id(
                 "report_claim_occurrence",
                 report_revision_id,
@@ -588,49 +601,84 @@ def materialize_final_report_occurrences(
                     normalized_claim_text=span.normalized_claim_text,
                 )
             )
-            for detail in sorted(details, key=lambda item: item.marker_start):
-                citation = citation_by_label.get(detail.citation_label) or {}
-                requested_passage_id = str(citation.get("passage_id") or "")
-                passage = passage_by_id.get(requested_passage_id) or {}
-                passage_id = requested_passage_id if passage else None
-                origin_run_id = (
-                    str(
-                        citation.get("origin_run_id")
-                        or passage.get("origin_run_id")
-                        or ""
+            claim_ids_by_span[(span.sentence_start, span.sentence_end)] = claim_occurrence_id
+            preview = preview_by_span.get((span.sentence_start, span.sentence_end)) or {}
+            mapping_source = str(preview.get("mapping_source") or "")
+            if mapping_source in {
+                "citation_lineage",
+                "claim_member_lineage",
+                "text_fallback",
+            }:
+                for scope_group_id in sorted(
+                    {
+                        str(value)
+                        for value in preview.get("scope_group_ids") or []
+                        if str(value)
+                    }
+                ):
+                    db.add(
+                        ReportClaimScopeGroupLink(
+                            link_id=_stable_id(
+                                "report_claim_scope_link",
+                                claim_occurrence_id,
+                                scope_group_id,
+                            ),
+                            claim_occurrence_id=claim_occurrence_id,
+                            scope_group_id=scope_group_id,
+                            mapping_source=mapping_source,
+                        )
                     )
-                    or None
+
+        db.flush()
+        for detail in sorted(validation.details, key=lambda item: item.marker_start):
+            span = claim_span_for_citation_detail(claim_spans, detail, final_answer)
+            if span is None:
+                continue
+            claim_occurrence_id = claim_ids_by_span[
+                (span.sentence_start, span.sentence_end)
+            ]
+            citation = citation_by_label.get(detail.citation_label) or {}
+            requested_passage_id = str(citation.get("passage_id") or "")
+            passage = passage_by_id.get(requested_passage_id) or {}
+            passage_id = requested_passage_id if passage else None
+            origin_run_id = (
+                str(
+                    citation.get("origin_run_id")
+                    or passage.get("origin_run_id")
+                    or ""
                 )
-                origin_trace_id = (
-                    str(
-                        citation.get("origin_trace_id")
-                        or passage.get("origin_trace_id")
-                        or passage.get("trace_id")
-                        or ""
-                    )
-                    or None
+                or None
+            )
+            origin_trace_id = (
+                str(
+                    citation.get("origin_trace_id")
+                    or passage.get("origin_trace_id")
+                    or passage.get("trace_id")
+                    or ""
                 )
-                db.add(
-                    CitationOccurrence(
-                        citation_occurrence_id=_stable_id(
-                            "citation_occurrence",
-                            claim_occurrence_id,
-                            detail.citation_label,
-                            str(detail.marker_start),
-                            str(detail.marker_end),
-                        ),
-                        claim_occurrence_id=claim_occurrence_id,
-                        citation_label=detail.citation_label,
-                        passage_id=passage_id,
-                        origin_run_id=origin_run_id,
-                        origin_trace_id=origin_trace_id,
-                        marker_start=detail.marker_start,
-                        marker_end=detail.marker_end,
-                        verdict=detail.verdict,
-                        keyword_overlap=detail.keyword_overlap,
-                        judgment_source=detail.judgment_source,
-                    )
+                or None
+            )
+            db.add(
+                CitationOccurrence(
+                    citation_occurrence_id=_stable_id(
+                        "citation_occurrence",
+                        claim_occurrence_id,
+                        detail.citation_label,
+                        str(detail.marker_start),
+                        str(detail.marker_end),
+                    ),
+                    claim_occurrence_id=claim_occurrence_id,
+                    citation_label=detail.citation_label,
+                    passage_id=passage_id,
+                    origin_run_id=origin_run_id,
+                    origin_trace_id=origin_trace_id,
+                    marker_start=detail.marker_start,
+                    marker_end=detail.marker_end,
+                    verdict=detail.verdict,
+                    keyword_overlap=detail.keyword_overlap,
+                    judgment_source=detail.judgment_source,
                 )
+            )
         revision.status = "complete"
         db.commit()
     except Exception:
@@ -665,11 +713,32 @@ def get_report_occurrence_bundle(
         if claim_ids
         else []
     )
+    scope_links = (
+        list(
+            db.scalars(
+                select(ReportClaimScopeGroupLink)
+                .where(ReportClaimScopeGroupLink.claim_occurrence_id.in_(claim_ids))
+                .order_by(
+                    ReportClaimScopeGroupLink.claim_occurrence_id,
+                    ReportClaimScopeGroupLink.scope_group_id,
+                )
+            )
+        )
+        if claim_ids
+        else []
+    )
     citation_counts: dict[str, int] = {}
+    citations_by_claim: dict[str, list[dict[str, Any]]] = {}
     for citation in citations:
         citation_counts[citation.claim_occurrence_id] = (
             citation_counts.get(citation.claim_occurrence_id, 0) + 1
         )
+        citations_by_claim.setdefault(citation.claim_occurrence_id, []).append(
+            _citation_occurrence_dict(citation)
+        )
+    links_by_claim: dict[str, list[ReportClaimScopeGroupLink]] = {}
+    for link in scope_links:
+        links_by_claim.setdefault(link.claim_occurrence_id, []).append(link)
     return {
         "report_revision": {
             "report_revision_id": revision.report_revision_id,
@@ -689,25 +758,19 @@ def get_report_occurrence_bundle(
                 "sentence_end": claim.sentence_end,
                 "normalized_claim_text": claim.normalized_claim_text,
                 "citation_count": citation_counts.get(claim.claim_occurrence_id, 0),
+                "scope_group_ids": [
+                    link.scope_group_id
+                    for link in links_by_claim.get(claim.claim_occurrence_id, [])
+                ],
+                "scope_group_mapping_sources": [
+                    link.mapping_source
+                    for link in links_by_claim.get(claim.claim_occurrence_id, [])
+                ],
+                "citations": citations_by_claim.get(claim.claim_occurrence_id, []),
             }
             for claim in claims
         ],
-        "citation_occurrences": [
-            {
-                "citation_occurrence_id": citation.citation_occurrence_id,
-                "claim_occurrence_id": citation.claim_occurrence_id,
-                "citation_label": citation.citation_label,
-                "passage_id": citation.passage_id,
-                "origin_run_id": citation.origin_run_id,
-                "origin_trace_id": citation.origin_trace_id,
-                "marker_start": citation.marker_start,
-                "marker_end": citation.marker_end,
-                "verdict": citation.verdict,
-                "keyword_overlap": citation.keyword_overlap,
-                "judgment_source": citation.judgment_source,
-            }
-            for citation in citations
-        ],
+        "citation_occurrences": [_citation_occurrence_dict(item) for item in citations],
     }
 
 
@@ -721,6 +784,12 @@ def _clear_report_occurrences(db: Session, report_revision_id: str) -> None:
     )
     claim_ids = [claim.claim_occurrence_id for claim in claims]
     if claim_ids:
+        for link in db.scalars(
+            select(ReportClaimScopeGroupLink).where(
+                ReportClaimScopeGroupLink.claim_occurrence_id.in_(claim_ids)
+            )
+        ):
+            db.delete(link)
         for citation in db.scalars(
             select(CitationOccurrence).where(
                 CitationOccurrence.claim_occurrence_id.in_(claim_ids)
@@ -730,6 +799,57 @@ def _clear_report_occurrences(db: Session, report_revision_id: str) -> None:
     for claim in claims:
         db.delete(claim)
     db.flush()
+
+
+def _citation_occurrence_dict(citation: CitationOccurrence) -> dict[str, Any]:
+    return {
+        "citation_occurrence_id": citation.citation_occurrence_id,
+        "claim_occurrence_id": citation.claim_occurrence_id,
+        "citation_label": citation.citation_label,
+        "passage_id": citation.passage_id,
+        "origin_run_id": citation.origin_run_id,
+        "origin_trace_id": citation.origin_trace_id,
+        "marker_start": citation.marker_start,
+        "marker_end": citation.marker_end,
+        "verdict": citation.verdict,
+        "keyword_overlap": citation.keyword_overlap,
+        "judgment_source": citation.judgment_source,
+    }
+
+
+def _scope_lineage_is_complete(
+    occurrence_bundle: dict[str, Any],
+    occurrence_preview: dict[str, list[dict[str, Any]]] | None,
+) -> bool:
+    expected = {
+        (
+            int(item.get("sentence_start", -1)),
+            int(item.get("sentence_end", -1)),
+            str(scope_group_id),
+            str(item.get("mapping_source") or ""),
+        )
+        for item in (occurrence_preview or {}).get("claim_occurrences") or []
+        if isinstance(item, dict)
+        for scope_group_id in item.get("scope_group_ids") or []
+        if str(item.get("mapping_source") or "")
+        in {"citation_lineage", "claim_member_lineage", "text_fallback"}
+    }
+    if not expected:
+        return True
+    actual: set[tuple[int, int, str, str]] = set()
+    for item in occurrence_bundle.get("claim_occurrences") or []:
+        group_ids = item.get("scope_group_ids") or []
+        mapping_sources = item.get("scope_group_mapping_sources") or []
+        actual.update(
+            (
+                int(item.get("sentence_start", -1)),
+                int(item.get("sentence_end", -1)),
+                str(group_id),
+                str(mapping_source),
+            )
+            for group_id, mapping_source in zip(group_ids, mapping_sources)
+        )
+    return actual == expected
 
 
 def _stable_id(prefix: str, *parts: str) -> str:

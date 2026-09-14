@@ -53,7 +53,11 @@ from app.reporting.integrity import (
     append_report_integrity_warnings,
     assess_report_integrity,
 )
-from app.reporting.claim_occurrence import segment_final_answer_claims
+from app.reporting.claim_occurrence import (
+    claim_span_for_citation_detail,
+    normalize_claim_text,
+    segment_final_answer_claims,
+)
 from app.trace import store
 from app.trace.logger import record_trace_event
 
@@ -494,6 +498,7 @@ def run_deep_research_v2(
             provenance_bundle=scope_evidence,
             report_path=expected_report_path,
             validation_report=citation_validation,
+            occurrence_preview=occurrence_preview,
         )
     except Exception:
         citation_validation = None
@@ -595,12 +600,30 @@ def _validation_occurrence_preview(
             if group_id and claim_id:
                 groups_by_claim_id.setdefault(claim_id, set()).add(group_id)
 
+    groups_by_claim_text: dict[str, set[str]] = {}
+    for claim in scope_bundle.get("claims") or []:
+        claim_id = str(claim.get("claim_id") or "")
+        normalized_text = normalize_claim_text(str(claim.get("claim_text") or ""))
+        if claim_id and normalized_text:
+            groups_by_claim_text.setdefault(normalized_text, set()).update(
+                groups_by_claim_id.get(claim_id, set())
+            )
+
     claims: list[dict[str, Any]] = []
-    for span in segment_final_answer_claims(final_answer):
+    spans = segment_final_answer_claims(final_answer)
+    details_by_span: dict[tuple[int, int], list[Any]] = {}
+    for detail in validation.details:
+        span = claim_span_for_citation_detail(spans, detail, final_answer)
+        if span is not None:
+            details_by_span.setdefault(
+                (span.sentence_start, span.sentence_end), []
+            ).append(detail)
+    for span in spans:
         if not span.is_claim_candidate:
             continue
+        details = details_by_span.get((span.sentence_start, span.sentence_end), [])
         group_ids: set[str] = set()
-        for label in span.citation_labels:
+        for label in [str(detail.citation_label or "") for detail in details]:
             citation = citations_by_label.get(label) or {}
             report_claim = report_claims.get(
                 str(citation.get("report_claim_id") or "")
@@ -609,6 +632,10 @@ def _validation_occurrence_preview(
                 groups_by_claim_id.get(str(report_claim.get("claim_id") or ""), set())
             )
         mapping_source = "citation_lineage" if group_ids else "none"
+        if not group_ids:
+            group_ids.update(groups_by_claim_text.get(span.normalized_claim_text, set()))
+            if group_ids:
+                mapping_source = "claim_member_lineage"
         if not group_ids:
             fallback_key = scope_claim_group_key({"claim_text": span.claim_text})
             group_ids.update(groups_by_normalized_key.get(fallback_key, set()))
@@ -620,7 +647,7 @@ def _validation_occurrence_preview(
                 "sentence_start": span.sentence_start,
                 "sentence_end": span.sentence_end,
                 "normalized_claim_text": span.normalized_claim_text,
-                "citation_count": len(span.citation_labels),
+                "citation_count": len(details),
                 "scope_group_ids": sorted(group_ids),
                 "mapping_source": mapping_source,
             }

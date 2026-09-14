@@ -38,7 +38,7 @@ def test_migration_0012_backfills_nested_legacy_lineage(tmp_path):
             "FROM agent_runs ORDER BY run_id"
         )).fetchall()
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-    assert revision == "0014_budget_provider_attempts"
+    assert revision == "0015_report_claim_scope_lineage"
     assert {row[0]: row[2] for row in rows} == {
         "root": "root", "child": "root", "grandchild": "root"
     }
@@ -53,6 +53,7 @@ def test_migration_0012_backfills_nested_legacy_lineage(tmp_path):
         "report_revisions",
         "report_claim_occurrences",
         "citation_occurrences",
+        "report_claim_scope_group_links",
     }.issubset(inspect(engine).get_table_names())
     assert "provider_attempts" in {
         column["name"] for column in inspect(engine).get_columns("run_budgets")
@@ -101,4 +102,60 @@ def test_migration_0013_nulls_dirty_scope_ids_and_adds_foreign_key(tmp_path):
         ))
     assert dirty_count == 0
     command.downgrade(config, "0012_research_scope_and_lineage")
+    engine.dispose()
+
+
+def test_migration_0015_upgrades_existing_report_data_and_is_idempotent(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    engine = create_engine(f"sqlite:///{tmp_path / 'r15-lineage.sqlite'}")
+    config = Config(str(root / "alembic.ini"))
+    config.set_main_option("script_location", str(root / "migrations"))
+    config.set_main_option("sqlalchemy.url", str(engine.url))
+    command.upgrade(config, "0014_budget_provider_attempts")
+    now = datetime.now(timezone.utc)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO agent_runs (run_id, task, report_type, source_mode, status, current_step, total_steps, "
+            "plan_json, total_tool_calls, total_latency_ms, estimated_cost, created_at, updated_at, root_run_id, run_role, engine_version) "
+            "VALUES ('root', 'root', 'summary', 'real', 'completed', 0, 0, '{}', 0, 0, 0, :now, :now, 'root', 'root', 'v2')"
+        ), {"now": now})
+        connection.execute(text(
+            "INSERT INTO research_scopes (scope_id, root_run_id, engine_version, status, research_contract_json, created_at, updated_at) "
+            "VALUES ('scope', 'root', 'v2', 'completed', '{}', :now, :now)"
+        ), {"now": now})
+        connection.execute(text(
+            "INSERT INTO scope_reasoning_runs (reasoning_run_id, scope_id, policy_version, policy_hash, evidence_fingerprint, engine_version, status, created_at, updated_at) "
+            "VALUES ('reason', 'scope', 'test', 'policy', 'evidence', 'v1', 'complete', :now, :now)"
+        ), {"now": now})
+        connection.execute(text(
+            "INSERT INTO scope_claim_groups (group_id, reasoning_run_id, normalized_key, representative_claim_text, unit, time_scope, created_at) "
+            "VALUES ('group', 'reason', 'claim|unit:<none>', 'Claim.', NULL, NULL, :now)"
+        ), {"now": now})
+        connection.execute(text(
+            "INSERT INTO report_revisions (report_revision_id, root_run_id, scope_id, content_hash, final_answer_hash, report_path, status, created_at) "
+            "VALUES ('revision', 'root', 'scope', 'content', 'answer', 'report.md', 'complete', :now)"
+        ), {"now": now})
+        connection.execute(text(
+            "INSERT INTO report_claim_occurrences (claim_occurrence_id, report_revision_id, section, claim_text, sentence_start, sentence_end, normalized_claim_text, created_at) "
+            "VALUES ('occurrence', 'revision', '3. 最终回答', 'Claim.', 0, 6, 'claim.', :now)"
+        ), {"now": now})
+    command.upgrade(config, "head")
+    command.upgrade(config, "head")
+    inspector = inspect(engine)
+    assert "report_claim_scope_group_links" in inspector.get_table_names()
+    assert {
+        "ix_report_claim_scope_group_links_claim_occurrence",
+        "ix_report_claim_scope_group_links_scope_group",
+    }.issubset({item["name"] for item in inspector.get_indexes("report_claim_scope_group_links")})
+    assert {
+        (tuple(item["constrained_columns"]), item["referred_table"], item["options"].get("ondelete"))
+        for item in inspector.get_foreign_keys("report_claim_scope_group_links")
+    } == {
+        (("claim_occurrence_id",), "report_claim_occurrences", "CASCADE"),
+        (("scope_group_id",), "scope_claim_groups", "CASCADE"),
+    }
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT COUNT(*) FROM report_revisions")) == 1
+        assert connection.scalar(text("SELECT COUNT(*) FROM report_claim_occurrences")) == 1
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0015_report_claim_scope_lineage"
     engine.dispose()

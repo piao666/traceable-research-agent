@@ -85,3 +85,44 @@ def test_segmentation_excludes_headings_links_and_code_blocks():
         final_answer[span.sentence_start : span.sentence_end] == span.raw_text
         for span in candidates
     )
+
+
+def test_standalone_citation_attaches_to_previous_claim(db):
+    root = create_root(db)
+    markdown = (
+        "# Report\n\n## 3. 最终回答\n\n"
+        "Market size reached $100.\n\n[CIT-001-01]\n\n## 4. 审计\n"
+    )
+    provenance = {
+        "passages": [{"passage_id": "pass-1", "text": "Market size reached $100."}],
+        "citations": [{"citation_label": "CIT-001-01", "passage_id": "pass-1"}],
+    }
+    bundle = materialize_final_report_occurrences(
+        db, root_run_id=root.run_id, markdown=markdown,
+        provenance_bundle=provenance, report_path="workspace/reports/standalone.md",
+    )
+    assert len(bundle["claim_occurrences"]) == 1
+    assert len(bundle["citation_occurrences"]) == 1
+    assert bundle["citation_occurrences"][0]["claim_occurrence_id"] == bundle["claim_occurrences"][0]["claim_occurrence_id"]
+    assert len(bundle["claim_occurrences"][0]["citations"]) == 1
+
+
+def test_standalone_citation_attaches_only_to_nearest_previous_claim(db):
+    root = create_root(db)
+    markdown = (
+        "# Report\n\n## 3. 最终回答\n\n"
+        "The first measured value was 10.\n"
+        "The second measured value was 20.\n\n"
+        "[CIT-001-01]\n\n## 4. 审计\n"
+    )
+    provenance = {
+        "passages": [{"passage_id": "pass-1", "text": "The second measured value was 20."}],
+        "citations": [{"citation_label": "CIT-001-01", "passage_id": "pass-1"}],
+    }
+    bundle = materialize_final_report_occurrences(
+        db, root_run_id=root.run_id, markdown=markdown,
+        provenance_bundle=provenance, report_path="workspace/reports/standalone-nearest.md",
+    )
+    assert len(bundle["claim_occurrences"]) == 2
+    assert [item["citation_count"] for item in bundle["claim_occurrences"]] == [0, 1]
+    assert bundle["citation_occurrences"][0]["claim_occurrence_id"] == bundle["claim_occurrences"][1]["claim_occurrence_id"]

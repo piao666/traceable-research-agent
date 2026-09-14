@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -464,6 +474,40 @@ class ReportClaimOccurrence(Base):
     sentence_start: Mapped[int] = mapped_column(Integer, nullable=False)
     sentence_end: Mapped[int] = mapped_column(Integer, nullable=False)
     normalized_claim_text: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ReportClaimScopeGroupLink(Base):
+    __tablename__ = "report_claim_scope_group_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "claim_occurrence_id",
+            "scope_group_id",
+            name="uq_report_claim_scope_group_links_claim_group",
+        ),
+        CheckConstraint(
+            "mapping_source IN ('citation_lineage', 'claim_member_lineage', 'text_fallback')",
+            name="ck_report_claim_scope_group_links_mapping_source",
+        ),
+        Index(
+            "ix_report_claim_scope_group_links_claim_occurrence",
+            "claim_occurrence_id",
+        ),
+        Index("ix_report_claim_scope_group_links_scope_group", "scope_group_id"),
+    )
+
+    link_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    claim_occurrence_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("report_claim_occurrences.claim_occurrence_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scope_group_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("scope_claim_groups.group_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    mapping_source: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

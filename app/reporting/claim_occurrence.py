@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from typing import Any
 
 
 CITATION_PATTERN = re.compile(r"CIT-\d{3}-\d{2}")
@@ -18,6 +19,7 @@ _PURE_MARKDOWN_LINK_PATTERN = re.compile(
 )
 _MARKDOWN_LINK_PATTERN = re.compile(r"!?\[([^\]]*)\]\([^)]+\)")
 _HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+_STANDALONE_CITATION_MAX_DISTANCE = 256
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,68 @@ def claim_span_for_offset(
     )
 
 
+def claim_span_for_citation_detail(
+    spans: list[FinalClaimSpan],
+    detail: Any,
+    final_answer: str,
+) -> FinalClaimSpan | None:
+    """Resolve a validated citation to its supported final Claim span."""
+
+    candidates = [span for span in spans if span.is_claim_candidate]
+    sentence_start = _integer_field(detail, "sentence_start")
+    sentence_end = _integer_field(detail, "sentence_end")
+    if sentence_start is not None and sentence_end is not None and sentence_end > sentence_start:
+        overlaps = [
+            span
+            for span in candidates
+            if span.sentence_start < sentence_end and sentence_start < span.sentence_end
+        ]
+        if overlaps:
+            return max(
+                overlaps,
+                key=lambda span: (
+                    min(span.sentence_end, sentence_end)
+                    - max(span.sentence_start, sentence_start),
+                    span.sentence_end,
+                ),
+            )
+
+    marker_start = _integer_field(detail, "marker_start")
+    marker_end = _integer_field(detail, "marker_end")
+    if marker_start is None:
+        return None
+    if marker_end is not None and marker_end > marker_start:
+        overlap = next(
+            (
+                span
+                for span in candidates
+                if span.sentence_start < marker_end and marker_start < span.sentence_end
+            ),
+            None,
+        )
+        if overlap is not None:
+            return overlap
+    containing = claim_span_for_offset(candidates, marker_start)
+    if containing is not None:
+        return containing
+
+    previous = [span for span in candidates if span.sentence_end <= marker_start]
+    if not previous:
+        return None
+    nearest = max(previous, key=lambda span: span.sentence_end)
+    gap = str(final_answer or "")[nearest.sentence_end:marker_start]
+    if len(gap) > _STANDALONE_CITATION_MAX_DISTANCE:
+        return None
+    if gap.strip(" \t\r\n[("):
+        return None
+    return nearest
+
+
+def _integer_field(value: Any, name: str) -> int | None:
+    raw = value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+
+
 def _sentence_ranges(text: str, start: int, end: int):
     cursor = start
     while cursor < end:
@@ -187,6 +251,7 @@ __all__ = [
     "CITATION_PATTERN",
     "FinalClaimSpan",
     "claim_span_for_offset",
+    "claim_span_for_citation_detail",
     "clean_claim_text",
     "normalize_claim_text",
     "segment_final_answer_claims",
