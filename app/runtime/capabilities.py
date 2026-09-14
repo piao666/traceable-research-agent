@@ -26,13 +26,35 @@ def local_capability_items(settings: Settings) -> list[dict[str, Any]]:
     )
     return [
         {
-            "name": "llm",
+            "name": "llm_basic",
             "category": "llm",
             "configured": llm_configured,
             "reachable": None,
             "usable": llm_configured,
             "mode": "offline" if provider == "deterministic" else "real",
-            "detail": "模型配置完整" if llm_configured else "模型地址、名称或密钥未配置完整，且地址必须为 HTTP(S)",
+            "detail": "模型基础 JSON 能力" if llm_configured else "模型地址、名称或密钥未配置完整",
+            "error_type": None if llm_configured else "missing_configuration",
+            "checked_at": checked_at,
+        },
+        {
+            "name": "llm_planner",
+            "category": "llm",
+            "configured": llm_configured,
+            "reachable": None,
+            "usable": llm_configured,
+            "mode": "offline" if provider == "deterministic" else "real",
+            "detail": "模型生成研究计划能力" if llm_configured else "模型配置不完整",
+            "error_type": None if llm_configured else "missing_configuration",
+            "checked_at": checked_at,
+        },
+        {
+            "name": "llm_react",
+            "category": "llm",
+            "configured": llm_configured,
+            "reachable": None,
+            "usable": llm_configured,
+            "mode": "offline" if provider == "deterministic" else "real",
+            "detail": "模型 ReAct 决策能力" if llm_configured else "模型配置不完整",
             "error_type": None if llm_configured else "missing_configuration",
             "checked_at": checked_at,
         },
@@ -103,12 +125,14 @@ def required_runtime_ready(settings: Settings, items: list[dict[str, Any]] | Non
         return settings.offline_mode
     rows = items or local_capability_items(settings)
     indexed = {str(row.get("name")): row for row in rows}
-    required = {"llm", settings.search_provider, "web_fetcher", "pdf_reader"}
+    required = {"llm_basic", "llm_planner", "llm_react", settings.search_provider, "web_fetcher", "pdf_reader"}
     if not required <= set(indexed):
         return False
     return bool(
-        indexed["llm"].get("usable")
-        and indexed["llm"].get("mode") == "real"
+        indexed["llm_basic"].get("usable")
+        and indexed["llm_planner"].get("usable")
+        and indexed["llm_react"].get("usable")
+        and indexed["llm_basic"].get("mode") == "real"
         and indexed[settings.search_provider].get("usable")
         and indexed[settings.search_provider].get("mode") == "real"
         and indexed["web_fetcher"].get("usable")

@@ -852,7 +852,7 @@ def run_react_task(
                 plan.get("task_contract"),
             )
             try:
-                response = client.complete(messages, temperature=0.0, max_tokens=800)
+                response = client.structured_complete(messages, temperature=0.0, max_tokens=800)
             except FinalizationRequired:
                 return _finalize_at_research_boundary(
                     db, run_id, plan, state, step_no, settings, client

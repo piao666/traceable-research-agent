@@ -23,27 +23,18 @@ def _replace(items: list[dict[str, Any]], name: str, **updates: Any) -> None:
             return
 
 
-def _safe_llm_probe(client: LLMClient) -> dict[str, Any]:
+def _check_llm_basic(client: LLMClient) -> dict[str, Any]:
+    """Probe raw JSON output: can the LLM return a parseable object at all?"""
     try:
         available = client.is_available()
     except Exception:
-        return {
-            "success": False,
-            "error_type": "provider_unavailable",
-            "detail": "模型可用性检查失败",
-            "usage_parsed": False,
-            "structured_output": False,
-        }
+        return _llm_failure("provider_unavailable", "模型可用性检查失败")
+
     if not available:
-        return {
-            "success": False,
-            "error_type": "missing_configuration",
-            "detail": "模型配置不完整",
-            "usage_parsed": False,
-            "structured_output": False,
-        }
+        return _llm_failure("missing_configuration", "模型配置不完整")
+
     try:
-        response = client.complete(
+        response = client.structured_complete(
             [
                 LLMMessage(role="system", content="Return only a JSON object."),
                 LLMMessage(role="user", content='Return exactly {"ok":true}.'),
@@ -52,28 +43,221 @@ def _safe_llm_probe(client: LLMClient) -> dict[str, Any]:
             max_tokens=16,
         )
     except Exception:
-        return {
-            "success": False,
-            "error_type": "provider_unavailable",
-            "detail": "模型最小 JSON 响应验证失败",
-            "usage_parsed": False,
-            "structured_output": False,
-        }
+        return _llm_failure("provider_unavailable", "模型最小 JSON 响应验证失败")
+
+    if not response.success:
+        return _llm_failure(
+            response.metadata.get("error_type") or "provider_unavailable",
+            "模型最小 JSON 响应验证失败",
+            response.usage is not None,
+        )
+
     structured = False
-    if response.success:
-        try:
-            structured = json.loads(str(response.content or "")) == {"ok": True}
-        except (TypeError, ValueError):
-            structured = False
-    error_type = None if response.success and structured else (
-        "structured_output_invalid" if response.success else response.metadata.get("error_type") or "provider_unavailable"
+    try:
+        structured = json.loads(str(response.content or "")) == {"ok": True}
+    except (TypeError, ValueError):
+        pass
+
+    if structured:
+        return {
+            "success": True,
+            "error_type": None,
+            "detail": "模型最小 JSON 响应验证通过",
+            "usage_parsed": response.usage is not None,
+            "structured_output": True,
+        }
+    return _llm_failure(
+        "structured_output_invalid",
+        "模型最小 JSON 响应验证失败",
+        response.usage is not None,
     )
+
+
+def _check_planner_capability(
+    client: LLMClient,
+    task: str = "List three open-source web frameworks.",
+    allowed_tools: str = "tavily_search, web_fetcher",
+    source_mode: str = "real",
+) -> dict[str, Any]:
+    """Probe whether the LLM returns a valid research plan with steps."""
+    try:
+        available = client.is_available()
+    except Exception:
+        return _llm_failure("provider_unavailable", "Planner probe: 模型不可用")
+
+    if not available:
+        return _llm_failure("missing_configuration", "Planner probe: 模型配置不完整")
+
+    system = (
+        "Return a valid JSON research plan. Required fields: version, task, source_mode, "
+        "allowed_tools, steps (array of {step_no, goal, tool_name, arguments}). "
+        "Use only these tools: " + allowed_tools + ". "
+        "Output only JSON, no Markdown."
+    )
+    user_payload = {
+        "task": task,
+        "source_mode": source_mode,
+        "allowed_tools": [t.strip() for t in allowed_tools.split(",")],
+        "required_top_level_fields": ["version", "task", "source_mode", "allowed_tools", "steps"],
+    }
+    try:
+        response = client.complete(
+            [
+                LLMMessage(role="system", content=system),
+                LLMMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
+            ],
+            temperature=0.0,
+            max_tokens=256,
+        )
+    except Exception:
+        return _llm_failure("provider_unavailable", "Planner probe: 请求失败")
+
+    if not response.success:
+        return _llm_failure(
+            response.metadata.get("error_type") or "provider_unavailable",
+            "Planner probe: 模型响应失败",
+            response.usage is not None,
+        )
+
+    parsed = json.loads(str(response.content or ""))
+
+    steps = parsed.get("steps")
+    if not isinstance(steps, list) or len(steps) == 0:
+        return _llm_failure(
+            "structured_output_invalid",
+            "Planner probe: 响应缺少 steps 数组或为空",
+            response.usage is not None,
+        )
+
+    valid_steps = [
+        step for step in steps
+        if isinstance(step, dict) and str(step.get("tool_name") or "").strip()
+    ]
+    if not valid_steps:
+        return _llm_failure(
+            "structured_output_invalid",
+            "Planner probe: steps 中没有可识别的 tool_name",
+            response.usage is not None,
+        )
+
     return {
-        "success": bool(response.success and structured),
-        "error_type": error_type,
-        "detail": "模型最小 JSON 响应验证通过" if response.success and structured else "模型最小 JSON 响应验证失败",
+        "success": True,
+        "error_type": None,
+        "detail": f"Planner probe: 返回了 {len(valid_steps)} 个有效步骤",
         "usage_parsed": response.usage is not None,
-        "structured_output": structured,
+        "structured_output": True,
+    }
+
+
+def _check_react_capability(
+    client: LLMClient,
+    task: str = "Search for Python async best practices and summarize.",
+    allowed_tools: str = "tavily_search, web_fetcher",
+) -> dict[str, Any]:
+    """Probe whether the LLM returns a valid ReAct decision with action."""
+    try:
+        available = client.is_available()
+    except Exception:
+        return _llm_failure("provider_unavailable", "ReAct probe: 模型不可用")
+
+    if not available:
+        return _llm_failure("missing_configuration", "ReAct probe: 模型配置不完整")
+
+    system = (
+        "You are a traceable research agent. Output one strict JSON object only, no Markdown. "
+        'Required schema: {"thought":"short rationale","action":"MUST be one of ['
+        + allowed_tools
+        + ', finish]","args":{},"finish_reason":null}. '
+        "Select exactly one allowed tool or finish."
+    )
+    user_payload = {
+        "task": task,
+        "allowed_tools": [t.strip() for t in allowed_tools.split(",")],
+        "observation_history": [],
+    }
+    try:
+        response = client.complete(
+            [
+                LLMMessage(role="system", content=system),
+                LLMMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
+            ],
+            temperature=0.0,
+            max_tokens=128,
+        )
+    except Exception:
+        return _llm_failure("provider_unavailable", "ReAct probe: 请求失败")
+
+    if not response.success:
+        return _llm_failure(
+            response.metadata.get("error_type") or "provider_unavailable",
+            "ReAct probe: 模型响应失败",
+            response.usage is not None,
+        )
+
+    parsed = json.loads(str(response.content or ""))
+
+    action = str(parsed.get("action") or "").strip().lower().replace("-", "_")
+    if not action:
+        return _llm_failure(
+            "structured_output_invalid",
+            "ReAct probe: 响应缺少 action 字段",
+            response.usage is not None,
+        )
+
+    allowed = {t.strip().lower().replace("-", "_") for t in allowed_tools.split(",")} | {"finish"}
+    if action not in allowed:
+        return _llm_failure(
+            "structured_output_invalid",
+            f"ReAct probe: action '{action}' 不在允许列表中",
+            response.usage is not None,
+        )
+
+    return {
+        "success": True,
+        "error_type": None,
+        "detail": f"ReAct probe: action={action} 有效",
+        "usage_parsed": response.usage is not None,
+        "structured_output": True,
+    }
+
+
+def _extract_json(text: str) -> dict[str, Any] | None:
+    """Extract the first JSON object from raw LLM text."""
+    import re
+    stripped = text.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        try:
+            return json.loads(fenced.group(1))
+        except (TypeError, ValueError):
+            pass
+    first = stripped.find("{")
+    last = stripped.rfind("}")
+    if first != -1 and last != -1 and last > first:
+        try:
+            return json.loads(stripped[first : last + 1])
+        except (TypeError, ValueError):
+            pass
+    try:
+        parsed = json.loads(stripped)
+        if isinstance(parsed, dict):
+            return parsed
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _llm_failure(
+    error_type: str,
+    detail: str,
+    usage_parsed: bool = False,
+) -> dict[str, Any]:
+    return {
+        "success": False,
+        "error_type": error_type,
+        "detail": detail,
+        "usage_parsed": usage_parsed,
+        "structured_output": False,
     }
 
 
@@ -181,6 +365,7 @@ def run_runtime_preflight(
     actor_identity = _llm_role_identity(settings, "actor")
     synthesizer_identity = _llm_role_identity(settings, "synthesizer")
     same_role_model = actor_identity == synthesizer_identity
+
     legacy_client = llm_client
     actor_probe_client = actor_client or legacy_client
     synthesizer_probe_client = synthesizer_client or legacy_client
@@ -190,53 +375,76 @@ def run_runtime_preflight(
             or synthesizer_probe_client
             or create_llm_client(settings, actor_identity[0], actor_identity[1])
         )
-        actor_result = synthesizer_result = _safe_llm_probe(shared_client)
+        basic = _check_llm_basic(shared_client)
+        planner = _check_planner_capability(shared_client)
+        react = _check_react_capability(shared_client)
     else:
-        actor_client_for_probe = actor_probe_client or create_llm_client(
+        actor_for_probe = actor_probe_client or create_llm_client(
             settings, actor_identity[0], actor_identity[1]
         )
-        synthesizer_client_for_probe = synthesizer_probe_client or create_llm_client(
+        synth_for_probe = synthesizer_probe_client or create_llm_client(
             settings, synthesizer_identity[0], synthesizer_identity[1]
         )
-        actor_result = _safe_llm_probe(actor_client_for_probe)
-        synthesizer_result = _safe_llm_probe(synthesizer_client_for_probe)
+        basic = _check_llm_basic(actor_for_probe)
+        planner = _check_planner_capability(actor_for_probe)
+        react = _check_react_capability(actor_for_probe)
 
-    llm_template = next(
-        (item for item in items if item.get("name") == "llm"),
-        {"category": "llm", "mode": "real"},
-    )
-    items = [item for item in items if item.get("name") != "llm"]
-    if same_role_model:
-        items.insert(0, _llm_capability(llm_template, "llm", actor_result))
-    else:
-        items[0:0] = [
-            _llm_capability(llm_template, "llm_actor", actor_result),
-            _llm_capability(
-                llm_template,
-                "llm_synthesizer",
-                synthesizer_result,
-            ),
-        ]
+    def _cap(name: str, result: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "name": name,
+            "category": "llm",
+            "configured": True,
+            "reachable": result["success"],
+            "usable": result["success"],
+            "mode": "real",
+            "detail": result["detail"],
+            "error_type": result["error_type"],
+            "checks": {
+                "usage_parsed": result["usage_parsed"],
+                "structured_output": result["structured_output"],
+            },
+            "checked_at": checked_at,
+        }
+
+    # Replace all static LLM templates with the three granular probe results
+    dynamic_llm_names = {
+        "llm", "llm_actor", "llm_synthesizer",
+        "llm_basic", "llm_planner", "llm_react",
+    }
+    items = [item for item in items if item.get("name") not in dynamic_llm_names]
+    items[0:0] = [
+        _cap("llm_basic", basic),
+        _cap("llm_planner", planner),
+        _cap("llm_react", react),
+    ]
 
     actor_required = settings.execution_mode == "react" or settings.deep_research_enabled
     synthesizer_required = settings.report_generation_mode == "llm"
-    if actor_required and not actor_result["success"]:
+    if settings.llm_planner_enabled and not planner["success"]:
         blockers.append(
             {
-                "capability": "llm_actor",
-                "error_type": str(actor_result["error_type"]),
-                "message": str(actor_result["detail"]),
+                "capability": "llm_planner",
+                "error_type": str(planner["error_type"]),
+                "message": str(planner["detail"]),
             }
         )
-    if synthesizer_required and not synthesizer_result["success"]:
+    if actor_required and not react["success"]:
+        blockers.append(
+            {
+                "capability": "llm_react",
+                "error_type": str(react["error_type"]),
+                "message": str(react["detail"]),
+            }
+        )
+    if synthesizer_required and not basic["success"]:
         blockers.append(
             {
                 "capability": "report_synthesis",
-                "error_type": str(synthesizer_result["error_type"]),
-                "message": str(synthesizer_result["detail"]),
+                "error_type": str(basic["error_type"]),
+                "message": str(basic["detail"]),
             }
         )
-    for role_result in {id(actor_result): actor_result, id(synthesizer_result): synthesizer_result}.values():
+    for role_result in {id(basic): basic, id(planner): planner, id(react): react}.values():
         if role_result["success"] and not role_result["usage_parsed"]:
             warnings.append("模型响应可用，但未返回可解析的 usage；Token 预算将采用本地保守估算。")
 

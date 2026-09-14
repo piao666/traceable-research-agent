@@ -163,4 +163,4 @@ def call_llm_for_plan(
             metadata={"available": False, "error_type": "provider_unavailable"},
         )
     messages = build_planner_messages(task, allowed_tools, source_mode, scenario_template)
-    return client.complete(messages, temperature=0.0, max_tokens=2000)
+    return client.structured_complete(messages, temperature=0.0, max_tokens=2000)

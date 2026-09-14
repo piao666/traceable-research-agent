@@ -84,12 +84,59 @@ class OpenAICompatibleLLMClient(LLMClient):
         temperature: float = 0.0,
         max_tokens: int = 2000,
     ) -> LLMResponse:
-        payload = {
+        return self._complete_request(messages, temperature, max_tokens)
+
+    def structured_complete(
+        self,
+        messages: list[LLMMessage],
+        temperature: float = 0.0,
+        max_tokens: int = 2000,
+    ) -> LLMResponse:
+        response = self._complete_request(
+            messages,
+            temperature,
+            max_tokens,
+            response_format={"type": "json_object"},
+        )
+        if not response.success:
+            return response
+
+        try:
+            parsed = json.loads(str(response.content or ""))
+        except (TypeError, ValueError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            return response
+
+        return LLMResponse(
+            success=False,
+            provider=response.provider,
+            model=response.model,
+            error_message="LLM structured response was not a JSON object.",
+            metadata={
+                **response.metadata,
+                "error_type": "structured_output_invalid",
+            },
+            usage=response.usage,
+        )
+
+    def _complete_request(
+        self,
+        messages: list[LLMMessage],
+        temperature: float,
+        max_tokens: int,
+        *,
+        response_format: dict[str, str] | None = None,
+    ) -> LLMResponse:
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": [message.model_dump() for message in messages],
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if response_format is not None:
+            payload["response_format"] = response_format
         body = json.dumps(payload).encode("utf-8")
         request = Request(
             f"{self.base_url}/chat/completions",

@@ -227,9 +227,15 @@ class BudgetClient(LLMClient):
         return self.client.describe()
 
     def complete(self, messages, temperature=0.0, max_tokens=2000):
+        return self._complete_with(self.client.complete, messages, temperature, max_tokens)
+
+    def structured_complete(self, messages, temperature=0.0, max_tokens=2000):
+        return self._complete_with(self.client.structured_complete, messages, temperature, max_tokens)
+
+    def _complete_with(self, method, messages, temperature, max_tokens):
         runtime = current_budget()
         if runtime is None or not self.is_available():
-            return self.client.complete(messages, temperature=temperature, max_tokens=max_tokens)
+            return method(messages, temperature=temperature, max_tokens=max_tokens)
         # Missing provider usage keeps this conservative reservation charged;
         # known usage below reconciles it to the provider's actual accounting.
         reserved = estimate_message_tokens(messages, max_tokens)
@@ -238,7 +244,7 @@ class BudgetClient(LLMClient):
             runtime.stop("llm_price_unconfigured")
         cost = reserved * (rate or 0) / 1_000_000
         runtime.reserve(llm=1, tokens=reserved, cost=cost)
-        response = self.client.complete(messages, temperature=temperature, max_tokens=max_tokens)
+        response = method(messages, temperature=temperature, max_tokens=max_tokens)
         runtime.record_provider_attempts(_provider_attempt_count(response))
         actual = max(0, response.usage.total_tokens,
                      max(0, response.usage.prompt_tokens) + max(0, response.usage.completion_tokens)) if response.usage else 0

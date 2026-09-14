@@ -110,7 +110,7 @@ function NewResearchForm({ sessionId }: { sessionId: string }) {
             {runtime.data && <>
               <StatusChip tone={runtime.data.research_environment_ready ? "success" : "warning"}>研究运行环境：{runtime.data.research_environment_ready ? "配置就绪" : "需要配置"}</StatusChip>
               <div className="summary-row"><span>运行档位</span><strong>{{ deep: "深度研究", standard: "标准研究", offline: "离线开发" }[runtime.data.research_profile ?? "standard"]}</strong></div>
-              <div className="summary-row"><span>大模型</span><strong>{runtime.data.offline_mode ? "离线模式" : verifiedStatus("llm", runtime.data.llm_configured)}</strong></div>
+              <div className="summary-row"><span>大模型</span><strong>{runtime.data.offline_mode ? "离线模式" : verifiedStatus("llm_basic", runtime.data.llm_configured)}</strong></div>
               <div className="summary-row"><span>外部搜索</span><strong>{runtime.data.offline_mode ? "离线数据" : verifiedStatus(runtime.data.search_provider, runtime.data.tavily_configured)}</strong></div>
               <div className="summary-row"><span>网页 / PDF</span><strong>{preflight ? verifiedStatus("web_fetcher", true) : runtime.data.items?.find((item) => item.name === "web_fetcher")?.usable ? "本地能力可用" : "不可用"} / {runtime.data.items?.find((item) => item.name === "pdf_reader")?.usable ? "可用" : "不可用"}</strong></div>
             </>}

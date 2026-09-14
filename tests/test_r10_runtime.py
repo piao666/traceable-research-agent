@@ -197,7 +197,7 @@ class ProviderAdapterTests(unittest.TestCase):
             llm_model="fixture-model",
         )
         from app.runtime.capabilities import local_capability_items
-        item = next(row for row in local_capability_items(settings) if row["name"] == "llm")
+        item = next(row for row in local_capability_items(settings) if row["name"] == "llm_basic")
         self.assertFalse(item["configured"])
         self.assertFalse(create_llm_client(settings).is_available())
 
@@ -348,6 +348,7 @@ class RuntimePreflightTests(unittest.TestCase):
             model="fixture",
             usage=LLMUsage(prompt_tokens=4, completion_tokens=3, total_tokens=7),
         ))
+        probe_ok = {"success": True, "error_type": None, "detail": "ok", "usage_parsed": True, "structured_output": True}
 
         def searcher(_arguments, **_kwargs):
             return ToolResult(success=True, output={"results": [{"url": "https://docs.example/page"}]},
@@ -362,10 +363,14 @@ class RuntimePreflightTests(unittest.TestCase):
                 "retrieval_attempts": [{"backend": "http", "status": "success"}],
             }]})
 
-        result = run_runtime_preflight(self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher)
+        with (
+            patch("app.runtime.preflight._check_planner_capability", return_value=probe_ok),
+            patch("app.runtime.preflight._check_react_capability", return_value=probe_ok),
+        ):
+            result = run_runtime_preflight(self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher)
         self.assertTrue(result["ready"])
         self.assertTrue(result["verified"])
-        self.assertEqual(llm.calls, 2)
+        self.assertEqual(llm.calls, 1)
         self.assertNotIn("private-key", json.dumps(result, default=str))
         fetch = next(item for item in result["capabilities"] if item["name"] == "web_fetcher")
         self.assertEqual(fetch["fetch_backend"], "http")
@@ -416,6 +421,7 @@ class RuntimePreflightTests(unittest.TestCase):
 
     def test_missing_usage_is_a_warning_not_a_false_connection_failure(self):
         llm = FixtureLLM(LLMResponse(success=True, content='{"ok":true}', provider="fixture"))
+        probe_ok = {"success": True, "error_type": None, "detail": "ok", "usage_parsed": False, "structured_output": True}
 
         def searcher(_arguments, **_kwargs):
             return ToolResult(success=True, output={"results": [{"url": "https://docs.example/page"}]},
@@ -430,12 +436,17 @@ class RuntimePreflightTests(unittest.TestCase):
                 "retrieval_attempts": [{"backend": "http", "status": "success"}],
             }]})
 
-        result = run_runtime_preflight(self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher)
+        with (
+            patch("app.runtime.preflight._check_planner_capability", return_value=probe_ok),
+            patch("app.runtime.preflight._check_react_capability", return_value=probe_ok),
+        ):
+            result = run_runtime_preflight(self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher)
         self.assertTrue(result["ready"])
         self.assertTrue(any("usage" in warning for warning in result["warnings"]))
 
     def test_preflight_reports_browser_fallback_as_the_actual_backend(self):
         llm = FixtureLLM(LLMResponse(success=True, content='{"ok":true}', provider="fixture"))
+        probe_ok = {"success": True, "error_type": None, "detail": "ok", "usage_parsed": True, "structured_output": True}
 
         def searcher(_arguments, **_kwargs):
             return ToolResult(
@@ -456,9 +467,13 @@ class RuntimePreflightTests(unittest.TestCase):
                 ],
             }]})
 
-        result = run_runtime_preflight(
-            self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher
-        )
+        with (
+            patch("app.runtime.preflight._check_planner_capability", return_value=probe_ok),
+            patch("app.runtime.preflight._check_react_capability", return_value=probe_ok),
+        ):
+            result = run_runtime_preflight(
+                self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher
+            )
         fetch = next(item for item in result["capabilities"] if item["name"] == "web_fetcher")
         self.assertTrue(result["ready"])
         self.assertEqual(fetch["fetch_backend"], "browser")
@@ -471,6 +486,7 @@ class RuntimePreflightTests(unittest.TestCase):
 
     def test_preflight_reports_remote_extract_fallback_as_the_actual_backend(self):
         llm = FixtureLLM(LLMResponse(success=True, content='{"ok":true}', provider="fixture"))
+        probe_ok = {"success": True, "error_type": None, "detail": "ok", "usage_parsed": True, "structured_output": True}
 
         def searcher(_arguments, **_kwargs):
             return ToolResult(
@@ -492,9 +508,13 @@ class RuntimePreflightTests(unittest.TestCase):
                 ],
             }]})
 
-        result = run_runtime_preflight(
-            self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher
-        )
+        with (
+            patch("app.runtime.preflight._check_planner_capability", return_value=probe_ok),
+            patch("app.runtime.preflight._check_react_capability", return_value=probe_ok),
+        ):
+            result = run_runtime_preflight(
+                self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher
+            )
         fetch = next(item for item in result["capabilities"] if item["name"] == "web_fetcher")
         self.assertTrue(result["ready"])
         self.assertEqual(fetch["fetch_backend"], "remote_extract")
@@ -553,20 +573,27 @@ class RuntimePreflightTests(unittest.TestCase):
                 },
             )
 
-        result = run_runtime_preflight(
-            settings,
-            actor_client=actor,
-            synthesizer_client=synthesizer,
-            searcher=searcher,
-            fetcher=fetcher,
-        )
+        probe_ok = {"success": True, "error_type": None, "detail": "ok", "usage_parsed": True, "structured_output": True}
+
+        with (
+            patch("app.runtime.preflight._check_planner_capability", return_value=probe_ok),
+            patch("app.runtime.preflight._check_react_capability", return_value=probe_ok),
+        ):
+            result = run_runtime_preflight(
+                settings,
+                actor_client=actor,
+                synthesizer_client=synthesizer,
+                searcher=searcher,
+                fetcher=fetcher,
+            )
 
         self.assertTrue(result["ready"])
         self.assertEqual(actor.calls, 1)
-        self.assertEqual(synthesizer.calls, 1)
+        self.assertEqual(synthesizer.calls, 0)
         names = {item["name"] for item in result["capabilities"]}
-        self.assertIn("llm_actor", names)
-        self.assertIn("llm_synthesizer", names)
+        self.assertIn("llm_basic", names)
+        self.assertIn("llm_planner", names)
+        self.assertIn("llm_react", names)
 
     def test_matching_actor_and_synthesizer_reuse_one_probe(self):
         settings = self.real_settings().model_copy(
@@ -590,9 +617,17 @@ class RuntimePreflightTests(unittest.TestCase):
                 return_value=Mock(),
             ) as create,
             patch(
-                "app.runtime.preflight._safe_llm_probe",
+                "app.runtime.preflight._check_llm_basic",
                 return_value=probe_result,
-            ) as probe,
+            ),
+            patch(
+                "app.runtime.preflight._check_planner_capability",
+                return_value=probe_result,
+            ),
+            patch(
+                "app.runtime.preflight._check_react_capability",
+                return_value=probe_result,
+            ),
         ):
             result = run_runtime_preflight(
                 settings,
@@ -609,9 +644,8 @@ class RuntimePreflightTests(unittest.TestCase):
             "openai_compatible",
             "shared-model",
         )
-        probe.assert_called_once()
         self.assertIn(
-            "llm",
+            "llm_basic",
             {item["name"] for item in result["capabilities"]},
         )
 

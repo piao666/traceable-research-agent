@@ -44,10 +44,10 @@ it("shows failed real probes as verification failures instead of unverified conf
     profile: "deep",
     ready: false,
     verified: true,
-    blockers: [{ capability: "llm", error_type: "auth_error", message: "模型验证失败" }],
+    blockers: [{ capability: "llm_basic", error_type: "auth_error", message: "模型验证失败" }],
     warnings: [],
     capabilities: [
-      { name: "llm", category: "llm", configured: true, reachable: false, usable: false, mode: "real", detail: "失败", error_type: "auth_error", checked_at: "2026-09-09T00:00:00Z" },
+      { name: "llm_basic", category: "llm", configured: true, reachable: false, usable: false, mode: "real", detail: "失败", error_type: "auth_error", checked_at: "2026-09-09T00:00:00Z" },
       { name: "tavily", category: "search", configured: true, reachable: false, usable: false, mode: "real", detail: "失败", error_type: "provider_unavailable", checked_at: "2026-09-09T00:00:00Z" },
       { name: "web_fetcher", category: "fetch", configured: true, reachable: false, usable: false, mode: "local_http", detail: "失败", error_type: "dependency_unavailable", checked_at: "2026-09-09T00:00:00Z" },
     ],
