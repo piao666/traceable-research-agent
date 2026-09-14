@@ -458,7 +458,14 @@ def _complete_report(
         return _summary(cancelled, plan, "Run cancelled by user.")
     state["finish_reason"] = finish_reason
     traces = store.list_tool_traces(db, run_id)
+    # Preserve dynamically discovered official sources across rebuilds
+    discovered_domains = (state.get("source_context") or {}).get("discovered_official_domains")
+    discovered_repos = (state.get("source_context") or {}).get("discovered_official_repos")
     state["source_context"] = build_source_context(traces)
+    if discovered_domains:
+        state["source_context"]["discovered_official_domains"] = discovered_domains
+    if discovered_repos:
+        state["source_context"]["discovered_official_repos"] = discovered_repos
     state["coverage_matrix"] = assess_comparison_coverage(
         plan.get("task_contract"), state["source_context"], traces
     )
@@ -805,7 +812,13 @@ def run_react_task(
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _summary(cancelled, plan, "Run cancelled by user.")
         current_traces = store.list_tool_traces(db, run_id)
+        discovered_domains = (state.get("source_context") or {}).get("discovered_official_domains")
+        discovered_repos = (state.get("source_context") or {}).get("discovered_official_repos")
         state["source_context"] = build_source_context(current_traces)
+        if discovered_domains:
+            state["source_context"]["discovered_official_domains"] = discovered_domains
+        if discovered_repos:
+            state["source_context"]["discovered_official_repos"] = discovered_repos
         state["coverage_matrix"] = assess_comparison_coverage(
             plan.get("task_contract"), state["source_context"], current_traces
         )

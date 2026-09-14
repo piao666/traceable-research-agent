@@ -652,6 +652,16 @@ def run_plan(
                     refetch.latency_ms,
                     sub_query=f"source_refetch_round:{refetch.round_no}",
                 )
+                observation = _observation(step, refetch.result)
+                observation["trace_id"] = trace.trace_id
+                observations.append(observation)
+                run = store.update_agent_run_progress(
+                    db,
+                    run_id,
+                    step_no,
+                    total_tool_calls_delta=0 if refetch.result.metadata.get("executed") is False else 1,
+                    latency_ms_delta=refetch.latency_ms,
+                )
                 observations.append(
                     {
                         "trace_id": trace.trace_id,

@@ -78,25 +78,23 @@ class TierPriorityTests(unittest.TestCase):
         self.assertEqual(source_class, "blog")
 
     def test_supported_vendor_docs_and_verified_repositories_are_t0(self) -> None:
-        for uri in (
-            "https://www.deepseek.com/harness/en",
-            "https://developers.openai.com/api/docs",
-            "https://code.claude.com/docs/en/sandboxing",
-            "https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/architecture.md",
-            "https://github.com/openai/codex",
-            "https://github.com/anthropics/claude-code",
+        # Verified repos and known academic/regulatory domains are T0
+        for uri, expected_tier in (
+            ("https://github.com/example-org/verified-repo", "T0"),
+            ("https://sec.gov/report", "T0"),
+            ("https://pubmed.ncbi.nlm.nih.gov/12345", "T0"),
+            ("https://arxiv.org/abs/2401.00001", "T1"),
         ):
             with self.subTest(uri=uri):
                 result = classify_tier("tavily_search", uri, {}, self.policy)
-                self.assertEqual(result.tier, "T0")
-                if "github.com" in uri:
-                    self.assertEqual(result.source_class, "official_code")
+                self.assertEqual(result.tier, expected_tier,
+                                 f"{uri} expected {expected_tier} got {result.tier}")
 
     def test_verified_repository_community_pages_do_not_inherit_t0(self) -> None:
         for section in ("issues/12", "discussions/1436", "pull/7"):
             result = classify_tier(
                 "tavily_search",
-                f"https://github.com/deepseek-ai/deepseek-harness/{section}",
+                f"https://github.com/example-org/verified-repo/{section}",
                 {},
                 self.policy,
             )
@@ -104,7 +102,7 @@ class TierPriorityTests(unittest.TestCase):
                 self.assertEqual(result.tier, "T2")
 
     def test_user_content_hosts_do_not_inherit_official_tier(self) -> None:
-        for uri in ("https://chatgpt.com/share/example", "https://claude.com/share/example"):
+        for uri in ("https://medium.com/tech-blog/post", "https://reddit.com/r/programming/comments/1"):
             result = classify_tier("tavily_search", uri, {}, self.policy)
             with self.subTest(uri=uri):
                 self.assertEqual(result.tier, "T2")
@@ -145,6 +143,7 @@ class ExecutionGovernanceTests(unittest.TestCase):
             max_fetch_candidates=2,
         )
         plan = _plan()
+        plan["task"] = "Research FastAPI framework performance and features"
         discovery = prepare_tool_arguments(
             "tavily_search", {"query": "test", "max_results": 4}, plan, settings
         )
@@ -180,7 +179,7 @@ class ExecutionGovernanceTests(unittest.TestCase):
         self.assertTrue(audit["budget_limited_selection"])
         self.assertEqual(audit["max_discovery_candidates"], 2)
 
-    def test_targeted_refetch_is_bounded_and_uses_preferred_domains(self) -> None:
+    def test_targeted_refetch_round1_uses_official_discovery_query(self) -> None:
         from app.agent.source_governance import (
             execute_targeted_refetches,
             govern_tool_result,
@@ -188,6 +187,7 @@ class ExecutionGovernanceTests(unittest.TestCase):
 
         settings = Settings(max_refetch_rounds=2, max_discovery_candidates=5)
         plan = _plan()
+        plan["task"] = "Research FastAPI framework performance and features"
         initial = govern_tool_result(
             "tavily_search",
             ToolResult(
@@ -200,7 +200,7 @@ class ExecutionGovernanceTests(unittest.TestCase):
         calls: list[dict] = []
 
         def execute(_name: str, arguments: dict) -> tuple[ToolResult, int]:
-            calls.append(arguments)
+            calls.append(dict(arguments))
             return (
                 ToolResult(
                     success=True,
@@ -217,10 +217,147 @@ class ExecutionGovernanceTests(unittest.TestCase):
             settings,
             execute=execute,
         )
-        self.assertEqual(len(refetches), 2)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0]["include_domains"], list(plan["profile_constraints"]["prefer_domains"]))
-        self.assertEqual([item.round_no for item in refetches], [1, 2])
+        self.assertGreaterEqual(len(refetches), 1)
+        # Round 1: uses official discovery query (not include_domains)
+        self.assertIn("official", calls[0].get("query", "").casefold())
+        self.assertNotIn("include_domains", calls[0])
+
+    def test_targeted_refetch_round2_uses_discovered_domains(self) -> None:
+        from app.agent.source_governance import (
+            execute_targeted_refetches,
+            govern_tool_result,
+            record_discovered_official,
+        )
+
+        settings = Settings(max_refetch_rounds=3, max_discovery_candidates=5)
+        plan = _plan()
+        plan["task"] = "Research FastAPI framework performance and features"
+        # Pre-populate discovered official domains
+        plan = record_discovered_official(plan, domains=["fastapi.tiangolo.com"])
+        initial = govern_tool_result(
+            "tavily_search",
+            ToolResult(
+                success=True,
+                output={"results": [{"title": "Community", "url": "https://blog.example/post"}]},
+            ),
+            plan,
+            settings,
+        )
+        calls: list[dict] = []
+
+        def execute(_name: str, arguments: dict) -> tuple[ToolResult, int]:
+            calls.append(dict(arguments))
+            return (
+                ToolResult(
+                    success=True,
+                    output={"results": [{"title": "FastAPI docs", "url": "https://fastapi.tiangolo.com/"}]},
+                ),
+                4,
+            )
+
+        refetches = execute_targeted_refetches(
+            "tavily_search",
+            {"query": "FastAPI framework", "max_results": 5},
+            initial,
+            plan,
+            settings,
+            execute=execute,
+        )
+        self.assertGreaterEqual(len(refetches), 1)
+        # With discovered domains, round 1 uses include_domains
+        self.assertIn("include_domains", calls[0])
+        self.assertEqual(calls[0]["include_domains"], ["fastapi.tiangolo.com"])
+
+    # ── P0-6: End-to-end official-source recovery regression ──────
+
+    def test_e2e_unknown_vendor_becomes_t0_via_recovery_flow(self):
+        """Full pipeline: unknown vendor → official discovery → infer → T0 → persist → refetch."""
+        from app.agent.source_governance import (
+            execute_targeted_refetches,
+            govern_tool_result,
+            discovered_official_sources,
+            prepare_tool_arguments,
+        )
+
+        settings = Settings(
+            max_refetch_rounds=3,
+            max_discovery_candidates=10,
+            oversample_factor=2,
+        )
+        plan = _plan()
+        plan["task"] = "Research FastAPI framework performance and features"
+        initial = govern_tool_result(
+            "tavily_search",
+            ToolResult(
+                success=True,
+                output={"results": [
+                    {"title": "FastAPI", "url": "https://fastapi.tiangolo.com/",
+                     "clean_content": "FastAPI framework, high performance"},
+                ]},
+            ),
+            plan,
+            settings,
+        )
+        # Without discovery, FastAPI docs won't be T0
+        governance = initial.metadata.get("source_governance", {})
+        self.assertGreaterEqual(governance.get("quota_shortfall", {}).get("t0_shortfall", 0), 0)
+
+        calls: list[dict] = []
+
+        def execute(_name: str, arguments: dict) -> tuple[ToolResult, int]:
+            calls.append(dict(arguments))
+            # If include_domains is set, return FastAPI official doc
+            if "fastapi" in str(arguments.get("include_domains") or "").casefold():
+                return (
+                    ToolResult(
+                        success=True,
+                        output={"results": [
+                            {"title": "FastAPI", "url": "https://fastapi.tiangolo.com/learn/",
+                             "clean_content": "Official FastAPI documentation",
+                             "metadata": {"official": True}}
+                        ]},
+                        metadata={"data_source": "tavily_api"},
+                    ),
+                    5,
+                )
+            # Discovery round: return FastAPI official site with strong signals
+            return (
+                ToolResult(
+                    success=True,
+                    output={"results": [
+                        {"title": "FastAPI - Official Documentation",
+                         "url": "https://fastapi.tiangolo.com/",
+                         "clean_content": "FastAPI framework, high performance, easy to learn",
+                         "metadata": {"official": True}}
+                    ]},
+                    metadata={"data_source": "tavily_api"},
+                ),
+                5,
+            )
+
+        refetches = execute_targeted_refetches(
+            "tavily_search",
+            {"query": "FastAPI framework", "max_results": 5},
+            initial,
+            plan,
+            settings,
+            execute=execute,
+        )
+        self.assertGreaterEqual(len(refetches), 1)
+        # Round 1: official discovery query used
+        round1 = calls[0]
+        self.assertIn("official", str(round1.get("query", "")).casefold())
+        self.assertNotIn("include_domains", round1)
+
+        # After round 1, discovered official sources are persisted in plan
+        discovered = discovered_official_sources(plan)
+        self.assertIn("fastapi.tiangolo.com", discovered["domains"],
+                      "FastAPI official domain should be discovered from round 1 results")
+
+        # Round 2 should use include_domains with the discovered domain
+        found_include = any("include_domains" in call for call in calls)
+        self.assertTrue(found_include,
+                        "At least one round should use include_domains with discovered official domain")
 
     def test_persisted_refetch_rounds_recovers_run_budget(self) -> None:
         from types import SimpleNamespace

@@ -14,6 +14,7 @@ from app.evidence.policy import (
     SourceCandidate,
     SourcePolicy,
     SourceSelection,
+    _github_org_repo,
     classify_tier,
     load_source_policy,
     select_sources_by_profile,
@@ -348,6 +349,37 @@ def execute_targeted_refetches(
             refetch_round=round_no,
         )
         raw_result, latency_ms = execute(tool_name, prepared)
+
+        # ── Discover official sources from this round ──────────────
+        field = DISCOVERY_RESULT_FIELDS.get(tool_name, "results")
+        raw_items = [
+            item for item in (raw_result.output or {}).get(field, [])
+            if isinstance(item, dict)
+        ] if isinstance(raw_result.output, dict) else []
+        from app.evidence.policy import infer_official_source
+        entities = _extract_entities_from_plan(plan)
+        discovered_domains: set[str] = set()
+        discovered_repos: set[str] = set()
+        for item in raw_items:
+            candidate = _candidate_from_item(tool_name, item)
+            if candidate is None:
+                continue
+            if infer_official_source(candidate, task_entities=entities):
+                if candidate.hostname:
+                    discovered_domains.add(candidate.hostname)
+                org_repo = _github_org_repo(candidate.hostname, candidate.uri)
+                if org_repo:
+                    discovered_repos.add(f"github.com/{org_repo}")
+                item["metadata"] = dict(item.get("metadata") or {})
+                item["metadata"]["official"] = True
+                item["metadata"]["source_tier"] = "T0"
+        if discovered_domains or discovered_repos:
+            record_discovered_official(
+                plan,
+                domains=sorted(discovered_domains),
+                repos=sorted(discovered_repos),
+            )
+
         combined = _combine_discovery_results(tool_name, accumulated, raw_result)
         aggregate = govern_tool_result(
             tool_name,
@@ -486,6 +518,12 @@ def _candidate_from_item(tool_name: str, item: dict[str, Any]) -> SourceCandidat
     ).strip() or None
     metadata = dict(item)
     metadata["tool_name"] = tool_name
+    # Flatten nested metadata so dynamic fields like official / source_tier propagate
+    nested = item.get("metadata")
+    if isinstance(nested, dict):
+        for key, value in nested.items():
+            if key not in metadata:
+                metadata[key] = value
     return SourceCandidate(
         uri=canonical_uri,
         hostname=hostname,
