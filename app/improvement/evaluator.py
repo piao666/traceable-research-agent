@@ -133,11 +133,12 @@ def _effective_entities(
 
 def _effective_source_tiers(
     provenance: dict[str, Any], root_run_id: str
-) -> tuple[dict[str, int], int]:
+) -> tuple[dict[str, int], int, dict[str, int] | None]:
     identity = provenance.get("scope_identity")
+    computed_metrics: dict[str, int] | None = None
 
     if not isinstance(identity, dict):
-        identity, _ = build_scope_identity_projection(
+        identity, computed_metrics = build_scope_identity_projection(
             provenance,
             {root_run_id: 0},
         )
@@ -211,7 +212,7 @@ def _effective_source_tiers(
         tiers[selected_tier] += 1
         independent_source_count += 1
 
-    return tiers, independent_source_count
+    return tiers, independent_source_count, computed_metrics
 
 
 def _effective_content_basis(
@@ -292,7 +293,7 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
     unsupported = getattr(run, "citation_unsupported", 0) or 0
 
     # Keep every evaluation dimension on the same resolved result boundary.
-    tiers, independent_source_count = _effective_source_tiers(
+    tiers, independent_source_count, computed_metrics = _effective_source_tiers(
         provenance, result.root_run_id
     )
     content_basis, content_ratios, effective_passage_count = _effective_content_basis(
@@ -309,7 +310,9 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
     overall = _compute_overall(relevance, factual, coverage, source_quality, auditability)
 
     # ── Resource vs Independent Source counts ────────────────────────────
-    metrics = provenance.get("metrics") or {}
+    # Scope Runs carry metrics in the bundle; non-Scope Runs get them
+    # from the build_scope_identity_projection() call inside _effective_source_tiers().
+    metrics = provenance.get("metrics") or computed_metrics or {}
 
     unique_resource_count = int(
         metrics.get(
