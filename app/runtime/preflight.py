@@ -101,7 +101,7 @@ def _check_planner_capability(
         "required_top_level_fields": ["version", "task", "source_mode", "allowed_tools", "steps"],
     }
     try:
-        response = client.complete(
+        response = client.structured_complete(
             [
                 LLMMessage(role="system", content=system),
                 LLMMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
@@ -119,7 +119,13 @@ def _check_planner_capability(
             response.usage is not None,
         )
 
-    parsed = json.loads(str(response.content or ""))
+    parsed = _extract_json(str(response.content or ""))
+    if parsed is None:
+        return _llm_failure(
+            "structured_output_invalid",
+            "Planner probe: 响应不是有效 JSON 对象",
+            response.usage is not None,
+        )
 
     steps = parsed.get("steps")
     if not isinstance(steps, list) or len(steps) == 0:
@@ -176,7 +182,7 @@ def _check_react_capability(
         "observation_history": [],
     }
     try:
-        response = client.complete(
+        response = client.structured_complete(
             [
                 LLMMessage(role="system", content=system),
                 LLMMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
@@ -194,7 +200,13 @@ def _check_react_capability(
             response.usage is not None,
         )
 
-    parsed = json.loads(str(response.content or ""))
+    parsed = _extract_json(str(response.content or ""))
+    if parsed is None:
+        return _llm_failure(
+            "structured_output_invalid",
+            "ReAct probe: 响应不是有效 JSON 对象",
+            response.usage is not None,
+        )
 
     action = str(parsed.get("action") or "").strip().lower().replace("-", "_")
     if not action:
@@ -385,8 +397,8 @@ def run_runtime_preflight(
         synth_for_probe = synthesizer_probe_client or create_llm_client(
             settings, synthesizer_identity[0], synthesizer_identity[1]
         )
-        basic = _check_llm_basic(actor_for_probe)
-        planner = _check_planner_capability(actor_for_probe)
+        basic = _check_llm_basic(synth_for_probe)
+        planner = _check_planner_capability(synth_for_probe)
         react = _check_react_capability(actor_for_probe)
 
     def _cap(name: str, result: dict[str, Any]) -> dict[str, Any]:

@@ -125,14 +125,31 @@ def required_runtime_ready(settings: Settings, items: list[dict[str, Any]] | Non
         return settings.offline_mode
     rows = items or local_capability_items(settings)
     indexed = {str(row.get("name")): row for row in rows}
-    required = {"llm_basic", "llm_planner", "llm_react", settings.search_provider, "web_fetcher", "pdf_reader"}
+    # Dynamic: only require roles that are actually enabled for this profile
+    actor_required = settings.execution_mode == "react" or settings.deep_research_enabled
+    synthesizer_required = settings.report_generation_mode == "llm"
+    llm_needed = actor_required or settings.llm_planner_enabled or synthesizer_required
+    if llm_needed:
+        # Non-offline profiles that need LLM must have at least one real LLM capability
+        llm_real = any(
+            row.get("name", "").startswith("llm") and row.get("usable") and row.get("mode") == "real"
+            for row in rows
+        )
+        if not llm_real:
+            return False
+    required = {settings.search_provider, "web_fetcher", "pdf_reader"}
+    if settings.llm_planner_enabled or synthesizer_required:
+        required |= {"llm_basic", "llm_planner"}
+    if actor_required:
+        required |= {"llm_react"}
     if not required <= set(indexed):
         return False
+    basic_usable = indexed.get("llm_basic", {}).get("usable", False)
+    planner_usable = indexed.get("llm_planner", {}).get("usable", False)
+    react_usable = indexed.get("llm_react", {}).get("usable", False)
     return bool(
-        indexed["llm_basic"].get("usable")
-        and indexed["llm_planner"].get("usable")
-        and indexed["llm_react"].get("usable")
-        and indexed["llm_basic"].get("mode") == "real"
+        (not settings.llm_planner_enabled and not synthesizer_required or (basic_usable and planner_usable))
+        and (not actor_required or react_usable)
         and indexed[settings.search_provider].get("usable")
         and indexed[settings.search_provider].get("mode") == "real"
         and indexed["web_fetcher"].get("usable")

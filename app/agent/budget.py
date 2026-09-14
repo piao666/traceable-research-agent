@@ -230,7 +230,11 @@ class BudgetClient(LLMClient):
         return self._complete_with(self.client.complete, messages, temperature, max_tokens)
 
     def structured_complete(self, messages, temperature=0.0, max_tokens=2000):
-        return self._complete_with(self.client.structured_complete, messages, temperature, max_tokens)
+        if hasattr(self.client, "structured_complete"):
+            return self._complete_with(self.client.structured_complete, messages, temperature, max_tokens)
+        # Old duck-typed clients without structured_complete: fall back to the
+        # base-class implementation that calls complete() then validates JSON.
+        return LLMClient.structured_complete(self, messages, temperature=temperature, max_tokens=max_tokens)
 
     def _complete_with(self, method, messages, temperature, max_tokens):
         runtime = current_budget()
