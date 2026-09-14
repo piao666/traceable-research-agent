@@ -101,6 +101,18 @@ def assess_scope_outcome(
     effective_source_count = int(
         metrics.get("effective_unique_source_count", raw_source_count)
     )
+    unique_resource_count = int(
+        metrics.get(
+            "unique_resource_count",
+            effective_source_count,
+        )
+    )
+    independent_source_count = int(
+        metrics.get(
+            "independent_source_count",
+            unique_resource_count,
+        )
+    )
     return {
         "version": SCOPE_OUTCOME_VERSION,
         "status": "failed" if errors else "passed",
@@ -110,6 +122,8 @@ def assess_scope_outcome(
         "raw_evidence_count": raw_evidence_count,
         "effective_evidence_count": effective_evidence_count,
         "raw_source_count": raw_source_count,
+        "unique_resource_count": unique_resource_count,
+        "independent_source_count": independent_source_count,
         "effective_source_count": effective_source_count,
         "run_count": len(scope_evidence.get("runs") or []),
         "node_count": len(nodes),

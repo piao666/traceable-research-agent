@@ -60,3 +60,34 @@ def test_scope_outcome_rejects_required_node_that_admits_goal_failure(db, r12_se
     outcome = assess_scope_outcome(db, scope, get_scope_provenance_bundle(db, scope), {})
     assert outcome["status"] == "failed"
     assert "required_research_branch_goal_not_met" in outcome["errors"]
+
+
+def test_scope_outcome_exposes_resource_and_independent_source_counts(db, r12_settings):
+    """Fields added for R13: unique_resource_count + independent_source_count."""
+    root = create_root(db)
+    scope = create_research_scope(db, root.run_id, {})
+    create_research_node(
+        db, scope.scope_id, parent_node_id=None, run_id=root.run_id,
+        node_type="discovery", topic="root", query="root", research_goal="root",
+        depth=0, priority=0, status="completed",
+    )
+    add_web_trace(db, root.run_id, "Evidence for source-count contract.", "multi")
+    materialize_run(db, root, r12_settings)
+    scope_evidence = get_scope_provenance_bundle(db, scope)
+
+    scope_evidence["metrics"] = {
+        "raw_source_count": 5,
+        "unique_resource_count": 3,
+        "independent_source_count": 2,
+        "effective_unique_source_count": 3,
+        "raw_passage_count": 5,
+        "effective_unique_passage_count": 4,
+    }
+
+    result = assess_scope_outcome(db, scope, scope_evidence, {})
+
+    assert result["raw_source_count"] == 5
+    assert result["unique_resource_count"] == 3
+    assert result["independent_source_count"] == 2
+    # Backward-compat field stays Resource Count
+    assert result["effective_source_count"] == 3

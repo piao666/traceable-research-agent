@@ -653,7 +653,7 @@ class GoalRecoveryTests(unittest.TestCase):
                         self.assertIsNone(run.report_path)
                         self.assertEqual(json.loads(run.plan_json)["research_outcome"]["error_code"], "structured_data_unavailable")
                         continue
-                    markdown = (root / run.report_path).read_text()
+                    markdown = (root / run.report_path).read_text(encoding="utf-8")
                     provenance = get_provenance_bundle(self.db, run.run_id)
                     passages = {p["passage_id"]: p for p in provenance["passages"]}
                     traces = {t.trace_id for t in store.list_tool_traces(self.db, run.run_id) if t.tool_name == "file_reader"}

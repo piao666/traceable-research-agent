@@ -246,7 +246,7 @@ class ContextIdentityTests(unittest.TestCase):
             self.assertEqual(view.execution_budget.tool_calls, 3)
             self.assertEqual(view.execution_insights.source_context.gaps.fetched, 1)
             self.assertEqual(next(t for t in view.execution_insights.tools if t.name == "mcp_github_search").status, "disabled")
-            markdown = (root / run.report_path).read_text()
+            markdown = (root / run.report_path).read_text(encoding="utf-8")
             provenance = get_provenance_bundle(self.db, run.run_id)
             passages = {p["passage_id"]: p for p in provenance["passages"]}
             self.assertTrue(provenance["citations"])

@@ -11,22 +11,29 @@ from scripts.run_offline_tests import isolated_test_database, is_loopback
 
 class R7ReleaseTests(unittest.TestCase):
     def test_demo_restart_preserves_modified_and_extra_data(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             path = Path(directory) / "demo.sqlite"
             init_demo_db(path)
-            with sqlite3.connect(path) as db:
+            db = sqlite3.connect(path)
+            try:
                 db.execute("UPDATE metrics SET value=123456 WHERE id=1")
                 db.execute("CREATE TABLE preserved (content TEXT)")
                 db.execute("INSERT INTO preserved VALUES ('keep')")
+                db.commit()
+            finally:
+                db.close()
             before = path.read_bytes()
             init_demo_db(path)
             self.assertEqual(path.read_bytes(), before)
-            with sqlite3.connect(path) as db:
+            db = sqlite3.connect(path)
+            try:
                 self.assertEqual(db.execute("SELECT value FROM metrics WHERE id=1").fetchone()[0], 123456)
                 self.assertEqual(db.execute("SELECT content FROM preserved").fetchone()[0], "keep")
+            finally:
+                db.close()
 
     def test_existing_unknown_database_is_not_reseeded(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             path = Path(directory) / "demo.sqlite"
             path.write_bytes(b"existing file must be inspected manually")
             before = path.read_bytes()

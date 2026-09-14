@@ -134,29 +134,84 @@ def _effective_entities(
 def _effective_source_tiers(
     provenance: dict[str, Any], root_run_id: str
 ) -> tuple[dict[str, int], int]:
-    documents = _effective_entities(
-        provenance,
-        entity_key="source_documents",
-        alias_key="source_aliases",
-        representative_key="representative_document_id",
-        entity_id_key="document_id",
-        root_run_id=root_run_id,
-    )
-    documents = [
-        document
-        for document in documents
-        if (document.get("metadata") or {}).get("research_eligible")
-        and not (document.get("metadata") or {}).get("is_mock")
-        and not (document.get("metadata") or {}).get("is_fallback")
-    ]
-    tiers = {
-        tier: sum(
-            (document.get("metadata") or {}).get("source_tier") == tier
-            for document in documents
+    identity = provenance.get("scope_identity")
+
+    if not isinstance(identity, dict):
+        identity, _ = build_scope_identity_projection(
+            provenance,
+            {root_run_id: 0},
         )
-        for tier in ("T0", "T1", "T2")
+
+    documents = {
+        str(item.get("document_id") or ""): item
+        for item in provenance.get("source_documents") or []
+        if isinstance(item, dict)
     }
-    return tiers, len(documents)
+
+    # Improvement Source Quality MUST count by Independent Source.
+    # Only fall back to source_aliases for old bundles without independence_aliases.
+    if "independence_aliases" in identity:
+        aliases = identity.get("independence_aliases") or []
+    else:
+        aliases = identity.get("source_aliases") or []
+
+    tiers: dict[str, int] = {"T0": 0, "T1": 0, "T2": 0}
+    independent_source_count = 0
+
+    tier_rank = {"T0": 3, "T1": 2, "T2": 1}
+
+    for alias in aliases:
+        if not isinstance(alias, dict):
+            continue
+
+        member_ids = [
+            str(value)
+            for value in alias.get("member_document_ids") or []
+            if str(value)
+        ]
+
+        # Compat with old source_aliases format
+        if not member_ids:
+            representative_id = str(
+                alias.get("representative_document_id") or ""
+            )
+            if representative_id:
+                member_ids = [representative_id]
+
+        candidates: list[tuple[int, str]] = []
+
+        for document_id in member_ids:
+            document = documents.get(document_id)
+            if not document:
+                continue
+
+            metadata = document.get("metadata") or {}
+
+            if not metadata.get("research_eligible"):
+                continue
+            if metadata.get("is_mock"):
+                continue
+            if metadata.get("is_fallback"):
+                continue
+
+            tier = str(metadata.get("source_tier") or "").upper()
+            if tier not in tier_rank:
+                continue
+
+            candidates.append((tier_rank[tier], tier))
+
+        if not candidates:
+            continue
+
+        # One independence cluster contributes at most one Source.
+        # If multiple Resources within the cluster have different tiers,
+        # pick the highest-confidence tier.
+        _, selected_tier = max(candidates)
+
+        tiers[selected_tier] += 1
+        independent_source_count += 1
+
+    return tiers, independent_source_count
 
 
 def _effective_content_basis(
@@ -237,7 +292,7 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
     unsupported = getattr(run, "citation_unsupported", 0) or 0
 
     # Keep every evaluation dimension on the same resolved result boundary.
-    tiers, effective_source_count = _effective_source_tiers(
+    tiers, independent_source_count = _effective_source_tiers(
         provenance, result.root_run_id
     )
     content_basis, content_ratios, effective_passage_count = _effective_content_basis(
@@ -252,6 +307,23 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
     source_quality = _score_source_quality(tiers["T0"], tiers["T1"], tiers["T2"], citations)
     auditability = _score_auditability(citations, accuracy, full_text_ratio)
     overall = _compute_overall(relevance, factual, coverage, source_quality, auditability)
+
+    # ── Resource vs Independent Source counts ────────────────────────────
+    metrics = provenance.get("metrics") or {}
+
+    unique_resource_count = int(
+        metrics.get(
+            "unique_resource_count",
+            metrics.get("effective_unique_source_count", 0),
+        )
+    )
+
+    reported_independent_source_count = int(
+        metrics.get(
+            "independent_source_count",
+            independent_source_count,
+        )
+    )
 
     # Skill composition
     plan: dict[str, Any] = {}
@@ -296,7 +368,9 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
                 "result_scope": "research_scope" if result.is_scope else "run",
                 "scope_id": result.scope_id,
                 "engine_version": result.engine_version,
-                "effective_source_count": effective_source_count,
+                "unique_resource_count": unique_resource_count,
+                "independent_source_count": reported_independent_source_count,
+                "effective_source_count": independent_source_count,
                 "effective_passage_count": effective_passage_count,
                 "coverage_evaluable": False,
                 "report_integrity_version": REPORT_INTEGRITY_VERSION,

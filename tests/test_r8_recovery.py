@@ -84,7 +84,7 @@ class RecoveryTests(unittest.TestCase):
 
     def skill_plan(self, allowed=None):
         from app.agent.planner import _skill_to_plan
-        skill = SkillDefinition.model_validate_json(Path("workspace/skills/deep_web_research.json").read_text())
+        skill = SkillDefinition.model_validate_json(Path("workspace/skills/deep_web_research.json").read_text(encoding="utf-8"))
         return {**_skill_to_plan(skill, "Compare evaluation frameworks", allowed, "real"),
                 "execution_mode": "react"}
 

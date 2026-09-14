@@ -493,6 +493,29 @@ class ImprovementFrontendContractTests(unittest.TestCase):
                     {"representative_passage_id": item["passage_id"]}
                     for item in passages
                 ],
+                "independence_aliases": [
+                    {
+                        "representative_document_id": "doc-0",
+                        "member_document_ids": ["doc-0", "doc-1", "doc-2"],
+                        "identity_key": "syndication:reuters|story:1",
+                    },
+                    {
+                        "representative_document_id": "doc-3",
+                        "member_document_ids": ["doc-3"],
+                        "identity_key": "resource:doc-3",
+                    },
+                    {
+                        "representative_document_id": "doc-4",
+                        "member_document_ids": ["doc-4"],
+                        "identity_key": "resource:doc-4",
+                    },
+                ],
+            },
+            "metrics": {
+                "raw_source_count": 9,
+                "unique_resource_count": 9,
+                "independent_source_count": 3,
+                "effective_unique_source_count": 9,
             },
         }
         with (
@@ -509,7 +532,7 @@ class ImprovementFrontendContractTests(unittest.TestCase):
 
         self.assertIsNotNone(entry)
         self.assertEqual(entry.execution_mode, "deep_research_v2")
-        self.assertEqual((entry.tier_t0, entry.tier_t1, entry.tier_t2), (4, 3, 2))
+        self.assertEqual((entry.tier_t0, entry.tier_t1, entry.tier_t2), (3, 0, 0))
         self.assertEqual(entry.citation_count, 15)
         self.assertEqual(
             {item["origin_run_id"] for item in documents},
@@ -518,11 +541,156 @@ class ImprovementFrontendContractTests(unittest.TestCase):
         metadata = json.loads(entry.evaluation_metadata_json)
         self.assertEqual(metadata["result_scope"], "research_scope")
         self.assertEqual(metadata["scope_id"], scope.scope_id)
-        self.assertEqual(metadata["effective_source_count"], 9)
+        self.assertEqual(metadata["unique_resource_count"], 9)
+        self.assertEqual(metadata["independent_source_count"], 3)
+        self.assertEqual(metadata["effective_source_count"], 3)
         self.assertEqual(metadata["effective_passage_count"], 9)
         self.assertFalse(metadata["coverage_evaluable"])
         get_provenance.assert_called_once()
         get_traces.assert_called_once()
+
+    def test_improvement_does_not_reward_syndicated_resource_duplicates(self) -> None:
+        """3 Reuters Resources → 1 independence alias → counts as 1 Source."""
+        from app.agent.outcome import SCOPE_INTEGRITY_VERSION
+        from app.improvement.evaluator import auto_evaluate_and_log
+        from app.reporting.integrity import REPORT_INTEGRITY_VERSION
+
+        root = self._create_run(
+            plan=_plan(
+                execution_mode="deep_research_v2",
+                research_outcome={
+                    "version": SCOPE_INTEGRITY_VERSION,
+                    "status": "passed",
+                    "effective_evidence_count": 3,
+                },
+                report_integrity={
+                    "version": REPORT_INTEGRITY_VERSION,
+                    "status": "passed",
+                },
+            )
+        )
+        scope = create_research_scope(self.db, root.run_id, {})
+        create_research_node(
+            self.db,
+            scope.scope_id,
+            parent_node_id=None,
+            run_id=root.run_id,
+            node_type="discovery",
+            topic="Reuters wire",
+            query="reuters",
+            research_goal="syndication",
+            depth=0,
+            priority=0,
+            status="completed",
+        )
+        store.update_agent_run_citation_validation(
+            self.db,
+            root.run_id,
+            total=6,
+            supported=6,
+            weakly_supported=0,
+            unsupported=0,
+            accuracy=1.0,
+        )
+        store.update_agent_run_status(self.db, root.run_id, "completed", None)
+
+        # 3 Reuters Resources — same wire story on different outlets
+        documents = [
+            {
+                "document_id": "reuters-original",
+                "origin_run_id": root.run_id,
+                "canonical_uri": "https://reuters.com/story/123",
+                "metadata": {
+                    "research_eligible": True,
+                    "source_tier": "T1",
+                    "source_identity": {
+                        "original_publisher": "Reuters",
+                    },
+                },
+            },
+            {
+                "document_id": "reuters-synd-1",
+                "origin_run_id": root.run_id,
+                "canonical_uri": "https://news-outlet-a.com/reprint/123",
+                "metadata": {
+                    "research_eligible": True,
+                    "source_tier": "T2",
+                    "source_identity": {
+                        "syndication_source": "Reuters",
+                    },
+                },
+            },
+            {
+                "document_id": "reuters-synd-2",
+                "origin_run_id": root.run_id,
+                "canonical_uri": "https://news-outlet-b.com/reprint/123",
+                "metadata": {
+                    "research_eligible": True,
+                    "source_tier": "T2",
+                    "source_identity": {
+                        "syndication_source": "Reuters",
+                    },
+                },
+            },
+        ]
+        passages = [
+            {"passage_id": f"passage-synd-{index}", "content_basis": "full_text"}
+            for index in range(3)
+        ]
+        provenance = {
+            "source_documents": documents,
+            "source_snapshots": [],
+            "passages": passages,
+            "assertions": [],
+            "scope_identity": {
+                "source_aliases": [
+                    {"representative_document_id": item["document_id"]}
+                    for item in documents
+                ],
+                "passage_aliases": [
+                    {"representative_passage_id": item["passage_id"]}
+                    for item in passages
+                ],
+                "independence_aliases": [
+                    {
+                        "representative_document_id": "reuters-original",
+                        "member_document_ids": [
+                            "reuters-original",
+                            "reuters-synd-1",
+                            "reuters-synd-2",
+                        ],
+                        "identity_key": "syndication:reuters|story:123",
+                    },
+                ],
+            },
+            "metrics": {
+                "raw_source_count": 3,
+                "unique_resource_count": 3,
+                "independent_source_count": 1,
+            },
+        }
+
+        with (
+            patch(
+                "app.improvement.evaluator.get_result_provenance_bundle",
+                return_value=provenance,
+            ),
+            patch(
+                "app.improvement.evaluator.list_result_traces",
+                return_value=[],
+            ),
+        ):
+            entry = auto_evaluate_and_log(self.db, root.run_id)
+
+        self.assertIsNotNone(entry)
+        # Core regression: 3 Resources that are really 1 independent source
+        independent_total = entry.tier_t0 + entry.tier_t1 + entry.tier_t2
+        self.assertEqual(independent_total, 1)
+
+        metadata = json.loads(entry.evaluation_metadata_json)
+        self.assertEqual(metadata["unique_resource_count"], 3)
+        self.assertEqual(metadata["independent_source_count"], 1)
+        self.assertEqual(metadata["effective_source_count"], 1)
 
     def test_per_run_quality_response_exposes_all_dimensions(self) -> None:
         self.db.add(

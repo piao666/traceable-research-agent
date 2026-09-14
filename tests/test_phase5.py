@@ -414,8 +414,8 @@ class Phase5ConfigDefaultsTests(unittest.TestCase):
     """New Phase 5 config fields should have sensible defaults."""
 
     def test_deep_research_disabled_by_default(self):
-        from app.config import settings
-        self.assertFalse(settings.deep_research_enabled)
+        from app.config import Settings
+        self.assertFalse(Settings().deep_research_enabled)
 
     def test_deep_research_max_depth_default(self):
         from app.config import settings
