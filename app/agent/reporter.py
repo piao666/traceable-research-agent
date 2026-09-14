@@ -802,7 +802,11 @@ def _llm_synthesize_answer(
         ),
     )
     try:
-        response = llm_client.complete(messages)
+        response = llm_client.complete(
+            messages,
+            temperature=0.0,
+            max_tokens=8192,
+        )
         if response.success and response.content:
             content = response.content.strip()
             if provenance_bundle and not _valid_synthesis_citations(content, provenance_bundle):

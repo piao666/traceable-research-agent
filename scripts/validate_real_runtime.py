@@ -56,7 +56,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--browser-url", default="https://playwright.dev/python/", help="Public Browser fixture URL.")
     parser.add_argument(
         "--pdf-url",
-        default="https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+        default="https://arxiv.org/pdf/1706.03762",
         help="Public PDF fixture URL.",
     )
     return parser

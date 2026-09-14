@@ -40,7 +40,7 @@ def _check_llm_basic(client: LLMClient) -> dict[str, Any]:
                 LLMMessage(role="user", content='Return exactly {"ok":true}.'),
             ],
             temperature=0.0,
-            max_tokens=16,
+            max_tokens=128,
         )
     except Exception:
         return _llm_failure("provider_unavailable", "模型最小 JSON 响应验证失败")
@@ -107,7 +107,7 @@ def _check_planner_capability(
                 LLMMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
             ],
             temperature=0.0,
-            max_tokens=256,
+            max_tokens=2000,
         )
     except Exception:
         return _llm_failure("provider_unavailable", "Planner probe: 请求失败")
@@ -188,7 +188,7 @@ def _check_react_capability(
                 LLMMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
             ],
             temperature=0.0,
-            max_tokens=128,
+            max_tokens=800,
         )
     except Exception:
         return _llm_failure("provider_unavailable", "ReAct probe: 请求失败")
