@@ -7,11 +7,13 @@
 
 - **分支**：`feature/improvements`
 - **本轮基线**：`57d665d02b155c5a334f928c8da430b07a5098a7`
-- **当前发布提交**：以 `git rev-parse HEAD` 与远端分支 HEAD 为准
+- **已验证发布提交**：`fcfcf2c53ac903792e5101bb29b5de2373b8132c`；对应文件树
+  `490f7c98639cb75f9b494ed60178a538afc82eeb` 与本地完整验收树一致
+- **发布 CI**：GitHub Actions `34794275464` 的 `frontend` 与 `lightweight` jobs
+  均已完成且结论为 `success`
 - **当前阶段**：`Pre-R13.2 Freeze Patch`
-- **当前结论**：修复方案限定的六项完整性补丁已实现并通过本地门禁；只有远端
-  `feature/improvements` 最终 HEAD 的 GitHub Actions Green 后才可视为发布完成，
-  且不得自行进入 R13
+- **当前结论**：修复方案限定的六项完整性补丁已实现、通过本地门禁并发布；远端
+  运行时／发布文档树及其 GitHub Actions 已核验，不得自行进入 R13
 - **项目边界**：单实例、本地优先、SQLite／workspace 持久化、只读外部工具；
   不引入多租户、RBAC、分布式基础设施、向量数据库或通用 RAG
 - **明确排除**：R13 Coverage／Gap／Evidence Gain／Research Requirement、Python
@@ -55,6 +57,8 @@
   fixture isolation 检查全部通过。
 - Streamlit：实际启动并通过 `/_stcore/health`，随后正常停止。
 - Docker 静态配置 Smoke：通过。
+- 远端：`feature/improvements@fcfcf2c` 文件树与本地验收树一致；GitHub Actions
+  `34794275464` 的两个 jobs 全部 Green。
 
 前端测试仍输出既有 React `act(...)` 与 React Router v7 提示，但退出码为 0。
 
@@ -64,15 +68,13 @@
    结果描述为真实 Provider 验收通过。
 2. 当前环境没有 Docker CLI，未执行 Compose 校验、镜像 build 或容器启动；静态
    Docker 配置 Smoke 已通过。
-3. 发布成功必须以远端 `feature/improvements` 最终 HEAD 与其 GitHub Actions 为准，
-   不能用本地 Commit 或本地测试结果代替。
+3. 后续任何代码变更仍必须以新的远端 HEAD 与其 GitHub Actions 为准，不能沿用本轮
+   结果替代新提交的验证。
 
 ## 五、下一步
 
-1. 推送本轮原子提交到 `feature/improvements`，核对远端 HEAD 与本地一致。
-2. 等待最终 HEAD 对应 GitHub Actions 的 `lightweight` 与 `frontend` jobs 全部 Green。
-3. 在已配置 Provider 与 Docker 的目标环境分别补做真实 Runtime 与镜像验收。
-4. R13 仅在用户另行明确指令后启动。
+1. 在已配置 Provider 与 Docker 的目标环境分别补做真实 Runtime 与镜像验收。
+2. 保持 Pre-R13.2 Freeze；R13 仅在用户另行明确指令后启动。
 
 ## 六、工程注意事项
 

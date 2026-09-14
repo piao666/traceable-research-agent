@@ -23,7 +23,7 @@ Budget Retry、Retry Freshness、Result API 与 Gate 阈值。Final Report Claim
 | 启动检查 | Streamlit 实际启动并通过 `/_stcore/health`，随后正常停止 |
 | Docker | 静态 Docker 配置 Smoke 通过；当前环境无 Docker CLI，未执行 Compose、镜像 build 或容器启动 |
 | 真实 Provider | 未执行真实 LLM、搜索、Browser、PDF 或 Remote Provider 请求；不得视为真实环境验收 |
-| 发布目标 | 原子提交发布至远端 `feature/improvements`；最终状态以该分支 HEAD 与 GitHub Actions 为准 |
+| 发布状态 | 已验证提交 `fcfcf2c53ac903792e5101bb29b5de2373b8132c` 的文件树与本地验收树一致；GitHub Actions `34794275464` 的 `frontend`、`lightweight` jobs 均为 `success` |
 
 ## Pre-R13.1 Integrity Patch：本地复核记录
 
