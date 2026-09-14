@@ -219,6 +219,8 @@ def test_integrated_scope_result_governance_chain(db, r12_settings):
 
     assert bundle["metrics"] == {
         "raw_source_count": 4,
+        "unique_resource_count": 3,
+        "independent_source_count": 3,
         "effective_unique_source_count": 3,
         "raw_passage_count": 4,
         "effective_unique_passage_count": 4,
@@ -234,10 +236,7 @@ def test_integrated_scope_result_governance_chain(db, r12_settings):
         len(item["member_passage_ids"]) == 1
         for item in bundle["scope_identity"]["passage_aliases"]
     )
-    assert any(
-        item["identity_key"] == "story:reuters-integrated-story"
-        for item in bundle["scope_identity"]["source_aliases"]
-    )
+    assert len(bundle["scope_identity"]["independence_aliases"]) == 3
 
     conflict = next(
         item

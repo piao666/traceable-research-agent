@@ -374,7 +374,11 @@ class HttpBackend:
         )
         canonical_url = _trusted_canonical(final_url, canonical_hint)
         normalized_final = canonicalize_url(canonical_url or final_url).normalized_url
-        lineage = source_lineage(normalized_final, source_content, {"title": title})
+        lineage = source_lineage(
+            normalized_final,
+            source_content,
+            {"title": title, "published_at": published_at},
+        )
         metadata: dict[str, Any] = {
             "tables": tables,
             "extraction_chain": chain,

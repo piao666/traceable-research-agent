@@ -73,10 +73,15 @@ def scope_claim_group_key(claim: dict) -> str:
 def scope_source_cluster_id(
     document: dict,
     passage: dict,
+    independence_identity_key: str | None = None,
 ) -> str:
     """Return a stable source cluster using fixed lineage precedence."""
 
-    seed = source_independence_key(document, passage)
+    seed = source_independence_key(
+        document,
+        passage,
+        resolved_group=independence_identity_key,
+    )
     return f"scope_cluster_{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:32]}"
 
 
@@ -130,6 +135,10 @@ def materialize_scope_reasoning(
         _mapping(bundle.get("scope_identity")).get("source_aliases"),
         "member_document_ids",
     )
+    independence_alias_by_member = _alias_index(
+        _mapping(bundle.get("scope_identity")).get("independence_aliases"),
+        "member_document_ids",
+    )
     passage_alias_by_member = _alias_index(
         _mapping(bundle.get("scope_identity")).get("passage_aliases"),
         "member_passage_ids",
@@ -147,6 +156,7 @@ def materialize_scope_reasoning(
             snapshots,
             documents,
             source_alias_by_member,
+            independence_alias_by_member,
             passage_alias_by_member,
         )
         relation_inputs[normalized_key] = inputs
@@ -286,6 +296,9 @@ def materialize_scope_reasoning(
                         "source_cluster_id": item["source_cluster_id"],
                         "source_alias_identity_key": _mapping(
                             item.get("source_alias")
+                        ).get("identity_key"),
+                        "source_independence_identity_key": _mapping(
+                            item.get("independence_alias")
                         ).get("identity_key"),
                         "representative_document_id": _mapping(
                             item.get("source_alias")
@@ -441,6 +454,7 @@ def _relation_inputs(
     snapshots: dict[str, dict[str, Any]],
     documents: dict[str, dict[str, Any]],
     source_alias_by_member: dict[str, dict[str, Any]],
+    independence_alias_by_member: dict[str, dict[str, Any]],
     passage_alias_by_member: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     inputs: list[dict[str, Any]] = []
@@ -452,6 +466,9 @@ def _relation_inputs(
             document = documents.get(_text((snapshot or {}).get("document_id")))
             if not all((assertion, passage, snapshot, document)):
                 continue
+            independence_alias = independence_alias_by_member.get(
+                _text(document.get("document_id"))
+            )
             inputs.append(
                 {
                     "claim": claim,
@@ -460,10 +477,15 @@ def _relation_inputs(
                     "passage": passage,
                     "snapshot": snapshot,
                     "document": document,
-                    "source_cluster_id": scope_source_cluster_id(document, passage),
+                    "source_cluster_id": scope_source_cluster_id(
+                        document,
+                        passage,
+                        _text(_mapping(independence_alias).get("identity_key")) or None,
+                    ),
                     "source_alias": source_alias_by_member.get(
                         _text(document.get("document_id"))
                     ),
+                    "independence_alias": independence_alias,
                     "passage_alias": passage_alias_by_member.get(
                         _text(passage.get("passage_id"))
                     ),

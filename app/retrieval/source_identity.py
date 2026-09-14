@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -17,6 +19,11 @@ _WIRE_SERVICES = {
     "afp": ("agence france-presse", "afp"),
     "xinhua": ("xinhua", "新华社"),
 }
+SYNDICATION_TITLE_SIMILARITY_THRESHOLD = 0.70
+SYNDICATION_BODY_SIMILARITY_THRESHOLD = 0.75
+SYNDICATION_DATE_TOLERANCE_DAYS = 2
+SYNDICATION_BODY_CHAR_LIMIT = 5000
+SYNDICATION_SHINGLE_SIZE = 3
 
 
 @dataclass(frozen=True)
@@ -28,7 +35,9 @@ class SourceLineage:
     organization: str | None
     original_publisher: str | None
     syndication_source: str | None
+    published_at: str | None
     canonical_story_hash: str
+    syndication_story_fingerprint: str | None
     independence_group: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -40,7 +49,9 @@ class SourceLineage:
             "organization": self.organization,
             "original_publisher": self.original_publisher,
             "syndication_source": self.syndication_source,
+            "published_at": self.published_at,
             "canonical_story_hash": self.canonical_story_hash,
+            "syndication_story_fingerprint": self.syndication_story_fingerprint,
             "possible_original_source": self.original_publisher,
             "syndication_hash": self.canonical_story_hash if self.syndication_source else None,
             "independence_group": self.independence_group,
@@ -69,14 +80,18 @@ def source_lineage(
                 syndication = syndication or name
                 break
     story_hash = canonical_story_hash(content)
-    syndication_fingerprint = _syndication_fingerprint(
-        normalized_title,
-        story_hash,
-        meta,
+    syndication_fingerprint = (
+        syndication_story_fingerprint(
+            normalized_title,
+            content,
+            meta.get("published_at"),
+        )
+        if original or syndication
+        else None
     )
     if original or syndication:
         group_seed = (
-            f"syndication:{original or syndication}|{syndication_fingerprint}"
+            f"syndication:{original or syndication}|{syndication_fingerprint or story_hash}"
         )
     else:
         group_seed = f"resource:{resource_kind}|{resource_identity}"
@@ -89,7 +104,9 @@ def source_lineage(
         organization,
         original,
         syndication,
+        _clean(meta.get("published_at")),
         story_hash,
+        syndication_fingerprint,
         group,
     )
 
@@ -132,20 +149,112 @@ def _normalize_identifier(kind: str, value: Any) -> str:
     return normalized
 
 
-def _syndication_fingerprint(
-    normalized_title: str | None,
-    story_hash: str,
-    metadata: dict[str, Any],
+def syndication_story_fingerprint(
+    title: str | None,
+    content: str,
+    published_at: Any = None,
 ) -> str:
-    """Return a bounded fingerprint only for explicit syndication candidates."""
+    """Return a lightweight 64-bit SimHash for one wire-story candidate."""
 
-    title = re.sub(r"\W+", " ", str(normalized_title or ""), flags=re.UNICODE)
-    title = " ".join(title.split())
-    published = str(metadata.get("published_at") or "")[:10]
-    if len(title) >= 12:
-        seed = f"{title}|{published}"
-        return hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    return story_hash
+    title_tokens = _tokens(title)
+    body_tokens = _tokens(str(content or "")[:SYNDICATION_BODY_CHAR_LIMIT])
+    features = [f"title:{token}" for token in title_tokens]
+    features.extend(
+        "body:" + "\x1f".join(shingle)
+        for shingle in _shingles(body_tokens, SYNDICATION_SHINGLE_SIZE)
+    )
+    published_day = _published_day(published_at)
+    if published_day is not None:
+        features.append(f"published:{published_day.isoformat()}")
+    if not features:
+        return canonical_story_hash(content)[:16]
+    weights = [0] * 64
+    for feature in features:
+        digest = int.from_bytes(
+            hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest(),
+            "big",
+        )
+        for bit in range(64):
+            weights[bit] += 1 if digest & (1 << bit) else -1
+    value = sum(1 << bit for bit, weight in enumerate(weights) if weight >= 0)
+    return f"{value:016x}"
+
+
+def syndication_near_duplicate(
+    *,
+    first_wire_service: str | None,
+    first_title: str | None,
+    first_content: str,
+    first_published_at: Any = None,
+    second_wire_service: str | None,
+    second_title: str | None,
+    second_content: str,
+    second_published_at: Any = None,
+) -> bool:
+    """Compare only two explicit candidates from the same wire service."""
+
+    first_wire = _clean(first_wire_service)
+    second_wire = _clean(second_wire_service)
+    if not first_wire or first_wire != second_wire or first_wire not in _WIRE_SERVICES:
+        return False
+    first_day = _published_day(first_published_at)
+    second_day = _published_day(second_published_at)
+    if (
+        first_day is not None
+        and second_day is not None
+        and abs((first_day - second_day).days) > SYNDICATION_DATE_TOLERANCE_DAYS
+    ):
+        return False
+    first_title_tokens = _tokens(first_title)
+    second_title_tokens = _tokens(second_title)
+    title_similarity = max(
+        _jaccard(set(first_title_tokens), set(second_title_tokens)),
+        SequenceMatcher(None, first_title_tokens, second_title_tokens).ratio(),
+    )
+    first_body = set(
+        _shingles(
+            _tokens(str(first_content or "")[:SYNDICATION_BODY_CHAR_LIMIT]),
+            SYNDICATION_SHINGLE_SIZE,
+        )
+    )
+    second_body = set(
+        _shingles(
+            _tokens(str(second_content or "")[:SYNDICATION_BODY_CHAR_LIMIT]),
+            SYNDICATION_SHINGLE_SIZE,
+        )
+    )
+    return (
+        title_similarity >= SYNDICATION_TITLE_SIMILARITY_THRESHOLD
+        and _jaccard(first_body, second_body) >= SYNDICATION_BODY_SIMILARITY_THRESHOLD
+    )
+
+
+def _tokens(value: Any) -> list[str]:
+    return re.findall(r"[\w]+", str(value or "").casefold(), flags=re.UNICODE)
+
+
+def _shingles(tokens: list[str], size: int) -> list[tuple[str, ...]]:
+    if not tokens:
+        return []
+    if len(tokens) < size:
+        return [tuple(tokens)]
+    return [tuple(tokens[index : index + size]) for index in range(len(tokens) - size + 1)]
+
+
+def _jaccard(first: set[Any], second: set[Any]) -> float:
+    if not first or not second:
+        return 0.0
+    return len(first & second) / len(first | second)
+
+
+def _published_day(value: Any):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text[:10]).date()
+    except ValueError:
+        return None
 
 
 def _marker_present(text: str, marker: str) -> bool:
@@ -157,3 +266,17 @@ def _marker_present(text: str, marker: str) -> bool:
 def _clean(value: Any) -> str | None:
     normalized = " ".join(str(value or "").strip().casefold().split())
     return normalized or None
+
+
+__all__ = [
+    "SYNDICATION_BODY_CHAR_LIMIT",
+    "SYNDICATION_BODY_SIMILARITY_THRESHOLD",
+    "SYNDICATION_DATE_TOLERANCE_DAYS",
+    "SYNDICATION_SHINGLE_SIZE",
+    "SYNDICATION_TITLE_SIMILARITY_THRESHOLD",
+    "SourceLineage",
+    "canonical_story_hash",
+    "source_lineage",
+    "syndication_near_duplicate",
+    "syndication_story_fingerprint",
+]

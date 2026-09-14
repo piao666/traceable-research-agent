@@ -5,6 +5,7 @@ from app.evidence.scope_identity import (
     passage_identity_key,
     source_independence_key,
     source_identity_key,
+    source_resource_key,
 )
 
 
@@ -74,22 +75,28 @@ def _entities(documents: list[dict], snapshots: list[dict], passages: list[dict]
     }
 
 
-def test_source_identity_uses_the_fixed_priority_order():
+def test_source_identity_is_a_resource_alias_not_an_independence_alias():
     document = _document(
         "doc-a", "root", "https://example.com/canonical", story_hash="story-a"
     )
     document["metadata"]["canonical_url"] = "https://example.com/metadata"
     document["metadata"]["source_identity"]["independence_group"] = "group-a"
-    assert source_identity_key(document) == "story:story-a"
-
-    del document["metadata"]["source_identity"]["canonical_story_hash"]
-    assert source_identity_key(document) == "independence:group-a"
-    del document["metadata"]["source_identity"]["independence_group"]
-    assert source_identity_key(document) == "url:https://example.com/canonical"
+    assert source_identity_key(document) == (
+        "resource:canonical_url:https://example.com/canonical"
+    )
+    assert source_identity_key(document) == source_resource_key(document)
 
     document["canonical_uri"] = ""
     document["metadata"].pop("canonical_url")
     assert source_identity_key(document) == "origin:root|document:doc-a"
+
+
+def test_academic_resource_identity_precedes_canonical_uri():
+    document = _document("doc-a", "root", "https://doi.org/10.1000/example")
+    document["metadata"]["source_identity"].update(
+        {"resource_identity_kind": "doi", "resource_identity": "10.1000/example"}
+    )
+    assert source_resource_key(document) == "resource:doi:10.1000/example"
 
 
 def test_resource_identity_precedes_backend_specific_story_hash():
@@ -129,6 +136,8 @@ def test_root_and_child_duplicate_rows_become_aliases_without_losing_raw_provena
     assert entities == raw_before
     assert metrics == {
         "raw_source_count": 2,
+        "unique_resource_count": 1,
+        "independent_source_count": 1,
         "effective_unique_source_count": 1,
         "raw_passage_count": 2,
         "effective_unique_passage_count": 1,
@@ -139,7 +148,7 @@ def test_root_and_child_duplicate_rows_become_aliases_without_losing_raw_provena
     assert identity["passage_aliases"][0]["origin_run_ids"] == ["root", "child"]
 
 
-def test_canonical_story_hash_aliases_different_urls():
+def test_canonical_story_hash_does_not_alias_different_resources():
     documents = [
         _document("doc-a", "root", "https://publisher-a.example/story", story_hash="story-one"),
         _document("doc-b", "child", "https://publisher-b.example/copy", story_hash="story-one"),
@@ -157,9 +166,10 @@ def test_canonical_story_hash_aliases_different_urls():
         _entities(documents, snapshots, passages), {"root": 0, "child": 1}
     )
 
-    assert metrics["effective_unique_source_count"] == 1
-    assert metrics["effective_unique_passage_count"] == 1
-    assert identity["source_aliases"][0]["identity_key"] == "story:story-one"
+    assert metrics["unique_resource_count"] == 2
+    assert metrics["independent_source_count"] == 2
+    assert metrics["effective_unique_passage_count"] == 2
+    assert len(identity["source_aliases"]) == 2
 
 
 def test_same_url_with_different_passage_hashes_remains_two_effective_passages():

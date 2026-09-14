@@ -205,7 +205,7 @@ class BrowserBackend:
                     "source_identity": source_lineage(
                         canonical_url,
                         source_view.source_content,
-                        {"title": title},
+                        {"title": title, "published_at": extraction.published_at},
                     ).to_dict(),
                     "fetched_at_ms": int((time.monotonic() - started) * 1000),
                     "browser_context": "isolated_non_persistent",
