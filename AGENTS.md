@@ -47,15 +47,23 @@ not a GPT Researcher fork. GPT Researcher is a read-only design reference.
    data.
 4. Never commit secrets, `.env`, private data, local databases, caches, virtual
    environments, generated reports, or model artifacts.
-5. Tools are read-only by default. Risky operations require dry-run and/or
-   human confirmation.
+5. Tools are read-only by default. Define high-risk operations as actions that
+   modify external state, publish, delete, or incur material cost. High-risk
+   operations must enter `waiting_human` before the real operation. A dry-run
+   supports inspection and planning but does not replace confirmation for a
+   high-risk operation. One user confirmation authorizes the specific stated
+   operation and scope.
 6. Persist every tool call in `tool_traces`; failures must be visible in run
    status and traces rather than hidden in logs.
-7. Record meaningful work in local repository-root `TASK.md` before and after
-   implementation, but never stage or commit it.
-8. At checkpoints, run available tests and smoke checks, update local-only
-   status records as needed, inspect staged content, then commit and push only
-   tracked project files.
+7. For implementation tasks, record meaningful work in local repository-root
+   `TASK.md` before and after code changes, but never stage or commit it.
+   Read-only reviews, investigations, and plans do not require `TASK.md`
+   changes unless the user asks for a progress record.
+8. At checkpoints, run applicable tests and smoke checks, update local-only
+   status records as needed, and inspect staged content. Commit only when the
+   user has requested a commit or the task explicitly requires one. Push only
+   with explicit user authorization; otherwise leave verified changes in the
+   working tree and report the suggested commit.
 
 ## Required API Surface
 
@@ -110,6 +118,11 @@ observations, and evidence, rather than concatenate raw tool output.
 
 ## Quality Gates
 
+For implementation or checkpoint tasks, apply these gates proportionally. Run
+only checks that can detect a failure relevant to the requested change; record
+skipped checks and why they were not applicable. Read-only reviews and narrowly
+scoped edits do not require repository-wide gates.
+
 Before a checkpoint commit:
 
 1. Update local-only `TASK.md` with files changed, implementation details,
@@ -121,7 +134,16 @@ Before a checkpoint commit:
    never stage files under `docs/`.
 4. Verify no secrets, `.env`, `TASK.md`, `CLAUDE.md`, `docs/`, cache, database,
    or bulky generated file is staged.
-5. Commit with a generic descriptive message and push the current branch.
+5. If a commit was requested or explicitly required, commit with a generic
+   descriptive message. Push only with explicit user authorization.
+
+## Clarification And Autonomy
+
+Ask a clarifying question only when missing information changes the requested
+outcome, authorization boundary, or an irreversible action. For reversible,
+low-impact choices, choose a reasonable default, state it, and continue.
+Skill-specific questioning rules may be stricter only when they protect an
+explicit user requirement.
 
 ## Coding Style
 
@@ -134,7 +156,8 @@ Before a checkpoint commit:
 
 ## Definition Of Done
 
-The FastAPI and Streamlit applications start, required APIs work, registered
-read-only tools are traceable, reports are persisted, Docker deployment needs
-only `.env` configuration, tests and smoke demos pass, documentation matches
-the implemented product, and the checkpoint is committed and pushed.
+For a release or checkpoint task, the FastAPI and Streamlit applications start,
+required APIs work, registered read-only tools are traceable, reports are
+persisted, Docker deployment needs only `.env` configuration, tests and smoke
+demos pass, and documentation matches the implemented product. A commit and
+push are separate authorized actions, not implicit completion requirements.

@@ -492,6 +492,7 @@ class ResearchIntegrityTests(unittest.TestCase):
         client.describe.return_value = {"provider": "fixture"}
         client.complete.return_value = LLMResponse(success=True, provider="fixture",
             content=json.dumps({"thought": "search", "action": "tavily_search", "args": {"query": "test"}}))
+        client.structured_complete.return_value = client.complete.return_value
         with (patch("app.agent.react_executor.list_tools", return_value=[ToolSpec(name="tavily_search", description="fixture", input_schema={})]),
               patch("app.agent.react_executor.execute_tool") as tool):
             result = run_react_task(self.db, self.run.run_id, Settings(tavily_api_key=None), client)

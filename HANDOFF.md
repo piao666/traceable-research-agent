@@ -6,13 +6,27 @@
 ## 一、当前状态
 
 - **分支**：`feature/improvements`
-- **本轮基线**：`a334e21`（Pre-R13.2 Freeze）
-- **当前 HEAD**：`f469103`（Pre-R13 Independent Source 语义修正）
-- **当前阶段**：Pre-R13，等待 R13 启动指令
+- **本轮基线**：`eeeea93`（真实 Runtime 与 reporter 参数修正）
+- **当前 HEAD**：`52bd74b`（P0 官方信源恢复与 E2E 回归）
+- **当前阶段**：Pre-R13 收尾，暂不启动 R13；完整 pytest 已通过，等待后续启动指令
 - **项目边界**：单实例、本地优先、SQLite／workspace 持久化、只读外部工具；
   不引入多租户、RBAC、分布式基础设施、向量数据库或通用 RAG
 
 ## 二、本轮实现
+
+### P0：官方信源恢复与执行链修正（2026-09-14）
+
+- `app/agent/source_governance.py`：动态官方信源发现、多查询恢复与每次 run 的上下文。
+- `app/agent/executor.py`、`app/agent/react_executor.py`：接入定向恢复、展平元数据并保留 React 状态。
+- `tests/test_source_governance.py`：重写 vendor 场景测试并补充 E2E 回归覆盖。
+- 提交：`dbbf490`、`52bd74b`。
+
+### 测试夹具修复与全量验证（2026-09-15）
+
+- `tests/test_phase8.py` 改用策略配置中的通用已验证仓库夹具，恢复 GitHub 证据角色测试与当前生产策略的一致性。
+- `tests/test_research_integrity.py` 的 ReAct Mock 补充 `structured_complete` 响应，匹配当前执行器接口。
+- 完整 pytest：**870 passed / 2 skipped / 1 xfailed / 100 subtests / 0 failed**。
+- R13 仍暂不启动；当前阻塞已从 pytest 失败转为等待后续启动指令及真实环境验收。
 
 ### P1：Improvement Source Quality 改用 independence_aliases
 
@@ -56,11 +70,12 @@
 ## 三、本地验证结果
 
 - **compileall**：通过。
-- **完整 pytest**：**850 passed / 2 skipped / 1 xfailed / 102 subtests passed / 0 failed**。
+- **最近一次已记录的完整 pytest**：**850 passed / 2 skipped / 1 xfailed / 102 subtests passed / 0 failed**；该结果早于当前 HEAD，不能替代当前完整 pytest 验证。
 - **离线测试**：675 项，674 passed / 1 failed（仅有 `test_demo_restart` Windows temp
   文件锁残留，非代码逻辑问题）、2 skipped。
 - **Docker 静态配置**：通过。
 - **Secrets audit**：无敏感文件暂存。
+- **当前状态**：完整 pytest 已通过；仍未执行真实 Provider、Docker 和 Browser/PDF 联网验收。
 
 ## 四、未完成与外部阻塞
 
@@ -75,9 +90,14 @@
 
 1. R13 仅在用户另行明确指令后启动；R13 中 Coverage／Evidence Gain／Source Diversity
    应统一使用 `independent_source_count`，不再使用 `effective_source_count`。
-2. 在已配置 Provider 与 Docker 的目标环境分别补做真实 Runtime 与镜像验收。
+2. 补做真实 Runtime 与镜像验收；R13 仍需用户明确启动指令。
 
-## 六、工程注意事项
+## 六、记录同步说明
+
+- `TASK.md` 中历史条目保留为审计记录；“待完成：暂存 → 提交 → 推送”仅对当时尚未提交的记录有效，不代表当前 HEAD 仍待提交。
+- 本轮测试夹具与文档修订应随当前提交发布；本轮发现的两个未跟踪文件已删除。
+
+## 七、工程注意事项
 
 1. `TASK.md`、`docs/`、`.env`、`workspace/` 运行产物是本地内容，不得提交。
 2. Resource Identity ≠ Independence Identity：同一 Reuters story 的 3 个转载是

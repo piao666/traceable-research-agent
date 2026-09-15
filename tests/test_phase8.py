@@ -15,14 +15,14 @@ class GithubEvidenceRoleTests(unittest.TestCase):
 
     def test_verified_content_and_community_surfaces_have_distinct_roles(self):
         cases = (
-            ("https://github.com/openai/codex", "primary_content", "T0"),
+            ("https://github.com/example-org/verified-repo", "primary_content", "T0"),
             (
-                "https://github.com/openai/codex/blob/abcdef1/README.md",
+                "https://github.com/example-org/verified-repo/blob/abcdef1/README.md",
                 "primary_content",
                 "T0",
             ),
             (
-                "https://github.com/openai/codex/issues/1",
+                "https://github.com/example-org/verified-repo/issues/1",
                 "community_content",
                 "T2",
             ),
