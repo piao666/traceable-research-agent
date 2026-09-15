@@ -26,7 +26,16 @@
 - `tests/test_phase8.py` 改用策略配置中的通用已验证仓库夹具，恢复 GitHub 证据角色测试与当前生产策略的一致性。
 - `tests/test_research_integrity.py` 的 ReAct Mock 补充 `structured_complete` 响应，匹配当前执行器接口。
 - 完整 pytest：**870 passed / 2 skipped / 1 xfailed / 100 subtests / 0 failed**。
+- 新增 3 个回归测试覆盖上述治理继承、URL 升级和 T2 比例恢复路径；最新完整 pytest：**873 passed / 2 skipped / 1 xfailed / 100 subtests / 0 failed**。
 - R13 仍暂不启动；当前阻塞已从 pytest 失败转为等待后续启动指令及真实环境验收。
+
+### Deep Research V2 正式 E2E 前四项修复（2026-09-15）
+
+- ResearchNode 子计划现在继承父 Run 的 `retrieval_profile`、`profile_constraints` 和 `policy_version`。
+- 搜索结果中的 `official`、`source_tier`、`source_class` 等治理字段贯通 EvidenceItem 与 SourceDocument。
+- 同一 canonical URL 的跨轮结果合并时，后续更高质量治理结果会升级并保留元数据。
+- `t2_ratio_exceeded` 纳入 quota shortfall，触发 targeted recovery，直到配额满足或预算耗尽。
+- 完整 pytest：**870 passed / 2 skipped / 1 xfailed / 100 subtests / 0 failed**。
 
 ### P1：Improvement Source Quality 改用 independence_aliases
 
@@ -90,7 +99,7 @@
 
 1. R13 仅在用户另行明确指令后启动；R13 中 Coverage／Evidence Gain／Source Diversity
    应统一使用 `independent_source_count`，不再使用 `effective_source_count`。
-2. 补做真实 Runtime 与镜像验收；R13 仍需用户明确启动指令。
+2. 补做正式 UI/API E2E 与真实 Runtime、镜像验收；R13 仍需用户明确启动指令。
 
 ## 六、记录同步说明
 

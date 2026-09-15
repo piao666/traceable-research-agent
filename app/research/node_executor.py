@@ -86,6 +86,12 @@ class ResearchNodeExecutor:
                 "requested_execution_mode": "react",
                 "source_mode": root.source_mode,
                 "allowed_tools": inherited_tools,
+                # Source governance is a run policy. Child research nodes must
+                # execute under the exact profile and policy snapshot chosen
+                # by their parent, rather than silently falling back to generic.
+                "retrieval_profile": parent_plan.get("retrieval_profile"),
+                "profile_constraints": parent_plan.get("profile_constraints"),
+                "policy_version": parent_plan.get("policy_version"),
                 "task_contract": parent_plan.get("task_contract"),
                 "research_scope_id": scope.scope_id,
                 "research_node_id": node.node_id,

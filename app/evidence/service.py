@@ -351,6 +351,12 @@ def _materialize_item(
                 "published_at",
                 "content_hash",
                 "canonical_url",
+                "official",
+                "source_tier",
+                "source_class",
+                "classification_rule",
+                "classification_confidence",
+                "evidence_role",
             )
             if key in item.metadata
         },

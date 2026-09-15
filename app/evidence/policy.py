@@ -787,8 +787,11 @@ def select_sources_by_profile(
     t0_shortfall = max(0, profile.min_t0_sources - final_t0)
     independent_shortfall = max(0, profile.min_independent_sources - final_clusters)
     t2_shortfall = max(0, profile.min_t2_sources - final_t2)
+    total_selected = final_t0 + final_t1 + final_t2
+    t2_ratio = final_t2 / total_selected if total_selected else 0.0
+    t2_ratio_exceeded = bool(total_selected and t2_ratio > profile.max_t2_ratio)
     quota_shortfall: dict[str, Any] = {}
-    if t0_shortfall or independent_shortfall or t2_shortfall:
+    if t0_shortfall or independent_shortfall or t2_shortfall or t2_ratio_exceeded:
         quota_shortfall = {
             "t0_required": profile.min_t0_sources,
             "t0_achieved": final_t0,
@@ -799,6 +802,9 @@ def select_sources_by_profile(
             "t2_required": profile.min_t2_sources,
             "t2_achieved": final_t2,
             "t2_shortfall": t2_shortfall,
+            "t2_ratio": round(t2_ratio, 6),
+            "t2_ratio_limit": profile.max_t2_ratio,
+            "t2_ratio_exceeded": t2_ratio_exceeded,
             "shortfall_policy": profile.shortfall_policy,
         }
 

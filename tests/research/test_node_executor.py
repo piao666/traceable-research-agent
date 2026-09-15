@@ -42,6 +42,38 @@ def test_node_executor_reuses_root_budget_and_sets_lineage(db, r12_settings):
     assert node.status == "completed"
 
 
+def test_node_executor_child_plan_inherits_source_governance(db, r12_settings):
+    root = create_root(db)
+    scope = create_research_scope(db, root.run_id, {})
+    root_node = create_research_node(
+        db, scope.scope_id, parent_node_id=None, run_id=root.run_id,
+        node_type="discovery", topic="root", query="root", research_goal="root",
+        depth=0, priority=0, status="completed",
+    )
+    store.replace_agent_run_plan(db, root.run_id, {
+        "retrieval_profile": "technical_facts",
+        "profile_constraints": {"min_t0_sources": 2},
+        "policy_version": "source-policy-v2",
+        "allowed_tools": ["tavily_search"],
+    })
+    node = create_research_node(
+        db, scope.scope_id, parent_node_id=root_node.node_id, run_id=None,
+        node_type="verification", topic="child", query="child", research_goal="child",
+        depth=1, priority=1,
+    )
+
+    def runner(session, run_id, settings, _client):
+        store.update_agent_run_status(session, run_id, "completed", None)
+        return {"run_id": run_id, "status": "completed"}
+
+    result = ResearchNodeExecutor(runner=runner).execute(db, scope, node, r12_settings)
+    child = store.get_agent_run(db, result["run_id"])
+    plan = json.loads(child.plan_json)
+    assert plan["retrieval_profile"] == "technical_facts"
+    assert plan["profile_constraints"] == {"min_t0_sources": 2}
+    assert plan["policy_version"] == "source-policy-v2"
+
+
 def test_node_executor_reuses_completed_run_without_calling_runner(db, r12_settings):
     root = create_root(db)
     scope = create_research_scope(db, root.run_id, {})

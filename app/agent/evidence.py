@@ -525,9 +525,17 @@ def _tavily_items(run_id: str, record: dict[str, Any], existing_count: int) -> l
         )
         if result.get("score") is not None:
             item.metadata["score"] = result.get("score")
+        result_metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
         item.metadata.update({key: result[key] for key in (
             "source_cluster_id", "hostname", "source_tier", "source_class",
+            "official", "evidence_role", "classification_rule",
+            "classification_confidence",
         ) if key in result})
+        item.metadata.update({key: result_metadata[key] for key in (
+            "source_cluster_id", "hostname", "source_tier", "source_class",
+            "official", "evidence_role", "classification_rule",
+            "classification_confidence",
+        ) if key in result_metadata})
         item.metadata["content_basis"] = (
             "partial" if result.get("raw_content") and not result.get("content") else "snippet_only"
         )

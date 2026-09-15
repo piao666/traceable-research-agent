@@ -132,6 +132,37 @@ class SelectionBudgetTests(unittest.TestCase):
         self.assertEqual(selection.quota_shortfall["t0_shortfall"], 3)
         self.assertEqual(selection.quota_shortfall["independent_shortfall"], 3)
 
+    def test_t2_ratio_excess_is_a_targeted_refetch_shortfall(self) -> None:
+        policy = load_source_policy("config/source_policy.v2.json")
+        profile = RetrievalProfile(
+            name="ratio", min_t0_sources=0, min_independent_sources=1,
+            max_t2_ratio=0.0, shortfall_policy="targeted_refetch",
+        )
+        selection = select_sources_by_profile(
+            [_candidate("https://blog.example/post")], profile, policy,
+        )
+        self.assertTrue(selection.quota_shortfall["t2_ratio_exceeded"])
+        self.assertEqual(selection.quota_shortfall["t2_achieved"], 1)
+
+
+class DiscoveryMergeTests(unittest.TestCase):
+    def test_later_official_metadata_upgrades_duplicate_url(self) -> None:
+        from app.agent.source_governance import _combine_discovery_results
+
+        initial = ToolResult(success=True, output={"results": [{
+            "url": "https://example.test/item", "title": "old",
+            "metadata": {"source_tier": "T2"},
+        }]})
+        current = ToolResult(success=True, output={"results": [{
+            "url": "https://example.test/item", "title": "new",
+            "metadata": {"source_tier": "T0", "official": True},
+        }]})
+        merged = _combine_discovery_results("tavily_search", initial, current)
+        item = merged.output["results"][0]
+        self.assertEqual(item["title"], "new")
+        self.assertEqual(item["metadata"]["source_tier"], "T0")
+        self.assertTrue(item["metadata"]["official"])
+
 
 class ExecutionGovernanceTests(unittest.TestCase):
     def test_prepare_arguments_applies_oversampling_and_hard_limits(self) -> None:

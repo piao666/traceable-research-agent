@@ -314,6 +314,12 @@ def needs_targeted_refetch(result: ToolResult) -> bool:
         isinstance(governance, dict)
         and governance.get("quota_shortfall")
         and governance.get("shortfall_policy") == "targeted_refetch"
+        and (
+            governance.get("quota_shortfall", {}).get("t2_ratio_exceeded")
+            or governance.get("quota_shortfall", {}).get("t0_shortfall", 0)
+            or governance.get("quota_shortfall", {}).get("independent_shortfall", 0)
+            or governance.get("quota_shortfall", {}).get("t2_shortfall", 0)
+        )
     )
 
 
@@ -420,14 +426,16 @@ def _combine_discovery_results(
     previous_items = previous_output.get(field) if isinstance(previous_output.get(field), list) else []
     current_items = current_output.get(field) if isinstance(current_output.get(field), list) else []
     combined_items: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    positions: dict[str, int] = {}
     for item in [*previous_items, *current_items]:
         if not isinstance(item, dict):
             continue
         identity = _item_uri(tool_name, item) or repr(sorted(item.items()))
-        if identity in seen:
+        if identity in positions:
+            index = positions[identity]
+            combined_items[index] = _merge_discovery_item(combined_items[index], item)
             continue
-        seen.add(identity)
+        positions[identity] = len(combined_items)
         combined_items.append(item)
     output = dict(current_output)
     output[field] = combined_items
@@ -437,6 +445,32 @@ def _combine_discovery_results(
         output_summary=current.output_summary,
         metadata=dict(current.metadata or {}),
     )
+
+
+def _merge_discovery_item(previous: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    """Merge duplicate discovery rows, preferring current-round governance metadata."""
+
+    merged = dict(previous)
+    for key, value in current.items():
+        if key != "metadata" or not isinstance(value, dict):
+            merged[key] = value
+            continue
+        nested = dict(merged.get("metadata") or {})
+        nested.update(value)
+        merged["metadata"] = nested
+    # A later governance pass may upgrade a URL from T2 to T0. Never let the
+    # older row overwrite that upgrade when both rows share one canonical URL.
+    old_meta = previous.get("metadata") if isinstance(previous.get("metadata"), dict) else {}
+    new_meta = current.get("metadata") if isinstance(current.get("metadata"), dict) else {}
+    old_tier = str(old_meta.get("source_tier") or previous.get("source_tier") or "").upper()
+    new_tier = str(new_meta.get("source_tier") or current.get("source_tier") or "").upper()
+    if new_tier == "T0" or new_meta.get("official") is True or current.get("official") is True:
+        merged["metadata"] = {**old_meta, **new_meta, "source_tier": "T0"}
+        merged["source_tier"] = "T0" if "source_tier" in merged else merged.get("source_tier")
+        merged["official"] = True
+    elif old_tier == "T0" and new_tier != "T0":
+        merged["metadata"] = {**new_meta, **old_meta}
+    return merged
 
 
 def _round_result_with_aggregate_governance(
