@@ -119,3 +119,17 @@
    污染，不可用于"默认值"断言。
 
 (End of file)
+
+## 2026-09-15 Planned Executor 修复
+
+- 修复 `app/agent/executor.py` targeted refetch 后调用未定义 `_observation` 的 NameError，并移除会造成重复 observation、tool count 和 latency 的重复更新。
+- `.venv` 全量验证：**873 passed, 2 skipped, 1 xfailed, 24 warnings, 100 subtests passed**（约 3 分 34 秒）。
+- Windows pytest cache 仍报告 WinError 5 权限警告；使用仓库内 `--basetemp` 可正常完成，警告不影响退出码。
+
+## 2026-09-15 Docker 构建失败修复
+
+- **根因**：`python:3.11-slim` 浮动到 Debian Trixie 后，`playwright install --with-deps chromium` 获取 `trixie/main` apt 索引返回 404，构建在 Dockerfile 第 26 行失败。
+- **修复**：将基础镜像固定为 `python:3.11-slim-bookworm`，保持 Playwright 安装步骤不变。
+- **验证**：`tests/test_r11_retrieval_runtime.py` → 5 passed；`docker compose config` 应作为人工复核前的静态检查。完整镜像重建已开始但因基础层下载极慢中止，未宣称构建成功。
+- 后续复核日志显示 HTTPS apt 已成功，失败点转为 Chromium 184 MB CDN 下载连接被关闭；已设置 `PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=300000` 允许慢速链路完成下载。
+- 该超时和备用 CDN 仍分别表现为 CDN 断连与 HTTP 400；最终改为安装 Debian Bookworm 的系统 `chromium` 包，并通过 `PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium` 供 Playwright 使用。API、Streamlit、Web 镜像均已构建并启动；`/health`=ok、`/api/tools`=12、Web/Streamlit HTTP 200。

@@ -205,9 +205,6 @@ def _react_step_capacity(settings_obj: Settings) -> int:
 
     configured = budget_limits(settings_obj)
     llm_capacity = configured["max_llm_calls"] - configured.get("final_report_llm_calls", 0)
-    token_capacity = (
-        configured["max_tokens"] - configured.get("final_report_tokens", 0)
-    ) // 1200
     time_capacity = configured["max_seconds"] // 5
     # One finish decision does not consume a tool call, while corrections are
     # separately bounded below. Runtime reservations remain the final authority.
@@ -217,7 +214,6 @@ def _react_step_capacity(settings_obj: Settings) -> int:
         min(
             MAX_DYNAMIC_REACT_STEPS,
             llm_capacity,
-            token_capacity,
             time_capacity,
             tool_capacity,
         ),

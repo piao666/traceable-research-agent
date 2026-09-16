@@ -67,12 +67,13 @@ def test_advanced_environment_documents_r11_without_expanding_minimal_profile() 
         assert f"{key}=" not in minimal
 
 
-def test_docker_installs_matching_playwright_chromium_runtime() -> None:
+def test_docker_installs_matching_chromium_runtime() -> None:
     requirements = (ROOT / "requirements" / "api.txt").read_text(encoding="utf-8")
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "playwright==1.62.0" in requirements
-    assert "python -m playwright install --with-deps chromium" in dockerfile
+    assert "apt-get install -y --no-install-recommends chromium" in dockerfile
+    assert "PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium" in dockerfile
     assert 'shm_size: "1gb"' in compose
 
 

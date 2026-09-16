@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+import os
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -71,7 +72,11 @@ class PlaywrightPageLoader:
             raise RuntimeError("playwright_not_installed") from exc
 
         with _BROWSER_SEMAPHORE, sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
+            launch_options = {"headless": True}
+            executable_path = os.getenv("PLAYWRIGHT_EXECUTABLE_PATH")
+            if executable_path:
+                launch_options["executable_path"] = executable_path
+            browser = playwright.chromium.launch(**launch_options)
             try:
                 context = browser.new_context(
                     accept_downloads=False,

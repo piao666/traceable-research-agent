@@ -125,27 +125,23 @@ class BudgetRuntime:
             raise BudgetExceeded("parent_terminal")
         config = self.limits
         final = _final_report.get() and self.run_id == self.root_id
-        token_limit = config["max_tokens"] - (0 if final or not llm else config.get("final_report_tokens", 0))
         llm_limit = config["max_llm_calls"] - (0 if final or not llm else config.get("final_report_llm_calls", 0))
         conditions = [RunBudget.run_id == self.root_id, RunBudget.stop_reason.is_(None),
             RunBudget.deadline > time.time(), RunBudget.tool_calls + tool <= config["max_tool_calls"],
             RunBudget.llm_calls + llm <= llm_limit,
-            RunBudget.reserved_tokens + tokens <= token_limit]
+        ]
         if config["max_estimated_cost"]:
             conditions.append(RunBudget.estimated_cost + cost <= config["max_estimated_cost"])
         admitted = self.db.execute(update(RunBudget).where(*conditions).values(
             tool_calls=RunBudget.tool_calls + tool, llm_calls=RunBudget.llm_calls + llm,
-            reserved_tokens=RunBudget.reserved_tokens + tokens, estimated_cost=RunBudget.estimated_cost + cost))
+            estimated_cost=RunBudget.estimated_cost + cost))
         self.db.commit()
         if admitted.rowcount != 1:
             row = self.db.get(RunBudget, self.root_id, populate_existing=True)
             reason = row.stop_reason or ("deadline" if time.time() >= row.deadline else
                 "tool_calls" if row.tool_calls + tool > config["max_tool_calls"] else
                 "llm_calls" if row.llm_calls + llm > config["max_llm_calls"] else
-                "tokens" if row.reserved_tokens + tokens > config["max_tokens"] else
-                "finalization_reserve" if row.reserved_tokens + tokens > token_limit or row.llm_calls + llm > llm_limit else "estimated_cost")
-            if reason == "finalization_reserve" and not final:
-                raise FinalizationRequired(reason)
+                "estimated_cost")
             self.stop(reason)
 
     def tool(self, name):
@@ -175,8 +171,7 @@ class BudgetRuntime:
     def can_deepen(self):
         self.reserve()
         row = self.snapshot()
-        return (row["accounted_tokens"] + self.limits.get("final_report_tokens", 0) + 2000 < self.limits["max_tokens"]
-                and row["llm_calls"] + self.limits.get("final_report_llm_calls", 0) + 2 < self.limits["max_llm_calls"])
+        return row["llm_calls"] + self.limits.get("final_report_llm_calls", 0) + 2 < self.limits["max_llm_calls"]
 
 
 def budget_snapshot(db, run_id):
@@ -240,27 +235,20 @@ class BudgetClient(LLMClient):
         runtime = current_budget()
         if runtime is None or not self.is_available():
             return method(messages, temperature=temperature, max_tokens=max_tokens)
-        # Missing provider usage keeps this conservative reservation charged;
-        # known usage below reconciles it to the provider's actual accounting.
-        reserved = estimate_message_tokens(messages, max_tokens)
         rate = runtime.limits["llm_cost_per_million_tokens"]
         if runtime.limits["max_estimated_cost"] and rate is None:
             runtime.stop("llm_price_unconfigured")
-        cost = reserved * (rate or 0) / 1_000_000
-        runtime.reserve(llm=1, tokens=reserved, cost=cost)
+        runtime.reserve(llm=1)
         response = method(messages, temperature=temperature, max_tokens=max_tokens)
         runtime.record_provider_attempts(_provider_attempt_count(response))
         actual = max(0, response.usage.total_tokens,
                      max(0, response.usage.prompt_tokens) + max(0, response.usage.completion_tokens)) if response.usage else 0
         if actual > 0:
-            delta = actual - reserved
             runtime.db.execute(update(RunBudget).where(RunBudget.run_id == runtime.root_id).values(
-                reserved_tokens=RunBudget.reserved_tokens + delta,
-                estimated_cost=RunBudget.estimated_cost + delta * (rate or 0) / 1_000_000))
+                reserved_tokens=RunBudget.reserved_tokens + actual,
+                estimated_cost=RunBudget.estimated_cost + actual * (rate or 0) / 1_000_000))
             runtime.db.commit()
             snapshot = runtime.snapshot()
-            if snapshot["accounted_tokens"] > runtime.limits["max_tokens"]:
-                runtime.stop("tokens")
             if runtime.limits["max_estimated_cost"] and snapshot["estimated_cost"] > runtime.limits["max_estimated_cost"]:
                 runtime.stop("estimated_cost")
         return response

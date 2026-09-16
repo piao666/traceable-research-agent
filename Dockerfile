@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM python:3.11-slim AS runtime-base
+# Pin the Debian release so Playwright's apt dependencies resolve against a
+# stable package index instead of the floating release in python:3.11-slim.
+FROM python:3.11-slim-bookworm AS runtime-base
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -26,11 +28,15 @@ COPY requirements/api.txt requirements/api.txt
 RUN --mount=type=cache,id=traceable-pip-py311,target=/root/.cache/pip,sharing=locked \
     python -m pip install --prefer-binary -r requirements/api.txt \
     && python -m pip check \
-    && python -m playwright install --with-deps chromium
+    && sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends chromium \
+    && rm -rf /var/lib/apt/lists/*
 
 FROM api-deps AS api
 
 COPY . .
+ENV PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium
 
 FROM api-deps AS streamlit-deps
 
@@ -42,6 +48,7 @@ RUN --mount=type=cache,id=traceable-pip-py311,target=/root/.cache/pip,sharing=lo
 FROM streamlit-deps AS streamlit
 
 COPY . .
+ENV PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium
 
 CMD ["streamlit", "run", "frontend/streamlit_app.py", "--server.port", "8501", "--server.address", "0.0.0.0", "--server.headless", "true"]
 

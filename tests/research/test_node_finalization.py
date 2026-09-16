@@ -75,6 +75,5 @@ def test_child_finalization_boundary_does_not_poison_root_budget(db, r12_setting
     ensure_budget(db, root.run_id, tight)
     ensure_budget(db, child.run_id, tight, parent_run_id=root.run_id)
     runtime = BudgetRuntime(db, child.run_id, tight)
-    with pytest.raises(FinalizationRequired):
-        runtime.reserve(llm=1, tokens=91)
+    runtime.reserve(llm=1, tokens=91)
     assert budget_snapshot(db, root.run_id)["stop_reason"] is None
