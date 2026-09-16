@@ -50,6 +50,7 @@ def _check_llm_basic(client: LLMClient) -> dict[str, Any]:
             response.metadata.get("error_type") or "provider_unavailable",
             "模型最小 JSON 响应验证失败",
             response.usage is not None,
+            response.metadata,
         )
 
     structured = False
@@ -117,6 +118,7 @@ def _check_planner_capability(
             response.metadata.get("error_type") or "provider_unavailable",
             "Planner probe: 模型响应失败",
             response.usage is not None,
+            response.metadata,
         )
 
     parsed = _extract_json(str(response.content or ""))
@@ -198,6 +200,7 @@ def _check_react_capability(
             response.metadata.get("error_type") or "provider_unavailable",
             "ReAct probe: 模型响应失败",
             response.usage is not None,
+            response.metadata,
         )
 
     parsed = _extract_json(str(response.content or ""))
@@ -263,7 +266,11 @@ def _llm_failure(
     error_type: str,
     detail: str,
     usage_parsed: bool = False,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    status = (metadata or {}).get("http_status")
+    if status:
+        detail = f"{detail}（HTTP {status}；请检查模型服务账单、API Key 和模型配置）"
     return {
         "success": False,
         "error_type": error_type,
