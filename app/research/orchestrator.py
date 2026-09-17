@@ -225,7 +225,7 @@ def run_deep_research_v2(
     # closes the orchestration loop instead of merely making the executor
     # recoverable in isolation.
     if not finalization_limited:
-        for node in nodes:
+        for node in serial_executor.order(nodes):
             if node.parent_node_id is None or node.status not in {"pending", "running"}:
                 continue
             if store.is_agent_run_cancelled(db, run_id):
@@ -957,3 +957,4 @@ def _verify_reference_report(
         cache_dir=settings_obj.reference_verifier_cache_dir,
         cache_ttl=settings_obj.reference_verifier_cache_ttl_seconds,
     ).verify(references)
+
