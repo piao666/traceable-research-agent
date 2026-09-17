@@ -8,6 +8,7 @@ to ReAct for deeper exploration — adaptive hybrid mode.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 
 from sqlalchemy.orm import Session
@@ -61,6 +62,29 @@ def _is_quick_plan(plan: dict) -> bool:
     return str(plan.get("research_mode") or "").casefold() == "quick" or bool(
         plan.get("quick_mode")
     )
+
+
+def _pear_rollout_decision(run_id: str, plan: dict, settings_obj: Settings) -> dict[str, object]:
+    """Choose PEAR deterministically for new auto-mode runs only.
+
+    Explicit Deep remains PEAR.  Legacy plans without a persisted
+    ``research_mode`` keep their historical route so a rollout cannot change
+    the controller used by an in-flight or previously-created Run.
+    """
+
+    mode = str(plan.get("research_mode") or "").casefold()
+    if mode == "deep" or str(plan.get("research_controller") or "").casefold() == "pear":
+        return {"selected": True, "bucket": 0, "percent": 100, "reason": "explicit_deep_or_pear"}
+    if mode != "auto":
+        return {"selected": False, "bucket": None, "percent": 0, "reason": "legacy_or_explicit_non_auto"}
+    percent = max(0, min(100, int(getattr(settings_obj, "pear_rollout_percent", 0))))
+    bucket = int(hashlib.sha256(str(run_id).encode("utf-8")).hexdigest()[:8], 16) % 100
+    return {
+        "selected": bucket < percent,
+        "bucket": bucket,
+        "percent": percent,
+        "reason": "percentage_rollout" if percent else "rollout_disabled",
+    }
 
 
 def _refresh_result(db: Session, run_id: str, result: dict) -> dict:
@@ -163,6 +187,10 @@ def run_task_by_mode(
         plan["execution_mode"] = "react"
         plan["requested_execution_mode"] = "react"
         _store.replace_agent_run_plan(db, run_id, plan)
+    pear_decision = _pear_rollout_decision(run_id, plan, settings_obj)
+    if run is not None and effective_mode == "react":
+        plan["pear_rollout"] = pear_decision
+        _store.replace_agent_run_plan(db, run_id, plan)
     if run is not None and run.status in {"failed", "cancelled", "completed", "waiting_human", "waiting_human_plan"}:
         from app.agent.executor import _summary
         return _refresh_result(db, run_id, _summary(run))
@@ -209,7 +237,14 @@ def run_task_by_mode(
             plan.get("requested_execution_mode") if plan.get("adaptive_upgrade") else None
         )
         try:
-            if settings_obj.deep_research_enabled:
+            # Plans created before the explicit research_mode contract retain
+            # their historical Deep/ReAct route.  New auto plans use the
+            # deterministic P4 percentage decision above.
+            legacy_react_compat = not str(plan.get("research_mode") or "").strip()
+            pear_execution_selected = settings_obj.deep_research_enabled and (
+                bool(pear_decision.get("selected")) or legacy_react_compat
+            )
+            if pear_execution_selected:
                 from app.research.orchestrator import run_deep_research_v2
 
                 result = run_deep_research_v2(
@@ -232,7 +267,7 @@ def run_task_by_mode(
                     _store.replace_agent_run_plan(db, run_id, final_plan)
             return _finalize_result(db, run_id, result)
         except Exception as exc:
-            if settings_obj.deep_research_enabled:
+            if locals().get("pear_execution_selected", False):
                 # Deep Profile has one official Engine V2 path. Never hide a
                 # Scope failure by switching to the unrelated planned runtime.
                 db.rollback()

@@ -134,6 +134,8 @@ class Settings(BaseModel):
     parallel_max_workers: int = 3
     parallel_group_strategy: str = "independent_tools"
     parallel_timeout_seconds: int = 60
+    # P4: deterministic rollout percentage for new auto-mode PEAR runs.
+    pear_rollout_percent: int = Field(default=0, ge=0, le=100)
     execution_mode: str = "planned"
     react_enabled: bool = True
     react_max_steps: int = 8
@@ -488,6 +490,7 @@ class Settings(BaseModel):
             parallel_timeout_seconds=_env_bounded_int(
                 "PARALLEL_TIMEOUT_SECONDS", 60, 5, 300
             ),
+            pear_rollout_percent=_env_bounded_int("PEAR_ROLLOUT_PERCENT", 0, 0, 100),
             execution_mode=_env_choice(
                 "EXECUTION_MODE", str(defaults["execution_mode"]), {"planned", "react"}
             ),
@@ -799,6 +802,7 @@ class Settings(BaseModel):
             "parallel_max_workers": self.parallel_max_workers,
             "parallel_group_strategy": self.parallel_group_strategy,
             "parallel_timeout_seconds": self.parallel_timeout_seconds,
+            "pear_rollout_percent": self.pear_rollout_percent,
         }
 
 def _env_optional(name: str) -> str | None:

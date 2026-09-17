@@ -301,6 +301,14 @@ def _run_mode(db: Session, case: dict[str, Any], mode: str, real_llm: bool) -> d
 
 def summarize_mode(results: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(results)
+    if total == 0:
+        raise ValueError("Cannot summarize an empty benchmark mode")
+    latencies = sorted(float(item.get("latency_ms") or 0.0) for item in results)
+
+    def percentile(percent: float) -> float:
+        index = min(len(latencies) - 1, max(0, int(round((percent / 100) * (len(latencies) - 1)))))
+        return round(latencies[index], 3)
+
     recovery_cases = [result for result in results if result["expected_recovery"]]
     hitl_cases = [result for result in results if result["hitl_required"]]
     return {
@@ -315,6 +323,8 @@ def summarize_mode(results: list[dict[str, Any]]) -> dict[str, Any]:
             sum(item["trace_quality_score"] for item in results) / total, 3
         ),
         "avg_latency_ms": round(sum(item["latency_ms"] for item in results) / total, 3),
+        "p50_latency_ms": percentile(50),
+        "p95_latency_ms": percentile(95),
         "fallback_count": sum(item["fallback_count"] for item in results),
         "hitl_success_rate": round(
             sum(bool(item["hitl_success"]) for item in hitl_cases) / len(hitl_cases), 4
@@ -373,14 +383,14 @@ def build_markdown(payload: dict[str, Any]) -> str:
             "* `recovery_count`: expected failure scenarios that produced a report after a failure, rejection, empty result, fallback, or bounded limitation.",
             "* `failed_tool_recovery_rate`: recovered expected-recovery cases divided by all expected-recovery cases.",
             "* `trace_quality_score`: deterministic 1-5 structural score; planned is capped at 4 and ReAct can reach 5 when recovery/limitation is explicit.",
-            "* `avg_latency_ms`: local wall-clock execution time per case, including HITL resume inside the harness.",
+            "* `avg_latency_ms`, `p50_latency_ms`, `p95_latency_ms`: local wall-clock execution time per case, including HITL resume inside the harness.",
             "",
             "## Summary Table",
             "",
-            "| Mode | Completion | Report Exists | Avg Steps | Recovery | Failed Recovery | Trace Quality | Avg Latency |",
+            "| Mode | Completion | Report Exists | Avg Steps | Recovery | Failed Recovery | Trace Quality | Avg / p50 / p95 Latency |",
             "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-            f"| Planned | {percent(planned['task_completion_rate'])} | {percent(planned['report_exists_rate'])} | {planned['avg_steps']:.3f} | {planned['recovery_count']} | {percent(planned['failed_tool_recovery_rate'])} | {planned['trace_quality_score']:.3f} | {planned['avg_latency_ms']:.3f} ms |",
-            f"| ReAct | {percent(react['task_completion_rate'])} | {percent(react['report_exists_rate'])} | {react['avg_steps']:.3f} | {react['recovery_count']} | {percent(react['failed_tool_recovery_rate'])} | {react['trace_quality_score']:.3f} | {react['avg_latency_ms']:.3f} ms |",
+            f"| Planned | {percent(planned['task_completion_rate'])} | {percent(planned['report_exists_rate'])} | {planned['avg_steps']:.3f} | {planned['recovery_count']} | {percent(planned['failed_tool_recovery_rate'])} | {planned['trace_quality_score']:.3f} | {planned['avg_latency_ms']:.3f} / {planned['p50_latency_ms']:.3f} / {planned['p95_latency_ms']:.3f} ms |",
+            f"| ReAct | {percent(react['task_completion_rate'])} | {percent(react['report_exists_rate'])} | {react['avg_steps']:.3f} | {react['recovery_count']} | {percent(react['failed_tool_recovery_rate'])} | {react['trace_quality_score']:.3f} | {react['avg_latency_ms']:.3f} / {react['p50_latency_ms']:.3f} / {react['p95_latency_ms']:.3f} ms |",
             "",
             "## Scenario Breakdown",
             "",

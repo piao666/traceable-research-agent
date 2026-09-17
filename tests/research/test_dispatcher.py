@@ -1,7 +1,7 @@
 from unittest.mock import patch
 import json
 
-from app.agent.dispatcher import run_task_by_mode
+from app.agent.dispatcher import _pear_rollout_decision, run_task_by_mode
 from app.eval.fake_react_llm import FakeReActLLMClient
 from app.trace import store
 
@@ -52,3 +52,43 @@ def test_quick_dispatcher_never_enters_adaptive_react_gate(db, r12_settings):
 
     planned.assert_called_once()
     assert result["status"] == "completed"
+
+
+def test_pear_rollout_is_deterministic_and_only_targets_auto_mode(r12_settings):
+    auto = {"research_mode": "auto"}
+    first = _pear_rollout_decision("run-42", auto, r12_settings.model_copy(update={"pear_rollout_percent": 37}))
+    second = _pear_rollout_decision("run-42", auto, r12_settings.model_copy(update={"pear_rollout_percent": 37}))
+    assert first == second
+    assert first["bucket"] is not None
+    assert _pear_rollout_decision("run-42", auto, r12_settings.model_copy(update={"pear_rollout_percent": 0}))["selected"] is False
+    assert _pear_rollout_decision("run-42", auto, r12_settings.model_copy(update={"pear_rollout_percent": 100}))["selected"] is True
+    assert _pear_rollout_decision("run-42", {"research_mode": "quick"}, r12_settings.model_copy(update={"pear_rollout_percent": 100}))["selected"] is False
+
+
+def test_auto_rollout_switches_only_new_run_controller(db, r12_settings):
+    def prepare(percent):
+        root = create_root(db)
+        plan = json.loads(root.plan_json)
+        plan.update({"research_mode": "auto", "execution_mode": "react"})
+        store.replace_agent_run_plan(db, root.run_id, plan)
+        return root, r12_settings.model_copy(update={"pear_rollout_percent": percent})
+
+    legacy_root, legacy_settings = prepare(0)
+    with (
+        patch("app.agent.dispatcher.enforce_execution_readiness", return_value=True),
+        patch("app.agent.react_executor.run_react_task", return_value={"run_id": legacy_root.run_id, "status": "completed"}) as legacy,
+        patch("app.research.orchestrator.run_deep_research_v2", side_effect=AssertionError("unexpected PEAR")),
+        patch("app.agent.dispatcher._finalize_result", side_effect=lambda _db, _id, result: result),
+    ):
+        run_task_by_mode(db, legacy_root.run_id, legacy_settings)
+    legacy.assert_called_once()
+
+    pear_root, pear_settings = prepare(100)
+    with (
+        patch("app.agent.dispatcher.enforce_execution_readiness", return_value=True),
+        patch("app.research.orchestrator.run_deep_research_v2", return_value={"run_id": pear_root.run_id, "status": "completed"}) as pear,
+        patch("app.agent.react_executor.run_react_task", side_effect=AssertionError("unexpected legacy ReAct")),
+        patch("app.agent.dispatcher._finalize_result", side_effect=lambda _db, _id, result: result),
+    ):
+        run_task_by_mode(db, pear_root.run_id, pear_settings)
+    pear.assert_called_once()
