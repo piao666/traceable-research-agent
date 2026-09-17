@@ -121,6 +121,7 @@ class PdfBackend:
                     canonical,
                     source_view.source_content,
                     document.get("metadata"),
+                    identity_url=canonicalize_url(request.url).normalized_url,
                 ).to_dict(),
                 "fetched_at_ms": int((time.monotonic() - started) * 1000),
             },

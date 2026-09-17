@@ -211,6 +211,7 @@ class BrowserBackend:
                         canonical_url,
                         source_view.source_content,
                         {"title": title, "published_at": extraction.published_at},
+                        identity_url=canonicalize_url(request.url).normalized_url,
                     ).to_dict(),
                     "fetched_at_ms": int((time.monotonic() - started) * 1000),
                     "browser_context": "isolated_non_persistent",

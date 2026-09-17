@@ -50,3 +50,12 @@ def test_primary_content_policy_is_unchanged() -> None:
     assert evidence_role_supports_claim(
         "primary_content", "The method reduced latency by 17%."
     ) is True
+
+
+@pytest.mark.parametrize("role", ["unknown", "", "malformed", "discovery", "index"])
+def test_unknown_and_legacy_discovery_roles_fail_closed_for_substantive_claims(role: str) -> None:
+    assert evidence_role_supports_claim(role, "The method reduced latency by 17%.") is False
+
+
+def test_legacy_discovery_alias_keeps_bibliographic_capability() -> None:
+    assert evidence_role_supports_claim("discovery", "The paper was published in 2025.") is True

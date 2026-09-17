@@ -100,7 +100,30 @@ class RetrievalRouter:
 
     @staticmethod
     def _attempt(label: str, backend: Backend, request: FetchRequest, attempts: list[dict[str, Any]]) -> FetchResult:
-        result = backend.fetch(request)
+        try:
+            result = backend.fetch(request)
+        except AssertionError:
+            # A backend invariant must remain an auditable, recoverable
+            # retrieval failure instead of escaping as opaque UNKNOWN.
+            failure = make_failure(
+                FetchFailureCode.BACKEND_UNAVAILABLE,
+                f"{label} retrieval backend was unavailable.",
+                tool_scoped=True,
+            )
+            try:
+                backend_kind = FetchBackend(label)
+            except ValueError:
+                backend_kind = FetchBackend.HTTP
+            result = FetchResult(
+                requested_url=request.url,
+                canonical_url=canonicalize_url(request.url).normalized_url,
+                fetch_status=failure_status(failure),
+                fetch_backend=backend_kind,
+                provider="retrieval_router",
+                failure=failure,
+                failure_reason=failure.message,
+                metadata={"router_exception": "AssertionError"},
+            )
         attempts.append(
             {
                 "backend": label,

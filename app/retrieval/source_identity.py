@@ -62,9 +62,19 @@ def source_lineage(
     url: str,
     content: str,
     metadata: dict[str, Any] | None = None,
+    *,
+    identity_url: str | None = None,
 ) -> SourceLineage:
+    """Build Source-owned lineage independent of backend-specific Views.
+
+    Retrieval backends pass ``identity_url`` explicitly so redirects or
+    provider result URLs do not make one requested Resource look independent
+    merely because HTTP, Browser, and Remote returned different final URLs.
+    """
+
     meta = dict(metadata or {})
-    canonical = canonicalize_url(url).normalized_url
+    identity_source = str(identity_url or url or "").strip()
+    canonical = canonicalize_url(identity_source).normalized_url
     resource_kind, resource_identity = _resource_identity(canonical, meta)
     host = (urlsplit(canonical).hostname or "").casefold()
     publisher = _clean(meta.get("publisher") or meta.get("organization") or host)

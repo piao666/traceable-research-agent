@@ -201,6 +201,7 @@ class RemoteExtractBackend:
                                 ),
                                 "title": title,
                             },
+                            identity_url=canonicalize_url(request.url).normalized_url,
                         ).to_dict(),
                         "fetched_at_ms": int((time.monotonic() - started) * 1000),
                     },
@@ -296,7 +297,12 @@ def normalize_remote_payload(raw: Any, requested_url: str) -> tuple[dict[str, An
     )
     if not isinstance(page, dict):
         return None, "provider returned no page"
-    metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
+    raw_metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+    payload_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    page_metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
+    # Providers may attach truncation facts to the bridge envelope or page.
+    # Preserve both locations for the Source/View completeness gate.
+    metadata = {**raw_metadata, **payload_metadata, **page_metadata}
     content = page.get("content") or page.get("markdown") or page.get("text") or page.get("summary")
     if not str(content or "").strip():
         return None, "provider page contained no readable content"

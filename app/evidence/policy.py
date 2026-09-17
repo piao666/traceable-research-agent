@@ -37,6 +37,26 @@ EVIDENCE_ROLES = {
     "unknown",
 }
 METADATA_ONLY_EVIDENCE_ROLES = frozenset({"official_metadata", "discovery_index"})
+_METADATA_ROLE_ALIASES = frozenset(
+    {
+        "official_metadata",
+        "discovery_index",
+        # Legacy/provider labels are normalized here at the capability gate.
+        "metadata",
+        "discovery",
+        "index",
+        "search",
+    }
+)
+_INDEPENDENT_EVIDENCE_ROLES = frozenset(
+    {
+        "primary_content",
+        "secondary_analysis",
+        "community_content",
+        # Source Pack adapters historically emitted this explicit label.
+        "support",
+    }
+)
 _SUBSTANTIVE_RESEARCH_TERMS = (
     "experiment", "experimental", "result", "performance", "accuracy",
     "benchmark", "conclusion", "demonstrate", "demonstrates", "show",
@@ -112,9 +132,13 @@ def evidence_role_supports_claim(evidence_role: str, claim_text: str) -> bool:
     authority or lexical overlap.
     """
 
-    if str(evidence_role or "").casefold() not in METADATA_ONLY_EVIDENCE_ROLES:
-        return True
-    return classify_metadata_claim_kind(claim_text) == MetadataClaimKind.BIBLIOGRAPHIC
+    role = str(evidence_role or "").strip().casefold().replace("-", "_")
+    if role in _METADATA_ROLE_ALIASES:
+        return classify_metadata_claim_kind(claim_text) == MetadataClaimKind.BIBLIOGRAPHIC
+    # Unknown or malformed roles fail closed. A source must be explicitly
+    # classified as content-bearing before it can independently support or
+    # refute a substantive claim.
+    return role in _INDEPENDENT_EVIDENCE_ROLES
 
 
 @dataclass(frozen=True)

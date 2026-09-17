@@ -220,6 +220,49 @@ def test_remote_identity_uses_source_not_requested_view() -> None:
     assert small.metadata["source_identity"] == large.metadata["source_identity"]
 
 
+def test_resource_identity_is_stable_when_backends_return_different_final_urls() -> None:
+    request_url = "https://example.com/requested/article"
+
+    class RedirectingLoader:
+        def load(self, request: FetchRequest) -> RenderedPage:
+            return RenderedPage(
+                final_url="https://browser.example/rendered/article",
+                html=f"<html><title>Article</title><main>{CONTENT}</main></html>",
+                title="Article",
+                redirect_chain=(request.url, "https://browser.example/rendered/article"),
+            )
+
+    @dataclass
+    class RedirectingRemoteProvider(FixtureRemoteProvider):
+        def extract(self, request: FetchRequest):
+            return {
+                "success": True,
+                "output": {
+                    "results": [
+                        {
+                            "url": "https://remote.example/extracted/article",
+                            "title": "Article",
+                            "content": CONTENT,
+                        }
+                    ]
+                },
+            }
+
+    with patch("app.tools.ssrf.socket.getaddrinfo", return_value=SAFE_DNS):
+        browser = BrowserBackend(RedirectingLoader(), enabled=True).fetch(
+            FetchRequest(url=request_url)
+        )
+        remote = RemoteExtractBackend(
+            [RedirectingRemoteProvider()], enabled=True
+        ).fetch(FetchRequest(url=request_url))
+
+    browser_identity = browser.metadata["source_identity"]
+    remote_identity = remote.metadata["source_identity"]
+    assert browser_identity["resource_identity"] == remote_identity["resource_identity"]
+    assert browser_identity["independence_group"] == remote_identity["independence_group"]
+    assert browser_identity["resource_identity"] == request_url
+
+
 def test_remote_provider_truncation_propagates_partial_source_basis() -> None:
     raw_content = ("Remote provider evidence sentence. " * 2500)[:79_999] + "."
 
@@ -247,6 +290,29 @@ def test_remote_provider_truncation_propagates_partial_source_basis() -> None:
     assert result.content_basis == "partial"
 
 
+def test_remote_envelope_truncation_metadata_is_preserved() -> None:
+    page, error = normalize_remote_payload(
+        {
+            "success": True,
+            "metadata": {
+                "provider_content_original_length": 120_000,
+                "provider_content_returned_length": 50_000,
+                "provider_content_limit": 50_000,
+                "provider_content_truncated": True,
+            },
+            "output": {
+                "results": [
+                    {"url": "https://example.com/a", "content": CONTENT}
+                ]
+            },
+        },
+        "https://example.com/a",
+    )
+    assert error is None and page is not None
+    assert page["metadata"]["provider_content_truncated"] is True
+    assert page["metadata"]["provider_content_original_length"] == 120_000
+
+
 def test_router_falls_back_http_to_browser_and_stops_on_success() -> None:
     http = StubBackend(_failure(FetchBackend.HTTP, FetchFailureCode.JAVASCRIPT_REQUIRED))
     browser = StubBackend(_success(FetchBackend.BROWSER))
@@ -257,6 +323,25 @@ def test_router_falls_back_http_to_browser_and_stops_on_success() -> None:
     assert result.usable
     assert http.calls == 1 and browser.calls == 1 and remote.calls == 0
     assert [item["backend"] for item in result.metadata["retrieval_attempts"]] == ["http", "browser"]
+
+
+def test_router_converts_backend_assertion_to_structured_unavailable() -> None:
+    class BrokenBackend:
+        def fetch(self, request: FetchRequest) -> FetchResult:
+            raise AssertionError("backend invariant")
+
+    result = RetrievalRouter(http_backend=BrokenBackend()).fetch(
+        FetchRequest(
+            url="https://example.com/a",
+            preferred_backends=[FetchBackend.HTTP],
+            allow_browser=False,
+            allow_remote_extract=False,
+        )
+    )
+    assert result.failure is not None
+    assert result.failure.code == FetchFailureCode.BACKEND_UNAVAILABLE
+    assert result.failure.tool_scoped is True
+    assert result.metadata["retrieval_attempts"][0]["failure_code"] == "backend_unavailable"
 
 
 def test_router_does_not_escalate_terminal_404() -> None:

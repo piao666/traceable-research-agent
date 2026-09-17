@@ -313,7 +313,15 @@ class CitationValidationTests(Phase7DatabaseTestCase):
     @staticmethod
     def _bundle(text: str = "该系统支持完整的证据追踪和审计能力") -> dict:
         return {
-            "passages": [{"passage_id": "p1", "text": text}],
+            "passages": [
+                {
+                    "passage_id": "p1",
+                    "text": text,
+                    # New integrity policy requires an explicit capability
+                    # role; unclassified evidence fails closed.
+                    "metadata": {"evidence_role": "primary_content"},
+                }
+            ],
             "citations": [{"citation_label": "CIT-001-01", "passage_id": "p1"}],
         }
 

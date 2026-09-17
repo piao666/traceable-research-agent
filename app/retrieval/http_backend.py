@@ -128,7 +128,18 @@ class HttpBackend:
         context = owned_client if owned_client is not None else nullcontext(self.client)
         try:
             with context as client:
-                assert client is not None
+                if client is None:
+                    return self._failed(
+                        requested,
+                        make_failure(
+                            FetchFailureCode.BACKEND_UNAVAILABLE,
+                            "HTTP client was not available for retrieval.",
+                            tool_scoped=True,
+                        ),
+                        started,
+                        transport_url=transport_url,
+                        cache_status=cache_status,
+                    )
                 headers: dict[str, str] = {}
                 if cache_status == "expired" and cached_entry is not None and cached_entry.etag:
                     headers["If-None-Match"] = cached_entry.etag
@@ -147,7 +158,18 @@ class HttpBackend:
                         redirect_chain=redirect_chain,
                         cache_status=cache_status,
                     )
-                assert response is not None
+                if response is None:
+                    return self._failed(
+                        requested,
+                        make_failure(
+                            FetchFailureCode.BACKEND_UNAVAILABLE,
+                            "HTTP backend returned no response.",
+                            tool_scoped=True,
+                        ),
+                        started,
+                        transport_url=transport_url,
+                        cache_status=cache_status,
+                    )
                 if response.status_code == 304 and cached_entry is not None:
                     cached_entry.fetched_at = time.time()
                     cached_entry.ttl_seconds = self.cache_ttl_seconds
@@ -378,6 +400,7 @@ class HttpBackend:
             normalized_final,
             source_content,
             {"title": title, "published_at": published_at},
+            identity_url=canonicalize_url(transport_url).normalized_url,
         )
         metadata: dict[str, Any] = {
             "tables": tables,
