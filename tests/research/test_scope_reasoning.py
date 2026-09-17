@@ -27,7 +27,7 @@ from app.trace import store
 from .conftest import add_web_trace, create_root, materialize_run
 
 
-POLICY_PATH = Path(__file__).resolve().parents[2] / "config" / "source_policy.v2.json"
+POLICY_PATH = Path(__file__).resolve().parents[2] / "config" / "evidence_policy.v3.json"
 
 
 def _scope_runs(db, settings, count: int = 2):

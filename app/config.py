@@ -160,7 +160,7 @@ class Settings(BaseModel):
     evidence_artifact_root: str = "workspace/artifacts"
     evidence_passage_max_chars: int = 4000
     evidence_reasoning_enabled: bool = True
-    source_policy_path: str = "config/source_policy.v2.json"
+    source_policy_path: str = "config/evidence_policy.v3.json"
     deep_research_enabled: bool = False
     deep_research_engine_version: str = "v2"
     deep_research_max_depth: int = 2
@@ -537,9 +537,9 @@ class Settings(BaseModel):
             ),
             evidence_reasoning_enabled=_env_bool("EVIDENCE_REASONING_ENABLED", True),
             source_policy_path=os.getenv(
-                "SOURCE_POLICY_PATH", "config/source_policy.v2.json"
+                "SOURCE_POLICY_PATH", "config/evidence_policy.v3.json"
             ).strip()
-            or "config/source_policy.v2.json",
+            or "config/evidence_policy.v3.json",
             deep_research_enabled=_env_bool("DEEP_RESEARCH_ENABLED", bool(defaults["deep_research_enabled"])),
             deep_research_engine_version=os.getenv(
                 "DEEP_RESEARCH_ENGINE_VERSION", "v2"

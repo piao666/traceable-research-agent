@@ -48,6 +48,11 @@ from app.schemas import (
     TaskCancelRequest,
     TaskCreateRequest,
     TaskCreateResponse,
+    TaskDiagnosticsResponse,
+    DiagnosticChildRunResponse,
+    DiagnosticEvidenceResponse,
+    DiagnosticFailureResponse,
+    DiagnosticProviderResponse,
     TaskConfirmRequest,
     TaskConfirmResponse,
     TaskListItem,
@@ -442,6 +447,9 @@ def _tool_trace_response(
         sub_query=trace.sub_query,
         origin_run_id=trace.run_id,
         research_node_id=research_node_id,
+        phase=trace.phase,
+        parent_trace_id=trace.parent_trace_id,
+        attempt=trace.attempt,
     )
 
 
@@ -507,8 +515,9 @@ def _persist_plan_config_snapshot(
     snapshot.update(
         {
             "retrieval_profile": plan.get("retrieval_profile"),
-            "source_policy_version": plan.get("policy_version"),
-            "profile_constraints": plan.get("profile_constraints") or {},
+            "research_profile": plan.get("research_profile") or {},
+            "source_constraints": plan.get("source_constraints") or {"mode": "open"},
+            "evidence_policy_version": plan.get("evidence_policy_version"),
         }
     )
     store.update_agent_run_config_snapshot(db, run_id, snapshot)
@@ -552,6 +561,7 @@ def create_task(
             execution_mode_override=task_request.execution_mode_override,
             skill_name=task_request.skill_name,
             retrieval_profile=task_request.retrieval_profile,
+            source_constraints=(task_request.source_constraints.model_dump() if task_request.source_constraints else None),
         )
         plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
         plan["requires_plan_approval"] = True
@@ -580,6 +590,7 @@ def create_task(
         execution_mode_override=task_request.execution_mode_override,
         skill_name=task_request.skill_name,
         retrieval_profile=task_request.retrieval_profile,
+        source_constraints=(task_request.source_constraints.model_dump() if task_request.source_constraints else None),
     )
     plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
     plan.setdefault("execution_mode", settings.execution_mode)
@@ -1042,6 +1053,115 @@ async def get_task_trace(
 
     traces = store.list_tool_traces(db, run_id)
     return [_tool_trace_response(trace) for trace in traces]
+
+
+@router.get("/{run_id}/diagnostics", response_model=TaskDiagnosticsResponse)
+def get_task_diagnostics(
+    run_id: str,
+    db: Session = Depends(get_db),
+) -> TaskDiagnosticsResponse:
+    """Aggregate the first failure, provider details, child runs, and evidence state."""
+
+    run = store.get_agent_run(db, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    result = _resolve_result_or_404(db, run_id)
+    traces = list_result_traces(db, result)
+
+    def _trace_metadata(trace: ToolTrace) -> dict[str, Any]:
+        output = _parse_trace_output(trace.output_json)
+        if not isinstance(output, dict):
+            return {}
+        metadata = output.get("metadata")
+        return metadata if isinstance(metadata, dict) else output
+
+    failures = [trace for trace in traces if trace.status in {"failed", "rejected"}]
+    first = min(failures, key=lambda item: (item.created_at, item.trace_id)) if failures else None
+    first_metadata = _trace_metadata(first) if first else {}
+    error_type = str(first_metadata.get("error_type") or "").strip() or None
+    provider_trace = next(
+        (
+            trace for trace in traces
+            if "planner" in trace.tool_name.casefold()
+            or "provider" in trace.tool_name.casefold()
+            or _trace_metadata(trace).get("provider")
+        ),
+        None,
+    )
+    provider_metadata = _trace_metadata(provider_trace) if provider_trace else {}
+    provider = None
+    if provider_trace or provider_metadata:
+        prompt_tokens = provider_metadata.get("prompt_tokens")
+        completion_tokens = provider_metadata.get("completion_tokens")
+        if prompt_tokens is None and provider_trace:
+            prompt_tokens = provider_trace.token_in
+        if completion_tokens is None and provider_trace:
+            completion_tokens = provider_trace.token_out
+        provider = DiagnosticProviderResponse(
+            provider=provider_metadata.get("provider"),
+            model=provider_metadata.get("model"),
+            finish_reason=provider_metadata.get("finish_reason"),
+            prompt_tokens=int(prompt_tokens or 0),
+            completion_tokens=int(completion_tokens or 0),
+            content_length=int(provider_metadata.get("content_length") or 0),
+            trace_id=provider_trace.trace_id if provider_trace else None,
+        )
+
+    child_runs = [
+        DiagnosticChildRunResponse(
+            run_id=child.run_id,
+            status=child.status,
+            run_role=child.run_role,
+            error_message=child.error_message,
+        )
+        for child in store.list_agent_runs(db, include_internal=True, limit=500)
+        if child.run_id != run.run_id and (child.root_run_id == result.root_run_id or child.parent_run_id == result.root_run_id)
+    ]
+    try:
+        bundle = get_result_provenance_bundle(db, result)
+        metrics = bundle.get("metrics") or {}
+        evidence = DiagnosticEvidenceResponse(
+            status="available",
+            source_documents=len(bundle.get("source_documents") or []),
+            passages=len(bundle.get("passages") or []),
+            report_claims=len(bundle.get("report_claims") or []),
+            citations=len(bundle.get("citations") or []),
+            independent_source_count=int(metrics.get("independent_source_count") or 0),
+            unresolved_conflict_count=len(bundle.get("resolutions") or []),
+        )
+    except Exception:
+        evidence = DiagnosticEvidenceResponse(status="unavailable")
+
+    root_cause = error_type
+    if not root_cause and first:
+        root_cause = "provider_failure" if first.tool_name == "research_branch_planner" else "trace_failure"
+    recommendation = {
+        "structured_output_truncated": "缩短结构化输出或调整 provider 输出上限后重试。",
+        "context_overflow": "减少输入上下文并重试，先检查 prompt_tokens。",
+        "provider_error": "检查 provider 配置和服务响应后再重试。",
+        "provider_failure": "检查 provider 配置和服务响应后再重试。",
+    }.get(root_cause or "", "检查首个失败阶段及其上游输入后再决定是否重试。")
+    return TaskDiagnosticsResponse(
+        run_id=run_id,
+        status=run.status,
+        first_failure=(
+            DiagnosticFailureResponse(
+                trace_id=first.trace_id,
+                phase=first.phase,
+                tool_name=first.tool_name,
+                status=first.status,
+                error_type=error_type,
+                error_message=first.error_message,
+                created_at=first.created_at,
+            )
+            if first else None
+        ),
+        root_cause_type=root_cause,
+        provider=provider,
+        child_runs=child_runs,
+        evidence=evidence,
+        retry_recommendation=recommendation,
+    )
 
 
 @router.get("/{run_id}/result/context", response_model=ResearchResultContextResponse)

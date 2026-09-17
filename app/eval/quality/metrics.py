@@ -4,7 +4,7 @@ Dataclasses for scoring research reports across:
   - relevance (LLM-as-judge)
   - factual_accuracy (deterministic, from citation validation)
   - coverage (LLM-as-judge)
-  - source_quality (deterministic, from tier distribution)
+  - source_quality (deterministic, from claim-centric evidence quality)
   - auditability (deterministic, from citation count/accuracy)
 """
 
@@ -36,10 +36,14 @@ class ResearchQualityReport:
 
     # ── Source quality (deterministic) ─────────────────────────────
     source_quality_score: float = 0.0      # 0-10
-    t0_count: int = 0
-    t1_count: int = 0
-    t2_count: int = 0
-    t2_ratio: float = 0.0
+    claim_support_coverage: float = 0.0
+    strong_claim_coverage: float = 0.0
+    independent_claim_coverage: float = 0.0
+    mean_cited_reliability: float = 0.0
+    p25_cited_reliability: float = 0.0
+    independent_source_count: int = 0
+    unique_resource_count: int = 0
+    unresolved_conflict_count: int = 0
     source_relevance_ratio: float = 0.0    # cited sources / total sources
 
     # ── Auditability (deterministic) ───────────────────────────────
@@ -76,10 +80,14 @@ class ResearchQualityReport:
             "covered_dimensions": self.covered_dimensions,
             "missing_dimensions": self.missing_dimensions,
             "source_quality_score": self.source_quality_score,
-            "t0_count": self.t0_count,
-            "t1_count": self.t1_count,
-            "t2_count": self.t2_count,
-            "t2_ratio": self.t2_ratio,
+            "claim_support_coverage": self.claim_support_coverage,
+            "strong_claim_coverage": self.strong_claim_coverage,
+            "independent_claim_coverage": self.independent_claim_coverage,
+            "mean_cited_reliability": self.mean_cited_reliability,
+            "p25_cited_reliability": self.p25_cited_reliability,
+            "independent_source_count": self.independent_source_count,
+            "unique_resource_count": self.unique_resource_count,
+            "unresolved_conflict_count": self.unresolved_conflict_count,
             "source_relevance_ratio": self.source_relevance_ratio,
             "auditability_score": self.auditability_score,
             "citation_count": self.citation_count,
@@ -100,9 +108,9 @@ class QualityEvalSummary:
     avg_coverage: float
     avg_source_quality: float
     avg_auditability: float
-    overall_t0_count: int
-    overall_t1_count: int
-    overall_t2_count: int
+    total_independent_sources: int
+    total_unique_resources: int
+    total_unresolved_conflicts: int
     total_citations: int
     avg_citation_accuracy: float
     avg_source_relevance_ratio: float = 0.0
@@ -118,9 +126,9 @@ class QualityEvalSummary:
             "avg_source_quality": self.avg_source_quality,
             "avg_auditability": self.avg_auditability,
             "avg_source_relevance_ratio": self.avg_source_relevance_ratio,
-            "overall_t0_count": self.overall_t0_count,
-            "overall_t1_count": self.overall_t1_count,
-            "overall_t2_count": self.overall_t2_count,
+            "total_independent_sources": self.total_independent_sources,
+            "total_unique_resources": self.total_unique_resources,
+            "total_unresolved_conflicts": self.total_unresolved_conflicts,
             "total_citations": self.total_citations,
             "avg_citation_accuracy": self.avg_citation_accuracy,
             "reports": [r.to_dict() for r in self.reports],

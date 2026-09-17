@@ -373,19 +373,6 @@ class GoalRecoveryTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(execute.call_count, 1)
 
-    def test_unread_candidates_survive_static_tier_selection(self):
-        from app.agent.source_governance import govern_tool_result
-        from app.tools.base import ToolResult
-        from tests.test_source_governance import _plan
-        plan = _plan("generic")
-        old = [f"https://old{n}.example.org/data" for n in range(3)]
-        fresh = "https://fresh.example.net/data"
-        plan["react_state"] = {"source_context": {"sources": [{"url": url, "fetch_status": "fetched"} for url in old]}}
-        output = ToolResult(success=True, output={"results": [{"url": url, "content": "Specific data"} for url in [*old, fresh]]})
-        result = govern_tool_result("tavily_search", output, plan, self.settings)
-        self.assertIn(fresh, [row["url"] for row in result.output["results"]])
-        self.assertEqual(len(result.output["discovery_candidates"]), 4)
-
     def test_ambiguous_price_request_is_blocked_before_any_tool(self):
         from app.agent.preflight import check_plan_readiness
         run = store.create_agent_run(self.db, "某股票近10年的涨幅变化数据", "summary", "real")

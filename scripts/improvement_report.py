@@ -90,14 +90,14 @@ def generate_report() -> str:
         )
         if recent:
             lines.append("\n## 最近 10 次运行")
-            lines.append("| 时间 | 类别 | 模式 | 综合分 | 引用 | T0/T1/T2 |")
+            lines.append("| 时间 | 类别 | 模式 | 综合分 | 引用 | Claim覆盖 / 独立来源 |")
             lines.append("|---|---|---|---|---|---|")
             for r in reversed(recent):
                 ts = r.created_at.strftime("%m-%d %H:%M") if r.created_at else "—"
-                tier_str = f"{r.tier_t0}/{r.tier_t1}/{r.tier_t2}"
+                quality_str = f"{r.claim_support_coverage:.0%} / {r.independent_source_count}"
                 lines.append(
                     f"| {ts} | {r.question_category or '—'} | {r.execution_mode or '—'} "
-                    f"| {r.overall_score} | {r.citation_count} | {tier_str} |"
+                    f"| {r.overall_score} | {r.citation_count} | {quality_str} |"
                 )
 
         # ── By strategy ──

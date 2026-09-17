@@ -17,12 +17,7 @@ from app.agent.execution_policy import execute_with_policy
 from app.agent.budget import budgeted_execution
 from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
-from app.agent.source_governance import (
-    execute_targeted_refetches,
-    govern_tool_result,
-    persisted_refetch_rounds,
-    prepare_tool_arguments,
-)
+from app.agent.source_intake import intake_tool_result, prepare_tool_arguments
 from app.config import Settings, settings as _exec_settings
 from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
@@ -375,136 +370,6 @@ def _message_summary(run: AgentRun, message: str) -> dict[str, Any]:
     return summary
 
 
-def _check_profile_quota(
-    db: Session,
-    run_id: str,
-    plan: dict[str, Any],
-    provenance_bundle: dict[str, Any] | None,
-    traces: list[Any],
-) -> None:
-    """Phase 8.1: Check retrieval profile constraints and emit shortfall trace."""
-    profile_constraints = (plan.get("profile_constraints") or {})
-    if not profile_constraints:
-        return
-
-    if not provenance_bundle:
-        return
-
-    documents = [doc for doc in provenance_bundle.get("source_documents") or []
-                 if (doc.get("metadata") or {}).get("research_eligible")
-                 and not (doc.get("metadata") or {}).get("is_mock")
-                 and not (doc.get("metadata") or {}).get("is_fallback")]
-    documents = list({doc.get("canonical_uri"): doc for doc in documents}.values())
-
-    try:
-        from app.evidence.policy import T0, T1, T2
-
-        tier_counts = {T0: 0, T1: 0, T2: 0}
-        cluster_ids: set[str] = set()
-        domain_counts: dict[str, int] = {}
-        for doc in documents:
-            metadata = doc.get("metadata") or {}
-            if isinstance(metadata, str):
-                try:
-                    metadata = json.loads(metadata)
-                except Exception:
-                    metadata = {}
-            tier = metadata.get("source_tier", T2)
-            if tier in tier_counts:
-                tier_counts[tier] += 1
-            cluster = str(metadata.get("source_cluster_id") or "").strip()
-            if cluster:
-                cluster_ids.add(cluster)
-            hostname = str(
-                metadata.get("hostname")
-                or metadata.get("source_hostname")
-                or urlsplit(str(doc.get("canonical_uri") or "")).hostname
-                or ""
-            ).strip().lower()
-            if hostname:
-                domain_counts[hostname] = domain_counts.get(hostname, 0) + 1
-                if not cluster:
-                    cluster_ids.add(hostname)
-            elif not cluster:
-                cluster_ids.add(str(doc.get("canonical_uri") or doc.get("document_id")))
-
-        total = len(documents)
-        t0 = tier_counts[T0]
-        t1 = tier_counts[T1]
-        t2 = tier_counts[T2]
-        independent = len(cluster_ids)
-
-        min_t0 = int(profile_constraints.get("min_t0_sources", 1))
-        min_independent = int(profile_constraints.get("min_independent_sources", 2))
-        min_t2 = int(profile_constraints.get("min_t2_sources", 0))
-        max_t2_ratio = float(profile_constraints.get("max_t2_ratio", 0.50))
-        max_per_domain = profile_constraints.get("max_per_domain")
-        shortfall_policy = profile_constraints.get("shortfall_policy", "report_only")
-
-        t0_shortfall = max(0, min_t0 - t0)
-        independent_shortfall = max(0, min_independent - independent)
-        t2_shortfall = max(0, min_t2 - t2)
-        t2_ratio = (t2 / total) if total else 0.0
-        t2_ratio_exceeded = t2_ratio > max_t2_ratio
-        domain_overages = [
-            domain for domain, count in domain_counts.items()
-            if max_per_domain and count > int(max_per_domain)
-        ]
-
-        quota_info = {
-            "profile": plan.get("retrieval_profile", "generic"),
-            "total_sources": total,
-            "t0_required": min_t0,
-            "t0_achieved": t0,
-            "t1_count": t1,
-            "t2_count": t2,
-            "independent_required": min_independent,
-            "independent_achieved": independent,
-            "max_t2_ratio": max_t2_ratio,
-            "t2_ratio": round(t2_ratio, 4),
-            "t2_required": min_t2,
-            "max_per_domain": max_per_domain,
-            "domain_overages": domain_overages,
-            "shortfalls": {
-                "t0_shortfall": t0_shortfall,
-                "independent_shortfall": independent_shortfall,
-                "t2_shortfall": t2_shortfall,
-                "t2_ratio_exceeded": t2_ratio_exceeded,
-            },
-            "shortfall_policy": shortfall_policy,
-        }
-
-        has_shortfall = bool(
-            t0_shortfall
-            or independent_shortfall
-            or t2_shortfall
-            or t2_ratio_exceeded
-            or domain_overages
-        )
-        if has_shortfall:
-            outcome = plan.get("research_outcome") or {}
-            warning = "Source quota requirements were not met; see source_quota_check in Trace."
-            outcome["warnings"] = list(dict.fromkeys([*(outcome.get("warnings") or []), warning]))
-            plan["research_outcome"] = outcome
-            store.replace_agent_run_plan(db, run_id, plan)
-            record_trace_event(
-                db=db,
-                run_id=run_id,
-                step_no=max((trace.step_no for trace in traces), default=0) + 1,
-                tool_name="source_quota_check",
-                status="warning",
-                input_data={"profile_constraints": profile_constraints},
-                output_summary=(
-                    f"Source quota shortfall: T0={t0}/{min_t0}, "
-                    f"independent={independent}/{min_independent}, "
-                    f"T2={t2} (ratio {t2_ratio:.2f}), policy={shortfall_policy}"
-                ),
-                output_data=quota_info,
-            )
-    except Exception as exc:
-        logging.getLogger(__name__).warning("Source quota check failed: %s", exc)
-
-
 @budgeted_execution
 def run_plan(
     db: Session,
@@ -532,7 +397,6 @@ def run_plan(
     steps = plan.get("steps") or []
     observations = load_observations(store.list_tool_traces(db, run_id))
     resume_after_step = run.current_step
-    refetch_rounds_used = persisted_refetch_rounds(store.list_tool_traces(db, run_id))
 
     try:
         run = store.mark_agent_run_running_unless_cancelled(db, run_id)
@@ -601,7 +465,7 @@ def run_plan(
             started = perf_counter()
             result = execute_with_policy(tool_name, execution_arguments, plan, settings_obj, execute_tool)
             latency_ms = int((perf_counter() - started) * 1000)
-            result = govern_tool_result(tool_name, result, plan, settings_obj)
+            result = intake_tool_result(tool_name, result, plan, settings_obj)
             trace = record_tool_result(
                 db, run_id, step_no, tool_name, arguments, result, latency_ms
             )
@@ -625,53 +489,6 @@ def run_plan(
                 latency_ms_delta=latency_ms,
             )
 
-            def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
-                refetch_started = perf_counter()
-                refetch_result = execute_with_policy(name, refetch_args, plan, settings_obj, execute_tool)
-                return refetch_result, int((perf_counter() - refetch_started) * 1000)
-
-            refetches = execute_targeted_refetches(
-                tool_name,
-                arguments,
-                result,
-                plan,
-                settings_obj,
-                execute=_execute_refetch,
-                max_rounds=settings_obj.max_refetch_rounds - refetch_rounds_used,
-                starting_round=refetch_rounds_used,
-            )
-            refetch_rounds_used += len(refetches)
-            for refetch in refetches:
-                trace = record_tool_result(
-                    db,
-                    run_id,
-                    step_no,
-                    tool_name,
-                    refetch.arguments,
-                    refetch.result,
-                    refetch.latency_ms,
-                    sub_query=f"source_refetch_round:{refetch.round_no}",
-                )
-                observations.append(
-                    {
-                        "trace_id": trace.trace_id,
-                        "step_no": step_no,
-                        "tool_name": tool_name,
-                        "success": refetch.result.success,
-                        "output_summary": refetch.result.output_summary,
-                        "error_message": refetch.result.error_message,
-                        "output": refetch.result.output,
-                        "metadata": refetch.result.metadata,
-                    }
-                )
-                run = store.update_agent_run_progress(
-                    db,
-                    run_id,
-                    step_no,
-                    total_tool_calls_delta=0 if refetch.result.metadata.get("executed") is False else 1,
-                    latency_ms_delta=refetch.latency_ms,
-                )
-
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _message_summary(cancelled, "Run cancelled by user.")
@@ -687,7 +504,6 @@ def run_plan(
             traces,
             settings_obj,
         )
-        _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
         _llm = resolve_report_llm_client(settings_obj, report_llm_client)
         report_llm_responses: list[Any] = []
         citation_validation_reports: list[Any] = []

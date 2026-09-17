@@ -342,51 +342,18 @@ def _run_component_case(
 def run_policy_case(db, case: dict[str, Any]) -> dict[str, Any]:
     def execute() -> dict[str, Any]:
         from app.config import settings
-        from app.evidence.policy import (
-            SourceCandidate,
-            classify_tier,
-            compute_source_clusters,
-            load_source_policy,
-            select_sources_by_profile,
-        )
+        from app.evidence.policy import classify_evidence_role, classify_source, load_source_policy
 
         arguments = case.get("arguments") or {}
         policy = load_source_policy(settings.source_policy_path)
-        operation = str(arguments.get("operation") or "classify_tier")
-        if operation == "classify_tier":
-            classification = classify_tier(
-                str(arguments.get("source_type") or "web_search"),
-                str(arguments.get("uri") or ""),
-                dict(arguments.get("metadata") or {}),
-                policy,
-            )
-            return {"classification": asdict(classification), "policy_version": policy.version}
-
-        candidates = []
-        for raw in arguments.get("candidates") or []:
-            uri = str(raw.get("uri") or "")
-            candidates.append(
-                SourceCandidate(
-                    uri=uri,
-                    hostname=str(raw.get("hostname") or (urlsplit(uri).hostname or "")).lower(),
-                    organization=raw.get("organization"),
-                    title=str(raw.get("title") or uri),
-                    snippet=str(raw.get("snippet") or "evidence"),
-                    metadata=dict(raw.get("metadata") or {}),
-                )
-            )
-        if operation == "clusters":
-            clusters = compute_source_clusters(candidates)
-            return {"clusters": clusters, "cluster_count": len(clusters)}
-        profile_name = str(arguments.get("profile") or "generic")
-        selection = select_sources_by_profile(
-            candidates,
-            policy.retrieval_profiles[profile_name],
-            policy,
-            oversample_factor=int(arguments.get("oversample_factor") or 2),
-            max_candidates=int(arguments.get("max_candidates") or 15),
-        )
-        return {"selection": asdict(selection), "policy_version": policy.version}
+        source_type = str(arguments.get("source_type") or "web_search")
+        uri = str(arguments.get("uri") or "")
+        metadata = dict(arguments.get("metadata") or {})
+        return {
+            "source_class": classify_source(source_type, uri, metadata, policy),
+            "evidence_role": classify_evidence_role(source_type, uri, metadata, policy),
+            "policy_version": policy.version,
+        }
 
     return _run_component_case(db, case, "source_policy", execute)
 

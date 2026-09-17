@@ -52,7 +52,7 @@ class LLMClient(ABC):
         self,
         messages: list[LLMMessage],
         temperature: float = 0.0,
-        max_tokens: int = 2000,
+        max_tokens: int | None = 2000,
     ) -> LLMResponse:
         """Complete a chat request."""
 
@@ -83,7 +83,7 @@ class LLMClient(ABC):
         self,
         messages: list[LLMMessage],
         temperature: float = 0.0,
-        max_tokens: int = 2000,
+        max_tokens: int | None = 2000,
     ) -> LLMResponse:
         """Return a completion only when its content is a JSON object."""
 
@@ -96,12 +96,25 @@ class LLMClient(ABC):
             parsed = None
         if isinstance(parsed, dict):
             return response
+        truncated = response.metadata.get("finish_reason") == "length"
         return LLMResponse(
             success=False,
             provider=response.provider,
             model=response.model,
-            error_message="LLM structured response was not a JSON object.",
-            metadata={**response.metadata, "error_type": "structured_output_invalid"},
+            error_message=(
+                "LLM structured response reached the provider output limit."
+                if truncated
+                else "LLM structured response was not a JSON object."
+            ),
+            metadata={
+                **response.metadata,
+                "error_type": (
+                    "structured_output_truncated"
+                    if truncated
+                    else "structured_output_invalid"
+                ),
+                "content_length": len(str(response.content or "")),
+            },
             usage=response.usage,
         )
 

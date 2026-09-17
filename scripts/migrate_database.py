@@ -157,10 +157,12 @@ def bootstrap_revision_for_tables(
                                                     "Legacy database has report claim scope lineage "
                                                     "without run_budgets.provider_attempts"
                                                 )
-                                            return _required_stamp(
-                                                current_revision,
-                                                "0015_report_claim_scope_lineage",
+                                            schema_revision = (
+                                                "0017_trace_context"
+                                                if {"phase", "parent_trace_id", "attempt"}.issubset(tool_trace_cols)
+                                                else "0016_evidence_quality_v3"
                                             )
+                                            return _required_stamp(current_revision, schema_revision)
                                         return _required_stamp(
                                             current_revision,
                                             (
@@ -202,6 +204,8 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0013_research_result_governance": 13,
         "0014_budget_provider_attempts": 14,
         "0015_report_claim_scope_lineage": 15,
+        "0016_evidence_quality_v3": 16,
+        "0017_trace_context": 17,
     }
     if current_revision is None:
         return schema_revision

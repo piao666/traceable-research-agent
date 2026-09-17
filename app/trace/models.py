@@ -118,6 +118,9 @@ class ToolTrace(Base):
         nullable=True,
     )
     sub_query: Mapped[str | None] = mapped_column(Text, nullable=True, index=True)
+    phase: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    parent_trace_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     run: Mapped[AgentRun] = relationship(back_populates="traces")
 

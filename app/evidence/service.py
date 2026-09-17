@@ -33,7 +33,7 @@ from app.evidence.normalizers import (
     source_organization,
     source_provider,
 )
-from app.evidence.policy import classify_evidence_role, classify_tier, load_source_policy
+from app.evidence.policy import classify_evidence_role, classify_source, load_source_policy
 from app.evidence.reasoning_service import get_reasoning_bundle, materialize_reasoning
 from app.trace.models import AgentRun, ToolTrace
 
@@ -352,36 +352,30 @@ def _materialize_item(
                 "content_hash",
                 "canonical_url",
                 "official",
-                "source_tier",
                 "source_class",
-                "classification_rule",
-                "classification_confidence",
                 "evidence_role",
             )
             if key in item.metadata
         },
     }
-    # ── Phase 8.1: tier classification ──────────────────────────
     evidence_role = "unknown"
     try:
-        tier_policy = load_source_policy(_svc_settings.source_policy_path)
-        tier_result = classify_tier(item.source_type, canonical_uri, item.metadata, tier_policy)
+        evidence_policy = load_source_policy(_svc_settings.source_policy_path)
         evidence_role = classify_evidence_role(
             item.source_type,
             canonical_uri,
             item.metadata,
-            tier_policy,
+            evidence_policy,
         )
-        metadata_doc["source_tier"] = tier_result.tier
         metadata_doc["evidence_role"] = evidence_role
-        metadata_doc["source_class"] = tier_result.source_class
-        metadata_doc["classification_rule"] = tier_result.classification_rule
-        metadata_doc["classification_confidence"] = tier_result.classification_confidence
+        metadata_doc["source_class"] = classify_source(
+            item.source_type,
+            canonical_uri,
+            item.metadata,
+            evidence_policy,
+        )
     except Exception:
-        metadata_doc["source_tier"] = "T2"
         metadata_doc["source_class"] = "unknown"
-        metadata_doc["classification_rule"] = "error_fallback"
-        metadata_doc["classification_confidence"] = 0.30
         metadata_doc["evidence_role"] = evidence_role
 
     document = SourceDocument(

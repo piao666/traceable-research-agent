@@ -42,7 +42,7 @@ def test_node_executor_reuses_root_budget_and_sets_lineage(db, r12_settings):
     assert node.status == "completed"
 
 
-def test_node_executor_child_plan_inherits_source_governance(db, r12_settings):
+def test_node_executor_child_plan_inherits_evidence_policy(db, r12_settings):
     root = create_root(db)
     scope = create_research_scope(db, root.run_id, {})
     root_node = create_research_node(
@@ -52,8 +52,9 @@ def test_node_executor_child_plan_inherits_source_governance(db, r12_settings):
     )
     store.replace_agent_run_plan(db, root.run_id, {
         "retrieval_profile": "technical_facts",
-        "profile_constraints": {"min_t0_sources": 2},
-        "policy_version": "source-policy-v2",
+        "research_profile": {"name": "technical_facts", "max_fetch_candidates": 8},
+        "source_constraints": {"mode": "open"},
+        "evidence_policy_version": "evidence-policy-v3",
         "allowed_tools": ["tavily_search"],
     })
     node = create_research_node(
@@ -70,8 +71,9 @@ def test_node_executor_child_plan_inherits_source_governance(db, r12_settings):
     child = store.get_agent_run(db, result["run_id"])
     plan = json.loads(child.plan_json)
     assert plan["retrieval_profile"] == "technical_facts"
-    assert plan["profile_constraints"] == {"min_t0_sources": 2}
-    assert plan["policy_version"] == "source-policy-v2"
+    assert plan["research_profile"]["name"] == "technical_facts"
+    assert plan["source_constraints"] == {"mode": "open"}
+    assert plan["evidence_policy_version"] == "evidence-policy-v3"
 
 
 def test_node_executor_reuses_completed_run_without_calling_runner(db, r12_settings):

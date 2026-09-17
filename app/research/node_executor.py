@@ -17,7 +17,7 @@ from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
 from app.research.models import ResearchNode, ResearchScope
 from app.trace import store
-from app.trace.logger import record_trace_event
+from app.trace.logger import record_phase_event, record_trace_event
 
 
 NodeRunner = Callable[[Session, str, Settings, LLMClient | None], dict[str, Any]]
@@ -86,12 +86,10 @@ class ResearchNodeExecutor:
                 "requested_execution_mode": "react",
                 "source_mode": root.source_mode,
                 "allowed_tools": inherited_tools,
-                # Source governance is a run policy. Child research nodes must
-                # execute under the exact profile and policy snapshot chosen
-                # by their parent, rather than silently falling back to generic.
                 "retrieval_profile": parent_plan.get("retrieval_profile"),
-                "profile_constraints": parent_plan.get("profile_constraints"),
-                "policy_version": parent_plan.get("policy_version"),
+                "research_profile": parent_plan.get("research_profile"),
+                "source_constraints": parent_plan.get("source_constraints"),
+                "evidence_policy_version": parent_plan.get("evidence_policy_version"),
                 "task_contract": parent_plan.get("task_contract"),
                 "research_scope_id": scope.scope_id,
                 "research_node_id": node.node_id,
@@ -123,12 +121,25 @@ class ResearchNodeExecutor:
             node.status = "running"
             node.updated_at = datetime.now(timezone.utc)
             db.commit()
+        execution_trace = record_phase_event(
+            db,
+            child.run_id,
+            "node_execution",
+            "started",
+            details={"node_id": node.node_id, "node_type": node.node_type},
+        )
         try:
             result = self.runner(db, child.run_id, settings, llm_client)
         except BudgetExceeded:
             node.status = "failed"
             node.updated_at = datetime.now(timezone.utc)
             db.commit()
+            record_phase_event(
+                db, child.run_id, "node_execution", "failed",
+                parent_trace_id=execution_trace.trace_id,
+                details={"node_id": node.node_id, "error_type": "BudgetExceeded"},
+                error_message="Research node exceeded its budget.",
+            )
             raise
         except Exception as exc:
             db.rollback()
@@ -142,6 +153,8 @@ class ResearchNodeExecutor:
                 "Research branch execution failed.",
                 {"error_type": type(exc).__name__},
                 error_message="Research branch execution failed; inspect Trace.",
+                phase="node_execution",
+                parent_trace_id=execution_trace.trace_id,
             )
             store.update_agent_run_status(
                 db, child.run_id, "failed", "Research branch execution failed; inspect Trace."
@@ -163,6 +176,15 @@ class ResearchNodeExecutor:
         node.status = child.status if child and child.status in {"completed", "failed", "cancelled"} else "failed"
         node.updated_at = datetime.now(timezone.utc)
         db.commit()
+        record_phase_event(
+            db,
+            child.run_id,
+            "node_execution",
+            "success" if node.status == "completed" else "failed",
+            parent_trace_id=execution_trace.trace_id,
+            details={"node_id": node.node_id, "status": node.status},
+            error_message="Research node did not complete." if node.status != "completed" else None,
+        )
         return {**result, "node_id": node.node_id, "run_id": child.run_id, "status": node.status}
 
 

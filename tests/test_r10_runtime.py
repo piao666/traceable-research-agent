@@ -195,6 +195,37 @@ class ProviderAdapterTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.usage.total_tokens, 3)
 
+    def test_optional_max_tokens_is_omitted_from_provider_payload(self):
+        response = JsonResponse({
+            "choices": [{"message": {"content": '{"ok":true}'}, "finish_reason": "stop"}],
+        })
+        with patch("app.llm.providers.urlopen", return_value=response) as opener:
+            result = self.client().structured_complete(
+                [LLMMessage(role="user", content="test")],
+                max_tokens=None,
+            )
+
+        request = opener.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertTrue(result.success)
+        self.assertNotIn("max_tokens", payload)
+
+    def test_structured_completion_classifies_truncated_json(self):
+        response = JsonResponse({
+            "choices": [{"message": {"content": '{"branches":['}, "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+        })
+        with patch("app.llm.providers.urlopen", return_value=response):
+            result = self.client().structured_complete(
+                [LLMMessage(role="user", content="test")],
+                max_tokens=None,
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.metadata["error_type"], "structured_output_truncated")
+        self.assertEqual(result.metadata["content_length"], 13)
+        self.assertEqual(result.usage.total_tokens, 30)
+
     def test_structured_completion_rejects_non_json_without_exposing_content(self):
         client = FixtureLLM(LLMResponse(success=True, content="not-json", provider="fixture"))
         result = client.structured_complete([LLMMessage(role="user", content="test")])

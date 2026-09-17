@@ -50,7 +50,7 @@ def main() -> None:
             "MCP_CHANNEL_INTERACTIVE_SERVERS": "", "MCP_CHANNEL_WRITE_SERVERS": "",
             "LLM_PROVIDER": "deterministic", "REACT_LLM_PROVIDER": "deterministic",
             "FILE_READER_ALLOWED_ROOTS": "workspace/docs", "EVIDENCE_ARTIFACT_ROOT": "workspace/artifacts",
-            "REFERENCE_VERIFIER_ENABLED": "false", "SOURCE_POLICY_PATH": "config/source_policy.v2.json"}
+            "REFERENCE_VERIFIER_ENABLED": "false", "SOURCE_POLICY_PATH": "config/evidence_policy.v3.json"}
         subprocess.run([sys.executable, "scripts/init_demo_db.py"], cwd=isolated, env=environment,
                        check=True, stdout=subprocess.DEVNULL)
         with socket.socket() as reserved:

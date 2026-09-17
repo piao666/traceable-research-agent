@@ -2437,8 +2437,9 @@ def _render_run_quality_card(quality: dict[str, Any] | None) -> None:
     st.caption(
         f"覆盖度 {quality.get('coverage_score', 0):.1f} · "
         f"引用 {quality.get('citation_count', 0)} 条 · "
-        f"来源层级 T0/T1/T2={quality.get('tier_t0', 0)}/"
-        f"{quality.get('tier_t1', 0)}/{quality.get('tier_t2', 0)}"
+        f"Claim覆盖 {quality.get('claim_support_coverage', 0):.0%} · "
+        f"独立来源 {quality.get('independent_source_count', 0)} · "
+        f"未解决冲突 {quality.get('unresolved_conflict_count', 0)}"
     )
 
 

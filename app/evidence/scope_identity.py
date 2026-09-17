@@ -450,13 +450,16 @@ def _representative_sort_key(
         _float(snapshot_metadata.get("extraction_confidence")),
         *[_float(item.get("extraction_confidence")) for item in assertions],
     ]
-    source_tier = _text(_mapping(document.get("metadata")).get("source_tier")).upper()
-    tier_rank = {"T0": 3, "T1": 2, "T2": 1}.get(source_tier, 0)
     origin_run_id = _text(passage.get("origin_run_id") or document.get("origin_run_id"))
+    traceability_complete = bool(
+        _text(passage.get("trace_id"))
+        and _text((snapshot or {}).get("snapshot_id"))
+        and _text(document.get("document_id"))
+    )
     return (
         -int(_text(passage.get("content_basis")).casefold() == "full_text"),
         -max(confidence_values, default=0.0),
-        -tier_rank,
+        -int(traceability_complete),
         -_timestamp((snapshot or {}).get("fetched_at")),
         run_rank.get(origin_run_id, 10**9),
         entity_id,

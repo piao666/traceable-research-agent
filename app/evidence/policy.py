@@ -150,6 +150,26 @@ class RetrievalProfile:
 
 
 @dataclass(frozen=True)
+class ResearchProfile:
+    name: str
+    oversample_factor: int = 2
+    max_discovery_candidates: int = 15
+    max_fetch_candidates: int = 8
+    max_recovery_rounds: int = 2
+    minimum_evidence_gain: float = 0.05
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "oversample_factor": self.oversample_factor,
+            "max_discovery_candidates": self.max_discovery_candidates,
+            "max_fetch_candidates": self.max_fetch_candidates,
+            "max_recovery_rounds": self.max_recovery_rounds,
+            "minimum_evidence_gain": self.minimum_evidence_gain,
+        }
+
+
+@dataclass(frozen=True)
 class SourcePolicy:
     version: str
     weights: dict[str, float]
@@ -160,6 +180,7 @@ class SourcePolicy:
     resolution: dict[str, float]
     tier_hints: TierHintTable = field(default_factory=TierHintTable)
     retrieval_profiles: dict[str, RetrievalProfile] = field(default_factory=dict)
+    research_profiles: dict[str, ResearchProfile] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -261,6 +282,19 @@ def load_source_policy(path: str | Path) -> SourcePolicy:
             freshness_days=int(pdata.get("freshness_days", 730)),
         )
 
+    research_profiles: dict[str, ResearchProfile] = {}
+    for pname, pdata in (raw.get("research_profiles") or {}).items():
+        if not isinstance(pdata, dict):
+            raise ValueError(f"Research profile must be an object: {pname}")
+        research_profiles[str(pname)] = ResearchProfile(
+            name=str(pname),
+            oversample_factor=max(1, int(pdata.get("oversample_factor", 2))),
+            max_discovery_candidates=max(1, int(pdata.get("max_discovery_candidates", 15))),
+            max_fetch_candidates=max(1, int(pdata.get("max_fetch_candidates", 8))),
+            max_recovery_rounds=max(0, int(pdata.get("max_recovery_rounds", 2))),
+            minimum_evidence_gain=max(0.0, float(pdata.get("minimum_evidence_gain", 0.05))),
+        )
+
     return SourcePolicy(
         version=version,
         weights=weights,
@@ -271,6 +305,7 @@ def load_source_policy(path: str | Path) -> SourcePolicy:
         resolution={key: float(value) for key, value in (raw.get("resolution") or {}).items()},
         tier_hints=tier_hints,
         retrieval_profiles=retrieval_profiles,
+        research_profiles=research_profiles,
     )
 
 
@@ -360,21 +395,25 @@ def classify_evidence_role(
         }:
             return "community_content"
         org_repo = _github_org_repo(hostname, canonical_uri)
-        verified = bool(
-            org_repo
-            and any(
-                org_repo == normalized_path
-                or org_repo.startswith(f"{normalized_path}/")
-                for normalized_path in (
-                    value.lower()
-                    .removeprefix("https://")
-                    .removeprefix("http://")
-                    .removeprefix("github.com/")
-                    .strip("/")
-                    for value in policy.tier_hints.org_verified_official_repos
+        # Repository identity is trusted only when the read-only adapter has
+        # explicitly verified the owner. A policy URL hint alone is not proof.
+        verified = metadata.get("verified_official_owner") is True
+        if not verified and policy.version != "evidence-policy-v3":
+            verified = bool(
+                org_repo
+                and any(
+                    org_repo == normalized_path
+                    or org_repo.startswith(f"{normalized_path}/")
+                    for normalized_path in (
+                        value.lower()
+                        .removeprefix("https://")
+                        .removeprefix("http://")
+                        .removeprefix("github.com/")
+                        .strip("/")
+                        for value in policy.tier_hints.org_verified_official_repos
+                    )
                 )
             )
-        ) or metadata.get("verified_official_owner") is True
         if verified:
             content_path = "/".join(path_parts[2:])
             immutable_ref = bool(

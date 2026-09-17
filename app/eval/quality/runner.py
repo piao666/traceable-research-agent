@@ -4,7 +4,7 @@ Executes research tasks and scores output across five dimensions:
   1. Relevance (LLM judge)
   2. Factual accuracy (citation validation)
   3. Coverage (LLM judge)
-  4. Source quality (tier distribution from governance metadata)
+  4. Source quality (claim-centric evidence quality)
   5. Auditability (citation count/accuracy from run data)
 
 Usage:
@@ -30,6 +30,8 @@ from app.agent.planner import plan_task
 from app.database import SessionLocal, init_db
 from app.eval.quality.judges import judge_report
 from app.eval.quality.metrics import ResearchQualityReport, QualityEvalSummary
+from app.evidence.quality import calculate_evidence_quality
+from app.evidence.service import get_provenance_bundle
 from app.llm.providers import create_llm_client
 from app.skills.registry import init_skill_registry
 from app.tools.defaults import register_default_tools
@@ -52,67 +54,6 @@ def load_dataset(name: str) -> list[dict[str, Any]]:
     ]
 
 
-def _compute_tier_metrics(traces: list) -> dict[str, Any]:
-    """Extract tier distribution from governance metadata in traces."""
-    t0 = 0
-    t1 = 0
-    t2 = 0
-    for t in traces:
-        try:
-            out = json.loads(t.output_json or "{}")
-            gov = (out.get("metadata", {}) or {}).get("source_governance", {})
-            if isinstance(gov, dict):
-                tiers = gov.get("tier_counts", {})
-                t0 += int(tiers.get("T0", 0))
-                t1 += int(tiers.get("T1", 0))
-                t2 += int(tiers.get("T2", 0))
-        except Exception:
-            pass
-    total = t0 + t1 + t2
-    return {
-        "t0_count": t0,
-        "t1_count": t1,
-        "t2_count": t2,
-        "t2_ratio": round(t2 / total, 2) if total > 0 else 0.0,
-        "source_quality_score": _score_source_quality(t0, t1, t2, citation_count=0),
-    }
-
-
-def _score_source_quality(t0: int, t1: int, t2: int, citation_count: int = 0, relevance_ratio: float = 0.5) -> float:
-    """Score source quality with calibrated weights.
-    
-    Weights calibrated against real-world evaluation data:
-    - T0=10 (primary sources), T1=7 (authoritative), T2=5 (community)
-    - Volume bonus caps at 20 sources (not 15)
-    - T2 ratio > 50% triggers a mild penalty
-    - Citation rate ensures only actually-used sources count
-    - Relevance ratio penalizes collecting many unused sources
-    """
-    total = t0 + t1 + t2
-    if total == 0:
-        return 5.0
-    # Citation rate
-    citation_rate = min(citation_count / max(total, 1), 1.0) if citation_count > 0 else 0.5
-    # Tier composition: T0=10, T1=7, T2=5
-    tier_score = (t0 * 10 + t1 * 7 + t2 * 5) / total
-    # Volume bonus: more sources is better, cap at 20
-    volume_bonus = min(total / 20, 1.0) * 1.0
-    # Diversity bonus
-    diversity = 0.0
-    if t0 > 0: diversity += 0.2
-    if t1 > 0: diversity += 0.2
-    if t2 > 0: diversity += 0.2
-    # T2 penalty: if T2 dominates, reduce score
-    t2_ratio = t2 / total if total > 0 else 0
-    t2_penalty = 0.85 if t2_ratio > 0.5 else 1.0
-    # Combine
-    raw_score = (tier_score * citation_rate + volume_bonus + diversity) * t2_penalty
-    # Relevance ratio: if many sources are collected but few cited, reduce score
-    if relevance_ratio < 0.3:
-        raw_score *= 0.5  # heavy penalty for low relevance
-    elif relevance_ratio < 0.5:
-        raw_score *= 0.7
-    return round(min(raw_score, 10), 1)
 def _score_auditability(citation_count: int, citation_accuracy: float, full_text_ratio: float, partial_ratio: float = 0.0) -> float:
     """Score auditability: higher citations + accuracy + content depth."""
     if citation_count == 0:
@@ -165,12 +106,18 @@ def run_quality_eval(
                 report_text = rp.read_text(encoding="utf-8")
 
         # ── Deterministic metrics from run data ─────────────────────
-        tier = _compute_tier_metrics(traces)
-
         citation_total = getattr(final_run, "citation_total", 0) if final_run else 0
         citation_accuracy = getattr(final_run, "citation_accuracy", 0.0) if final_run else 0.0
         verified = getattr(final_run, "citation_supported", 0) if final_run else 0
         unsupported = getattr(final_run, "citation_unsupported", 0) if final_run else 0
+        try:
+            provenance = get_provenance_bundle(db, run.run_id)
+        except ValueError:
+            provenance = {}
+        evidence_quality = calculate_evidence_quality(
+            provenance,
+            citation_accuracy=citation_accuracy,
+        )
 
         # Content basis from trace metadata
         cb = _compute_content_basis(traces)
@@ -201,11 +148,15 @@ def run_quality_eval(
             coverage_score=float(judge_result.get("coverage_score", 6)),
             covered_dimensions=list(judge_result.get("covered_dimensions", [])),
             missing_dimensions=list(judge_result.get("missing_dimensions", [])),
-            source_quality_score=_score_source_quality(tier["t0_count"], tier["t1_count"], tier["t2_count"], citation_count=citation_total, relevance_ratio=source_relevance_ratio),
-            t0_count=tier["t0_count"],
-            t1_count=tier["t1_count"],
-            t2_count=tier["t2_count"],
-            t2_ratio=tier["t2_ratio"],
+            source_quality_score=evidence_quality["evidence_quality_score"],
+            claim_support_coverage=evidence_quality["claim_support_coverage"],
+            strong_claim_coverage=evidence_quality["strong_claim_coverage"],
+            independent_claim_coverage=evidence_quality["independent_claim_coverage"],
+            mean_cited_reliability=evidence_quality["mean_cited_reliability"],
+            p25_cited_reliability=evidence_quality["p25_cited_reliability"],
+            independent_source_count=evidence_quality["independent_source_count"],
+            unique_resource_count=evidence_quality["unique_resource_count"],
+            unresolved_conflict_count=evidence_quality["unresolved_conflict_count"],
             auditability_score=_score_auditability(citation_total, citation_accuracy, full_text_ratio, partial_ratio),
             citation_count=citation_total,
             citation_accuracy=citation_accuracy,
@@ -299,8 +250,9 @@ def run_dataset(
         return QualityEvalSummary(
             total_questions=0, avg_overall=0.0, avg_relevance=0.0,
             avg_factual_accuracy=0.0, avg_coverage=0.0, avg_source_quality=0.0,
-            avg_auditability=0.0, overall_t0_count=0, overall_t1_count=0,
-            overall_t2_count=0, total_citations=0, avg_citation_accuracy=0.0,
+            avg_auditability=0.0, total_independent_sources=0,
+            total_unique_resources=0, total_unresolved_conflicts=0,
+            total_citations=0, avg_citation_accuracy=0.0,
             reports=[],
         )
 
@@ -314,9 +266,9 @@ def run_dataset(
         avg_source_quality=round(sum(r.source_quality_score for r in reports) / n, 1),
         avg_auditability=round(sum(r.auditability_score for r in reports) / n, 1),
         avg_source_relevance_ratio=round(sum(r.source_relevance_ratio for r in reports) / n, 2) if n > 0 else 0.0,
-        overall_t0_count=sum(r.t0_count for r in reports),
-        overall_t1_count=sum(r.t1_count for r in reports),
-        overall_t2_count=sum(r.t2_count for r in reports),
+        total_independent_sources=sum(r.independent_source_count for r in reports),
+        total_unique_resources=sum(r.unique_resource_count for r in reports),
+        total_unresolved_conflicts=sum(r.unresolved_conflict_count for r in reports),
         total_citations=sum(r.citation_count for r in reports),
         avg_citation_accuracy=round(sum(r.citation_accuracy for r in reports) / n, 2) if n > 0 else 0.0,
         reports=reports,

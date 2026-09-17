@@ -532,7 +532,7 @@ class ImprovementFrontendContractTests(unittest.TestCase):
 
         self.assertIsNotNone(entry)
         self.assertEqual(entry.execution_mode, "deep_research_v2")
-        self.assertEqual((entry.tier_t0, entry.tier_t1, entry.tier_t2), (3, 0, 0))
+        self.assertEqual(entry.independent_source_count, 3)
         self.assertEqual(entry.citation_count, 15)
         self.assertEqual(
             {item["origin_run_id"] for item in documents},
@@ -683,9 +683,8 @@ class ImprovementFrontendContractTests(unittest.TestCase):
             entry = auto_evaluate_and_log(self.db, root.run_id)
 
         self.assertIsNotNone(entry)
-        # Core regression: 3 Resources that are really 1 independent source
-        independent_total = entry.tier_t0 + entry.tier_t1 + entry.tier_t2
-        self.assertEqual(independent_total, 1)
+        # Core regression: 3 syndicated resources are counted as one source.
+        self.assertEqual(entry.independent_source_count, 1)
 
         metadata = json.loads(entry.evaluation_metadata_json)
         self.assertEqual(metadata["unique_resource_count"], 3)
@@ -703,9 +702,10 @@ class ImprovementFrontendContractTests(unittest.TestCase):
                 source_quality_score=7.0,
                 auditability_score=8.0,
                 citation_count=5,
-                tier_t0=1,
-                tier_t1=2,
-                tier_t2=2,
+                quality_schema_version="evidence-quality-v3",
+                evidence_quality_score=7.0,
+                independent_source_count=3,
+                unique_resource_count=5,
             )
         )
         self.db.commit()

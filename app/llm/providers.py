@@ -37,7 +37,7 @@ class UnavailableLLMClient(LLMClient):
         self,
         messages: list[LLMMessage],
         temperature: float = 0.0,
-        max_tokens: int = 2000,
+        max_tokens: int | None = 2000,
     ) -> LLMResponse:
         return LLMResponse(
             success=False,
@@ -82,7 +82,7 @@ class OpenAICompatibleLLMClient(LLMClient):
         self,
         messages: list[LLMMessage],
         temperature: float = 0.0,
-        max_tokens: int = 2000,
+        max_tokens: int | None = 2000,
     ) -> LLMResponse:
         return self._complete_request(messages, temperature, max_tokens)
 
@@ -90,7 +90,7 @@ class OpenAICompatibleLLMClient(LLMClient):
         self,
         messages: list[LLMMessage],
         temperature: float = 0.0,
-        max_tokens: int = 2000,
+        max_tokens: int | None = 2000,
     ) -> LLMResponse:
         response = self._complete_request(
             messages,
@@ -109,14 +109,24 @@ class OpenAICompatibleLLMClient(LLMClient):
         if isinstance(parsed, dict):
             return response
 
+        truncated = response.metadata.get("finish_reason") == "length"
         return LLMResponse(
             success=False,
             provider=response.provider,
             model=response.model,
-            error_message="LLM structured response was not a JSON object.",
+            error_message=(
+                "LLM structured response reached the provider output limit."
+                if truncated
+                else "LLM structured response was not a JSON object."
+            ),
             metadata={
                 **response.metadata,
-                "error_type": "structured_output_invalid",
+                "error_type": (
+                    "structured_output_truncated"
+                    if truncated
+                    else "structured_output_invalid"
+                ),
+                "content_length": len(str(response.content or "")),
             },
             usage=response.usage,
         )
@@ -125,7 +135,7 @@ class OpenAICompatibleLLMClient(LLMClient):
         self,
         messages: list[LLMMessage],
         temperature: float,
-        max_tokens: int,
+        max_tokens: int | None,
         *,
         response_format: dict[str, str] | None = None,
     ) -> LLMResponse:
@@ -133,8 +143,9 @@ class OpenAICompatibleLLMClient(LLMClient):
             "model": self.model,
             "messages": [message.model_dump() for message in messages],
             "temperature": temperature,
-            "max_tokens": max_tokens,
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if response_format is not None:
             payload["response_format"] = response_format
         body = json.dumps(payload).encode("utf-8")

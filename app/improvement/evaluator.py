@@ -1,275 +1,59 @@
-"""Auto-evaluate a completed run and write to improvement_log.
-
-Deterministic scoring — no LLM calls. Reuses the same formulas as the
-L3 quality evaluation module (app/eval/quality/).
-"""
+"""Deterministically evaluate completed runs with claim-centric evidence metrics."""
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 from sqlalchemy.orm import Session
-from app.agent.outcome import trusted_run_ids
 
-from app.evidence.scope_identity import build_scope_identity_projection
+from app.agent.outcome import trusted_run_ids
+from app.evidence.quality import calculate_evidence_quality
 from app.improvement.models import ImprovementLog
 from app.reporting.integrity import REPORT_INTEGRITY_VERSION
-from app.research.result_context import (
-    get_result_provenance_bundle,
-    list_result_traces,
-    resolve_research_result,
-)
+from app.research.result_context import get_result_provenance_bundle, list_result_traces, resolve_research_result
 from app.trace import store as trace_store
 
+
 logger = logging.getLogger(__name__)
-
-# ── Reuse scoring formulas from quality module ──────────────────────────
-
-
-def _score_source_quality(t0: int, t1: int, t2: int, citation_count: int = 0) -> float:
-    total = t0 + t1 + t2
-    if total == 0:
-        return 5.0
-    citation_rate = min(citation_count / max(total, 1), 1.0) if citation_count > 0 else 0.5
-    tier_score = (t0 * 10 + t1 * 7 + t2 * 5) / total
-    volume_bonus = min(total / 20, 1.0) * 1.0
-    diversity = 0.0
-    if t0 > 0: diversity += 0.2
-    if t1 > 0: diversity += 0.2
-    if t2 > 0: diversity += 0.2
-    t2_ratio = t2 / total if total > 0 else 0
-    t2_penalty = 0.85 if t2_ratio > 0.5 else 1.0
-    raw = (tier_score * citation_rate + volume_bonus + diversity) * t2_penalty
-    return round(min(raw, 10), 1)
 
 
 def _score_auditability(citation_count: int, citation_accuracy: float, full_text_ratio: float) -> float:
     if citation_count == 0:
         return 3.0
-    citation_score = min(citation_count / 10, 1.0) * 5
-    accuracy_score = citation_accuracy * 3
-    full_text_score = full_text_ratio * 1.5
-    return round(min(citation_score + accuracy_score + full_text_score, 10), 1)
+    return round(min(min(citation_count / 10, 1.0) * 5 + citation_accuracy * 3 + full_text_ratio * 2, 10), 1)
 
 
-def _compute_overall(
-    relevance: float, factual: float, coverage: float,
-    source_quality: float, auditability: float,
-) -> float:
+def _compute_overall(relevance: float, factual: float, coverage: float, source_quality: float, auditability: float) -> float:
     return round(
         relevance * 0.20 + factual * 10 * 0.25 + coverage * 0.20
-        + source_quality * 0.15 + auditability * 0.20, 1,
+        + source_quality * 0.15 + auditability * 0.20,
+        1,
     )
-
-
-# ── Tier extraction from traces ────────────────────────────────────────
-
-
-def _extract_tiers(traces: list[Any]) -> dict[str, int]:
-    t0 = t1 = t2 = 0
-    for t in traces:
-        try:
-            out = json.loads(getattr(t, "output_json", None) or "{}")
-            gov = (out.get("metadata") or {}).get("source_governance", {})
-            if isinstance(gov, dict):
-                tiers = gov.get("tier_counts", {})
-                t0 += int(tiers.get("T0", 0))
-                t1 += int(tiers.get("T1", 0))
-                t2 += int(tiers.get("T2", 0))
-        except Exception:
-            pass
-    return {"T0": t0, "T1": t1, "T2": t2}
-
-
-def _extract_content_basis(traces: list[Any]) -> dict[str, int]:
-    full_text = partial = snippet = 0
-    for t in traces:
-        try:
-            out = json.loads(getattr(t, "output_json", None) or "{}")
-            pages = out.get("output", {}).get("pages", [])
-            if isinstance(pages, list):
-                for page in pages:
-                    if isinstance(page, dict):
-                        cb = page.get("content_basis", "")
-                        if cb == "full_text": full_text += 1
-                        elif cb == "partial": partial += 1
-                        elif cb == "snippet_only": snippet += 1
-        except Exception:
-            pass
-    return {"full_text": full_text, "partial": partial, "snippet_only": snippet}
-
-
-def _effective_entities(
-    provenance: dict[str, Any],
-    *,
-    entity_key: str,
-    alias_key: str,
-    representative_key: str,
-    entity_id_key: str,
-    root_run_id: str,
-) -> list[dict[str, Any]]:
-    """Return only the deterministic Scope Identity representatives."""
-
-    identity = provenance.get("scope_identity")
-    if not isinstance(identity, dict):
-        identity, _ = build_scope_identity_projection(
-            provenance,
-            {root_run_id: 0},
-        )
-    entities = {
-        str(item.get(entity_id_key) or ""): item
-        for item in provenance.get(entity_key) or []
-        if isinstance(item, dict)
-    }
-    return [
-        entities[representative_id]
-        for alias in identity.get(alias_key) or []
-        if isinstance(alias, dict)
-        and (representative_id := str(alias.get(representative_key) or "")) in entities
-    ]
-
-
-def _effective_source_tiers(
-    provenance: dict[str, Any], root_run_id: str
-) -> tuple[dict[str, int], int, dict[str, int] | None]:
-    identity = provenance.get("scope_identity")
-    computed_metrics: dict[str, int] | None = None
-
-    if not isinstance(identity, dict):
-        identity, computed_metrics = build_scope_identity_projection(
-            provenance,
-            {root_run_id: 0},
-        )
-
-    documents = {
-        str(item.get("document_id") or ""): item
-        for item in provenance.get("source_documents") or []
-        if isinstance(item, dict)
-    }
-
-    # Improvement Source Quality MUST count by Independent Source.
-    # Only fall back to source_aliases for old bundles without independence_aliases.
-    if "independence_aliases" in identity:
-        aliases = identity.get("independence_aliases") or []
-    else:
-        aliases = identity.get("source_aliases") or []
-
-    tiers: dict[str, int] = {"T0": 0, "T1": 0, "T2": 0}
-    independent_source_count = 0
-
-    tier_rank = {"T0": 3, "T1": 2, "T2": 1}
-
-    for alias in aliases:
-        if not isinstance(alias, dict):
-            continue
-
-        member_ids = [
-            str(value)
-            for value in alias.get("member_document_ids") or []
-            if str(value)
-        ]
-
-        # Compat with old source_aliases format
-        if not member_ids:
-            representative_id = str(
-                alias.get("representative_document_id") or ""
-            )
-            if representative_id:
-                member_ids = [representative_id]
-
-        candidates: list[tuple[int, str]] = []
-
-        for document_id in member_ids:
-            document = documents.get(document_id)
-            if not document:
-                continue
-
-            metadata = document.get("metadata") or {}
-
-            if not metadata.get("research_eligible"):
-                continue
-            if metadata.get("is_mock"):
-                continue
-            if metadata.get("is_fallback"):
-                continue
-
-            tier = str(metadata.get("source_tier") or "").upper()
-            if tier not in tier_rank:
-                continue
-
-            candidates.append((tier_rank[tier], tier))
-
-        if not candidates:
-            continue
-
-        # One independence cluster contributes at most one Source.
-        # If multiple Resources within the cluster have different tiers,
-        # pick the highest-confidence tier.
-        _, selected_tier = max(candidates)
-
-        tiers[selected_tier] += 1
-        independent_source_count += 1
-
-    return tiers, independent_source_count, computed_metrics
-
-
-def _effective_content_basis(
-    provenance: dict[str, Any], root_run_id: str
-) -> tuple[dict[str, int], dict[str, float], int]:
-    passages = _effective_entities(
-        provenance,
-        entity_key="passages",
-        alias_key="passage_aliases",
-        representative_key="representative_passage_id",
-        entity_id_key="passage_id",
-        root_run_id=root_run_id,
-    )
-    counts = {
-        basis: sum(passage.get("content_basis") == basis for passage in passages)
-        for basis in ("full_text", "partial", "snippet_only")
-    }
-    total = sum(counts.values())
-    ratios = {
-        basis: round(count / total, 2) if total else 0.0
-        for basis, count in counts.items()
-    }
-    return counts, ratios, len(passages)
-
-
-# ── Question classification (reuse routing signals) ────────────────────
 
 
 def _classify_question(task: str) -> str:
-    """Classify task into a category using keyword signals."""
     from app.agent.routing import SKILL_SIGNALS
-    task_lower = task.lower()
+
     scores: dict[str, int] = {}
+    lowered = task.casefold()
     for skill_name, signals in SKILL_SIGNALS.items():
         for keyword, weight in signals:
-            if keyword.lower() in task_lower:
+            if keyword.casefold() in lowered:
                 scores[skill_name] = scores.get(skill_name, 0) + weight
     if not scores:
         return "general"
-    best = max(scores, key=lambda k: scores[k])
-    # Map skill names to question categories
-    category_map = {
+    return {
         "systematic_review": "academic_literature",
         "local_audit": "local_audit",
         "technical_docs_research": "technical_docs",
         "deep_web_research": "deep_research",
         "quick_search": "quick_fact",
         "hybrid_research": "technical_comparison",
-    }
-    return category_map.get(best, "general")
-
-
-# ── Main entry point ───────────────────────────────────────────────────
+    }.get(max(scores, key=lambda key: scores[key]), "general")
 
 
 def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
-    """Evaluate a completed run and persist to improvement_log."""
     try:
         result = resolve_research_result(db, run_id)
     except ValueError:
@@ -279,115 +63,82 @@ def auto_evaluate_and_log(db: Session, run_id: str) -> ImprovementLog | None:
         return None
     if result.root_run_id not in set(db.scalars(trusted_run_ids())):
         return None
-
-    # Check if already logged (idempotent)
     existing = db.get(ImprovementLog, result.root_run_id)
     if existing is not None:
         return existing
 
-    provenance = get_result_provenance_bundle(db, result)
-    traces = list_result_traces(db, result)
-    citations = getattr(run, "citation_total", 0) or 0
-    accuracy = getattr(run, "citation_accuracy", 0.0) or 0.0
-    verified = getattr(run, "citation_supported", 0) or 0
-    unsupported = getattr(run, "citation_unsupported", 0) or 0
-
-    # Keep every evaluation dimension on the same resolved result boundary.
-    tiers, independent_source_count, computed_metrics = _effective_source_tiers(
-        provenance, result.root_run_id
+    bundle = get_result_provenance_bundle(db, result)
+    list_result_traces(db, result)
+    citations = int(getattr(run, "citation_total", 0) or 0)
+    accuracy = float(getattr(run, "citation_accuracy", 0.0) or 0.0)
+    verified = int(getattr(run, "citation_supported", 0) or 0)
+    quality = calculate_evidence_quality(bundle, citation_accuracy=accuracy)
+    metrics = bundle.get("metrics") or {}
+    effective_source_count = int(metrics.get("independent_source_count", quality["independent_source_count"]))
+    effective_passage_count = int(metrics.get("effective_unique_passage_count", len(bundle.get("passages") or [])))
+    quality["independent_source_count"] = effective_source_count
+    quality["unique_resource_count"] = max(
+        int(quality.get("unique_resource_count") or 0),
+        int(metrics.get("unique_resource_count") or 0),
     )
-    content_basis, content_ratios, effective_passage_count = _effective_content_basis(
-        provenance, result.root_run_id
+    passages = [item for item in bundle.get("passages") or [] if isinstance(item, dict)]
+    full_text_ratio = (
+        sum(str(item.get("content_basis") or "") == "full_text" for item in passages) / len(passages)
+        if passages else 0.0
     )
-    full_text_ratio = content_ratios["full_text"]
-
-    # Deterministic 5-dimension scoring
-    relevance = 6.0  # deterministic default (no LLM judge)
-    factual = round(verified / citations, 2) if citations > 0 else 0.0
-    coverage = 6.0   # deterministic default
-    source_quality = _score_source_quality(tiers["T0"], tiers["T1"], tiers["T2"], citations)
+    relevance = 6.0
+    factual = round(verified / citations, 2) if citations else 0.0
+    coverage = round(float(quality["claim_support_coverage"]) * 10, 1)
+    source_quality = round(float(quality["evidence_quality_score"]), 1)
     auditability = _score_auditability(citations, accuracy, full_text_ratio)
-    overall = _compute_overall(relevance, factual, coverage, source_quality, auditability)
 
-    # ── Resource vs Independent Source counts ────────────────────────────
-    # Scope Runs carry metrics in the bundle; non-Scope Runs get them
-    # from the build_scope_identity_projection() call inside _effective_source_tiers().
-    metrics = provenance.get("metrics") or computed_metrics or {}
-
-    unique_resource_count = int(
-        metrics.get(
-            "unique_resource_count",
-            metrics.get("effective_unique_source_count", 0),
-        )
-    )
-
-    reported_independent_source_count = int(
-        metrics.get(
-            "independent_source_count",
-            independent_source_count,
-        )
-    )
-
-    # Skill composition
-    plan: dict[str, Any] = {}
     try:
         plan = json.loads(run.plan_json or "{}")
-        skill_routing = plan.get("skill_routing") or {}
-        composed_from = skill_routing.get("composed_from")
-        skill_comp = json.dumps(composed_from) if composed_from else skill_routing.get("selected_skill")
-    except Exception:
-        skill_comp = None
+    except (json.JSONDecodeError, TypeError):
+        plan = {}
+    routing = plan.get("skill_routing") or {}
+    composition = routing.get("composed_from") or routing.get("selected_skill")
+    mode = "deep_research_v2" if plan.get("execution_mode") == "deep_research_v2" or run.engine_version == "v2" else plan.get("execution_mode")
 
-    execution_mode = None
-    try:
-        if plan.get("execution_mode") == "deep_research_v2" or run.engine_version == "v2":
-            execution_mode = "deep_research_v2"
-        elif plan.get("adaptive_upgrade"):
-            execution_mode = "adaptive"
-        elif plan.get("deepening_total_rounds") or plan.get("deepening_phase"):
-            execution_mode = "react_deepening"
-        elif plan.get("parallel_execution"):
-            execution_mode = "planned_parallel"
-    except Exception:
-        pass
-
-    log_entry = ImprovementLog(
+    entry = ImprovementLog(
         run_id=result.root_run_id,
         question_category=_classify_question(run.task),
-        skill_composition=str(skill_comp) if skill_comp else None,
-        execution_mode=execution_mode,
-        overall_score=overall,
+        skill_composition=json.dumps(composition, ensure_ascii=False) if isinstance(composition, list) else composition,
+        execution_mode=mode,
+        overall_score=_compute_overall(relevance, factual, coverage, source_quality, auditability),
         relevance_score=relevance,
         factual_accuracy=factual,
         coverage_score=coverage,
         source_quality_score=source_quality,
         auditability_score=auditability,
         citation_count=citations,
-        tier_t0=tiers["T0"],
-        tier_t1=tiers["T1"],
-        tier_t2=tiers["T2"],
+        quality_schema_version=quality["quality_schema_version"],
+        evidence_quality_score=quality["evidence_quality_score"],
+        claim_support_coverage=quality["claim_support_coverage"],
+        strong_claim_coverage=quality["strong_claim_coverage"],
+        independent_claim_coverage=quality["independent_claim_coverage"],
+        mean_cited_reliability=quality["mean_cited_reliability"],
+        p25_cited_reliability=quality["p25_cited_reliability"],
+        independent_source_count=quality["independent_source_count"],
+        unique_resource_count=quality["unique_resource_count"],
+        unresolved_conflict_count=quality["unresolved_conflict_count"],
         evaluation_metadata_json=json.dumps(
             {
+                **quality,
                 "result_scope": "research_scope" if result.is_scope else "run",
                 "scope_id": result.scope_id,
                 "engine_version": result.engine_version,
-                "unique_resource_count": unique_resource_count,
-                "independent_source_count": reported_independent_source_count,
-                "effective_source_count": independent_source_count,
+                "report_integrity_version": REPORT_INTEGRITY_VERSION,
+                "independent_source_count": effective_source_count,
+                "effective_source_count": effective_source_count,
                 "effective_passage_count": effective_passage_count,
                 "coverage_evaluable": False,
-                "report_integrity_version": REPORT_INTEGRITY_VERSION,
             },
             ensure_ascii=False,
             sort_keys=True,
         ),
     )
-    db.add(log_entry)
+    db.add(entry)
     db.commit()
-    logger.info(
-        "Improvement log written for result %s: overall=%.1f, traces=%d",
-        result.root_run_id,
-        overall,
-        len(traces),
-    )
-    return log_entry
+    logger.info("Improvement log written for result %s: overall=%.1f", result.root_run_id, entry.overall_score)
+    return entry

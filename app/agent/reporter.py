@@ -42,16 +42,6 @@ CONTENT_BASIS_LABELS: dict[str, str] = {
 }
 
 # ── Phase 8.1: Tier badges ──────────────────────────────────────────────
-TIER_BADGES: dict[str, str] = {
-    "T0": "🟢 T0",
-    "T1": "🟡 T1",
-    "T2": "🟠 T2",
-}
-TIER_LABELS: dict[str, str] = {
-    "T0": "一手/原始来源",
-    "T1": "机构/权威二手",
-    "T2": "社区/个人",
-}
 
 
 @dataclass
@@ -1130,110 +1120,29 @@ def _render_provenance_markdown(bundle: dict[str, Any] | None) -> list[str]:
     return lines
 
 
-def _render_tier_distribution(
-    bundle: dict[str, Any] | None,
-    plan: dict[str, Any],
-) -> list[str]:
-    """Phase 8.1: Render source tier distribution and quota analysis."""
+def _render_evidence_quality_summary(bundle: dict[str, Any] | None) -> list[str]:
     if not bundle:
         return []
-    documents = [doc for doc in bundle.get("source_documents") or []
-                 if (doc.get("metadata") or {}).get("research_eligible")
-                 and not (doc.get("metadata") or {}).get("is_mock")
-                 and not (doc.get("metadata") or {}).get("is_fallback")]
-    documents = list({doc.get("canonical_uri"): doc for doc in documents}.values())
-    if not documents:
-        return []
-
-    # Count tiers
-    tier_counts: dict[str, int] = {"T0": 0, "T1": 0, "T2": 0}
-    for doc in documents:
-        metadata = doc.get("metadata") or {}
-        if isinstance(metadata, str):
-            try:
-                metadata = json.loads(metadata)
-            except Exception:
-                metadata = {}
-        tier = metadata.get("source_tier", "T2") if isinstance(metadata, dict) else "T2"
-        if tier in tier_counts:
-            tier_counts[tier] += 1
-
-    total = sum(tier_counts.values())
-    if total == 0:
-        return []
-
-    profile_constraints = plan.get("profile_constraints") or {}
-    min_t0 = profile_constraints.get("min_t0_sources", 1)
-
-    lines = [
-        "## 10. 信源层级分布",
+    claims = bundle.get("report_claims") or []
+    citations = bundle.get("citations") or []
+    scores = bundle.get("reliability_scores") or []
+    resolutions = bundle.get("resolutions") or []
+    cited_claims = {item.get("report_claim_id") for item in citations}
+    values = sorted(float(item.get("total_score") or 0.0) for item in scores)
+    mean = sum(values) / len(values) if values else 0.0
+    p25 = values[max(0, int(len(values) * 0.25) - 1)] if values else 0.0
+    clusters = {item.get("source_cluster_id") for item in scores if item.get("source_cluster_id")}
+    unresolved = sum(1 for item in resolutions if item.get("resolution") in {"unresolved", "conflicted"})
+    coverage = len(cited_claims) / len(claims) if claims else 0.0
+    return [
+        "## 10. 证据质量摘要",
         "",
-        "| 层级 | 含义 | 数量 | 占比 |",
-        "|------|------|------|------|",
+        f"* Claim 引用覆盖率：`{coverage:.1%}`",
+        f"* 引用证据平均可靠性 / P25：`{mean:.3f}` / `{p25:.3f}`",
+        f"* 独立来源簇：`{len(clusters)}`",
+        f"* 未解决冲突：`{unresolved}`",
+        "",
     ]
-    for tier in ("T0", "T1", "T2"):
-        count = tier_counts[tier]
-        pct = f"{count / total * 100:.0f}%" if total > 0 else "0%"
-        badge = TIER_BADGES.get(tier, tier)
-        label = TIER_LABELS.get(tier, tier)
-        lines.append(f"| {badge} | {label} | {count} | {pct} |")
-
-    lines.append("")
-
-    # Profile quota
-    if profile_constraints:
-        profile_name = plan.get("retrieval_profile", "generic")
-        shortfall = max(0, min_t0 - tier_counts["T0"])
-        lines.extend([
-            f"* **检索配置**：`{profile_name}`",
-            f"* **T0 最低要求**：{min_t0}，**实际达成**：{tier_counts['T0']}",
-        ])
-        if shortfall > 0:
-            shortfall_policy = profile_constraints.get("shortfall_policy", "report_only")
-            lines.extend([
-                f"* **⚠️ T0 缺口**：缺少 {shortfall} 个 T0 来源（策略：`{shortfall_policy}`）",
-                "",
-                "> 本报告的部分结论可能仅依赖非一手来源，请在使用时注意交叉验证。",
-            ])
-        else:
-            lines.append("* ✅ T0 来源满足最低要求")
-        lines.append("")
-
-    # T2-only claims detection
-    tiers_by_claim: dict[str, set[str]] = {}
-    report_claims = {rc["report_claim_id"]: rc for rc in bundle.get("report_claims") or []}
-    passages = {p["passage_id"]: p for p in bundle.get("passages") or []}
-    for citation in bundle.get("citations") or []:
-        claim_id = citation.get("report_claim_id", "")
-        passage_id = citation.get("passage_id", "")
-        passage = passages.get(passage_id) or {}
-        pmeta = passage.get("metadata") or {}
-        if isinstance(pmeta, str):
-            try:
-                pmeta = json.loads(pmeta)
-            except Exception:
-                pmeta = {}
-        tier = pmeta.get("source_tier", "T2") if isinstance(pmeta, dict) else "T2"
-        if claim_id:
-            tiers_by_claim.setdefault(claim_id, set()).add(tier)
-
-    t2_only_claims = [
-        str((report_claims.get(claim_id) or {}).get("claim_text") or "")[:120]
-        for claim_id, tiers in tiers_by_claim.items()
-        if tiers == {"T2"}
-        and str((report_claims.get(claim_id) or {}).get("claim_text") or "")
-    ]
-
-    if t2_only_claims:
-        lines.append("### 仅由 T2 来源支撑的结论")
-        lines.append("")
-        lines.append("> 以下结论的支撑证据仅来自社区/个人来源（T2），建议在关键决策中谨慎使用：")
-        lines.append("")
-        for i, claim_text in enumerate(t2_only_claims[:10], 1):
-            lines.append(f"{i}. {claim_text}")
-        lines.append("")
-
-    return lines
 
 
 def _render_citation_index(bundle: dict[str, Any] | None) -> list[str]:
@@ -1251,8 +1160,8 @@ def _render_citation_index(bundle: dict[str, Any] | None) -> list[str]:
     lines = [
         "## 9. 引用索引",
         "",
-        "| 引用编号 | 信源层级 | 关系 | 证据质量 | 来源 | 原文片段 |",
-        "|----------|----------|------|----------|------|----------|",
+        "| 引用编号 | 证据角色 | 关系 | 可靠性 | 来源 | 原文片段 |",
+        "|----------|----------|------|--------|------|----------|",
     ]
 
     for citation in citations:
@@ -1262,15 +1171,6 @@ def _render_citation_index(bundle: dict[str, Any] | None) -> list[str]:
         cb = _content_basis_label(passage)
         source_uri = str(passage.get("locator", {}).get("uri") or "")
         source_display = source_uri[:60] if source_uri else "—"
-        tier_meta = (passage.get("metadata") or {})
-        if isinstance(tier_meta, str):
-            try:
-                tier_meta = json.loads(tier_meta)
-            except Exception:
-                tier_meta = {}
-        tier = tier_meta.get("source_tier", "T2") if isinstance(tier_meta, dict) else "T2"
-        tier_badge = TIER_BADGES.get(tier, "🟠 T2")
-
         # Find relation from edges
         edge_id = citation.get("edge_id")
         relation = "supports"
@@ -1278,10 +1178,16 @@ def _render_citation_index(bundle: dict[str, Any] | None) -> list[str]:
             if edge.get("edge_id") == edge_id:
                 relation = edge.get("relation", "supports")
                 break
+        score = next(
+            (item for item in bundle.get("reliability_scores") or [] if item.get("edge_id") == edge_id),
+            {},
+        )
+        role = str((passage.get("metadata") or {}).get("evidence_role") or "unknown")
+        reliability = float(score.get("total_score") or 0.0)
         relation_icon = {"supports": "✅", "refutes": "❌", "contextualizes": "ℹ️"}.get(relation, "—")
 
         lines.append(
-            f"| [{label}] | {tier_badge} | {relation_icon} {relation} | {cb} | {source_display} | {passage_text} |"
+            f"| [{label}] | {role} | {relation_icon} {relation} | {reliability:.3f} ({cb}) | {source_display} | {passage_text} |"
         )
 
     lines.append("")
@@ -2068,9 +1974,9 @@ def generate_markdown_report(
 
     # ── Phase 8.1: Source tier distribution ──────────────────────────
     if provenance_bundle:
-        tier_lines = _render_tier_distribution(provenance_bundle, plan)
-        if tier_lines:
-            lines.extend(tier_lines)
+        quality_lines = _render_evidence_quality_summary(provenance_bundle)
+        if quality_lines:
+            lines.extend(quality_lines)
 
     # ── Phase 7: Skill version footer ──────────────────────────────────────
     skill_name = plan.get("skill_name")

@@ -36,6 +36,16 @@ class ImprovementLog(Base):
     tier_t0: Mapped[int] = mapped_column(Integer, default=0)
     tier_t1: Mapped[int] = mapped_column(Integer, default=0)
     tier_t2: Mapped[int] = mapped_column(Integer, default=0)
+    quality_schema_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence_quality_score: Mapped[float] = mapped_column(Float, default=0.0)
+    claim_support_coverage: Mapped[float] = mapped_column(Float, default=0.0)
+    strong_claim_coverage: Mapped[float] = mapped_column(Float, default=0.0)
+    independent_claim_coverage: Mapped[float] = mapped_column(Float, default=0.0)
+    mean_cited_reliability: Mapped[float] = mapped_column(Float, default=0.0)
+    p25_cited_reliability: Mapped[float] = mapped_column(Float, default=0.0)
+    independent_source_count: Mapped[int] = mapped_column(Integer, default=0)
+    unique_resource_count: Mapped[int] = mapped_column(Integer, default=0)
+    unresolved_conflict_count: Mapped[int] = mapped_column(Integer, default=0)
     evaluation_metadata_json: Mapped[str] = mapped_column(
         Text, nullable=False, default="{}"
     )

@@ -200,6 +200,57 @@ def test_report_budget_failure_marks_root_and_scope_failed(db, r12_settings):
     assert scope.status == "failed"
 
 
+def test_branch_planner_failure_persists_provider_diagnostics(db, r12_settings):
+    root = create_root(db)
+
+    def fake_root_runner(session, run_id, settings, _client):
+        run = store.mark_agent_run_running_unless_cancelled(session, run_id)
+        add_web_trace(session, run_id, "Evidence collected before planner failure.", "root")
+        traces = store.list_tool_traces(session, run_id)
+        materialize_execution_provenance(
+            session,
+            run,
+            json.loads(run.plan_json or "{}"),
+            load_observations(traces),
+            traces,
+            settings,
+        )
+        return {"run_id": run_id, "status": "running"}
+
+    with patch("app.research.orchestrator.run_react_task", side_effect=fake_root_runner):
+        result = run_deep_research_v2(
+            db,
+            root.run_id,
+            r12_settings,
+            FakeReActLLMClient([]),
+            branch_planner=lambda *_args, **_kwargs: {
+                "branches": [],
+                "is_comprehensive": False,
+                "planner_failed": True,
+                "error_type": "structured_output_truncated",
+                "error_message": "Branch planner response reached the provider output limit.",
+                "provider": "fixture",
+                "model": "reasoning-model",
+                "finish_reason": "length",
+                "prompt_tokens": 1102,
+                "completion_tokens": 1200,
+                "content_length": 693,
+            },
+        )
+
+    trace = next(
+        item for item in store.list_tool_traces(db, root.run_id)
+        if item.tool_name == "research_branch_planner"
+    )
+    diagnostics = json.loads(trace.output_json)
+    assert result["status"] == "failed"
+    assert diagnostics["error_type"] == "structured_output_truncated"
+    assert diagnostics["finish_reason"] == "length"
+    assert diagnostics["provider"] == "fixture"
+    assert trace.token_in == 1102
+    assert trace.token_out == 1200
+
+
 def test_orchestrator_resume_skips_completed_branch_planning(db, r12_settings):
     root = create_root(db)
     scope = create_research_scope(db, root.run_id, {})

@@ -59,7 +59,7 @@ from app.reporting.claim_occurrence import (
     segment_final_answer_claims,
 )
 from app.trace import store
-from app.trace.logger import record_trace_event
+from app.trace.logger import record_phase_event, record_trace_event
 
 
 BranchPlanner = Callable[..., dict[str, Any]]
@@ -86,6 +86,7 @@ def run_deep_research_v2(
     plan = _json_object(root.plan_json)
     if root.status in {"failed", "cancelled", "waiting_human", "waiting_human_plan"}:
         return _summary(root, plan)
+    record_phase_event(db, run_id, "orchestration", "started")
     scope = resolve_research_scope(db, run_id) or create_research_scope(
         db,
         run_id,
@@ -142,11 +143,17 @@ def run_deep_research_v2(
         )
     else:
         try:
+            record_phase_event(db, run_id, "root_discovery", "started")
             root_result = run_react_task(db, run_id, settings_obj, actor_client)
+            record_phase_event(db, run_id, "root_discovery", "success")
         except BudgetExceeded:
             root_node.status = "failed"
             db.commit()
             update_scope_status(db, scope.scope_id, "failed")
+            record_phase_event(db, run_id, "root_discovery", "failed", error_message="Research root discovery exceeded its budget.")
+            raise
+        except Exception as exc:
+            record_phase_event(db, run_id, "root_discovery", "failed", details={"error_type": type(exc).__name__}, error_message="Research root discovery failed.")
             raise
     root = store.get_fresh_agent_run(db, run_id)
     if root is None:
@@ -253,6 +260,10 @@ def run_deep_research_v2(
                 raise
         parent_traces = store.list_tool_traces(db, parent_node.run_id or run_id)
         try:
+            planning_trace = record_phase_event(
+                db, run_id, "branch_planning", "started",
+                details={"parent_node_id": parent_node.node_id, "depth": parent_node.depth + 1},
+            )
             branch_plan = branch_planner(
                 actor_client,
                 task=parent_node.query,
@@ -264,6 +275,22 @@ def run_deep_research_v2(
             )
         except BudgetExceeded:
             update_scope_status(db, scope.scope_id, "failed")
+            record_phase_event(
+                db, run_id, "branch_planning", "failed",
+                parent_trace_id=locals().get("planning_trace").trace_id if locals().get("planning_trace") else None,
+                error_message="Research branch planning exceeded its budget.",
+            )
+            raise
+        except Exception as exc:
+            record_phase_event(
+                db,
+                run_id,
+                "branch_planning",
+                "failed",
+                parent_trace_id=locals().get("planning_trace").trace_id if locals().get("planning_trace") else None,
+                details={"parent_node_id": parent_node.node_id, "error_type": type(exc).__name__},
+                error_message="Research branch planning failed.",
+            )
             raise
         if branch_plan.get("finalization_limited"):
             finalization_limited = True
@@ -271,6 +298,25 @@ def run_deep_research_v2(
         if branch_plan.get("planner_failed"):
             update_node_metadata(db, parent_node, branch_planning_status="failed")
             orchestration_incomplete = True
+            planner_error = str(
+                branch_plan.get("error_message") or "Research branch planning failed."
+            )
+            planner_diagnostics = {
+                key: branch_plan.get(key)
+                for key in (
+                    "parent_node_id",
+                    "error_type",
+                    "provider",
+                    "model",
+                    "finish_reason",
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "content_length",
+                )
+                if branch_plan.get(key) is not None
+            }
+            planner_diagnostics["parent_node_id"] = parent_node.node_id
+            planner_diagnostics["depth"] = parent_node.depth + 1
             record_trace_event(
                 db,
                 run_id,
@@ -278,9 +324,13 @@ def run_deep_research_v2(
                 "research_branch_planner",
                 "failed",
                 {"parent_node_id": parent_node.node_id},
-                "Research branch planning failed; completeness was not established.",
-                {"parent_node_id": parent_node.node_id, "depth": parent_node.depth + 1},
-                error_message="Research branch planning failed.",
+                planner_error,
+                planner_diagnostics,
+                error_message=planner_error,
+                token_in=int(branch_plan.get("prompt_tokens") or 0),
+                token_out=int(branch_plan.get("completion_tokens") or 0),
+                phase="branch_planning",
+                parent_trace_id=planning_trace.trace_id,
             )
             break
         branches = list(branch_plan.get("branches") or [])
@@ -297,6 +347,8 @@ def run_deep_research_v2(
                 "Research branch planner did not establish completeness.",
                 {"parent_node_id": parent_node.node_id, "depth": parent_node.depth + 1},
                 error_message="Research completeness was not established.",
+                phase="branch_planning",
+                parent_trace_id=planning_trace.trace_id,
             )
             break
         if parent_node.depth >= settings_obj.deep_research_max_depth:
@@ -315,6 +367,7 @@ def run_deep_research_v2(
                 )
                 break
             update_node_metadata(db, parent_node, branch_planning_status="completed")
+            record_phase_event(db, run_id, "branch_planning", "success", parent_trace_id=planning_trace.trace_id, details={"branch_count": 0, "is_comprehensive": True})
             continue
         for branch in branches:
             runtime = current_budget()
@@ -359,6 +412,7 @@ def run_deep_research_v2(
                 finalization_limited = True
                 break
         update_node_metadata(db, parent_node, branch_planning_status="completed")
+        record_phase_event(db, run_id, "branch_planning", "success", parent_trace_id=planning_trace.trace_id, details={"branch_count": len(branches)})
         if orchestration_incomplete:
             break
         if finalization_limited:
@@ -419,6 +473,7 @@ def run_deep_research_v2(
     citation_reports: list[Any] = []
     reference_reports: list[Any] = []
     try:
+        report_phase_trace = record_phase_event(db, run_id, "report_generation", "started")
         markdown = report_generator(
             report_subject(root),
             plan,
@@ -433,10 +488,13 @@ def run_deep_research_v2(
         )
     except BudgetExceeded:
         update_scope_status(db, scope.scope_id, "failed")
+        record_phase_event(db, run_id, "report_generation", "failed", error_message="Report generation exceeded its budget.")
         raise
     except Exception as exc:
         update_scope_status(db, scope.scope_id, "failed")
+        record_phase_event(db, run_id, "report_generation", "failed", parent_trace_id=locals().get("report_phase_trace").trace_id if locals().get("report_phase_trace") else None, details={"error_type": type(exc).__name__}, error_message="Report generation failed.")
         return _summary(fail_execution(db, run_id, exc), plan)
+    record_phase_event(db, run_id, "report_generation", "success", parent_trace_id=report_phase_trace.trace_id)
     if report_responses:
         record_report_synthesis_trace(db, run_id, traces, report_responses[-1], success=True)
     expected_report_path = f"workspace/reports/{run_id}.md"
@@ -554,6 +612,7 @@ def run_deep_research_v2(
     _after_run_completed(db, root, markdown, step_no=max((t.step_no for t in root_traces), default=0) + 1)
     update_scope_status(db, scope.scope_id, "completed")
     root = store.update_agent_run_status(db, run_id, "completed", None)
+    record_phase_event(db, run_id, "orchestration", "success", details={"research_scope_id": scope.scope_id})
     return {
         **_summary(root, plan, "Deep Research Engine V2 completed."),
         "execution_mode": "deep_research_v2",

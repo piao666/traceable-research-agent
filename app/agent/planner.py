@@ -762,6 +762,7 @@ def plan_task(
     execution_mode_override: str | None = None,
     skill_name: str | None = None,
     retrieval_profile: str | None = None,
+    source_constraints: dict[str, Any] | None = None,
     skill_parameters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a plan using deterministic rules, optional LLM planning, or a Skill template.
@@ -822,7 +823,8 @@ def plan_task(
     if _memory_recall_data:
         _memory_extra["memory_recall_trace"] = _memory_recall_data
 
-    # ── Phase 8.1: retrieval profile constraint ──────────────────
+    # Retrieval profiles control discovery/fetch effort. Source admission is
+    # governed only by explicit user constraints, never by authority tiers.
     _profile_extra: dict[str, Any] = {}
     normalized_task = task.casefold()
     inferred_profile = (
@@ -834,13 +836,14 @@ def plan_task(
     try:
         from app.evidence.policy import load_source_policy
         policy = load_source_policy(settings.source_policy_path)
-        profile = policy.retrieval_profiles.get(selected_profile)
+        profile = policy.research_profiles.get(selected_profile)
         if profile is None:
             raise ValueError(f"Unknown retrieval profile: {selected_profile}")
         _profile_extra = {
             "retrieval_profile": selected_profile,
-            "profile_constraints": profile.to_dict(),
-            "policy_version": policy.version,
+            "research_profile": profile.to_dict(),
+            "source_constraints": source_constraints or {"mode": "open"},
+            "evidence_policy_version": policy.version,
         }
     except (OSError, ValueError, KeyError):
         pass
@@ -1829,6 +1832,7 @@ def plan_task_for_review(
     execution_mode_override: str | None = None,
     skill_name: str | None = None,
     retrieval_profile: str | None = None,
+    source_constraints: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Generate a plan and attach cost/risk estimates for human review.
 
@@ -1845,6 +1849,7 @@ def plan_task_for_review(
         execution_mode_override=execution_mode_override,
         skill_name=skill_name,
         retrieval_profile=retrieval_profile,
+        source_constraints=source_constraints,
     )
 
     steps = plan.get("steps") or []

@@ -113,6 +113,9 @@ def _base_event(
     metadata: dict[str, Any] | None = None,
     created_at: datetime | str | None = None,
     finished_at: datetime | str | None = None,
+    phase: str | None = None,
+    parent_trace_id: str | None = None,
+    attempt: int = 1,
     current_step: int | None = None,
     total_steps: int | None = None,
     report_path: str | None = None,
@@ -130,6 +133,9 @@ def _base_event(
         "metadata": metadata or {},
         "created_at": _iso(created_at),
         "finished_at": _iso(finished_at),
+        "phase": phase,
+        "parent_trace_id": parent_trace_id,
+        "attempt": attempt,
         "current_step": current_step,
         "total_steps": total_steps,
         "report_path": report_path,
@@ -268,6 +274,9 @@ def _trace_event(trace: ToolTrace) -> dict[str, Any]:
         metadata=metadata,
         created_at=trace.created_at,
         finished_at=trace.finished_at,
+        phase=trace.phase,
+        parent_trace_id=trace.parent_trace_id,
+        attempt=trace.attempt,
     )
 
 

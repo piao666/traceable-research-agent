@@ -167,7 +167,9 @@ def enforce_execution_readiness(
     if run is None or run.status in {"cancelled", "failed", "completed"}:
         return False
     snapshot = settings.get_safe_runtime_config_summary()
-    snapshot.update({key: plan.get(key) for key in ("retrieval_profile", "profile_constraints", "policy_version")})
+    snapshot.update({key: plan.get(key) for key in (
+        "retrieval_profile", "research_profile", "source_constraints", "evidence_policy_version"
+    )})
     run.run_config_snapshot = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
     db.commit()
     if result["ready"]:

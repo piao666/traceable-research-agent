@@ -209,7 +209,7 @@ class R5MigrationTests(unittest.TestCase):
                 self.assertEqual(db.get(UserMemory, id_).content, "preserve")
                 self.assertEqual(
                     db.scalar(text("SELECT version_num FROM alembic_version")),
-                    "0015_report_claim_scope_lineage",
+                    "0017_trace_context",
                 )
                 self.assertIn("run_budgets", inspect(engine).get_table_names())
             engine.dispose()

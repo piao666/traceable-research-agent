@@ -374,7 +374,7 @@ def _web_page_items(run_id: str, record: dict[str, Any], existing_count: int) ->
                           source_ref=url, source_type="web")
         item.metadata.update({key: page[key] for key in (
             "content_basis", "extraction_method", "extraction_confidence", "content_hash",
-            "source_cluster_id", "hostname", "source_tier", "truncated", "requested_url",
+            "source_cluster_id", "hostname", "truncated", "requested_url",
             "final_url", "canonical_url", "canonical_hint", "published_at", "content_type",
             "fetch_status", "fetch_backend", "provider", "quality", "source_identity",
             "redirect_chain", "retrieval_attempts", "fragment_locator",
@@ -527,12 +527,12 @@ def _tavily_items(run_id: str, record: dict[str, Any], existing_count: int) -> l
             item.metadata["score"] = result.get("score")
         result_metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
         item.metadata.update({key: result[key] for key in (
-            "source_cluster_id", "hostname", "source_tier", "source_class",
+            "source_cluster_id", "hostname", "source_class",
             "official", "evidence_role", "classification_rule",
             "classification_confidence",
         ) if key in result})
         item.metadata.update({key: result_metadata[key] for key in (
-            "source_cluster_id", "hostname", "source_tier", "source_class",
+            "source_cluster_id", "hostname", "source_class",
             "official", "evidence_role", "classification_rule",
             "classification_confidence",
         ) if key in result_metadata})

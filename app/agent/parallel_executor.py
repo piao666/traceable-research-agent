@@ -19,7 +19,6 @@ from app.agent.report_generation import resolve_report_llm_client
 from app.agent.executor import (
     EXECUTABLE_TOOLS,
     _after_run_completed,
-    _check_profile_quota,
     _failed_observation,
     _is_step_confirmed,
     _resolve_arguments_from,
@@ -32,12 +31,7 @@ from app.agent.executor import (
     _summary,
 )
 from app.agent.reporter import generate_markdown_report, save_report
-from app.agent.source_governance import (
-    execute_targeted_refetches,
-    govern_tool_result,
-    persisted_refetch_rounds,
-    prepare_tool_arguments,
-)
+from app.agent.source_intake import intake_tool_result, prepare_tool_arguments
 from app.config import Settings, settings
 from app.evidence.service import materialize_execution_provenance
 from app.agent.preflight import enforce_execution_readiness
@@ -222,7 +216,7 @@ def _execute_step(
     result = execute_with_policy(tool_name, execution_arguments, policy_plan, settings_obj, execute_tool,
                                  budget_reserved=budget_reserved)
     latency_ms = int((perf_counter() - started) * 1000)
-    result = govern_tool_result(tool_name, result, plan or {}, settings_obj)
+    result = intake_tool_result(tool_name, result, plan or {}, settings_obj)
     finished_at = _utc_iso()
     return _StepResult(step, result, latency_ms, started_at, finished_at, worker_id)
 
@@ -371,7 +365,6 @@ def run_plan_parallel(
     steps = plan.get("steps") or []
     observations = load_observations(store.list_tool_traces(db, run_id))
     resume_after_step = run.current_step
-    refetch_rounds_used = persisted_refetch_rounds(store.list_tool_traces(db, run_id))
 
     # Shared URL dedup across sub-queries
     visited_urls: set[str] = set()
@@ -465,43 +458,6 @@ def run_plan_parallel(
                     latency_ms_delta=step_result.latency_ms,
                 )
 
-                def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
-                    refetch_started = perf_counter()
-                    refetch_result = execute_with_policy(name, refetch_args, plan, settings_obj, execute_tool)
-                    return refetch_result, int((perf_counter() - refetch_started) * 1000)
-
-                refetches = execute_targeted_refetches(
-                    tool_name,
-                    actual_arguments,
-                    step_result.result,
-                    plan,
-                    settings_obj,
-                    execute=_execute_refetch,
-                    max_rounds=settings_obj.max_refetch_rounds - refetch_rounds_used,
-                    starting_round=refetch_rounds_used,
-                )
-                refetch_rounds_used += len(refetches)
-                for refetch in refetches:
-                    trace = record_tool_result(
-                        db,
-                        run_id,
-                        step_no,
-                        tool_name,
-                        refetch.arguments,
-                        refetch.result,
-                        refetch.latency_ms,
-                        sub_query=f"source_refetch_round:{refetch.round_no}",
-                    )
-                    observation = _observation(step, refetch.result)
-                    observation["trace_id"] = trace.trace_id
-                    observations.append(observation)
-                    run = store.update_agent_run_progress(
-                        db,
-                        run_id,
-                        step_no,
-                        total_tool_calls_delta=0 if refetch.result.metadata.get("executed") is False else 1,
-                        latency_ms_delta=refetch.latency_ms,
-                    )
                 continue
 
             parallel_results = _run_parallel_group(
@@ -524,43 +480,6 @@ def run_plan_parallel(
                 observation = _observation(step, step_result.result)
                 observation["trace_id"] = trace.trace_id
                 observations.append(observation)
-                def _execute_refetch(name: str, refetch_args: dict[str, Any]) -> tuple[ToolResult, int]:
-                    refetch_started = perf_counter()
-                    refetch_result = execute_with_policy(name, refetch_args, plan, settings_obj, execute_tool)
-                    return refetch_result, int((perf_counter() - refetch_started) * 1000)
-
-                refetches = execute_targeted_refetches(
-                    tool_name,
-                    arguments,
-                    step_result.result,
-                    plan,
-                    settings_obj,
-                    execute=_execute_refetch,
-                    max_rounds=settings_obj.max_refetch_rounds - refetch_rounds_used,
-                    starting_round=refetch_rounds_used,
-                )
-                refetch_rounds_used += len(refetches)
-                for refetch in refetches:
-                    trace = record_tool_result(
-                        db,
-                        run_id,
-                        step_no,
-                        tool_name,
-                        refetch.arguments,
-                        refetch.result,
-                        refetch.latency_ms,
-                        sub_query=f"source_refetch_round:{refetch.round_no}",
-                    )
-                    observation = _observation(step, refetch.result)
-                    observation["trace_id"] = trace.trace_id
-                    observations.append(observation)
-                    run = store.update_agent_run_progress(
-                        db,
-                        run_id,
-                        step_no,
-                        total_tool_calls_delta=0 if refetch.result.metadata.get("executed") is False else 1,
-                        latency_ms_delta=refetch.latency_ms,
-                    )
             if parallel_results:
                 max_step = max(int(item.step.get("step_no") or 0) for item in parallel_results)
                 run = store.update_agent_run_progress(
@@ -586,7 +505,6 @@ def run_plan_parallel(
             traces,
             settings_obj,
         )
-        _check_profile_quota(db, run_id, plan, provenance_bundle, traces)
         llm_client = resolve_report_llm_client(settings_obj, report_llm_client)
         citation_validation_reports: list[Any] = []
         reference_verification_reports: list[Any] = []

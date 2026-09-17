@@ -14,6 +14,14 @@ class HealthResponse(BaseModel):
     react_enabled: bool = True
 
 
+class SourceConstraintsRequest(BaseModel):
+    mode: Literal["open", "prioritize", "restrict"] = "open"
+    domains: list[str] = Field(default_factory=list)
+    urls: list[str] = Field(default_factory=list)
+    preferred_source_classes: list[str] = Field(default_factory=list)
+    excluded_domains: list[str] = Field(default_factory=list)
+
+
 class TaskCreateRequest(BaseModel):
     task: str = Field(..., min_length=1)
     report_type: str = "summary"
@@ -25,7 +33,8 @@ class TaskCreateRequest(BaseModel):
     session_id: str | None = None
     skill_name: str | None = None
     require_plan_approval: bool = False  # Phase 7.4: pause for plan review before execution
-    retrieval_profile: str | None = None  # Phase 8.1: source tier retrieval profile
+    retrieval_profile: str | None = None
+    source_constraints: SourceConstraintsRequest | None = None
 
 
 class RuntimeCapabilitiesResponse(BaseModel):
@@ -306,6 +315,10 @@ class TaskPlanResponse(BaseModel):
     version: str
     task: str
     source_mode: str
+    retrieval_profile: str | None = None
+    research_profile: dict[str, Any] | None = None
+    source_constraints: dict[str, Any] | None = None
+    evidence_policy_version: str | None = None
     allowed_tools: list[str]
     steps: list[PlanStepResponse]
     notes: list[str]
@@ -440,6 +453,57 @@ class ToolTraceResponse(BaseModel):
     sub_query: str | None = None
     origin_run_id: str
     research_node_id: str | None = None
+    phase: str | None = None
+    parent_trace_id: str | None = None
+    attempt: int = 1
+
+
+class DiagnosticFailureResponse(BaseModel):
+    trace_id: str | None = None
+    phase: str | None = None
+    tool_name: str | None = None
+    status: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None
+    created_at: datetime | None = None
+
+
+class DiagnosticProviderResponse(BaseModel):
+    provider: str | None = None
+    model: str | None = None
+    finish_reason: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    content_length: int = 0
+    trace_id: str | None = None
+
+
+class DiagnosticChildRunResponse(BaseModel):
+    run_id: str
+    status: str
+    run_role: str = "research_branch"
+    error_message: str | None = None
+
+
+class DiagnosticEvidenceResponse(BaseModel):
+    status: str
+    source_documents: int = 0
+    passages: int = 0
+    report_claims: int = 0
+    citations: int = 0
+    independent_source_count: int = 0
+    unresolved_conflict_count: int = 0
+
+
+class TaskDiagnosticsResponse(BaseModel):
+    run_id: str
+    status: str
+    first_failure: DiagnosticFailureResponse | None = None
+    root_cause_type: str | None = None
+    provider: DiagnosticProviderResponse | None = None
+    child_runs: list[DiagnosticChildRunResponse] = Field(default_factory=list)
+    evidence: DiagnosticEvidenceResponse
+    retry_recommendation: str
 
 
 class EvidenceItemResponse(BaseModel):
