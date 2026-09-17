@@ -1,5 +1,9 @@
-from app.research.assessor import assess_requirements, persist_shadow_assessment
-from app.research.models import EvidenceGapRecord
+from app.research.assessor import (
+    assess_requirements,
+    persist_plan_contract,
+    persist_shadow_assessment,
+)
+from app.research.models import EvidenceGapRecord, EvidenceRequirement, ResearchQuestion
 
 from .conftest import create_root
 
@@ -110,9 +114,33 @@ def test_shadow_assessment_persistence_is_idempotent_and_does_not_change_run(db)
     root = create_root(db)
     before = (root.status, root.error_message)
     result = assess_requirements(_contract(), {"sources": []})
-    first = persist_shadow_assessment(db, root_run_id=root.run_id, result=result)
-    second = persist_shadow_assessment(db, root_run_id=root.run_id, result=result)
+    revision = persist_plan_contract(db, root_run_id=root.run_id, contract=_contract())
+    first = persist_shadow_assessment(
+        db, root_run_id=root.run_id, plan_revision_id=revision.revision_id, result=result
+    )
+    second = persist_shadow_assessment(
+        db, root_run_id=root.run_id, plan_revision_id=revision.revision_id, result=result
+    )
     db.refresh(root)
     assert first.snapshot_id == second.snapshot_id
     assert db.query(EvidenceGapRecord).filter_by(snapshot_id=first.snapshot_id).count() == 1
     assert (root.status, root.error_message) == before
+
+
+def test_plan_contract_projection_is_idempotent_and_revision_scoped(db) -> None:
+    root = create_root(db)
+    contract = _contract(
+        original_task="Assess latency",
+        questions=[{"question_id": "q1", "text": "What is the latency?", "requirement_ids": ["r1"]}],
+    )
+    first = persist_plan_contract(db, root_run_id=root.run_id, contract=contract)
+    second = persist_plan_contract(db, root_run_id=root.run_id, contract=contract)
+    assert first.revision_id == second.revision_id
+    assert db.query(ResearchQuestion).filter_by(revision_id=first.revision_id).count() == 1
+    assert db.query(EvidenceRequirement).filter_by(revision_id=first.revision_id).count() == 1
+
+    revised = dict(contract)
+    revised["original_task"] = "Assess throughput"
+    third = persist_plan_contract(db, root_run_id=root.run_id, contract=revised)
+    assert third.revision_id != first.revision_id
+    assert db.query(EvidenceRequirement).filter_by(revision_id=third.revision_id).count() == 1

@@ -34,8 +34,14 @@ from app.evidence.reference_verifier import (
 from app.llm.base import LLMClient
 from app.llm.providers import create_llm_client
 from app.research.branch_planner import plan_research_branches
+from app.research.assessor import (
+    assess_requirements,
+    persist_plan_contract,
+    persist_shadow_assessment,
+)
 from app.research.models import ResearchNode
 from app.research.node_executor import ResearchNodeExecutor
+from app.research.branch_executor import SerialPearExecutor
 from app.research.outcome import assess_scope_outcome
 from app.research.scope import (
     create_research_node,
@@ -100,9 +106,22 @@ def run_deep_research_v2(
     if root is None:
         raise ValueError("Task run not found")
     plan = _json_object(root.plan_json)
+    # A completed V2 run is terminal.  Replaying the orchestrator must be a
+    # read-only summary operation: no planner, node runner, report generator,
+    # or new audit rows may be created on a second invocation.
+    if root.status == "completed" and plan.get("execution_mode") == "deep_research_v2":
+        return _summary(root, plan)
     if root.status in {"failed", "cancelled", "waiting_human", "waiting_human_plan"}:
         return _summary(root, plan)
     record_phase_event(db, run_id, "orchestration", "started")
+    plan_revision = persist_plan_contract(
+        db,
+        root_run_id=run_id,
+        contract=plan.get("task_contract"),
+    )
+    plan["plan_revision_id"] = plan_revision.revision_id
+    plan["plan_revision_number"] = plan_revision.revision_number
+    store.replace_agent_run_plan(db, run_id, plan)
     scope = resolve_research_scope(db, run_id) or create_research_scope(
         db,
         run_id,
@@ -189,6 +208,7 @@ def run_deep_research_v2(
     db.commit()
 
     executor = node_executor or ResearchNodeExecutor()
+    serial_executor = SerialPearExecutor(executor)
     nodes = list_scope_nodes(db, scope.scope_id)
     prior_queries = [node.query for node in nodes]
     created_run_ids = [
@@ -222,7 +242,9 @@ def run_deep_research_v2(
                     update_scope_status(db, scope.scope_id, "failed")
                     raise
             try:
-                result = executor.execute(db, scope, node, settings_obj, actor_client)
+                result = serial_executor.execute_one(
+                    db, scope, node, settings_obj, actor_client
+                )
             except BudgetExceeded:
                 update_scope_status(db, scope.scope_id, "failed")
                 raise
@@ -413,7 +435,7 @@ def run_deep_research_v2(
             )
             prior_queries.append(node.query)
             try:
-                result = executor.execute(
+                result = serial_executor.execute_one(
                     db, scope, node, settings_obj, actor_client
                 )
             except BudgetExceeded:
@@ -467,6 +489,26 @@ def run_deep_research_v2(
     materialize_scope_reasoning(db, scope.scope_id, settings_obj.source_policy_path)
     scope_evidence = get_scope_provenance_bundle(db, scope)
     scope_traces = list_scope_traces(db, scope.scope_id)
+    shadow_assessment = assess_requirements(
+        plan.get("task_contract"),
+        build_source_context(scope_traces),
+        traces=scope_traces,
+        scope_evidence=scope_evidence,
+    )
+    shadow_snapshot = persist_shadow_assessment(
+        db,
+        root_run_id=run_id,
+        scope_id=scope.scope_id,
+        plan_revision_id=plan_revision.revision_id,
+        result=shadow_assessment,
+    )
+    plan["requirement_assessment_shadow"] = {
+        "snapshot_id": shadow_snapshot.snapshot_id,
+        "assessor_version": shadow_assessment["assessor_version"],
+        "status": shadow_assessment["status"],
+        "complete": shadow_assessment["complete"],
+    }
+    store.replace_agent_run_plan(db, run_id, plan)
     scope_evidence["coverage_matrix"] = assess_comparison_coverage(
         plan.get("task_contract"),
         build_source_context(scope_traces),

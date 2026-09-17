@@ -13,15 +13,129 @@ import json
 from typing import Any
 from urllib.parse import urlsplit
 
-from sqlalchemy import delete
+from sqlalchemy import delete, desc, select
 from sqlalchemy.orm import Session
 
 from app.evidence.policy import evidence_role_supports_claim
-from app.research.contracts import normalize_requirements
-from app.research.models import CoverageSnapshot, EvidenceGapRecord
+from app.research.contracts import normalize_questions, normalize_requirements
+from app.research.models import (
+    CoverageSnapshot,
+    EvidenceGapRecord,
+    EvidenceRequirement as EvidenceRequirementRow,
+    ResearchPlanRevision,
+    ResearchQuestion as ResearchQuestionRow,
+)
 
 
 ASSESSOR_VERSION = "pear-assessor-v1"
+
+
+def _scoped_contract_id(prefix: str, revision_id: str, source_id: str, limit: int = 160) -> str:
+    digest = hashlib.sha256(f"{revision_id}:{source_id}".encode("utf-8")).hexdigest()[:32]
+    return f"{prefix}-{digest}"[:limit]
+
+
+def persist_plan_contract(
+    db: Session,
+    *,
+    root_run_id: str,
+    contract: dict[str, Any] | None,
+    status: str = "approved",
+) -> ResearchPlanRevision:
+    """Persist an immutable plan/question/requirement projection idempotently."""
+
+    payload = dict(contract or {})
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    contract_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    existing = db.scalar(
+        select(ResearchPlanRevision)
+        .where(
+            ResearchPlanRevision.root_run_id == root_run_id,
+            ResearchPlanRevision.contract_hash == contract_hash,
+        )
+        .order_by(desc(ResearchPlanRevision.revision_number))
+        .limit(1)
+    )
+    if existing is not None:
+        return existing
+
+    latest_number = db.scalar(
+        select(ResearchPlanRevision.revision_number)
+        .where(ResearchPlanRevision.root_run_id == root_run_id)
+        .order_by(desc(ResearchPlanRevision.revision_number))
+        .limit(1)
+    ) or 0
+    revision_number = int(latest_number) + 1
+    revision_id = "rev-" + hashlib.sha256(
+        f"{root_run_id}|{contract_hash}|{revision_number}".encode("utf-8")
+    ).hexdigest()[:60]
+    revision = ResearchPlanRevision(
+        revision_id=revision_id,
+        root_run_id=root_run_id,
+        revision_number=revision_number,
+        contract_hash=contract_hash,
+        contract_json=encoded,
+        status=status,
+    )
+    db.add(revision)
+    questions = normalize_questions(payload)
+    if not questions:
+        # Legacy contracts have no question array. Preserve their task as one
+        # explicitly marked compatibility question instead of dropping links.
+        questions = [{
+            "question_id": "q-1",
+            "text": str(payload.get("original_task") or "Research task"),
+            "requirement_ids": tuple(item.requirement_id for item in normalize_requirements(payload)),
+        }]
+    for ordinal, question in enumerate(questions, 1):
+        source_question_id = str(question.question_id if hasattr(question, "question_id") else question["question_id"])
+        question_id = _scoped_contract_id("q", revision_id, source_question_id)
+        text_value = str(question.text if hasattr(question, "text") else question.get("text") or "Research task")
+        requirement_ids = (
+            list(question.requirement_ids)
+            if hasattr(question, "requirement_ids")
+            else list(question.get("requirement_ids") or [])
+        )
+        db.add(
+            ResearchQuestionRow(
+                question_id=question_id,
+                revision_id=revision_id,
+                ordinal=ordinal,
+                text=text_value,
+                metadata_json=json.dumps(
+                    {"source_question_id": source_question_id, "requirement_ids": requirement_ids},
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+    question_ids = {
+        str(item.question_id if hasattr(item, "question_id") else item["question_id"])
+        for item in questions
+    }
+    for requirement in normalize_requirements(payload):
+        source_question_id = requirement.question_id if requirement.question_id in question_ids else "q-1"
+        question_id = _scoped_contract_id("q", revision_id, source_question_id)
+        requirement_id = _scoped_contract_id("req", revision_id, requirement.requirement_id)
+        db.add(
+            EvidenceRequirementRow(
+                requirement_id=requirement_id,
+                revision_id=revision_id,
+                question_id=question_id,
+                kind=requirement.kind,
+                predicate=requirement.predicate,
+                entity=requirement.entity,
+                dimension=requirement.dimension,
+                time_scope=requirement.time_scope,
+                min_reliability=requirement.min_reliability,
+                min_independent_sources=requirement.min_independent_sources,
+                acceptable_content_basis_json=json.dumps(requirement.acceptable_content_basis),
+                required=requirement.required,
+                status="uncovered",
+            )
+        )
+    db.flush()
+    return revision
 
 
 def _source_role(source: dict[str, Any]) -> str:
@@ -60,7 +174,11 @@ def _scope_groups(scope_evidence: dict[str, Any] | None, group_ids: set[str]) ->
         return []
     return [
         dict(group)
-        for group in (scope_evidence or {}).get("claim_groups") or []
+        for group in (
+            (scope_evidence or {}).get("claim_groups")
+            or (scope_evidence or {}).get("scope_claim_groups")
+            or []
+        )
         if isinstance(group, dict) and str(group.get("group_id") or "") in group_ids
     ]
 
@@ -273,11 +391,21 @@ def persist_shadow_assessment(
     for gap in result.get("gaps") or []:
         if not isinstance(gap, dict):
             continue
+        source_requirement_id = str(gap.get("requirement_id") or "unknown")
+        persisted_requirement_id = (
+            _scoped_contract_id("req", plan_revision_id, source_requirement_id)
+            if plan_revision_id
+            else source_requirement_id
+        )
+        if db.get(EvidenceRequirementRow, persisted_requirement_id) is None:
+            # The snapshot remains complete in JSON; do not violate the FK if
+            # a caller assessed a contract that was not persisted in this DB.
+            continue
         db.add(
             EvidenceGapRecord(
-                gap_id=f"{snapshot_id}:{gap.get('requirement_id')}",
+                gap_id=f"{snapshot_id}:{source_requirement_id}",
                 snapshot_id=snapshot_id,
-                requirement_id=str(gap.get("requirement_id") or "unknown"),
+                requirement_id=persisted_requirement_id,
                 gap_type=str(gap.get("type") or "missing_evidence"),
                 missing_dimensions_json=json.dumps(gap.get("missing_dimensions") or [], ensure_ascii=False),
                 related_claims_json=json.dumps(gap.get("related_claims") or [], ensure_ascii=False),

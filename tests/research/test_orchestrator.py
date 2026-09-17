@@ -2,6 +2,7 @@ import json
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import func, select
 
 from app.agent.outcome import load_observations
 from app.agent.outcome import result_integrity
@@ -16,6 +17,7 @@ from app.evidence.reference_verifier import (
 )
 from app.evidence.scope_service import get_scope_provenance_bundle
 from app.research.node_executor import ResearchNodeExecutor
+from app.research.models import CoverageSnapshot, ResearchPlanRevision
 from app.research.orchestrator import run_deep_research_v2
 from app.research.scope import (
     create_research_node,
@@ -160,6 +162,20 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
     )
     assert result_integrity(completed_root)["requires_review"] is False
     assert get_scope_provenance_bundle(db, scope)["integrity"]["child_citation_count"] >= 1
+
+    # A completed V2 run is replay-safe: no external runner/planner/report call
+    # and no additional durable plan or assessment rows are created.
+    revision_count = db.scalar(select(func.count()).select_from(ResearchPlanRevision))
+    snapshot_count = db.scalar(select(func.count()).select_from(CoverageSnapshot))
+    with (
+        patch("app.research.orchestrator.run_react_task", side_effect=AssertionError("replayed")),
+        patch("app.research.orchestrator.save_report", side_effect=AssertionError("replayed")),
+        patch("app.research.orchestrator.plan_research_branches", side_effect=AssertionError("replayed")),
+    ):
+        replay = run_deep_research_v2(db, root.run_id, r12_settings, actor_client)
+    assert replay["status"] == "completed"
+    assert db.scalar(select(func.count()).select_from(ResearchPlanRevision)) == revision_count
+    assert db.scalar(select(func.count()).select_from(CoverageSnapshot)) == snapshot_count
 
 
 def test_report_budget_failure_marks_root_and_scope_failed(db, r12_settings):
