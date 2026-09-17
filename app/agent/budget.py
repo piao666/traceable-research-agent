@@ -60,11 +60,11 @@ def estimate_text_tokens(value: str) -> int:
     return max(1, math.ceil(estimate * 1.2))
 
 
-def estimate_message_tokens(messages, max_tokens: int) -> int:
+def estimate_message_tokens(messages, max_tokens: int | None) -> int:
     """Estimate prompt plus requested completion with per-message overhead."""
 
     prompt = sum(estimate_text_tokens(message.content) + 12 for message in messages)
-    return prompt + max(0, int(max_tokens))
+    return prompt + max(0, int(max_tokens or 0))
 
 
 def limits(settings):

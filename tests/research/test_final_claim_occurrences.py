@@ -1,6 +1,9 @@
 from sqlalchemy import func, select
 
-from app.evidence.citation_validator import materialize_final_report_occurrences
+from app.evidence.citation_validator import (
+    extract_final_answer_section,
+    materialize_final_report_occurrences,
+)
 from app.evidence.models import CitationOccurrence, ReportClaimOccurrence
 from app.evidence.scope_service import get_scope_provenance_bundle
 from app.reporting.claim_occurrence import segment_final_answer_claims
@@ -27,6 +30,27 @@ def test_uncited_factual_sentence_materializes_claim_without_citation(db):
     assert bundle["citation_occurrences"] == []
     assert db.scalar(select(func.count()).select_from(ReportClaimOccurrence)) == 1
     assert db.scalar(select(func.count()).select_from(CitationOccurrence)) == 0
+
+
+def test_final_answer_keeps_semantic_subheadings_until_next_numbered_chapter():
+    markdown = (
+        "# Report\n\n"
+        "## 3. 最终回答\n\n"
+        "# Answer title\n\n"
+        "## 一、架构对比\n\n"
+        "Pi uses a layered architecture. [CIT-001-01]\n\n"
+        "## 二、上下文管理\n\n"
+        "The harness keeps an append-only log. [CIT-001-02]\n\n"
+        "## 4. 执行计划\n\n"
+        "### 步骤 1\n"
+    )
+
+    final_answer = extract_final_answer_section(markdown)
+
+    assert "## 一、架构对比" in final_answer
+    assert "## 二、上下文管理" in final_answer
+    assert "## 4. 执行计划" not in final_answer
+    assert "Pi uses a layered architecture." in final_answer
 
 
 def test_cited_and_uncited_sentences_both_materialize(db, r12_settings):

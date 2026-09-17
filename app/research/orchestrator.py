@@ -542,6 +542,55 @@ def run_deep_research_v2(
             enforce_reference_consistency=_requires_strict_reference_gate(plan),
             scope_bundle=scope_evidence,
         )
+        repair_attempted = False
+        deterministic_fallback_used = False
+        if report_integrity.status == "failed" and report_integrity.error_code in {
+            "no_final_claim_occurrences",
+            "unsupported_citation_rate_exceeded",
+            "citation_support_rate_below_threshold",
+        }:
+            repair_attempted = True
+            fallback_markdown = generate_markdown_report(
+                report_subject(root),
+                plan,
+                observations,
+                traces,
+                llm_client=None,
+                provenance_bundle=scope_evidence,
+                report_type=root.report_type,
+            )
+            fallback_final_answer = extract_final_answer_section(fallback_markdown)
+            fallback_validation = validate_scope_citations(
+                fallback_final_answer,
+                scope_evidence,
+                min_supported_overlap=0.15,
+                min_weak_overlap=0.05,
+            )
+            fallback_preview = _validation_occurrence_preview(
+                fallback_validation,
+                fallback_final_answer,
+                scope_evidence,
+            )
+            fallback_integrity = assess_report_integrity(
+                fallback_preview,
+                reference_report=reference_report,
+                enforce_reference_consistency=_requires_strict_reference_gate(plan),
+                scope_bundle=scope_evidence,
+            )
+            if fallback_integrity.status == "passed":
+                markdown = fallback_markdown
+                citation_validation = fallback_validation
+                occurrence_preview = fallback_preview
+                report_integrity = fallback_integrity
+                deterministic_fallback_used = True
+        plan.setdefault("report_diagnostics", {})
+        plan["report_diagnostics"].update(
+            {
+                "repair_attempted": repair_attempted,
+                "deterministic_fallback_used": deterministic_fallback_used,
+            }
+        )
+        store.replace_agent_run_plan(db, run_id, plan)
         reference_lines = render_reference_verification_section(reference_report)
         if reference_lines:
             markdown = "\n".join(

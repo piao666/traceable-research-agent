@@ -61,11 +61,11 @@ def build_react_messages(
         "Do not repeat unavailable tools or rejected inputs; choose another permitted route. "
         "If no feasible route remains, finish with an explicit limitation summary. "
         "Finishing does not bypass evidence requirements or guarantee a completed research report. "
-        "The thought field must contain only a short decision rationale. "
+        "The thought field must contain only a short decision rationale of at most 160 characters. "
         "Output one strict JSON object only, no Markdown. Required schema: "
         '{"thought":"short rationale","action":"MUST be from allowed list or finish",'
         '"args":{},"finish_reason":null}. '
-        "If complete, use action=finish and put a concise answer in args.summary. "
+        "If complete, use action=finish and put a concise answer in args.summary. Keep args minimal. "
         "For finish, set args.goal_status to achieved, not_met or needs_clarification. "
         "Tool unavailability, exhausted attempts or finding no requested dataset is NOT achieved. "
         "Use task_contract.as_of and period exactly; never replace relative years with remembered dates. "

@@ -65,6 +65,7 @@ def _build_sub_query_groups(
     passages_by_id: dict[str, dict[str, Any]] = {}
     citations_by_claim: dict[str, list[dict[str, Any]]] = {}
     claims_by_id: dict[str, dict[str, Any]] = {}
+    disputed_claim_ids: set[str] = set()
     if provenance_bundle:
         for p in provenance_bundle.get("passages") or []:
             passages_by_id[str(p.get("passage_id"))] = p
@@ -73,6 +74,24 @@ def _build_sub_query_groups(
             citations_by_claim.setdefault(claim_id, []).append(c)
         for rc in provenance_bundle.get("report_claims") or []:
             claims_by_id[str(rc.get("report_claim_id"))] = rc
+        disputed_claim_ids.update(
+            str(item.get("claim_id") or "")
+            for item in provenance_bundle.get("resolutions") or []
+            if item.get("status") in {"unresolved", "requires_human"}
+        )
+        disputed_group_ids = {
+            str(item.get("group_id") or "")
+            for item in provenance_bundle.get("scope_resolutions") or []
+            if item.get("status") in {"unresolved", "requires_human"}
+        }
+        for group in provenance_bundle.get("scope_claim_groups") or []:
+            if str(group.get("group_id") or "") not in disputed_group_ids:
+                continue
+            disputed_claim_ids.update(
+                str(member.get("claim_id") or "")
+                for member in group.get("members") or []
+            )
+        disputed_claim_ids.discard("")
 
     # Group traces by sub_query
     groups: dict[str, list[ToolTrace]] = {}
@@ -110,7 +129,10 @@ def _build_sub_query_groups(
         # Find claims referenced by these citations
         claim_ids = {str(c.get("report_claim_id")) for c in group_citations}
         group_claims = [
-            claims_by_id[cid] for cid in claim_ids if cid in claims_by_id
+            claims_by_id[cid]
+            for cid in claim_ids
+            if cid in claims_by_id
+            and str(claims_by_id[cid].get("claim_id") or "") not in disputed_claim_ids
         ]
 
         result.append(SubQueryGroup(
@@ -1593,6 +1615,9 @@ def _render_grouped_final_answer(
         # Collect findings from this group's claims
         for claim in group.claims:
             claim_text = str(claim.get("claim_text") or "")
+            sentence_match = re.match(r".*?(?:[。！？]|[.!?](?=\s|$))", claim_text)
+            if sentence_match:
+                claim_text = sentence_match.group(0).strip()
             # Find citations for this claim
             claim_citations = [
                 c for c in group.citations
@@ -1603,6 +1628,8 @@ def _render_grouped_final_answer(
                 for c in claim_citations
                 if c.get("citation_label")
             ]
+            if not citation_labels:
+                continue
             cit_str = "[" + "][".join(citation_labels) + "]" if citation_labels else ""
 
             # Find content_basis for the passages backing this claim
@@ -1617,17 +1644,6 @@ def _render_grouped_final_answer(
                 cb_suffix = f" （{' / '.join(sorted(cb_labels))}）"
 
             lines.append(f"**发现：** {claim_text}{cit_str}{cb_suffix}")
-            lines.append("")
-
-        # Show supporting evidence snippets
-        if group.passages:
-            lines.append("**支撑证据：**")
-            lines.append("")
-            for p in group.passages[:5]:
-                text = str(p.get("text") or "")[:300]
-                cb = _content_basis_label(p)
-                trace_id = str(p.get("trace_id") or "")[:12]
-                lines.append(f"* {cb} `{trace_id}…` — {text}")
             lines.append("")
 
     # If no groups have claims, fall back to legacy answer
@@ -1713,7 +1729,7 @@ def generate_markdown_report(
             )
 
     # ── Phase 3: Grouped answer when sub-query groups exist ─────────────
-    if sub_query_groups and len(sub_query_groups) > 1 and not _llm_answer:
+    if sub_query_groups and any(group.claims for group in sub_query_groups) and not _llm_answer:
         _final_answer_lines = _render_grouped_final_answer(
             run.task, observations, traces, sub_query_groups,
         )
@@ -1725,8 +1741,6 @@ def generate_markdown_report(
         ]
     else:
         _final_answer_lines = _render_final_answer(run.task, observations, traces) or []
-
-    _final_answer_lines.extend(_conflict_alert_lines(provenance_bundle))
 
     lines += [
         "## 3. 最终回答",

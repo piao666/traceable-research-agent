@@ -57,6 +57,22 @@ def test_explicit_empty_claim_universe_fails_with_claim_error():
     assert result.claim_total == 0
 
 
+def test_report_integrity_preserves_strict_citation_thresholds_after_claim_extraction():
+    result = assess_report_integrity(
+        {
+            "claim_occurrences": [
+                {"claim_text": "Pi uses a layered architecture.", "citation_count": 1}
+            ],
+            "citation_occurrences": [
+                {"passage_id": "pass-1", "verdict": "unsupported"}
+            ],
+        }
+    )
+
+    assert result.status == "failed"
+    assert result.error_code == "unsupported_citation_rate_exceeded"
+
+
 def test_claim_coverage_metrics_include_uncited_claims():
     result = assess_report_integrity(
         {

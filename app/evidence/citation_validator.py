@@ -495,13 +495,17 @@ def validate_scope_citations(
 
 
 def extract_final_answer_section(markdown: str) -> str:
-    """Extract only the rendered `## 3. 最终回答` body."""
+    """Extract the rendered final-answer body until the next top-level chapter.
+
+    Final answers may contain semantic subheadings such as ``## 一、架构``.
+    Only numbered report chapters delimit the answer.
+    """
 
     heading = re.search(r"(?m)^##\s+3\.\s*最终回答\s*$", markdown)
     if heading is None:
         return ""
     body_start = heading.end()
-    next_heading = re.search(r"(?m)^##\s+", markdown[body_start:])
+    next_heading = re.search(r"(?m)^##\s+\d+\.\s+", markdown[body_start:])
     body_end = body_start + next_heading.start() if next_heading else len(markdown)
     return markdown[body_start:body_end].strip()
 

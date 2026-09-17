@@ -1141,6 +1141,26 @@ def get_task_diagnostics(
         "provider_error": "检查 provider 配置和服务响应后再重试。",
         "provider_failure": "检查 provider 配置和服务响应后再重试。",
     }.get(root_cause or "", "检查首个失败阶段及其上游输入后再决定是否重试。")
+    plan: dict[str, Any] = {}
+    report_integrity = {}
+    try:
+        plan = json.loads(run.plan_json or "{}")
+        report_integrity = plan.get("report_integrity") or {}
+    except (TypeError, json.JSONDecodeError):
+        report_integrity = {}
+    report_metrics = report_integrity.get("metrics") or {}
+    if report_integrity.get("status") == "failed":
+        failed_phase = "report_integrity"
+        root_cause = str(report_integrity.get("error_code") or root_cause or "report_integrity_failed")
+        recommendation = {
+            "no_final_claim_occurrences": "检查最终回答章节边界和 Claim 分段结果后重试。",
+            "unsupported_citation_rate_exceeded": "仅保留能由对应证据支持的结论，并重新生成报告。",
+            "citation_support_rate_below_threshold": "修正引用与 Claim 的对应关系后重新生成报告。",
+        }.get(root_cause, recommendation)
+    else:
+        failed_phase = first.phase if first else None
+    react_state = plan.get("react_state") or {}
+    report_diagnostics = plan.get("report_diagnostics") or {}
     return TaskDiagnosticsResponse(
         run_id=run_id,
         status=run.status,
@@ -1161,6 +1181,11 @@ def get_task_diagnostics(
         child_runs=child_runs,
         evidence=evidence,
         retry_recommendation=recommendation,
+        failed_phase=failed_phase,
+        report_integrity_error_code=(str(report_integrity.get("error_code")) if report_integrity.get("error_code") else None),
+        report_integrity_metrics=report_metrics,
+        repair_attempted=bool(report_diagnostics.get("repair_attempted")),
+        deterministic_fallback_used=bool(report_diagnostics.get("deterministic_fallback_used")),
     )
 
 

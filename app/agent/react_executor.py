@@ -191,6 +191,7 @@ def _initial_state(settings: Settings, provider: str, model: str | None) -> dict
         "completed_with_limitation": False,
         "finish_reason": None,
         "replacement_steps_granted": 0,
+        "structured_output_retries": 0,
     }
 
 
@@ -850,7 +851,7 @@ def run_react_task(
                 plan.get("task_contract"),
             )
             try:
-                response = client.structured_complete(messages, temperature=0.0, max_tokens=800)
+                response = client.structured_complete(messages, temperature=0.0, max_tokens=None)
             except FinalizationRequired:
                 return _finalize_at_research_boundary(
                     db, run_id, plan, state, step_no, settings, client
@@ -891,6 +892,7 @@ def run_react_task(
             except ReActDecisionError as exc:
                 reason = _safe_error(str(exc))
                 state["invalid_decisions"] = int(state.get("invalid_decisions") or 0) + 1
+                invalid_count = int(state.get("invalid_decisions") or 0)
                 plan["react_state"] = state
                 _persist_plan(db, run_id, plan)
                 record_trace_event(
@@ -909,11 +911,17 @@ def run_react_task(
                             "fallback_used": settings.react_fallback_to_planned,
                             "llm_provider": provider,
                             "llm_model": model,
+                            "finish_reason": response.metadata.get("finish_reason") if response else None,
+                            "prompt_tokens": response.usage.prompt_tokens if response and response.usage else 0,
+                            "completion_tokens": response.usage.completion_tokens if response and response.usage else 0,
                         }
                     },
                     error_message=reason,
+                    token_in=response.usage.prompt_tokens if response and response.usage else 0,
+                    token_out=response.usage.completion_tokens if response and response.usage else 0,
+                    phase="react_decision",
+                    attempt=invalid_count,
                 )
-                invalid_count = int(state.get("invalid_decisions") or 0)
                 terminal_provider_errors = {
                     "auth_error",
                     "permission_error",
@@ -926,6 +934,23 @@ def run_react_task(
                     # Persist this choice so resumed execution also uses the
                     # reduced observation window for its bounded retry.
                     state["llm_context_compacted"] = True
+                if exc.error_type == "structured_output_truncated" and not state.get("llm_context_compacted"):
+                    # Retry once with compact prompt history. The failed
+                    # provider response is already persisted in Trace.
+                    state["llm_context_compacted"] = True
+                    state["structured_output_retries"] = int(state.get("structured_output_retries") or 0) + 1
+                    state.setdefault("observation_history", []).append({
+                        "step_no": step_no,
+                        "action": "invalid_decision",
+                        "thought": "(truncated response)",
+                        "observation_summary": "Structured ReAct JSON was truncated; retrying with compact context.",
+                        "success": False,
+                        "error_message": reason,
+                        "tool_result_metadata": {"error_type": "structured_output_truncated"},
+                    })
+                    plan["react_state"] = state
+                    _persist_plan(db, run_id, plan)
+                    continue
                 if exc.error_type in terminal_provider_errors:
                     if settings.react_fallback_to_planned and not any(
                         item.get("success") for item in state.get("observation_history") or []

@@ -504,6 +504,11 @@ class TaskDiagnosticsResponse(BaseModel):
     child_runs: list[DiagnosticChildRunResponse] = Field(default_factory=list)
     evidence: DiagnosticEvidenceResponse
     retry_recommendation: str
+    failed_phase: str | None = None
+    report_integrity_error_code: str | None = None
+    report_integrity_metrics: dict[str, Any] = Field(default_factory=dict)
+    repair_attempted: bool = False
+    deterministic_fallback_used: bool = False
 
 
 class EvidenceItemResponse(BaseModel):
