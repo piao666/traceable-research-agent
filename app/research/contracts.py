@@ -137,7 +137,10 @@ class ResearchOperationContract(BaseModel):
     operation_id: str = Field(min_length=1, max_length=160)
     logical_key: str = Field(min_length=1, max_length=256)
     attempt: int = Field(default=1, ge=1)
-    status: Literal["reserved", "running", "succeeded", "failed", "waiting", "cancelled"] = "reserved"
+    status: Literal[
+        "reserved", "running", "succeeded", "failed", "waiting", "cancelled",
+        "interrupted", "unknown",
+    ] = "reserved"
 
 
 def normalize_requirements(contract: dict[str, Any] | None) -> list[EvidenceRequirement]:

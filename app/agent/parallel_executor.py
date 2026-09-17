@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextvars import copy_context
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ from app.agent.preflight import enforce_execution_readiness
 from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, load_observations, report_subject, skip_dependency
 from app.agent.budget import budgeted_execution, reserve_tool, BudgetExceeded
 from app.mcp.policy import is_parallel_safe_tool
+from app.research.models import ResearchOperation
 from app.tools.base import ToolResult
 from app.tools.registry import execute_tool, get_tool
 from app.trace import store
@@ -79,6 +81,50 @@ class _StepResult:
 
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _operation_key(step: dict[str, Any]) -> str:
+    return f"planned-step:{int(step.get('step_no') or 0)}:{str(step.get('tool_name') or '')}"
+
+
+def _reserve_parallel_operation(db: Session, run_id: str, step: dict[str, Any]) -> ResearchOperation:
+    """Reserve an operation before worker submission; workers never share Session."""
+    logical_key = _operation_key(step)
+    previous = (
+        db.query(ResearchOperation)
+        .filter(ResearchOperation.root_run_id == run_id, ResearchOperation.logical_key == logical_key)
+        .order_by(ResearchOperation.attempt.desc())
+        .first()
+    )
+    attempt = 1
+    if previous is not None:
+        attempt = int(previous.attempt or 1) + 1
+        if previous.status in {"reserved", "running"}:
+            previous.status = "interrupted"
+            previous.error_message = "Coordinator restarted before operation completion."
+    arguments_hash = hashlib.sha256(
+        json.dumps(step.get("arguments") or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    operation = ResearchOperation(
+        operation_id=f"op-{uuid4().hex}", root_run_id=run_id, run_id=run_id,
+        operation_kind="planned_tool", logical_key=logical_key, attempt=attempt,
+        status="running", arguments_hash=arguments_hash,
+        lease_owner="parallel-coordinator", started_at=datetime.now(timezone.utc),
+    )
+    db.add(operation)
+    db.commit()
+    return operation
+
+
+def _finish_parallel_operation(db: Session, operation_id: str, result: ToolResult, *, interrupted: bool = False) -> None:
+    operation = db.get(ResearchOperation, operation_id)
+    if operation is None:
+        return
+    operation.status = "interrupted" if interrupted else ("succeeded" if result.success else "failed")
+    operation.result_revision = str((result.metadata or {}).get("result_revision") or "") or None
+    operation.error_message = result.error_message
+    operation.finished_at = datetime.now(timezone.utc)
+    db.commit()
 
 
 def _has_explicit_dependency(step: dict[str, Any]) -> bool:
@@ -137,6 +183,7 @@ def _with_parallel_metadata(
     started_at: str,
     finished_at: str,
     latency_ms: int,
+    operation_id: str | None = None,
 ) -> ToolResult:
     metadata = dict(result.metadata or {})
     metadata.update(
@@ -151,6 +198,8 @@ def _with_parallel_metadata(
             "latency_ms": latency_ms,
         }
     )
+    if operation_id:
+        metadata["operation_id"] = operation_id
     return ToolResult(
         success=result.success,
         output=result.output,
@@ -227,6 +276,8 @@ def _execute_step(
 
 
 def _run_parallel_group(
+    db: Session,
+    run_id: str,
     group: list[dict[str, Any]],
     settings_obj: Settings,
     plan: dict[str, Any] | None = None,
@@ -237,25 +288,31 @@ def _run_parallel_group(
     group_size = len(group)
     max_workers = min(settings_obj.parallel_max_workers, group_size)
     executor = ThreadPoolExecutor(max_workers=max_workers)
-    futures: dict[Future[_StepResult], tuple[dict[str, Any], int, str]] = {}
+    futures: dict[Future[_StepResult], tuple[dict[str, Any], int, str, str]] = {}
     group_started_at = _utc_iso()
     results: list[_StepResult] = []
     try:
         for index, step in enumerate(group, 1):
+            operation = _reserve_parallel_operation(db, run_id, step)
             try:
                 reserve_tool(str(step.get("tool_name")))
             except BudgetExceeded as exc:
+                _finish_parallel_operation(
+                    db,
+                    operation.operation_id,
+                    ToolResult(success=False, error_message=str(exc), metadata={"executed": False}),
+                )
                 results.append(_StepResult(step, ToolResult(success=False, error_message=str(exc),
                     metadata={"error_type": "budget_exhausted", "executed": False}), 0,
                     group_started_at, _utc_iso(), index))
                 continue
             futures[executor.submit(
                 copy_context().run, _execute_step, step, index, plan, visited_urls, visited_urls_lock, settings_obj, True
-            )] = (step, index, group_started_at)
+            )] = (step, index, group_started_at, operation.operation_id)
 
         done, pending = wait(set(futures), timeout=settings_obj.parallel_timeout_seconds)
         for future in done:
-            step, worker_id, fallback_started_at = futures[future]
+            step, worker_id, fallback_started_at, operation_id = futures[future]
             try:
                 step_result = future.result()
             except Exception as exc:
@@ -272,6 +329,7 @@ def _run_parallel_group(
                     finished_at=finished_at,
                     worker_id=worker_id,
                 )
+            _finish_parallel_operation(db, operation_id, step_result.result)
             results.append(
                 _StepResult(
                     step=step_result.step,
@@ -283,6 +341,7 @@ def _run_parallel_group(
                         started_at=step_result.started_at,
                         finished_at=step_result.finished_at,
                         latency_ms=step_result.latency_ms,
+                        operation_id=operation_id,
                     ),
                     latency_ms=step_result.latency_ms,
                     started_at=step_result.started_at,
@@ -292,23 +351,26 @@ def _run_parallel_group(
             )
 
         for future in pending:
-            step, worker_id, fallback_started_at = futures[future]
+            step, worker_id, fallback_started_at, operation_id = futures[future]
             future.cancel()
             finished_at = _utc_iso()
             latency_ms = settings_obj.parallel_timeout_seconds * 1000
+            timeout_result = _timeout_result(
+                f"Parallel tool timed out after {settings_obj.parallel_timeout_seconds} seconds."
+            )
+            _finish_parallel_operation(db, operation_id, timeout_result, interrupted=True)
             results.append(
                 _StepResult(
                     step=step,
                     result=_with_parallel_metadata(
-                        _timeout_result(
-                            f"Parallel tool timed out after {settings_obj.parallel_timeout_seconds} seconds."
-                        ),
+                        timeout_result,
                         group_id=group_id,
                         worker_id=worker_id,
                         group_size=group_size,
                         started_at=fallback_started_at,
                         finished_at=finished_at,
                         latency_ms=latency_ms,
+                        operation_id=operation_id,
                     ),
                     latency_ms=latency_ms,
                     started_at=fallback_started_at,
@@ -466,6 +528,8 @@ def run_plan_parallel(
                 continue
 
             parallel_results = _run_parallel_group(
+                db,
+                run_id,
                 executable_group, settings_obj, plan, visited_urls, visited_urls_lock
             )
             for step_result in parallel_results:
