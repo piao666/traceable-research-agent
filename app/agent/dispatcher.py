@@ -188,7 +188,29 @@ def run_task_by_mode(
         plan["requested_execution_mode"] = "react"
         _store.replace_agent_run_plan(db, run_id, plan)
     pear_decision = _pear_rollout_decision(run_id, plan, settings_obj)
-    if run is not None and effective_mode == "react":
+    # Auto is the only mode allowed to change controller at rollout time.  A
+    # selected cohort must enter the PEAR owner even when the legacy planner
+    # initially emitted ``execution_mode=planned``; Quick and explicit modes
+    # have already been handled above and remain unchanged.
+    if (
+        run is not None
+        and str(plan.get("research_mode") or "").casefold() == "auto"
+        and bool(pear_decision.get("selected"))
+        and settings_obj.deep_research_enabled
+    ):
+        effective_mode = "react"
+        plan_mode = "react"
+        plan["execution_mode"] = "react"
+        plan["requested_execution_mode"] = "react"
+        _store.replace_agent_run_plan(db, run_id, plan)
+    # Persist the deterministic decision for every new auto-mode Run, even
+    # when the sampled cohort remains on the legacy planned route.  This is
+    # rollout observability only; it never changes historical controller
+    # selection or Quick semantics.
+    if run is not None and (
+        effective_mode == "react"
+        or str(plan.get("research_mode") or "").casefold() == "auto"
+    ):
         plan["pear_rollout"] = pear_decision
         _store.replace_agent_run_plan(db, run_id, plan)
     if run is not None and run.status in {"failed", "cancelled", "completed", "waiting_human", "waiting_human_plan"}:

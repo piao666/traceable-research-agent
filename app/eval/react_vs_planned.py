@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.agent.executor import run_plan
 from app.agent.file_access_policy import confirmation_details_for_path
 from app.agent.react_executor import run_react_task
+from app.agent.budget import budget_snapshot
 from app.config import Settings
 from app.eval.fake_react_llm import FakeReActLLMClient
 from app.llm.providers import create_llm_client
@@ -261,6 +262,7 @@ def _run_mode(db: Session, case: dict[str, Any], mode: str, real_llm: bool) -> d
     final_run = store.get_agent_run(db, run.run_id)
     final_plan = json.loads(final_run.plan_json or "{}")
     traces = store.list_tool_traces(db, run.run_id)
+    budget = budget_snapshot(db, run.run_id) or {}
     report = _report_text(final_run)
     keywords = [str(item).lower() for item in case.get("success_keywords") or []]
     keyword_matches = [keyword for keyword in keywords if keyword in report.lower()]
@@ -275,6 +277,20 @@ def _run_mode(db: Session, case: dict[str, Any], mode: str, real_llm: bool) -> d
         1 for trace in traces if _trace_metadata(trace).get("fallback_used")
     ) + int(bool(state.get("fallback_used")))
     quality = trace_quality_score(mode, traces, final_plan, recovered)
+    budget_stop_reason = str(budget.get("stop_reason") or "")
+    budget_overrun_reasons = {
+        "deadline",
+        "tool_calls",
+        "llm_calls",
+        "estimated_cost",
+        "tool_price_unconfigured",
+        "llm_price_unconfigured",
+    }
+    fetch_attempts = sum(
+        1
+        for trace in traces
+        if any(token in str(trace.tool_name).casefold() for token in ("fetch", "browser", "pdf"))
+    )
     return {
         "case_id": case["case_id"],
         "scenario": case["scenario"],
@@ -296,6 +312,13 @@ def _run_mode(db: Session, case: dict[str, Any], mode: str, real_llm: bool) -> d
         "hitl_success": waiting_seen and completed if case.get("requires_hitl") else None,
         "completed_with_limitation": limitation,
         "trace_tools": [trace.tool_name for trace in traces],
+        "logical_llm_calls": int(budget.get("llm_calls") or 0),
+        "provider_attempts": int(budget.get("provider_attempts") or 0),
+        "tool_calls": int(budget.get("tool_calls") or 0),
+        "fetch_attempts": fetch_attempts,
+        "accounted_tokens": int(budget.get("accounted_tokens") or 0),
+        "budget_stop_reason": budget_stop_reason or None,
+        "budget_overrun": budget_stop_reason in budget_overrun_reasons,
     }
 
 
@@ -329,12 +352,109 @@ def summarize_mode(results: list[dict[str, Any]]) -> dict[str, Any]:
         "hitl_success_rate": round(
             sum(bool(item["hitl_success"]) for item in hitl_cases) / len(hitl_cases), 4
         ) if hitl_cases else 0.0,
+        # A completion carrying an un-recovered failure signal is a useful
+        # deterministic false-completion proxy for rollout gates.  It is
+        # deliberately reported separately from the legacy completion rate.
+        "false_completion_count": sum(
+            bool(item["task_completed"] and item["failure_signal"] and not item["recovered"])
+            for item in results
+        ),
+        "conflict_leakage_count": sum(int(item.get("conflict_leakage_count") or 0) for item in results),
+        "logical_llm_calls": sum(int(item.get("logical_llm_calls") or 0) for item in results),
+        "provider_attempts": sum(int(item.get("provider_attempts") or 0) for item in results),
+        "tool_calls": sum(int(item.get("tool_calls") or 0) for item in results),
+        "fetch_attempts": sum(int(item.get("fetch_attempts") or 0) for item in results),
+        "accounted_tokens": sum(int(item.get("accounted_tokens") or 0) for item in results),
+        "budget_overrun_count": sum(bool(item.get("budget_overrun")) for item in results),
+    }
+
+
+def compare_mode_summaries(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    max_completion_regression: float = 0.0,
+    max_report_regression: float = 0.0,
+    max_trace_quality_regression: float = 0.0,
+) -> dict[str, Any]:
+    """Apply the P4 quality gate to two deterministic benchmark summaries.
+
+    ``baseline`` is normally the retained legacy cohort and ``candidate`` is
+    the PEAR cohort.  Quality gates are intentionally independent of latency
+    or call-count improvements: no performance claim can waive a quality
+    regression.  The returned deltas make the decision auditable and keep
+    zero-call cases as explicit counters instead of dividing by zero.
+    """
+
+    thresholds = {
+        "task_completion_rate": float(max_completion_regression),
+        "report_exists_rate": float(max_report_regression),
+        "trace_quality_score": float(max_trace_quality_regression),
+    }
+    deltas = {
+        key: round(float(baseline.get(key, 0.0)) - float(candidate.get(key, 0.0)), 4)
+        for key in thresholds
+    }
+    failures = [
+        {
+            "metric": key,
+            "regression": deltas[key],
+            "allowed": threshold,
+        }
+        for key, threshold in thresholds.items()
+        if deltas[key] > threshold
+    ]
+    # Safety counters are non-regression gates even when a benchmark fixture
+    # does not expose requirement-level fields yet.  ``get`` keeps this
+    # helper compatible with older recorded benchmark payloads.
+    for key in ("false_completion_count", "conflict_leakage_count"):
+        baseline_count = int(baseline.get(key) or 0)
+        candidate_count = int(candidate.get(key) or 0)
+        if candidate_count > baseline_count:
+            failures.append(
+                {
+                    "metric": key,
+                    "regression": candidate_count - baseline_count,
+                    "allowed": 0,
+                }
+            )
+    if "required_requirement_satisfaction_rate" in baseline or "required_requirement_satisfaction_rate" in candidate:
+        requirement_delta = round(
+            float(baseline.get("required_requirement_satisfaction_rate", 0.0))
+            - float(candidate.get("required_requirement_satisfaction_rate", 0.0)),
+            4,
+        )
+        if requirement_delta > 0:
+            failures.append(
+                {
+                    "metric": "required_requirement_satisfaction_rate",
+                    "regression": requirement_delta,
+                    "allowed": 0,
+                }
+            )
+    baseline_calls = int(baseline.get("logical_llm_calls") or 0)
+    candidate_calls = int(candidate.get("logical_llm_calls") or 0)
+    return {
+        "passed": not failures,
+        "quality_gate": "p4-non-regression-v1",
+        "baseline": baseline,
+        "candidate": candidate,
+        "quality_deltas": deltas,
+        "failures": failures,
+        "logical_llm_call_delta": candidate_calls - baseline_calls,
+        "logical_llm_call_reduction_rate": (
+            round((baseline_calls - candidate_calls) / baseline_calls, 4)
+            if baseline_calls
+            else None
+        ),
+        "zero_call_baseline": baseline_calls == 0,
     }
 
 
 def build_markdown(payload: dict[str, Any]) -> str:
     planned = payload["modes"]["planned"]
     react = payload["modes"]["react"]
+    comparison = payload.get("comparison") or compare_mode_summaries(planned, react)
     rows = []
     for case in payload["cases"]:
         planned_result = next(
@@ -392,6 +512,15 @@ def build_markdown(payload: dict[str, Any]) -> str:
             f"| Planned | {percent(planned['task_completion_rate'])} | {percent(planned['report_exists_rate'])} | {planned['avg_steps']:.3f} | {planned['recovery_count']} | {percent(planned['failed_tool_recovery_rate'])} | {planned['trace_quality_score']:.3f} | {planned['avg_latency_ms']:.3f} / {planned['p50_latency_ms']:.3f} / {planned['p95_latency_ms']:.3f} ms |",
             f"| ReAct | {percent(react['task_completion_rate'])} | {percent(react['report_exists_rate'])} | {react['avg_steps']:.3f} | {react['recovery_count']} | {percent(react['failed_tool_recovery_rate'])} | {react['trace_quality_score']:.3f} | {react['avg_latency_ms']:.3f} / {react['p50_latency_ms']:.3f} / {react['p95_latency_ms']:.3f} ms |",
             "",
+            "## P4 Acceptance Gate",
+            "",
+            f"* quality gate: `{comparison['quality_gate']}`; status: `{'PASS' if comparison['passed'] else 'FAIL'}`",
+            f"* false completions: planned `{planned['false_completion_count']}`, ReAct `{react['false_completion_count']}`",
+            f"* logical LLM calls: planned `{planned['logical_llm_calls']}`, ReAct `{react['logical_llm_calls']}`; provider attempts: planned `{planned['provider_attempts']}`, ReAct `{react['provider_attempts']}`",
+            f"* tool calls / fetch attempts: planned `{planned['tool_calls']}` / `{planned['fetch_attempts']}`, ReAct `{react['tool_calls']}` / `{react['fetch_attempts']}`",
+            f"* budget overruns: planned `{planned['budget_overrun_count']}`, ReAct `{react['budget_overrun_count']}`",
+            "* A passing quality gate does not by itself claim a latency or cost improvement; those are reported as measured deltas.",
+            "",
             "## Scenario Breakdown",
             "",
             "Result cells show `status / trace quality`.",
@@ -445,6 +574,7 @@ def run_evaluation(
         mode: summarize_mode([result for result in results if result["mode"] == mode])
         for mode in ("planned", "react")
     }
+    comparison = compare_mode_summaries(modes["planned"], modes["react"])
     payload = {
         "react_vs_planned_eval": "ok",
         "total_cases": len(active_cases),
@@ -452,6 +582,7 @@ def run_evaluation(
         "real_llm_requested": real_llm_requested,
         "real_llm_executed": real_llm,
         "modes": modes,
+        "comparison": comparison,
         "cases": [
             {"case_id": case["case_id"], "scenario": case["scenario"]}
             for case in active_cases

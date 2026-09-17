@@ -82,6 +82,8 @@ def test_auto_rollout_switches_only_new_run_controller(db, r12_settings):
     ):
         run_task_by_mode(db, legacy_root.run_id, legacy_settings)
     legacy.assert_called_once()
+    observed_legacy_plan = json.loads(store.get_agent_run(db, legacy_root.run_id).plan_json)
+    assert observed_legacy_plan["pear_rollout"]["selected"] is False
 
     pear_root, pear_settings = prepare(100)
     with (
@@ -92,3 +94,23 @@ def test_auto_rollout_switches_only_new_run_controller(db, r12_settings):
     ):
         run_task_by_mode(db, pear_root.run_id, pear_settings)
     pear.assert_called_once()
+    observed_pear_plan = json.loads(store.get_agent_run(db, pear_root.run_id).plan_json)
+    assert observed_pear_plan["pear_rollout"]["selected"] is True
+
+
+def test_auto_rollout_can_promote_planned_cohort_to_pear(db, r12_settings):
+    root = create_root(db)
+    plan = json.loads(root.plan_json)
+    plan.update({"research_mode": "auto", "execution_mode": "planned"})
+    store.replace_agent_run_plan(db, root.run_id, plan)
+    settings = r12_settings.model_copy(update={"pear_rollout_percent": 100, "deep_research_enabled": True})
+    with (
+        patch("app.agent.dispatcher.enforce_execution_readiness", return_value=True),
+        patch("app.research.orchestrator.run_deep_research_v2", return_value={"run_id": root.run_id, "status": "completed"}) as pear,
+        patch("app.agent.react_executor.run_react_task", side_effect=AssertionError("unexpected legacy ReAct")),
+        patch("app.agent.dispatcher._finalize_result", side_effect=lambda _db, _id, result: result),
+    ):
+        run_task_by_mode(db, root.run_id, settings)
+    pear.assert_called_once()
+    observed_plan = json.loads(store.get_agent_run(db, root.run_id).plan_json)
+    assert observed_plan["execution_mode"] == "react"
