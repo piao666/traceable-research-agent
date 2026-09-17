@@ -127,6 +127,31 @@ def _finish_parallel_operation(db: Session, operation_id: str, result: ToolResul
     db.commit()
 
 
+def recover_parallel_operations(db: Session, run_id: str) -> int:
+    """Mark abandoned coordinator leases as interrupted before resuming.
+
+    A process restart cannot prove whether an external request completed.  It
+    therefore records the uncertainty and lets the next attempt be charged and
+    traced independently instead of pretending the call never happened.
+    """
+
+    operations = (
+        db.query(ResearchOperation)
+        .filter(
+            ResearchOperation.root_run_id == run_id,
+            ResearchOperation.status.in_(["reserved", "running"]),
+        )
+        .all()
+    )
+    for operation in operations:
+        operation.status = "interrupted"
+        operation.error_message = "Recovered after coordinator restart; external result is unknown."
+        operation.finished_at = datetime.now(timezone.utc)
+    if operations:
+        db.commit()
+    return len(operations)
+
+
 def _has_explicit_dependency(step: dict[str, Any]) -> bool:
     if isinstance(step.get("arguments_from"), dict):
         return True
@@ -424,6 +449,8 @@ def run_plan_parallel(
         return _message_summary(run, f"Run is {run.status} and cannot be executed.")
     if run.status in {"waiting_human", "waiting_human_plan"}:
         return _message_summary(run, "Run is waiting for human approval.")
+
+    recover_parallel_operations(db, run_id)
 
     plan = _parse_plan(run)
     if not enforce_execution_readiness(db, run_id, plan, settings_obj,
