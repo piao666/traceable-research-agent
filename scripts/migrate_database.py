@@ -54,6 +54,29 @@ R12_RESULT_TABLES = {
     "citation_occurrences",
 }
 REPORT_CLAIM_SCOPE_LINEAGE_TABLE = "report_claim_scope_group_links"
+EVIDENCE_QUALITY_V3_COLUMNS = {
+    "quality_schema_version",
+    "evidence_quality_score",
+    "claim_support_coverage",
+    "strong_claim_coverage",
+    "independent_claim_coverage",
+    "mean_cited_reliability",
+    "p25_cited_reliability",
+    "independent_source_count",
+    "unique_resource_count",
+    "unresolved_conflict_count",
+}
+P0_CONTRACT_TABLES = {
+    "research_plan_revisions",
+    "research_questions",
+    "evidence_requirements",
+    "requirement_claim_links",
+    "source_discovery_links",
+    "research_operations",
+    "coverage_snapshots",
+    "evidence_gaps",
+    "node_execution_results",
+}
 
 
 def bootstrap_revision_for_tables(
@@ -157,11 +180,24 @@ def bootstrap_revision_for_tables(
                                                     "Legacy database has report claim scope lineage "
                                                     "without run_budgets.provider_attempts"
                                                 )
+                                            present_p0 = table_names & P0_CONTRACT_TABLES
+                                            if present_p0 and not P0_CONTRACT_TABLES.issubset(table_names):
+                                                missing = ", ".join(sorted(P0_CONTRACT_TABLES - present_p0))
+                                                raise RuntimeError(
+                                                    "Legacy database has a partial P0 contract schema; "
+                                                    f"missing tables: {missing}"
+                                                )
                                             schema_revision = (
-                                                "0017_trace_context"
-                                                if {"phase", "parent_trace_id", "attempt"}.issubset(tool_trace_cols)
-                                                else "0016_evidence_quality_v3"
+                                                "0018_pear_contract_entities"
+                                                if P0_CONTRACT_TABLES.issubset(table_names)
+                                                else (
+                                                    "0017_trace_context"
+                                                    if {"phase", "parent_trace_id", "attempt"}.issubset(tool_trace_cols)
+                                                    else "0016_evidence_quality_v3"
+                                                )
                                             )
+                                            if not EVIDENCE_QUALITY_V3_COLUMNS.issubset(improvement_columns):
+                                                schema_revision = "0015_report_claim_scope_lineage"
                                             return _required_stamp(current_revision, schema_revision)
                                         return _required_stamp(
                                             current_revision,
@@ -206,6 +242,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0015_report_claim_scope_lineage": 15,
         "0016_evidence_quality_v3": 16,
         "0017_trace_context": 17,
+        "0018_pear_contract_entities": 18,
     }
     if current_revision is None:
         return schema_revision

@@ -21,11 +21,21 @@ RequirementKind = Literal[
     "causal",
     "scope",
 ]
-RequirementStatus = Literal["uncovered", "partial", "covered", "blocked"]
+RequirementStatus = Literal[
+    "uncovered",
+    "discovered",
+    "partial",
+    "covered",  # legacy spelling retained for old plan payloads
+    "satisfied",
+    "conflicted",
+    "blocked",
+]
 EvidenceGapType = Literal[
     "missing_evidence",
+    "missing_mapping",
     "missing_independence",
     "missing_freshness",
+    "unknown_evidence_role",
     "conflict",
     "unmapped_claim",
 ]
@@ -93,6 +103,41 @@ class EvidenceGap(BaseModel):
     related_groups: tuple[str, ...] = ()
     suggested_action: str = "Fetch and verify an eligible source."
     status: Literal["open", "closed"] = "open"
+
+
+class RequirementClaimLink(BaseModel):
+    """Typed contract for the durable requirement-to-claim mapping ledger."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    link_id: str = Field(min_length=1, max_length=160)
+    requirement_id: str = Field(min_length=1, max_length=160)
+    claim_occurrence_id: str | None = None
+    scope_group_id: str | None = None
+    mapping_source: Literal["assessor", "citation_lineage", "scope_reasoning", "manual"] = "assessor"
+
+
+class SourceDiscoveryLink(BaseModel):
+    """Typed contract separating source discovery from evidence support."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    discovery_id: str = Field(min_length=1, max_length=160)
+    requirement_id: str = Field(min_length=1, max_length=160)
+    source_identity: str = Field(min_length=1, max_length=512)
+    source_url: str | None = None
+    link_type: Literal["discovered", "fetched", "rejected", "contextual"] = "discovered"
+
+
+class ResearchOperationContract(BaseModel):
+    """Controller-facing operation identity used before external invocation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str = Field(min_length=1, max_length=160)
+    logical_key: str = Field(min_length=1, max_length=256)
+    attempt: int = Field(default=1, ge=1)
+    status: Literal["reserved", "running", "succeeded", "failed", "waiting", "cancelled"] = "reserved"
 
 
 def normalize_requirements(contract: dict[str, Any] | None) -> list[EvidenceRequirement]:

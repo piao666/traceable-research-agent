@@ -38,7 +38,7 @@ def test_migration_0012_backfills_nested_legacy_lineage(tmp_path):
             "FROM agent_runs ORDER BY run_id"
         )).fetchall()
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "0017_trace_context"
+        assert revision == "0018_pear_contract_entities"
     assert {row[0]: row[2] for row in rows} == {
         "root": "root", "child": "root", "grandchild": "root"
     }
@@ -54,6 +54,15 @@ def test_migration_0012_backfills_nested_legacy_lineage(tmp_path):
         "report_claim_occurrences",
         "citation_occurrences",
         "report_claim_scope_group_links",
+        "research_plan_revisions",
+        "research_questions",
+        "evidence_requirements",
+        "requirement_claim_links",
+        "source_discovery_links",
+        "research_operations",
+        "coverage_snapshots",
+        "evidence_gaps",
+        "node_execution_results",
     }.issubset(inspect(engine).get_table_names())
     assert "provider_attempts" in {
         column["name"] for column in inspect(engine).get_columns("run_budgets")
@@ -157,5 +166,5 @@ def test_migration_0015_upgrades_existing_report_data_and_is_idempotent(tmp_path
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT COUNT(*) FROM report_revisions")) == 1
         assert connection.scalar(text("SELECT COUNT(*) FROM report_claim_occurrences")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0017_trace_context"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0018_pear_contract_entities"
     engine.dispose()
