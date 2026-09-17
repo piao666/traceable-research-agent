@@ -16,6 +16,7 @@ from app.config import Settings
 from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
 from app.research.models import ResearchNode, ResearchScope
+from app.research.contracts import NodeExecutionResult
 from app.trace import store
 from app.trace.logger import record_phase_event, record_trace_event
 
@@ -23,11 +24,27 @@ from app.trace.logger import record_phase_event, record_trace_event
 NodeRunner = Callable[[Session, str, Settings, LLMClient | None], dict[str, Any]]
 
 
+def run_legacy_react_node(
+    db: Session,
+    run_id: str,
+    settings: Settings,
+    llm_client: LLMClient | None = None,
+) -> dict[str, Any]:
+    """Compatibility adapter implementing the controller-neutral node API."""
+
+    result = run_react_task(db, run_id, settings, llm_client)
+    return {
+        **(result if isinstance(result, dict) else {}),
+        "run_id": run_id,
+        "status": str((result or {}).get("status") or "failed"),
+    }
+
+
 class ResearchNodeExecutor:
     """Create a child AgentRun with explicit lineage and reuse ReAct unchanged."""
 
     def __init__(self, runner: NodeRunner | None = None) -> None:
-        self.runner = runner or run_react_task
+        self.runner = runner or run_legacy_react_node
 
     def execute(
         self,
@@ -36,7 +53,7 @@ class ResearchNodeExecutor:
         node: ResearchNode,
         settings: Settings,
         llm_client: LLMClient | None = None,
-    ) -> dict[str, Any]:
+    ) -> NodeExecutionResult:
         root = store.get_agent_run(db, scope.root_run_id)
         if root is None:
             raise ValueError("Research root run not found")
@@ -85,8 +102,12 @@ class ResearchNodeExecutor:
                 "execution_mode": "react",
                 "requested_execution_mode": "react",
                 "source_mode": root.source_mode,
+                "research_mode": parent_plan.get("research_mode") or "deep",
+                "research_controller": parent_plan.get("research_controller") or "pear",
                 "allowed_tools": inherited_tools,
                 "retrieval_profile": parent_plan.get("retrieval_profile"),
+                "intake_profile_name": parent_plan.get("intake_profile_name"),
+                "intake_profile_snapshot": parent_plan.get("intake_profile_snapshot"),
                 "research_profile": parent_plan.get("research_profile"),
                 "source_constraints": parent_plan.get("source_constraints"),
                 "evidence_policy_version": parent_plan.get("evidence_policy_version"),
@@ -173,17 +194,37 @@ class ResearchNodeExecutor:
                     traces,
                     settings,
                 )
-        node.status = child.status if child and child.status in {"completed", "failed", "cancelled"} else "failed"
+        # Preserve a real pause or in-flight state.  A runner may have reached
+        # an approval boundary without being a failed tool invocation.
+        node.status = (
+            child.status
+            if child and child.status in {
+                "completed",
+                "failed",
+                "cancelled",
+                "waiting_human",
+                "waiting_human_plan",
+                "running",
+                "pending",
+            }
+            else "failed"
+        )
         node.updated_at = datetime.now(timezone.utc)
         db.commit()
         record_phase_event(
             db,
             child.run_id,
             "node_execution",
-            "success" if node.status == "completed" else "failed",
+            "success" if node.status == "completed" else "waiting" if node.status in {"waiting_human", "waiting_human_plan"} else "failed",
             parent_trace_id=execution_trace.trace_id,
             details={"node_id": node.node_id, "status": node.status},
-            error_message="Research node did not complete." if node.status != "completed" else None,
+            error_message=(
+                "Research node is waiting for confirmation."
+                if node.status in {"waiting_human", "waiting_human_plan"}
+                else "Research node did not complete."
+                if node.status != "completed"
+                else None
+            ),
         )
         return {**result, "node_id": node.node_id, "run_id": child.run_id, "status": node.status}
 

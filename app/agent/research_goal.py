@@ -41,6 +41,17 @@ def build_task_contract(task: str, created_at: datetime | None = None) -> dict:
             entities=entities,
             dimensions=dimensions,
             requirements=comparison_requirements(entities, dimensions),
+            questions=[
+                {
+                    "question_id": f"q-{index + 1}",
+                    "text": f"{entity} 在 { '、'.join(dimensions) } 方面需要被证据核对？",
+                    "requirement_ids": [
+                        f"cmp-{index + 1}-{dimension_index + 1}"
+                        for dimension_index, dimension in enumerate(dimensions)
+                    ],
+                }
+                for index, entity in enumerate(entities)
+            ],
         )
     match = re.search(r"(?:近|最近|过去)\s*(\d{1,2}|十)\s*年|(?:last|past)\s+(\d{1,2})\s+years", task, re.I)
     if match:

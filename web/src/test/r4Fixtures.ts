@@ -7,11 +7,13 @@ export const taskFixture: TaskStatusResponse = {
   created_at: "2026-09-02T01:00:00", updated_at: "2026-09-02T01:01:00",
   research_outcome: { status: "failed", effective_evidence_count: 0 },
   execution_mode: "planned", adaptive_gate_pending: false, adaptive_upgrade: false, adaptive_upgrade_failed: false, deepening_pending: false,
+  research_mode: "auto",
   run_role: "root", engine_version: "legacy",
   citation_total: 0, citation_supported: 0, citation_weakly_supported: 0, citation_unsupported: 0, citation_accuracy: 0,
 };
 export const planFixture: TaskPlanResponse = {
   run_id: "fixture", version: "r4", task: "核对研究证据", source_mode: "real", allowed_tools: ["file_reader"], notes: [],
+  research_mode: "auto",
   adaptive_gate_pending: false, adaptive_upgrade: false, adaptive_upgrade_failed: false, deepening_pending: false, deepening_total_rounds: 0,
   steps: [{ step_no: 1, tool_name: "file_reader", goal: "读取本地资料", arguments: { path: "fixture.md" },
     expected_output: "正文", completion_criteria: "有效正文", risk_level: "high", requires_confirmation: true }],
@@ -21,6 +23,7 @@ export const traceFixture: ToolTraceResponse = {
   origin_run_id: "fixture", research_node_id: null,
   token_in: 0, token_out: 0, estimated_cost: 0,
   created_at: "2026-09-02T01:00:00", finished_at: "2026-09-02T01:00:01", error_message: "Fixture read failed",
+  attempt: 1,
 };
 export const evidenceFixture: EvidenceBundleResponse = {
   run_id: "fixture", task: "核对研究证据", total_evidence_items: 1, source_groups: [], claims: [], unsupported_claims: [], warnings: [],

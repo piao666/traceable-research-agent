@@ -155,7 +155,7 @@ it("shows missing evaluation as error, and historical evaluation as requiring re
   const detail = vi.spyOn(api, "qualityRun").mockRejectedValueOnce(new Error("No evaluation"));
   show("/system"); fireEvent.change(screen.getByLabelText("Run ID"), { target: { value: "old" } }); fireEvent.click(screen.getByRole("button", { name: "读取明细" }));
   await screen.findByText("No evaluation");
-  detail.mockResolvedValue({ run_id: "old", requires_review: true, evaluation_method: "rule_heuristic", overall_score: 9, relevance_score: 9, factual_accuracy: 0.9, coverage_score: 9, source_quality_score: 9, auditability_score: 9, citation_count: 1, tier_t0: 1, tier_t1: 0, tier_t2: 0 });
+  detail.mockResolvedValue({ run_id: "old", requires_review: true, evaluation_method: "rule_heuristic", overall_score: 9, relevance_score: 9, factual_accuracy: 0.9, coverage_score: 9, source_quality_score: 9, auditability_score: 9, citation_count: 1, tier_t0: 1, tier_t1: 0, tier_t2: 0, evidence_quality_score: 0, claim_support_coverage: 0, strong_claim_coverage: 0, independent_claim_coverage: 0, mean_cited_reliability: 0, p25_cited_reliability: 0, independent_source_count: 0, unique_resource_count: 0, unresolved_conflict_count: 0 });
   fireEvent.click(screen.getByRole("button", { name: "重新读取" })); await screen.findByText(/历史结果待复核；这些分数不能/);
   expect(screen.getByText("事实性启发值 / 1")).toBeInTheDocument();
 });

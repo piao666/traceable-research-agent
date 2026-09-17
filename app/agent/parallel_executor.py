@@ -31,12 +31,11 @@ from app.agent.executor import (
     _summary,
 )
 from app.agent.reporter import generate_markdown_report, save_report
-from app.agent.source_intake import intake_tool_result, prepare_tool_arguments
+from app.agent.source_intake import execute_governed_operation, prepare_tool_arguments
 from app.config import Settings, settings
 from app.evidence.service import materialize_execution_provenance
 from app.agent.preflight import enforce_execution_readiness
 from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, load_observations, report_subject, skip_dependency
-from app.agent.execution_policy import execute_with_policy
 from app.agent.budget import budgeted_execution, reserve_tool, BudgetExceeded
 from app.mcp.policy import is_parallel_safe_tool
 from app.tools.base import ToolResult
@@ -205,18 +204,24 @@ def _execute_step(
     arguments = prepare_tool_arguments(tool_name, arguments, plan or {}, settings_obj)
     step = dict(step)
     step["arguments"] = arguments
-    execution_arguments = (
-        file_reader_execution_arguments(arguments, plan)
-        if tool_name == "file_reader"
-        else arguments
-    )
     started_at = _utc_iso()
     started = perf_counter()
     policy_plan = plan if plan is not None else {"steps": [step]}
-    result = execute_with_policy(tool_name, execution_arguments, policy_plan, settings_obj, execute_tool,
-                                 budget_reserved=budget_reserved)
+    result = execute_governed_operation(
+        tool_name,
+        arguments,
+        policy_plan,
+        settings_obj,
+        execute_tool,
+        execution_arguments=(
+            (lambda prepared: file_reader_execution_arguments(prepared, plan))
+            if tool_name == "file_reader"
+            else None
+        ),
+        budget_reserved=budget_reserved,
+        arguments_prepared=True,
+    )
     latency_ms = int((perf_counter() - started) * 1000)
-    result = intake_tool_result(tool_name, result, plan or {}, settings_obj)
     finished_at = _utc_iso()
     return _StepResult(step, result, latency_ms, started_at, finished_at, worker_id)
 

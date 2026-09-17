@@ -13,11 +13,10 @@ from sqlalchemy.orm import Session
 from app.agent.file_access_policy import file_reader_execution_arguments
 from app.agent.preflight import enforce_execution_readiness
 from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, load_observations, report_subject, result_integrity, skip_dependency
-from app.agent.execution_policy import execute_with_policy
 from app.agent.budget import budgeted_execution
 from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
-from app.agent.source_intake import intake_tool_result, prepare_tool_arguments
+from app.agent.source_intake import execute_governed_operation, prepare_tool_arguments
 from app.config import Settings, settings as _exec_settings
 from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
@@ -452,20 +451,23 @@ def run_plan(
                 arguments = _resolve_arguments_from(step, observations)
 
             arguments = prepare_tool_arguments(
+                tool_name, arguments, plan, settings_obj
+            )
+            started = perf_counter()
+            result = execute_governed_operation(
                 tool_name,
                 arguments,
                 plan,
                 settings_obj,
+                execute_tool,
+                execution_arguments=(
+                    (lambda prepared: file_reader_execution_arguments(prepared, plan))
+                    if tool_name == "file_reader"
+                    else None
+                ),
+                arguments_prepared=True,
             )
-            execution_arguments = (
-                file_reader_execution_arguments(arguments, plan)
-                if tool_name == "file_reader"
-                else arguments
-            )
-            started = perf_counter()
-            result = execute_with_policy(tool_name, execution_arguments, plan, settings_obj, execute_tool)
             latency_ms = int((perf_counter() - started) * 1000)
-            result = intake_tool_result(tool_name, result, plan, settings_obj)
             trace = record_tool_result(
                 db, run_id, step_no, tool_name, arguments, result, latency_ms
             )

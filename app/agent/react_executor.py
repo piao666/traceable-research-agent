@@ -24,7 +24,7 @@ from app.agent.executor import (
 )
 from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
 from app.agent.preflight import enforce_execution_readiness, check_plan_readiness
-from app.agent.execution_policy import execute_with_policy, policy_failure
+from app.agent.execution_policy import policy_failure
 from app.agent.tool_recovery import (
     observe_result,
     prune_completed_fetch_urls,
@@ -50,7 +50,7 @@ from app.agent.react_schema import (
     validate_react_decision,
 )
 from app.agent.reporter import generate_markdown_report, save_report
-from app.agent.source_intake import intake_tool_result, prepare_tool_arguments
+from app.agent.source_intake import execute_governed_operation
 from app.config import Settings
 from app.evidence.service import materialize_execution_provenance
 from app.llm.base import LLMClient
@@ -1203,26 +1203,25 @@ def run_react_task(
             store.update_agent_run_progress(db, run_id, step_no)
             return _complete_report(db, run_id, plan, state, "report_generated", settings, client)
 
-        governed_args = prepare_tool_arguments(
-            decision.action,
-            decision.args,
-            plan,
-            settings,
-        )
-        execution_args = (
-            file_reader_execution_arguments(governed_args, plan)
-            if decision.action == "file_reader"
-            else governed_args
-        )
         started = perf_counter()
         # Dynamic decisions must also respect runtime configuration, not only the initial plan.
         if not enforce_execution_readiness(db, run_id, plan, settings,
                                           llm_available=client.is_available(), decision_tool=decision.action):
             return _summary(store.get_fresh_agent_run(db, run_id), plan)
-        result = execute_with_policy(decision.action, execution_args, plan, settings, execute_tool)
+        result = execute_governed_operation(
+            decision.action,
+            decision.args,
+            plan,
+            settings,
+            execute_tool,
+            execution_arguments=(
+                (lambda prepared: file_reader_execution_arguments(prepared, plan))
+                if decision.action == "file_reader"
+                else None
+            ),
+        )
         latency_ms = int((perf_counter() - started) * 1000)
         recovered = observe_result(state, decision.action, decision.args, result, tool_limits[decision.action])
-        result = intake_tool_result(decision.action, result, plan, settings)
         observation_summary = _observation_summary(decision.action, result)
         metadata = _react_metadata(decision, observation_summary, count, state)
         metadata.update(result.metadata)

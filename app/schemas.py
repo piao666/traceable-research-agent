@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class HealthResponse(BaseModel):
@@ -28,6 +28,7 @@ class TaskCreateRequest(BaseModel):
     source_mode: str = "real"
     allowed_tools: list[str] | None = None
     execution_mode_override: str | None = None  # "planned" | "react" | None (use server default)
+    research_mode: Literal["quick", "deep", "auto"] = "auto"
     scenario_template: str | None = None
     scenario_template_key: str | None = None
     session_id: str | None = None
@@ -35,6 +36,12 @@ class TaskCreateRequest(BaseModel):
     require_plan_approval: bool = False  # Phase 7.4: pause for plan review before execution
     retrieval_profile: str | None = None
     source_constraints: SourceConstraintsRequest | None = None
+
+    @model_validator(mode="after")
+    def validate_research_mode(self) -> "TaskCreateRequest":
+        if self.research_mode == "quick" and self.execution_mode_override == "react":
+            raise ValueError("quick research_mode cannot use execution_mode_override=react")
+        return self
 
 
 class RuntimeCapabilitiesResponse(BaseModel):
@@ -168,6 +175,7 @@ class TaskCancelRequest(BaseModel):
 class TaskRetryRequest(BaseModel):
     reuse_plan: bool = True
     from_failed_step: bool = False
+    research_mode: Literal["quick", "deep", "auto"] | None = None
 
 
 class SessionUpdateRequest(BaseModel):
@@ -195,6 +203,7 @@ class TaskStatusResponse(ResearchIntegrityResponse):
     created_at: datetime
     updated_at: datetime
     execution_mode: str = "planned"
+    research_mode: Literal["quick", "deep", "auto"] = "auto"
     requested_execution_mode: str | None = None
     planner_source: str | None = None
     llm_provider: str | None = None
@@ -328,6 +337,7 @@ class TaskPlanResponse(BaseModel):
     llm_model: str | None = None
     execution_mode: str | None = None
     requested_execution_mode: str | None = None
+    research_mode: Literal["quick", "deep", "auto"] = "auto"
     react_state: dict[str, Any] | None = None
     skill_routing: dict[str, Any] | None = None
     adaptive_gate_pending: bool = False

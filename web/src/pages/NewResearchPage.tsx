@@ -57,6 +57,7 @@ function NewResearchForm({ sessionId }: { sessionId: string }) {
         report_type: reportType,
         source_mode: template === "local_audit" ? "mock" : "real",
         scenario_template_key: template,
+        research_mode: template === "standard" ? "quick" : template === "deep_web_research" ? "deep" : "auto",
         skill_name: template === "local_audit" ? "local_audit" : undefined,
         require_plan_approval: true,
         ...(retrievalProfile === "auto" ? {} : { retrieval_profile: retrievalProfile }),

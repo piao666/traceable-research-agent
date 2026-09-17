@@ -285,6 +285,7 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
         created_at=run.created_at,
         updated_at=run.updated_at,
         execution_mode=plan_meta["execution_mode"],
+        research_mode=plan_meta.get("research_mode", "auto"),
         requested_execution_mode=plan_meta.get("requested_execution_mode"),
         planner_source=plan_meta.get("planner_source"),
         llm_provider=plan_meta.get("llm_provider"),
@@ -391,6 +392,7 @@ def _plan_metadata(run: AgentRun) -> dict:
         react_state = {}
     return {
         "execution_mode": plan.get("execution_mode") or "planned",
+        "research_mode": plan.get("research_mode") or "auto",
         "requested_execution_mode": plan.get("requested_execution_mode")
         or plan.get("execution_mode")
         or "planned",
@@ -515,6 +517,7 @@ def _persist_plan_config_snapshot(
     snapshot.update(
         {
             "retrieval_profile": plan.get("retrieval_profile"),
+            "research_mode": plan.get("research_mode") or "auto",
             "research_profile": plan.get("research_profile") or {},
             "source_constraints": plan.get("source_constraints") or {"mode": "open"},
             "evidence_policy_version": plan.get("evidence_policy_version"),
@@ -562,6 +565,7 @@ def create_task(
             skill_name=task_request.skill_name,
             retrieval_profile=task_request.retrieval_profile,
             source_constraints=(task_request.source_constraints.model_dump() if task_request.source_constraints else None),
+            research_mode=task_request.research_mode,
         )
         plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
         plan["requires_plan_approval"] = True
@@ -591,6 +595,7 @@ def create_task(
         skill_name=task_request.skill_name,
         retrieval_profile=task_request.retrieval_profile,
         source_constraints=(task_request.source_constraints.model_dump() if task_request.source_constraints else None),
+        research_mode=task_request.research_mode,
     )
     plan.setdefault("requested_execution_mode", plan.get("execution_mode") or settings.execution_mode)
     plan.setdefault("execution_mode", settings.execution_mode)
@@ -1543,10 +1548,16 @@ def retry_task(
                 or original_plan.get("execution_mode")
             ),
             skill_name="auto",
+            research_mode=(request.research_mode if request else None),
         )
     # A retry is a fresh execution. Never inherit approval, runtime, Scope,
     # Gate, lineage, or finalization state from the failed Run.
     _clear_retry_derived_state(plan)
+    if request and request.research_mode:
+        plan["research_mode"] = request.research_mode
+        if request.research_mode == "quick":
+            plan["execution_mode"] = "planned"
+            plan["requested_execution_mode"] = "planned"
     plan["execution_mode"] = plan.get("requested_execution_mode") or "planned"
     plan["parent_run_id"] = run_id
     plan["notes"] = list(plan.get("notes") or []) + [
@@ -1599,6 +1610,29 @@ def _clear_retry_derived_state(plan: dict[str, Any]) -> None:
         "report_integrity",
         "reference_verification",
         "citation_validation",
+        "report_diagnostics",
+        "controller_runtime",
+        "coverage_snapshot",
+        "coverage_matrix",
+        "research_operations",
+        "research_assessment",
+        "evidence_assessment",
+        "evidence_gaps",
+        "operation_journal",
+        "finalization_checkpoint",
+        "finalization_status",
+        "report_revision_id",
+        "citation_revision",
+        "reference_revision",
+        "policy_hash",
+        "evidence_fingerprint",
+        "controller_version",
+        "plan_revision",
+        "approval_revision",
+        "fallback_used",
+        "repair_attempted",
+        "research_mode_error",
+        "research_controller",
     }
     for key in list(plan):
         if (

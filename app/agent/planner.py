@@ -753,6 +753,21 @@ def _apply_execution_mode(
     return plan
 
 
+def _normalize_research_mode(
+    research_mode: str | None,
+    scenario_template: str | None,
+) -> str:
+    """Resolve the product mode without conflating it with deployment profile."""
+
+    requested = str(research_mode or "auto").strip().casefold()
+    if requested not in {"quick", "deep", "auto"}:
+        requested = "auto"
+    # Template/profile names are routing hints, not product execution modes.
+    # In particular, the legacy ``standard`` template must not silently turn
+    # an omitted mode into Quick; omitted mode remains controller-owned auto.
+    return requested
+
+
 def plan_task(
     task: str,
     allowed_tools: list[str] | None = None,
@@ -764,6 +779,7 @@ def plan_task(
     retrieval_profile: str | None = None,
     source_constraints: dict[str, Any] | None = None,
     skill_parameters: dict[str, Any] | None = None,
+    research_mode: str | None = None,
 ) -> dict[str, Any]:
     """Create a plan using deterministic rules, optional LLM planning, or a Skill template.
 
@@ -841,6 +857,8 @@ def plan_task(
             raise ValueError(f"Unknown retrieval profile: {selected_profile}")
         _profile_extra = {
             "retrieval_profile": selected_profile,
+            "intake_profile_name": selected_profile,
+            "intake_profile_snapshot": profile.to_dict(),
             "research_profile": profile.to_dict(),
             "source_constraints": source_constraints or {"mode": "open"},
             "evidence_policy_version": policy.version,
@@ -866,6 +884,8 @@ def plan_task(
             "candidates": [],
         }
     _memory_extra["skill_routing"] = skill_routing
+    resolved_research_mode = _normalize_research_mode(research_mode, scenario_template)
+    _memory_extra["research_mode"] = resolved_research_mode
 
     if resolved_skill_name:
         skill = get_skill_def(resolved_skill_name)
@@ -884,7 +904,8 @@ def plan_task(
             # ── Sub-question decomposition (Skill-level) ──
             if skill.decompose and skill.decompose.enabled:
                 _decompose_skill_plan(plan, task, skill.decompose)
-            return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+            result = _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+            return _enforce_research_mode(result, resolved_research_mode, execution_mode_override)
         # Fall through to deterministic if skill not found
 
     # ── Composed plan (multi-skill combination) ──
@@ -899,7 +920,8 @@ def plan_task(
         plan["planner_source"] = "composed"
         plan["llm_provider"] = None
         plan["llm_model"] = None
-        return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+        result = _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+        return _enforce_research_mode(result, resolved_research_mode, execution_mode_override)
 
     mode = (planner_mode or settings.llm_planner_mode or "deterministic").lower()
     if mode not in {"deterministic", "llm", "auto"}:
@@ -910,7 +932,8 @@ def plan_task(
         plan["planner_source"] = "deterministic"
         plan["llm_provider"] = None
         plan["llm_model"] = None
-        return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+        result = _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+        return _enforce_research_mode(result, resolved_research_mode, execution_mode_override)
 
     should_try_llm = mode == "llm" or (mode == "auto" and settings.llm_planner_enabled)
     if should_try_llm:
@@ -968,7 +991,8 @@ def plan_task(
                     )
                     normalize_plan_arguments(normalized, task, source_mode)
                     _apply_requested_result_count(normalized, task)
-                    return _apply_execution_mode(normalized, execution_mode_override, _memory_extra, task)
+                    result = _apply_execution_mode(normalized, execution_mode_override, _memory_extra, task)
+                    return _enforce_research_mode(result, resolved_research_mode, execution_mode_override)
                 fallback_reason = "LLM output failed schema validation; used deterministic fallback."
                 fallback_error_type = "structured_output_invalid"
             else:
@@ -990,7 +1014,8 @@ def plan_task(
         }
         _synchronize_confirmation_notes(plan)
         _apply_requested_result_count(plan, task)
-        return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+        result = _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+        return _enforce_research_mode(result, resolved_research_mode, execution_mode_override)
 
     plan = deterministic_plan_task(task, allowed_tools, source_mode, scenario_template)
     plan["planner_source"] = "deterministic"
@@ -998,7 +1023,49 @@ def plan_task(
     plan["llm_model"] = None
     _synchronize_confirmation_notes(plan)
     _apply_requested_result_count(plan, task)
-    return _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+    result = _apply_execution_mode(plan, execution_mode_override, _memory_extra, task)
+    return _enforce_research_mode(result, resolved_research_mode, execution_mode_override)
+
+
+def _enforce_research_mode(
+    plan: dict[str, Any],
+    research_mode: str,
+    execution_mode_override: str | None,
+) -> dict[str, Any]:
+    """Make explicit product modes hard routing boundaries."""
+
+    plan["research_mode"] = research_mode
+    if research_mode == "deep":
+        # Deep is an explicit request for the Scope/PEAR controller.  The
+        # dispatcher decides whether that controller is available; it must not
+        # be downgraded to Quick or inferred from a template name.
+        plan["execution_mode"] = "react"
+        plan["requested_execution_mode"] = "react"
+        routing = dict(plan.get("execution_routing") or {})
+        routing.update({
+            "selected": "react",
+            "requested": "react",
+            "reason": "Deep 模式使用 Research Scope/PEAR 控制器。",
+        })
+        plan["execution_routing"] = routing
+        return plan
+    if research_mode != "quick":
+        return plan
+    if str(execution_mode_override or "").casefold() == "react":
+        raise ValueError("quick research_mode cannot use execution_mode_override=react")
+    plan["execution_mode"] = "planned"
+    plan["requested_execution_mode"] = "planned"
+    routing = dict(plan.get("execution_routing") or {})
+    routing.update({
+        "selected": "planned",
+        "requested": "planned",
+        "reason": "Quick 模式禁止自动升级到 ReAct 或 Deep Scope。",
+        "signals": [],
+        "fallback": None,
+    })
+    plan["execution_routing"] = routing
+    plan["quick_mode"] = True
+    return plan
 
 
 def deterministic_plan_task(
@@ -1833,6 +1900,7 @@ def plan_task_for_review(
     skill_name: str | None = None,
     retrieval_profile: str | None = None,
     source_constraints: dict[str, Any] | None = None,
+    research_mode: str | None = None,
 ) -> dict[str, Any]:
     """Generate a plan and attach cost/risk estimates for human review.
 
@@ -1850,6 +1918,7 @@ def plan_task_for_review(
         skill_name=skill_name,
         retrieval_profile=retrieval_profile,
         source_constraints=source_constraints,
+        research_mode=research_mode,
     )
 
     steps = plan.get("steps") or []

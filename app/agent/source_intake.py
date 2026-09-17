@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from app.config import Settings
@@ -76,9 +76,66 @@ class SourceIntakeResult:
     selection_log: list[str]
 
 
+def execute_governed_operation(
+    tool_name: str,
+    arguments: dict[str, Any],
+    plan: dict[str, Any],
+    settings: Settings,
+    execute: Callable[[str, dict[str, Any]], ToolResult],
+    *,
+    execution_arguments: dict[str, Any] | Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    budget_reserved: bool = False,
+    arguments_prepared: bool = False,
+) -> ToolResult:
+    """Run one tool operation through the shared policy/intake boundary.
+
+    Controllers may prepare immutable arguments (for example file-reader
+    snapshots) before calling this function, but permission checks, budget
+    admission, source resolution and discovery intake always execute in the
+    same order.  This prevents Quick, PEAR and legacy executors from drifting
+    into subtly different source-governance semantics.
+    """
+
+    from app.agent.execution_policy import execute_with_policy
+
+    governed = dict(arguments or {}) if arguments_prepared else prepare_tool_arguments(
+        tool_name, arguments, plan, settings
+    )
+    if callable(execution_arguments):
+        effective = execution_arguments(governed)
+    else:
+        effective = dict(execution_arguments) if execution_arguments is not None else governed
+    result = execute_with_policy(
+        tool_name,
+        effective,
+        plan,
+        settings,
+        execute,
+        budget_reserved=budget_reserved,
+    )
+    return intake_tool_result(tool_name, result, plan, settings)
+
+
 def research_profile(plan: dict[str, Any], settings: Settings) -> ResearchProfile:
+    snapshot = plan.get("intake_profile_snapshot")
+    if isinstance(snapshot, dict) and snapshot.get("name"):
+        try:
+            return ResearchProfile(
+                name=str(snapshot["name"]),
+                oversample_factor=int(snapshot.get("oversample_factor", 2)),
+                max_discovery_candidates=int(snapshot.get("max_discovery_candidates", 15)),
+                max_fetch_candidates=int(snapshot.get("max_fetch_candidates", 8)),
+                max_recovery_rounds=int(snapshot.get("max_recovery_rounds", 2)),
+                minimum_evidence_gain=float(snapshot.get("minimum_evidence_gain", 0.05)),
+            )
+        except (TypeError, ValueError):
+            pass
     policy = load_source_policy(settings.source_policy_path)
-    profile_name = str(plan.get("retrieval_profile") or settings.default_retrieval_profile)
+    profile_name = str(
+        plan.get("intake_profile_name")
+        or plan.get("retrieval_profile")
+        or settings.default_retrieval_profile
+    )
     return (
         policy.research_profiles.get(profile_name)
         or policy.research_profiles.get(settings.default_retrieval_profile)

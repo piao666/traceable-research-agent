@@ -21,6 +21,14 @@ def calculate_evidence_quality(
 
     scores_by_edge = {str(item.get("edge_id") or ""): item for item in scores}
     cited_edges = {str(item.get("edge_id") or "") for item in citations}
+    # A citation attached only to contextual metadata is not claim support.
+    # Keep the metric name for API compatibility, but make its denominator
+    # reflect evidence relations that can actually support or refute claims.
+    eligible_edge_ids = {
+        str(item.get("edge_id") or "")
+        for item in edges
+        if str(item.get("relation") or "").casefold() in {"supports", "refutes"}
+    }
     claim_id_by_report = {
         str(item.get("report_claim_id") or ""): str(item.get("claim_id") or "")
         for item in report_claims
@@ -28,6 +36,7 @@ def calculate_evidence_quality(
     cited_claim_ids = {
         claim_id_by_report.get(str(item.get("report_claim_id") or ""), "")
         for item in citations
+        if str(item.get("edge_id") or "") in eligible_edge_ids
     }
     cited_claim_ids.discard("")
 

@@ -41,8 +41,13 @@ def comparison_requirements(entities: list[str], dimensions: list[str]) -> list[
     return [
         {
             "requirement_id": f"cmp-{entity_index + 1}-{dimension_index + 1}",
+            "question_id": f"q-{entity_index + 1}",
+            "kind": "comparison",
+            "predicate": "compare",
             "entity": entity,
             "dimension": dimension,
+            "acceptable_content_basis": ["full_text", "table", "structured"],
+            "min_independent_sources": 1,
             "mandatory": True,
         }
         for entity_index, entity in enumerate(entities)
@@ -98,11 +103,16 @@ def assess_comparison_coverage(
     traces=None,
 ) -> dict:
     contract = contract or {}
-    requirements = list(contract.get("requirements") or [])
+    from app.agent.source_context import source_url
+
+    from app.research.contracts import normalize_requirements
+
+    requirements = [item.model_dump(mode="json") for item in normalize_requirements(contract)]
     if contract.get("goal_kind") != "comparison" or not requirements:
         return {"applicable": False, "complete": True, "requirements": [], "gaps": []}
 
     sources = list((source_context or {}).get("sources") or [])
+    authoritative_traces = traces is not None
     fetched_documents = _fetched_text_by_url(traces)
     rows: list[dict] = []
     for requirement in requirements:
@@ -116,20 +126,61 @@ def assess_comparison_coverage(
                 str(source.get(key) or "")
                 for key in ("title", "url", "snippet", "search_snippet")
             )
-            if source.get("fetch_status") == "fetched":
-                text += " " + fetched_documents.get(str(source.get("url") or ""), "")
-            if _matches(text, entity_terms) and _matches(text, dimension_terms):
-                matching.append(source)
-        fetched = [source for source in matching if source.get("fetch_status") == "fetched"]
-        status = "covered" if fetched else "partial" if matching else "uncovered"
+            source_url_value = source_url(source.get("url"))
+            fetched_content = fetched_documents.get(source_url_value or "", "")
+            content_basis = str(source.get("content_basis") or "full_text").casefold()
+            if source.get("fetch_status") == "fetched" and (
+                fetched_content or not authoritative_traces
+            ):
+                text += " " + fetched_content
+            if (
+                _matches(text, entity_terms)
+                and _matches(text, dimension_terms)
+                and content_basis in set(requirement.get("acceptable_content_basis") or ("full_text",))
+                and (fetched_content or not authoritative_traces)
+            ):
+                matching.append({
+                    **source,
+                    # Legacy callers without a trace list supplied only an
+                    # already-materialized source context.  Preserve their
+                    # diagnostic behavior; all authoritative Deep/PEAR calls
+                    # pass traces and therefore require actual fetched text.
+                    "_fetched_content": bool(fetched_content or not authoritative_traces),
+                })
+        fetched = [
+            source for source in matching
+            if source.get("fetch_status") == "fetched" and source.get("_fetched_content")
+        ]
+        independent_keys = {
+            str(source.get("independence_group") or "").strip()
+            or urlsplit(str(source.get("url") or "")).netloc
+            for source in fetched
+        }
+        independent_keys.discard("")
+        min_independent = int(requirement.get("min_independent_sources") or 0)
+        reliability_values = [
+            float(source.get("reliability_score"))
+            for source in fetched
+            if source.get("reliability_score") is not None
+        ]
+        min_reliability = float(requirement.get("min_reliability") or 0.0)
+        reliability_ok = not min_reliability or any(
+            score >= min_reliability for score in reliability_values
+        )
+        status = (
+            "covered"
+            if fetched and len(independent_keys) >= min_independent and reliability_ok
+            else "partial"
+            if fetched or matching
+            else "uncovered"
+        )
         rows.append({
             **requirement,
             "status": status,
             "source_ids": [source.get("source_id") for source in fetched[:4]],
-            "independent_hosts": len({
-                urlsplit(str(source.get("url") or "")).netloc for source in fetched
-                if source.get("url")
-            }),
+            "independent_hosts": len(independent_keys),
+            "independence_satisfied": len(independent_keys) >= min_independent,
+            "reliability_satisfied": reliability_ok,
         })
     gaps = [
         f"{row['entity']} × {row['dimension']} ({row['status']})"

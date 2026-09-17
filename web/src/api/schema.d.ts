@@ -229,6 +229,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/tasks/{run_id}/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Task Diagnostics
+         * @description Aggregate the first failure, provider details, child runs, and evidence state.
+         */
+        get: operations["get_task_diagnostics_api_tasks__run_id__diagnostics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tasks/{run_id}/result/context": {
         parameters: {
             query?: never;
@@ -1200,6 +1220,98 @@ export interface components {
             /** Notes */
             notes?: string | null;
         };
+        /** DiagnosticChildRunResponse */
+        DiagnosticChildRunResponse: {
+            /** Run Id */
+            run_id: string;
+            /** Status */
+            status: string;
+            /**
+             * Run Role
+             * @default research_branch
+             */
+            run_role: string;
+            /** Error Message */
+            error_message?: string | null;
+        };
+        /** DiagnosticEvidenceResponse */
+        DiagnosticEvidenceResponse: {
+            /** Status */
+            status: string;
+            /**
+             * Source Documents
+             * @default 0
+             */
+            source_documents: number;
+            /**
+             * Passages
+             * @default 0
+             */
+            passages: number;
+            /**
+             * Report Claims
+             * @default 0
+             */
+            report_claims: number;
+            /**
+             * Citations
+             * @default 0
+             */
+            citations: number;
+            /**
+             * Independent Source Count
+             * @default 0
+             */
+            independent_source_count: number;
+            /**
+             * Unresolved Conflict Count
+             * @default 0
+             */
+            unresolved_conflict_count: number;
+        };
+        /** DiagnosticFailureResponse */
+        DiagnosticFailureResponse: {
+            /** Trace Id */
+            trace_id?: string | null;
+            /** Phase */
+            phase?: string | null;
+            /** Tool Name */
+            tool_name?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Error Type */
+            error_type?: string | null;
+            /** Error Message */
+            error_message?: string | null;
+            /** Created At */
+            created_at?: string | null;
+        };
+        /** DiagnosticProviderResponse */
+        DiagnosticProviderResponse: {
+            /** Provider */
+            provider?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Finish Reason */
+            finish_reason?: string | null;
+            /**
+             * Prompt Tokens
+             * @default 0
+             */
+            prompt_tokens: number;
+            /**
+             * Completion Tokens
+             * @default 0
+             */
+            completion_tokens: number;
+            /**
+             * Content Length
+             * @default 0
+             */
+            content_length: number;
+            /** Trace Id */
+            trace_id?: string | null;
+        };
         /** EvidenceBundleResponse */
         EvidenceBundleResponse: {
             /** Run Id */
@@ -1512,12 +1624,68 @@ export interface components {
             auditability_score: number;
             /** Citation Count */
             citation_count: number;
-            /** Tier T0 */
+            /**
+             * Tier T0
+             * @default 0
+             */
             tier_t0: number;
-            /** Tier T1 */
+            /**
+             * Tier T1
+             * @default 0
+             */
             tier_t1: number;
-            /** Tier T2 */
+            /**
+             * Tier T2
+             * @default 0
+             */
             tier_t2: number;
+            /** Quality Schema Version */
+            quality_schema_version?: string | null;
+            /**
+             * Evidence Quality Score
+             * @default 0
+             */
+            evidence_quality_score: number;
+            /**
+             * Claim Support Coverage
+             * @default 0
+             */
+            claim_support_coverage: number;
+            /**
+             * Strong Claim Coverage
+             * @default 0
+             */
+            strong_claim_coverage: number;
+            /**
+             * Independent Claim Coverage
+             * @default 0
+             */
+            independent_claim_coverage: number;
+            /**
+             * Mean Cited Reliability
+             * @default 0
+             */
+            mean_cited_reliability: number;
+            /**
+             * P25 Cited Reliability
+             * @default 0
+             */
+            p25_cited_reliability: number;
+            /**
+             * Independent Source Count
+             * @default 0
+             */
+            independent_source_count: number;
+            /**
+             * Unique Resource Count
+             * @default 0
+             */
+            unique_resource_count: number;
+            /**
+             * Unresolved Conflict Count
+             * @default 0
+             */
+            unresolved_conflict_count: number;
             /** Created At */
             created_at?: string | null;
         };
@@ -2569,6 +2737,23 @@ export interface components {
             /** Content Hash */
             content_hash?: string | null;
         };
+        /** SourceConstraintsRequest */
+        SourceConstraintsRequest: {
+            /**
+             * Mode
+             * @default open
+             * @enum {string}
+             */
+            mode: "open" | "prioritize" | "restrict";
+            /** Domains */
+            domains?: string[];
+            /** Urls */
+            urls?: string[];
+            /** Preferred Source Classes */
+            preferred_source_classes?: string[];
+            /** Excluded Domains */
+            excluded_domains?: string[];
+        };
         /** SourceContextResponse */
         SourceContextResponse: {
             /** Version */
@@ -2648,6 +2833,12 @@ export interface components {
             allowed_tools?: string[] | null;
             /** Execution Mode Override */
             execution_mode_override?: string | null;
+            /**
+             * Research Mode
+             * @default auto
+             * @enum {string}
+             */
+            research_mode: "quick" | "deep" | "auto";
             /** Scenario Template */
             scenario_template?: string | null;
             /** Scenario Template Key */
@@ -2663,6 +2854,7 @@ export interface components {
             require_plan_approval: boolean;
             /** Retrieval Profile */
             retrieval_profile?: string | null;
+            source_constraints?: components["schemas"]["SourceConstraintsRequest"] | null;
         };
         /** TaskCreateResponse */
         TaskCreateResponse: {
@@ -2680,6 +2872,40 @@ export interface components {
             plan_url?: string | null;
             /** Run Url */
             run_url?: string | null;
+        };
+        /** TaskDiagnosticsResponse */
+        TaskDiagnosticsResponse: {
+            /** Run Id */
+            run_id: string;
+            /** Status */
+            status: string;
+            first_failure?: components["schemas"]["DiagnosticFailureResponse"] | null;
+            /** Root Cause Type */
+            root_cause_type?: string | null;
+            provider?: components["schemas"]["DiagnosticProviderResponse"] | null;
+            /** Child Runs */
+            child_runs?: components["schemas"]["DiagnosticChildRunResponse"][];
+            evidence: components["schemas"]["DiagnosticEvidenceResponse"];
+            /** Retry Recommendation */
+            retry_recommendation: string;
+            /** Failed Phase */
+            failed_phase?: string | null;
+            /** Report Integrity Error Code */
+            report_integrity_error_code?: string | null;
+            /** Report Integrity Metrics */
+            report_integrity_metrics?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Repair Attempted
+             * @default false
+             */
+            repair_attempted: boolean;
+            /**
+             * Deterministic Fallback Used
+             * @default false
+             */
+            deterministic_fallback_used: boolean;
         };
         /**
          * TaskListItem
@@ -2786,6 +3012,18 @@ export interface components {
             task: string;
             /** Source Mode */
             source_mode: string;
+            /** Retrieval Profile */
+            retrieval_profile?: string | null;
+            /** Research Profile */
+            research_profile?: {
+                [key: string]: unknown;
+            } | null;
+            /** Source Constraints */
+            source_constraints?: {
+                [key: string]: unknown;
+            } | null;
+            /** Evidence Policy Version */
+            evidence_policy_version?: string | null;
             /** Allowed Tools */
             allowed_tools: string[];
             /** Steps */
@@ -2806,6 +3044,12 @@ export interface components {
             execution_mode?: string | null;
             /** Requested Execution Mode */
             requested_execution_mode?: string | null;
+            /**
+             * Research Mode
+             * @default auto
+             * @enum {string}
+             */
+            research_mode: "quick" | "deep" | "auto";
             /** React State */
             react_state?: {
                 [key: string]: unknown;
@@ -2874,6 +3118,8 @@ export interface components {
              * @default false
              */
             from_failed_step: boolean;
+            /** Research Mode */
+            research_mode?: ("quick" | "deep" | "auto") | null;
         };
         /** TaskRunResponse */
         TaskRunResponse: {
@@ -3030,6 +3276,12 @@ export interface components {
              * @default planned
              */
             execution_mode: string;
+            /**
+             * Research Mode
+             * @default auto
+             * @enum {string}
+             */
+            research_mode: "quick" | "deep" | "auto";
             /** Requested Execution Mode */
             requested_execution_mode?: string | null;
             /** Planner Source */
@@ -3202,6 +3454,15 @@ export interface components {
             origin_run_id: string;
             /** Research Node Id */
             research_node_id?: string | null;
+            /** Phase */
+            phase?: string | null;
+            /** Parent Trace Id */
+            parent_trace_id?: string | null;
+            /**
+             * Attempt
+             * @default 1
+             */
+            attempt: number;
         };
         /** UserMemoryResponse */
         UserMemoryResponse: {
@@ -3626,6 +3887,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ToolTraceResponse"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_task_diagnostics_api_tasks__run_id__diagnostics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskDiagnosticsResponse"];
                 };
             };
             /** @description Validation Error */

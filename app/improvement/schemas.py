@@ -87,6 +87,9 @@ class ImprovementRunResponse(BaseModel):
     source_quality_score: float
     auditability_score: float
     citation_count: int
+    tier_t0: int = 0
+    tier_t1: int = 0
+    tier_t2: int = 0
     quality_schema_version: str | None = None
     evidence_quality_score: float = 0.0
     claim_support_coverage: float = 0.0

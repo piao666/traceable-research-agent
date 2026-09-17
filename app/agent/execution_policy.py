@@ -121,8 +121,18 @@ def execute_with_policy(name: str, arguments: dict, plan: dict, settings: Settin
     if name == "mcp_github_search":
         # A configured mock default must not override a real run (or vice versa).
         prepared["mode"] = "public_api" if real_sources(plan) else "mock"
-    if (plan.get("execution_mode") == "react" or current_budget() is not None) and name in {"mcp_github_search", "tavily_search"}:
-        # The ReAct recovery loop owns retries; prevent nested transport retries.
+    # Transport retries belong to the provider/tool adapter.  A logical tool
+    # invocation is reserved once; adapters expose bounded physical attempts
+    # in result metadata for the shared budget ledger.  Historical ReAct plans
+    # (which predate the explicit research_mode contract) retain their old
+    # recovery ownership.  New Quick/Deep/Auto plans must never force zero
+    # retries merely to make the budget appear consistent.
+    if (
+        "research_mode" not in plan
+        and plan.get("execution_mode") == "react"
+        and current_budget() is None
+        and name in {"mcp_github_search", "tavily_search"}
+    ):
         prepared["_max_transport_retries"] = 0
     result = execute(name, prepared)
     if source_resolution:

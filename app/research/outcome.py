@@ -68,6 +68,16 @@ def assess_scope_outcome(
         errors.append("task_requirements_unresolved")
 
     traces = list_scope_traces(db, scope.scope_id)
+    # Requirement-level coverage is a Scope projection, not a per-run ReAct
+    # flag.  If the orchestrator supplied it, enforce it here as the single
+    # completion gate; absent/unknown projections remain conservative.
+    coverage = scope_evidence.get("coverage_matrix") or {}
+    if coverage.get("applicable") and not coverage.get("complete"):
+        errors.append("required_evidence_coverage_incomplete")
+        warnings.extend(
+            "Evidence gap: " + str(gap)
+            for gap in (coverage.get("gaps") or [])[:8]
+        )
     structured_failure = structured_goal_failure(contract, load_observations(traces))
     if structured_failure:
         errors.append(structured_failure)
@@ -127,6 +137,7 @@ def assess_scope_outcome(
         "effective_source_count": effective_source_count,
         "run_count": len(scope_evidence.get("runs") or []),
         "node_count": len(nodes),
+        "coverage_matrix": coverage if coverage else None,
         "message": (
             "Research Scope passed the evidence and lineage gate."
             if not errors

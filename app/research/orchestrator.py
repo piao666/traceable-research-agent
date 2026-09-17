@@ -66,6 +66,22 @@ BranchPlanner = Callable[..., dict[str, Any]]
 ReportGenerator = Callable[..., str]
 
 
+def _run_pear_react_adapter(
+    db: Session,
+    run_id: str,
+    settings_obj: Settings,
+    actor_client: LLMClient | None,
+) -> dict[str, Any]:
+    """Bridge the legacy ReAct loop to the PEAR node result contract."""
+
+    result = run_react_task(db, run_id, settings_obj, actor_client)
+    return {
+        **(result if isinstance(result, dict) else {}),
+        "run_id": run_id,
+        "status": str((result or {}).get("status") or "failed"),
+    }
+
+
 @budgeted_execution
 def run_deep_research_v2(
     db: Session,
@@ -122,6 +138,7 @@ def run_deep_research_v2(
             "execution_mode": "react",
             "requested_execution_mode": "react",
             "defer_to_research_scope": True,
+            "research_controller": "pear",
             "deepening_pending": False,
             "deepening_phase": "deprecated",
         }
@@ -144,7 +161,9 @@ def run_deep_research_v2(
     else:
         try:
             record_phase_event(db, run_id, "root_discovery", "started")
-            root_result = run_react_task(db, run_id, settings_obj, actor_client)
+            root_result = _run_pear_react_adapter(
+                db, run_id, settings_obj, actor_client
+            )
             record_phase_event(db, run_id, "root_discovery", "success")
         except BudgetExceeded:
             root_node.status = "failed"
@@ -418,11 +437,43 @@ def run_deep_research_v2(
         if finalization_limited:
             break
 
+    nodes = list_scope_nodes(db, scope.scope_id)
+    waiting_nodes = [
+        node for node in nodes
+        if node.status in {"waiting_human", "waiting_human_plan"}
+    ]
+    if waiting_nodes:
+        waiting_status = "waiting_human_plan" if any(
+            node.status == "waiting_human_plan" for node in waiting_nodes
+        ) else "waiting_human"
+        update_scope_status(db, scope.scope_id, waiting_status)
+        waiting_root = store.update_agent_run_status(
+            db,
+            run_id,
+            waiting_status,
+            "Research is waiting for confirmation before continuing.",
+        )
+        return _summary(
+            waiting_root,
+            _json_object(waiting_root.plan_json if waiting_root else None),
+            "Research is waiting for confirmation before continuing.",
+        )
+
     scope_evidence = get_scope_provenance_bundle(db, scope)
     from app.evidence.scope_reasoning import materialize_scope_reasoning
+    from app.agent.source_context import build_source_context
+    from app.research.coverage import assess_comparison_coverage
 
     materialize_scope_reasoning(db, scope.scope_id, settings_obj.source_policy_path)
     scope_evidence = get_scope_provenance_bundle(db, scope)
+    scope_traces = list_scope_traces(db, scope.scope_id)
+    scope_evidence["coverage_matrix"] = assess_comparison_coverage(
+        plan.get("task_contract"),
+        build_source_context(scope_traces),
+        scope_traces,
+    )
+    plan["coverage_matrix"] = scope_evidence["coverage_matrix"]
+    store.replace_agent_run_plan(db, run_id, plan)
     outcome = assess_scope_outcome(
         db,
         scope,
@@ -518,18 +569,10 @@ def run_deep_research_v2(
             scope_evidence,
             citation_labels,
         )
-        reference_report = ReferenceVerificationReport()
-        if settings_obj.reference_verification_enabled and cited_academic_references:
-            reference_report = ReferenceVerifier(
-                allowed_indexes=[
-                    item.strip()
-                    for item in settings_obj.reference_verifier_allowed_indexes.split(",")
-                    if item.strip()
-                ],
-                timeout=settings_obj.reference_verifier_timeout_seconds,
-                cache_dir=settings_obj.reference_verifier_cache_dir,
-                cache_ttl=settings_obj.reference_verifier_cache_ttl_seconds,
-            ).verify(cited_academic_references)
+        reference_report = _verify_reference_report(
+            cited_academic_references,
+            settings_obj,
+        )
         reference_reports = [reference_report]
         occurrence_preview = _validation_occurrence_preview(
             citation_validation,
@@ -581,7 +624,30 @@ def run_deep_research_v2(
                 markdown = fallback_markdown
                 citation_validation = fallback_validation
                 occurrence_preview = fallback_preview
+                # The fallback may change citation labels. Recompute academic
+                # reference verification from the adopted final answer rather
+                # than carrying the candidate report's reference set forward.
+                fallback_labels = {
+                    str(detail.citation_label or "")
+                    for detail in fallback_validation.details
+                    if detail.citation_label
+                }
+                fallback_references = extract_cited_academic_references(
+                    scope_evidence,
+                    fallback_labels,
+                )
+                reference_report = _verify_reference_report(
+                    fallback_references,
+                    settings_obj,
+                )
+                fallback_integrity = assess_report_integrity(
+                    fallback_preview,
+                    reference_report=reference_report,
+                    enforce_reference_consistency=_requires_strict_reference_gate(plan),
+                    scope_bundle=scope_evidence,
+                )
                 report_integrity = fallback_integrity
+                reference_reports = [reference_report]
                 deterministic_fallback_used = True
         plan.setdefault("report_diagnostics", {})
         plan["report_diagnostics"].update(
@@ -829,3 +895,23 @@ def _requires_strict_reference_gate(plan: dict[str, Any]) -> bool:
         selected_skill == "systematic_review"
         or plan.get("retrieval_profile") == "academic_literature"
     )
+
+
+def _verify_reference_report(
+    references: list[dict[str, Any]],
+    settings_obj: Settings,
+) -> ReferenceVerificationReport:
+    """Verify exactly the references present in the adopted report revision."""
+
+    if not settings_obj.reference_verification_enabled or not references:
+        return ReferenceVerificationReport()
+    return ReferenceVerifier(
+        allowed_indexes=[
+            item.strip()
+            for item in settings_obj.reference_verifier_allowed_indexes.split(",")
+            if item.strip()
+        ],
+        timeout=settings_obj.reference_verifier_timeout_seconds,
+        cache_dir=settings_obj.reference_verifier_cache_dir,
+        cache_ttl=settings_obj.reference_verifier_cache_ttl_seconds,
+    ).verify(references)

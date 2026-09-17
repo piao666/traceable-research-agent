@@ -55,6 +55,14 @@ def _adaptive_upgrade_reason(db: Session, run_id: str) -> str | None:
     return None
 
 
+def _is_quick_plan(plan: dict) -> bool:
+    """Quick is a product contract, not a quality-triggered auto-upgrade."""
+
+    return str(plan.get("research_mode") or "").casefold() == "quick" or bool(
+        plan.get("quick_mode")
+    )
+
+
 def _refresh_result(db: Session, run_id: str, result: dict) -> dict:
     """Synchronize an executor summary with the final persisted run and plan."""
     from app.trace import store as _store
@@ -129,6 +137,32 @@ def run_task_by_mode(
             plan_mode = None
 
     effective_mode = plan_mode or "planned"
+    if _is_quick_plan(plan):
+        effective_mode = "planned"
+        plan_mode = "planned"
+        plan["execution_mode"] = "planned"
+        plan["requested_execution_mode"] = "planned"
+        _store.replace_agent_run_plan(db, run_id, plan)
+    elif str(plan.get("research_mode") or "").casefold() == "deep":
+        if not settings_obj.deep_research_enabled:
+            from app.agent.executor import _summary
+
+            plan["research_mode_error"] = "deep_research_disabled"
+            _store.replace_agent_run_plan(db, run_id, plan)
+            failed = _store.update_agent_run_status(
+                db,
+                run_id,
+                "failed",
+                "Deep Research mode is unavailable in the current runtime configuration.",
+            )
+            return _refresh_result(db, run_id, _summary(failed, plan))
+        # Explicit Deep bypasses the legacy quality-triggered adaptive gate and
+        # enters the single Scope/PEAR owner immediately.
+        effective_mode = "react"
+        plan_mode = "react"
+        plan["execution_mode"] = "react"
+        plan["requested_execution_mode"] = "react"
+        _store.replace_agent_run_plan(db, run_id, plan)
     if run is not None and run.status in {"failed", "cancelled", "completed", "waiting_human", "waiting_human_plan"}:
         from app.agent.executor import _summary
         return _refresh_result(db, run_id, _summary(run))
@@ -235,7 +269,7 @@ def run_task_by_mode(
                     _store.replace_agent_run_plan(db, run_id, fallback_plan)
             return _finalize_result(db, run_id, result)
 
-    adaptive_candidate = bool(effective_mode == "planned" and settings_obj.react_enabled
+    adaptive_candidate = bool(effective_mode == "planned" and not _is_quick_plan(plan) and settings_obj.react_enabled
                               and (llm_client is not None or settings_obj.get_llm_api_key(
                                   settings_obj.react_llm_provider or settings_obj.llm_provider)))
     if run is not None:
@@ -278,7 +312,7 @@ def run_task_by_mode(
 
     # ── Adaptive gate: upgrade planned → ReAct if quality insufficient ──
     upgrade_reason = _adaptive_upgrade_reason(db, run_id)
-    if upgrade_reason:
+    if upgrade_reason and not _is_quick_plan(plan):
         original_requested_mode = plan.get("requested_execution_mode") or "planned"
         try:
             from app.agent.react_executor import run_react_task
