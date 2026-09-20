@@ -1453,6 +1453,14 @@ def _render_final_answer(
     tavily_record = next(
         (r for r in successful if r["tool_name"] == "tavily_search"), None
     )
+    # Once a body fetch succeeded, search snippets are discovery context only.
+    # Do not let the generic Tavily renderer turn them into final claims; use
+    # content-bearing records below so the integrity gate sees the same
+    # evidence role as the report body.
+    if tavily_record and any(
+        r["tool_name"] in {"web_fetcher", "file_reader"} for r in successful
+    ):
+        tavily_record = None
     task_lower = task.lower()
     learning_route = any(
         term in task_lower
@@ -1536,6 +1544,65 @@ def _render_final_answer(
         )
 
     return answer or ["本次执行未产生可用证据，请检查工具配置后重试。", ""]
+
+
+def _render_discovery_final_answer(
+    task: str, observations: list[dict[str, Any]], traces: list[ToolTrace]
+) -> list[str]:
+    records = [record for record in _evidence_records(observations, traces)
+               if record.get("success") and record.get("tool_name") == "tavily_search"]
+    lines = ["本次 Quick 运行仅完成来源发现，以下条目尚未完成网页正文核验：", ""]
+    seen: set[str] = set()
+    index = 1
+    for record in records:
+        output = record.get("output") or {}
+        for item in (output.get("results") if isinstance(output, dict) else []) or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            lines.append(f"{index}. {str(item.get('title') or url).strip()} — {url}")
+            index += 1
+    if index == 1:
+        lines.append("未发现可用来源链接。")
+    lines.extend(["", "> 以上内容属于 discovery evidence，仅用于定位来源，不证明网页正文中的实质性结论。"])
+    return lines
+
+
+def render_discovery_report(
+    run: AgentRun,
+    plan: dict[str, Any],
+    observations: list[dict[str, Any]],
+    traces: list[ToolTrace],
+) -> str:
+    """Deterministic Quick discovery report with no substantive assertions."""
+    records = [record for record in _evidence_records(observations, traces)
+               if record.get("success") and record.get("tool_name") == "tavily_search"]
+    lines = [
+        "# Traceable Research Agent 调研报告", "", "## 1. 任务说明", "", run.task,
+        "", "## 3. 最终回答", "",
+        "本次 Quick 运行仅完成来源发现，以下条目尚未完成网页正文核验：", "",
+    ]
+    seen: set[str] = set()
+    index = 1
+    for record in records:
+        output = record.get("output") or {}
+        for item in (output.get("results") if isinstance(output, dict) else []) or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "").strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            title = str(item.get("title") or item.get("name") or url).strip()
+            lines.append(f"{index}. {title} — {url}")
+            index += 1
+    if index == 1:
+        lines.append("未发现可用来源链接。")
+    lines.extend(["", "> 以上内容属于 discovery evidence，仅用于定位来源，不证明网页正文中的实质性结论。"])
+    return "\n".join(lines) + "\n"
 
 
 def _runtime_limitations(plan: dict[str, Any]) -> list[str]:
@@ -1639,6 +1706,9 @@ def _render_grouped_final_answer(
                     if str(p.get("passage_id")) == str(cit.get("passage_id")):
                         cb_labels.add(_content_basis_label(p))
 
+            if cb_labels and cb_labels <= {CONTENT_BASIS_LABELS["snippet_only"]}:
+                continue
+
             cb_suffix = ""
             if cb_labels:
                 cb_suffix = f" （{' / '.join(sorted(cb_labels))}）"
@@ -1681,6 +1751,13 @@ def generate_markdown_report(
       - "outline_report": header + TOC + section headings only (fast preview)
     """
 
+    # Quick discovery has a deliberately tiny, deterministic report surface:
+    # source title and URL only.  Keep it outside the general synthesis
+    # renderer so extra summaries or snippets cannot silently enter the
+    # discovery artifact.
+    if str(plan.get("quick_output_mode") or "") == "discovery":
+        return render_discovery_report(run, plan, observations, traces)
+
     degradation_label, degradation_note = _degradation_state(plan, traces)
     execution_mode = plan.get("execution_mode") or "planned"
     requested_execution_mode = plan.get("requested_execution_mode") or execution_mode
@@ -1711,7 +1788,8 @@ def generate_markdown_report(
 
     # ── Phase A: LLM synthesis if available, else template ──────────────────
     _llm_answer: str | None = None
-    if llm_client is not None:
+    discovery_only = str(plan.get("quick_output_mode") or "") == "discovery"
+    if llm_client is not None and not discovery_only:
         _llm_answer = _llm_synthesize_answer(
             run.task + ("\nTask requirements (do not change dates or metric): " + json.dumps(plan["task_contract"], ensure_ascii=False)
                         if plan.get("task_contract") else ""),
@@ -1729,7 +1807,9 @@ def generate_markdown_report(
             )
 
     # ── Phase 3: Grouped answer when sub-query groups exist ─────────────
-    if sub_query_groups and any(group.claims for group in sub_query_groups) and not _llm_answer:
+    if discovery_only:
+        _final_answer_lines = _render_discovery_final_answer(run.task, observations, traces)
+    elif sub_query_groups and any(group.claims for group in sub_query_groups) and not _llm_answer:
         _final_answer_lines = _render_grouped_final_answer(
             run.task, observations, traces, sub_query_groups,
         )

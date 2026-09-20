@@ -14,7 +14,7 @@ from app.agent.executor import (
     _persist_citation_validation,
     _persist_reference_verification,
 )
-from app.agent.outcome import fail_execution, load_observations, report_subject
+from app.agent.outcome import fail_execution, finalize_terminal_decision, load_observations, report_subject
 from app.agent.react_executor import _summary, run_react_task
 from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
@@ -323,6 +323,15 @@ def run_deep_research_v2(
             )
             raise
         except Exception as exc:
+            parent_node.status = "failed"
+            db.commit()
+            update_node_metadata(
+                db,
+                parent_node,
+                branch_planning_status="failed",
+                branch_planning_error=type(exc).__name__,
+            )
+            orchestration_incomplete = True
             record_phase_event(
                 db,
                 run_id,
@@ -332,11 +341,26 @@ def run_deep_research_v2(
                 details={"parent_node_id": parent_node.node_id, "error_type": type(exc).__name__},
                 error_message="Research branch planning failed.",
             )
-            raise
+            record_trace_event(
+                db,
+                run_id,
+                0,
+                "research_branch_planner",
+                "failed",
+                {"parent_node_id": parent_node.node_id},
+                "Research branch planning failed.",
+                {"error_type": type(exc).__name__, "parent_node_id": parent_node.node_id},
+                error_message="Research branch planning failed.",
+                phase="branch_planning",
+                parent_trace_id=locals().get("planning_trace").trace_id if locals().get("planning_trace") else None,
+            )
+            break
         if branch_plan.get("finalization_limited"):
             finalization_limited = True
             break
         if branch_plan.get("planner_failed"):
+            parent_node.status = "failed"
+            db.commit()
             update_node_metadata(db, parent_node, branch_planning_status="failed")
             orchestration_incomplete = True
             planner_error = str(
@@ -376,6 +400,8 @@ def run_deep_research_v2(
             break
         branches = list(branch_plan.get("branches") or [])
         if not branches and not branch_plan.get("is_comprehensive"):
+            parent_node.status = "failed"
+            db.commit()
             update_node_metadata(db, parent_node, branch_planning_status="failed")
             orchestration_incomplete = True
             record_trace_event(
@@ -553,11 +579,15 @@ def run_deep_research_v2(
     )
     if outcome["status"] != "passed":
         update_scope_status(db, scope.scope_id, "failed")
-        return _summary(
-            store.update_agent_run_status(db, run_id, "failed", outcome["message"]),
-            plan,
-            outcome["message"],
+        failed_root = store.get_fresh_agent_run(db, run_id)
+        finalize_terminal_decision(
+            db, failed_root, plan,
+            traces=list_scope_traces(db, scope.scope_id),
+            scope_outcome=outcome,
+            force_failure=outcome.get("error_code") or "scope_outcome_failed",
         )
+        failed_root = store.get_fresh_agent_run(db, run_id)
+        return _summary(failed_root, _json_object(failed_root.plan_json), outcome["message"])
 
     traces = list_scope_traces(db, scope.scope_id)
     observations = load_observations(traces)
@@ -762,13 +792,39 @@ def run_deep_research_v2(
             f"{report_integrity.error_code}. The report is retained only as an audit artifact."
         )
         update_scope_status(db, scope.scope_id, "failed")
-        failed = store.update_agent_run_status(db, run_id, "failed", message)
-        return _summary(failed, plan, message)
+        failed_root = store.get_fresh_agent_run(db, run_id)
+        decision = finalize_terminal_decision(
+            db, failed_root, plan,
+            traces=store.list_tool_traces(db, run_id),
+            report_integrity=report_integrity.to_plan_dict(),
+            scope_outcome=outcome,
+            force_failure="report_integrity_failed",
+        )
+        failed_root = store.get_fresh_agent_run(db, run_id)
+        return _summary(failed_root, _json_object(failed_root.plan_json), message)
 
+    root = store.get_fresh_agent_run(db, run_id)
+    decision = finalize_terminal_decision(
+        db,
+        root,
+        plan,
+        traces=store.list_tool_traces(db, run_id),
+        report_integrity=report_integrity.to_plan_dict(),
+        scope_outcome=outcome,
+    )
+    root = store.get_fresh_agent_run(db, run_id)
+    if decision.get("status") != "completed":
+        decision_status = str(decision.get("status") or "incomplete")
+        update_scope_status(
+            db,
+            scope.scope_id,
+            decision_status if decision_status in {"failed", "incomplete"} else "failed",
+        )
+        return _summary(root, plan, decision.get("error_code"))
     root_traces = store.list_tool_traces(db, run_id)
     _after_run_completed(db, root, markdown, step_no=max((t.step_no for t in root_traces), default=0) + 1)
     update_scope_status(db, scope.scope_id, "completed")
-    root = store.update_agent_run_status(db, run_id, "completed", None)
+    root = store.get_fresh_agent_run(db, run_id)
     record_phase_event(db, run_id, "orchestration", "success", details={"research_scope_id": scope.scope_id})
     return {
         **_summary(root, plan, "Deep Research Engine V2 completed."),
@@ -957,4 +1013,3 @@ def _verify_reference_report(
         cache_dir=settings_obj.reference_verifier_cache_dir,
         cache_ttl=settings_obj.reference_verifier_cache_ttl_seconds,
     ).verify(references)
-

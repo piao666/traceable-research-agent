@@ -37,6 +37,15 @@ it("shows persisted failure, metrics limitations and full retry", async () => {
   expect(screen.getByRole("button", { name: "完整重试" })).toBeEnabled();
   expect(screen.queryByRole("button", { name: "取消任务" })).toBeNull();
 });
+it("shows incomplete runs as retryable and labels their partial report", async () => {
+  vi.mocked(api.getTask).mockResolvedValue({ ...taskFixture, status: "incomplete", report_path: "workspace/reports/partial.md" });
+  vi.mocked(api.getReport).mockResolvedValue({ run_id: "fixture", exists: true, availability: "partial", markdown: "# 部分正文", message: "Report contains partial results", requires_review: true, citation_evaluated: false });
+  show("/runs/fixture/report");
+  expect(await screen.findByText("研究未完成：当前报告仅包含部分结果，可阅读和导出；可创建新 Run 重试。")).toBeInTheDocument();
+  expect(await screen.findByText(/部分报告：研究未完成/)).toBeInTheDocument();
+  expect(screen.getByText("部分正文")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "完整重试" })).toBeEnabled();
+});
 it("creates a fresh retry only after confirmation and navigates to its review", async () => {
   const retry = vi.spyOn(api, "retryTask").mockResolvedValue({ run_id: "new", status: "waiting_human_plan", status_url: "", trace_url: "", report_url: "" });
   const start = vi.spyOn(api, "startTask");

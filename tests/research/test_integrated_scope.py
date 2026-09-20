@@ -7,6 +7,7 @@ from sqlalchemy import select
 from unittest.mock import patch
 
 from app.agent.evidence_exporter import resolve_export_path
+from app.agent.reporter import save_report as real_save_report
 from app.agent.outcome import load_observations
 from app.api.tasks import (
     _export_run_evidence,
@@ -199,7 +200,7 @@ def test_integrated_scope_result_governance_chain(db, r12_settings):
     settings = r12_settings.model_copy(update={"reference_verification_enabled": False})
     with (
         patch("app.research.orchestrator.run_react_task", side_effect=runner),
-        patch("app.research.orchestrator.save_report", return_value="workspace/reports/integrated.md"),
+        patch("app.research.orchestrator.save_report", side_effect=real_save_report),
     ):
         result = run_deep_research_v2(
             db,

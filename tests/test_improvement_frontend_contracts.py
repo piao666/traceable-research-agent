@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import patch
 
 from sqlalchemy import create_engine
@@ -180,6 +182,47 @@ class ImprovementFrontendContractTests(unittest.TestCase):
         self.assertIn("report_ready", [event["event_type"] for event in events])
         self.assertIn("done", [event["event_type"] for event in events])
 
+    def test_incomplete_report_emits_partial_ready_and_terminal_done(self) -> None:
+        report = Path("workspace/reports") / "partial-contract.md"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("# Partial\n", encoding="utf-8")
+        report_hash = hashlib.sha256(report.read_bytes()).hexdigest()
+        run = self._create_run(
+            plan=_plan(terminal_decision={
+                "version": "terminal-decision-v1", "status": "incomplete",
+                "report_sha256": report_hash,
+                "blockers": ["required_evidence_coverage_incomplete"],
+            }),
+            status="incomplete",
+        )
+        store.update_agent_run_report(self.db, run.run_id, str(report))
+        events, should_close = build_incremental_events(self.db, run.run_id, TraceEventCursor())
+        by_type = {event["event_type"]: event for event in events}
+        self.assertTrue(should_close)
+        self.assertEqual(by_type["run_status"]["status"], "incomplete")
+        self.assertTrue(by_type["report_ready"]["partial"])
+        self.assertEqual(by_type["report_ready"]["report_status"], "incomplete")
+        self.assertEqual(by_type["done"]["status"], "incomplete")
+        self.assertEqual(by_type["done"]["metadata"]["terminal_decision"]["status"], "incomplete")
+
+    def test_incomplete_report_hash_mismatch_does_not_emit_ready(self) -> None:
+        report = Path("workspace/reports") / "tampered-contract.md"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("# Original\n", encoding="utf-8")
+        report_hash = hashlib.sha256(report.read_bytes()).hexdigest()
+        run = self._create_run(
+            plan=_plan(terminal_decision={
+                "version": "terminal-decision-v1", "status": "incomplete",
+                "report_sha256": report_hash,
+            }),
+            status="incomplete",
+        )
+        store.update_agent_run_report(self.db, run.run_id, str(report))
+        report.write_text("# Tampered\n", encoding="utf-8")
+        events, should_close = build_incremental_events(self.db, run.run_id, TraceEventCursor())
+        self.assertTrue(should_close)
+        self.assertNotIn("report_ready", [event["event_type"] for event in events])
+
     def test_planned_quality_gate_uses_one_final_terminal_boundary(self) -> None:
         run = self._create_run()
         seen_completion_statuses: list[str] = []
@@ -217,8 +260,10 @@ class ImprovementFrontendContractTests(unittest.TestCase):
             )
 
         self.assertEqual(seen_completion_statuses, ["running"])
-        self.assertEqual(finalized_statuses, ["completed"])
-        self.assertEqual(result["status"], "completed")
+        # Improvement bookkeeping runs while the adaptive parent remains
+        # visibly running; the terminal decision owns the later transition.
+        self.assertEqual(finalized_statuses, ["incomplete"])
+        self.assertEqual(result["status"], "incomplete")
         stored_plan = json.loads(store.get_fresh_agent_run(self.db, run.run_id).plan_json)
         self.assertFalse(stored_plan["adaptive_gate_pending"])
         self.assertEqual(stored_plan["adaptive_phase"], "completed")

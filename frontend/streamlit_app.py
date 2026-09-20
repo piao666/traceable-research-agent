@@ -116,6 +116,7 @@ STATUS_CN = {
     "waiting_human":      ("✋", "等待确认", "#B45309"),
     "waiting_human_plan": ("📋", "计划审批", "#7C3AED"),
     "completed":          ("✅", "已完成", "#15803D"),
+    "incomplete":         ("⚠️", "未完成·可重试", "#B45309"),
     "failed":             ("❌", "执行失败", "#B91C1C"),
     "cancelled":          ("⛔", "已取消", "#6B7280"),
     "success":            ("✅", "成功", "#15803D"),
@@ -143,6 +144,7 @@ STREAM_STATUS_CN = {
     "running": "运行中",
     "success": "成功",
     "completed": "已完成",
+    "incomplete": "未完成·可重试",
     "failed": "失败",
     "cancelled": "已取消",
     "waiting_human": "等待确认",
@@ -784,7 +786,7 @@ def maybe_auto_refresh() -> None:
     if not run_id:
         return
     status = (st.session_state.get("last_status") or {}).get("status")
-    if status not in ("pending", "running"):
+    if status not in ("pending", "running", "waiting_human", "waiting_human_plan"):
         return
     # Consume a short resumable SSE slice.  A long-lived requests iterator
     # would block Streamlit's single script thread for the entire research
@@ -1127,7 +1129,9 @@ def render_status_strip() -> None:
     planner_source = _planner_source_label(plan.get("planner_source") or status_obj.get("planner_source"))
     adaptive_label, adaptive_note = _adaptive_status(plan, status_obj)
     report_value = (
-        "已生成"
+        "部分报告"
+        if report.get("exists") and (status_obj.get("status") == "incomplete" or report.get("availability") == "partial")
+        else "已生成"
         if report.get("exists") and status_obj.get("status") == "completed"
         else "生成中" if report.get("exists") else "待生成"
     )
@@ -1261,8 +1265,9 @@ def render_report_preview_panel() -> None:
     report = st.session_state.get("last_report") or {}
     evidence = st.session_state.get("last_evidence") or {}
     report_exists = bool(report.get("exists"))
-    title = "报告已生成" if report_exists else "报告待生成"
-    note = "可预览、下载 Markdown / Word / PDF。" if report_exists else "执行任务后，摘要、关键发现、证据链和来源链接会汇总在这里。"
+    partial = report.get("availability") == "partial" or (st.session_state.get("last_status") or {}).get("status") == "incomplete"
+    title = "部分报告已生成" if partial and report_exists else "报告已生成" if report_exists else "报告待生成"
+    note = "研究未完成；可预览、下载当前部分结果，并创建新 Run 重试。" if partial and report_exists else "可预览、下载 Markdown / Word / PDF。" if report_exists else "执行任务后，摘要、关键发现、证据链和来源链接会汇总在这里。"
     evidence_count = evidence.get("total_evidence_items", 0) if isinstance(evidence, dict) else 0
     body = textwrap.dedent(f"""
     <div class="ra-empty-box">
@@ -1278,7 +1283,7 @@ def render_report_preview_panel() -> None:
         <div class="ra-panel">
             <div class="ra-section-head">
                 <div class="ra-section-title">研究报告</div>
-                <div class="ra-chip">{'已生成' if report_exists else '待生成'}</div>
+                <div class="ra-chip">{'部分报告' if partial and report_exists else '已生成' if report_exists else '待生成'}</div>
             </div>
             {body}
         </div>

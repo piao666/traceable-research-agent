@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from app.agent.outcome import load_observations
 from app.agent.outcome import result_integrity
 from app.agent.budget import BudgetExceeded
-from app.agent.reporter import build_bounded_provenance_context
+from app.agent.reporter import build_bounded_provenance_context, save_report as real_save_report
 from app.eval.fake_react_llm import FakeReActLLMClient
 from app.evidence.service import materialize_execution_provenance
 from app.evidence.citation_validator import extract_final_answer_section
@@ -86,7 +86,7 @@ def test_orchestrator_final_report_receives_parent_and_child_evidence(db, r12_se
 
     def save_report(_run_id, markdown):
         captured["markdown"] = markdown
-        return "workspace/reports/r12.md"
+        return real_save_report(_run_id, markdown)
 
     def report_generator(_run, _plan, _observations, _traces, **kwargs):
         assert store.get_fresh_agent_run(db, root.run_id).status == "running"
@@ -433,7 +433,7 @@ def test_orchestrator_resume_executes_existing_unfinished_child(
             f"{passage['text']} [{citation['citation_label']}]"
         )
 
-    with patch("app.research.orchestrator.save_report", return_value="workspace/reports/resume.md"):
+    with patch("app.research.orchestrator.save_report", side_effect=real_save_report):
         result = run_deep_research_v2(
             db,
             root.run_id,

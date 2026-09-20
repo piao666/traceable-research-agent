@@ -13,8 +13,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.agent.react_executor import run_react_task
-from app.agent.executor import _persist_citation_validation, _persist_reference_verification
-from app.agent.outcome import enforce_research_outcome, fail_execution, report_subject
+from app.agent.executor import _persist_citation_validation, _persist_final_report_gate, _persist_reference_verification
+from app.agent.outcome import enforce_research_outcome, fail_execution, finalize_terminal_decision, report_subject
 from app.agent.budget import BudgetExceeded, budgeted_execution, budget_client, current_budget
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings as _settings
@@ -580,6 +580,13 @@ def _legacy_run_deepening_v1(
         reference_verification_reports,
         all_traces,
     )
+    run = store.get_fresh_agent_run(db, run_id)
+    plan = json.loads(run.plan_json or "{}")
+    _persist_final_report_gate(
+        db, run, plan, markdown, provenance_bundle, report_path,
+        citation_validation_reports,
+    )
+    run = store.get_fresh_agent_run(db, run_id)
 
     # Add deepening summary to report markdown
     if all_learnings:
@@ -591,7 +598,14 @@ def _legacy_run_deepening_v1(
             deepening_section += f"{i}. {learning}\n"
         deepening_section += "\n"
         markdown += deepening_section
-        save_report(run_id, markdown)
+        report_path = save_report(run_id, markdown)
+        run = store.update_agent_run_report(db, run_id, report_path)
+        plan = json.loads(run.plan_json or "{}")
+        _persist_final_report_gate(
+            db, run, plan, markdown, provenance_bundle, report_path,
+            citation_validation_reports,
+        )
+        run = store.get_fresh_agent_run(db, run_id)
 
     if store.is_agent_run_cancelled(db, run_id):
         _finish_deepening_phase(db, run_id, "cancelled")
@@ -601,7 +615,9 @@ def _legacy_run_deepening_v1(
         final_plan["deepening_pending"] = False
         final_plan["deepening_phase"] = "completed"
         store.replace_agent_run_plan(db, run_id, final_plan)
-        run = store.update_agent_run_status(db, run_id, "completed", None)
+        plan = json.loads(run.plan_json or "{}")
+        finalize_terminal_decision(db, run, plan, traces=store.list_tool_traces(db, run_id))
+        run = store.get_fresh_agent_run(db, run_id)
 
     cancelled = run.status == "cancelled"
     return {

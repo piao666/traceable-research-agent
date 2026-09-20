@@ -526,7 +526,9 @@ class GoalRecoveryTests(unittest.TestCase):
         with (patch("app.agent.react_executor.execute_tool", return_value=ToolResult(success=True, output={
                 "pages": [{"url": URL, "content": "Substantive documentation."}]})),
               patch("app.agent.react_executor.generate_markdown_report", return_value="# Fixture"),
-              patch("app.agent.react_executor.save_report", return_value="not-written.md")):
+              patch("app.agent.react_executor.save_report", return_value="not-written.md"),
+              patch("app.agent.react_executor.finalize_terminal_decision",
+                    side_effect=recovery.accept_synthetic_terminal)):
             result = run_react_task(self.db, run.run_id, self.settings.model_copy(update={"react_max_steps": 2}),
                 recovery.ScriptedLLM([decision("web_fetcher", urls=[URL]), decision("finish")]))
         self.assertEqual(result["status"], "completed")
@@ -591,7 +593,9 @@ class GoalRecoveryTests(unittest.TestCase):
                 output={"pages": [{"url": URL, "content": "Documented feature behavior."}]})),
               patch("app.agent.react_executor.generate_markdown_report", return_value="# Intermediate"),
               patch("app.agent.react_executor.save_report", return_value="not-written.md"),
-              patch("app.agent.deepening.generate_markdown_report") as final_report):
+              patch("app.agent.deepening.generate_markdown_report") as final_report,
+              patch("app.agent.react_executor.finalize_terminal_decision",
+                    side_effect=recovery.accept_synthetic_terminal)):
             result = run_deepening(self.db, run.run_id, settings, client)
         self.assertEqual(result["status"], "failed")
         final_report.assert_not_called()
@@ -631,7 +635,11 @@ class GoalRecoveryTests(unittest.TestCase):
                                                   decision("finish", goal_status="achieved")])
                     with (patch("app.agent.file_access_policy.DOCS_ROOT", docs),
                           patch("app.config.settings", settings), patch("app.agent.executor._after_run_completed"),
-                          patch("app.agent.reporter.ROOT", root), patch("app.agent.reporter.REPORTS_ROOT", root / "reports")):
+                          patch("app.agent.reporter.ROOT", root), patch("app.agent.reporter.REPORTS_ROOT", root / "reports"),
+                          patch("app.agent.report_exporter.ROOT", root),
+                          patch("app.agent.report_exporter.REPORTS_ROOT", root / "reports"),
+                          patch("app.agent.report_exporter.resolve_report_path",
+                                side_effect=lambda path, **kwargs: root / path)):
                         result = run_react_task(self.db, run.run_id, settings, client)
                     self.assertEqual(result["status"], expected, result)
                     if expected == "failed":

@@ -14,10 +14,11 @@ const connectionLabels = { loading: "正在读取", connecting: "连接实时更
 
 export function IntegrityNotice({ task }: { task: NonNullable<RunContext["task"]> }) {
   const warnings = [...new Set((task.quality_warnings ?? []).map(localizeQualityWarning))];
-  if (!task.requires_review && !warnings.length && task.status !== "failed") return null;
+  if (!task.requires_review && !warnings.length && !["failed", "incomplete"].includes(task.status)) return null;
   return <aside className="warning-banner" aria-label="研究限制">
     {task.requires_review && <strong>历史结果待复核：旧状态和旧质量分数不能证明研究有效。</strong>}
     {task.status === "failed" && <strong>研究失败，不能作为成功结果验收。</strong>}
+    {task.status === "incomplete" && <strong>研究未完成：当前报告仅包含部分结果，可阅读和导出；可创建新 Run 重试。</strong>}
     {warnings.length > 0 && <ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
   </aside>;
 }
@@ -66,7 +67,7 @@ function RunView({ runId }: { runId: string }) {
   if (loading && !task) return <div className="page"><PageHeader title="研究详情" subtitle={`Run ${runId}`} /><Panel><LoadingState>正在读取研究状态、计划和 Trace…</LoadingState></Panel></div>;
   if (!task) return <div className="page stack"><PageHeader title="无法读取研究" subtitle={`Run ${runId}`} /><div role="alert" className="error-banner">{error || "任务不存在"}</div><Button variant="secondary" onClick={refresh}>重新加载</Button><Link to="/runs">返回研究任务</Link></div>;
   const mayCancel = ["pending", "running", "waiting_human", "waiting_human_plan"].includes(task.status);
-  const mayRetry = ["failed", "cancelled"].includes(task.status);
+  const mayRetry = ["failed", "cancelled", "incomplete"].includes(task.status);
   return <div className="page run-page stack">
     <PageHeader title="研究详情" subtitle={`Run ${runId}`} action={<StatusChip tone={taskStatusTone(task)}>{taskStatusLabel(task)}</StatusChip>} />
     <section className="panel run-heading">

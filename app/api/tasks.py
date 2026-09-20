@@ -308,7 +308,7 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
 
 def _task_run_response(summary: dict) -> TaskRunResponse:
     return TaskRunResponse(
-        **{key: summary[key] for key in ("research_outcome", "requires_review", "citation_evaluated", "quality_warnings") if key in summary},
+        **{key: summary[key] for key in ("research_outcome", "terminal_decision", "requires_review", "citation_evaluated", "quality_warnings") if key in summary},
         run_id=summary["run_id"],
         status=summary["status"],
         current_step=summary["current_step"],
@@ -674,6 +674,8 @@ def run_task(
         return _task_run_response(
             _run_summary(run, "Run already completed; no tools executed.")
         )
+    if run.status == "incomplete":
+        raise HTTPException(status_code=409, detail="Incomplete runs cannot be rerun directly; create a retry run.")
     if run.status == "running":
         raise HTTPException(status_code=409, detail="Task run is already running")
     if run.status == "waiting_human":
@@ -712,6 +714,8 @@ async def run_task_async(
         raise HTTPException(status_code=400, detail="Task run does not have a plan")
     if run.status == "completed":
         return _async_run_response(run, "Run already completed; no tools executed.")
+    if run.status == "incomplete":
+        raise HTTPException(status_code=409, detail="Incomplete runs cannot be rerun directly; create a retry run.")
     if run.status == "running":
         return _async_run_response(run, "Run is already running; no duplicate task queued.")
     if run.status == "waiting_human":
@@ -1512,10 +1516,10 @@ def retry_task(
     original = store.get_agent_run(db, run_id)
     if original is None:
         raise HTTPException(status_code=404, detail="Original task run not found")
-    if original.status not in ("failed", "cancelled"):
+    if original.status not in ("failed", "cancelled", "incomplete"):
         raise HTTPException(
             status_code=409,
-            detail=f"Only failed or cancelled tasks can be retried (current status: '{original.status}')",
+            detail=f"Only failed, cancelled, or incomplete tasks can be retried (current status: '{original.status}')",
         )
     if request and request.from_failed_step:
         raise HTTPException(
@@ -1633,6 +1637,15 @@ def _clear_retry_derived_state(plan: dict[str, Any]) -> None:
         "repair_attempted",
         "research_mode_error",
         "research_controller",
+        "terminal_decision",
+        "report_sha256",
+        # A retry starts with a new scope and fresh terminal/report gates.
+        "discovery_report_sha256",
+        "terminal_requirement_assessment",
+        "report_revision",
+        "quality_gate",
+        "research_quality_gate",
+        "gate",
     }
     for key in list(plan):
         if (

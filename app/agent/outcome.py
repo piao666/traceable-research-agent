@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -152,9 +154,202 @@ def enforce_research_outcome(db, run, plan, observations, traces, settings) -> b
     if result["status"] == "failed":
         store.update_agent_run_citation_validation(db, run.run_id, total=0, supported=0,
             weakly_supported=0, unsupported=0, accuracy=0.0)
-        store.update_agent_run_status(db, run.run_id, "failed", result["message"])
+        finalize_terminal_decision(db, run, plan, force_failure=result["error_code"])
         return False
     return True
+
+
+TERMINAL_DECISION_VERSION = "terminal-decision-v1"
+
+
+def _task_allows_discovery_completion(plan: dict[str, Any]) -> bool:
+    """Return whether a plan explicitly asks only for source discovery.
+
+    Quick discovery is a valid product result.  It must not be confused with
+    substantive research, which requires content-bearing evidence and a
+    citation/coverage decision.
+    """
+    contract = plan.get("task_contract") or {}
+    goal_kind = str(contract.get("goal_kind") or plan.get("goal_kind") or "").casefold()
+    return bool(
+        plan.get("research_mode") == "quick"
+        and (
+            plan.get("quick_output_mode") == "discovery"
+            or goal_kind in {"discovery", "source_discovery", "search", "lookup"}
+        )
+    )
+
+
+def _report_hash(run) -> str | None:
+    if not getattr(run, "report_path", None):
+        return None
+    try:
+        from app.agent.report_exporter import resolve_report_path
+        return hashlib.sha256(resolve_report_path(run.report_path).read_bytes()).hexdigest()
+    except (OSError, ValueError):
+        return None
+
+
+def finalize_terminal_decision(
+    db, run, plan: dict[str, Any], *, traces=None,
+    report_integrity: dict[str, Any] | None = None,
+    scope_outcome: dict[str, Any] | None = None,
+    force_failure: str | None = None,
+) -> dict[str, Any]:
+    """Commit the decision and run state together, using persisted evidence.
+
+    The caller must persist report/diagnostic inputs first. Node-local success
+    is not root completion; only the Scope owner calls this for a Deep root.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import select, update
+    from app.trace.models import AgentRun
+    from app.evidence.models import ReportRevision
+    from app.evidence.citation_validator import get_report_occurrence_bundle
+    from app.reporting.integrity import assess_report_integrity
+    from app.evidence.service import get_provenance_bundle
+
+    current = store.get_fresh_agent_run(db, run.run_id)
+    if current is None or current.status in {"cancelled", "waiting_human", "waiting_human_plan"}:
+        return {"version": TERMINAL_DECISION_VERSION,
+                "status": current.status if current else "failed",
+                "error_code": "run_not_finalizable", "blockers": ["run_not_finalizable"],
+                "warnings": []}
+    run = current
+    expected_plan = run.plan_json
+    expected_status = run.status
+    persisted = json.loads(expected_plan or "{}")
+    plan = persisted if isinstance(persisted, dict) else {}
+    contract = plan.get("task_contract") or {}
+    outcome = plan.get("research_outcome") or {}
+    integrity = report_integrity if report_integrity is not None else plan.get("report_integrity") or {}
+    scope = scope_outcome if scope_outcome is not None else outcome
+    report_hash = _report_hash(run)
+    blockers: list[str] = []
+    warnings = list(outcome.get("warnings") or []) + list(integrity.get("warnings") or [])
+    if force_failure:
+        blockers.append(force_failure)
+    if not report_hash:
+        blockers.append("report_missing")
+    if integrity.get("version") != REPORT_INTEGRITY_VERSION or integrity.get("status") not in {"passed", "failed"}:
+        blockers.append("report_integrity_missing")
+    if outcome.get("status") != "passed":
+        blockers.append(str(outcome.get("error_code") or "research_outcome_not_passed"))
+    if scope.get("status") == "failed":
+        blockers.extend(str(error) for error in scope.get("errors") or [scope.get("error_code") or "scope_outcome_failed"])
+
+    evidence: dict[str, Any] = {}
+    actual_traces = store.list_tool_traces(db, run.run_id)
+    if run.research_scope_id:
+        from app.evidence.scope_service import get_scope_provenance_bundle
+        from app.research.scope import list_scope_traces
+        try:
+            evidence = get_scope_provenance_bundle(db, run.research_scope_id)
+            actual_traces = list_scope_traces(db, run.research_scope_id)
+        except ValueError:
+            blockers.append("evidence_snapshot_missing")
+    else:
+        try:
+            evidence = get_provenance_bundle(db, run.run_id)
+        except ValueError:
+            blockers.append("evidence_snapshot_missing")
+    if not evidence.get("passages"):
+        blockers.append("no_usable_evidence")
+
+    revision = db.scalar(select(ReportRevision).where(
+        ReportRevision.root_run_id == run.run_id,
+        ReportRevision.content_hash == report_hash,
+        ReportRevision.status == "complete")) if report_hash else None
+    occurrences: dict[str, Any] = {}
+    if revision is None:
+        blockers.append("report_revision_missing")
+    else:
+        occurrences = get_report_occurrence_bundle(db, revision.report_revision_id)
+    discovery = _task_allows_discovery_completion(plan)
+    safe_discovery = discovery and bool(report_hash) and plan.get("discovery_report_sha256") == report_hash
+    if discovery and not safe_discovery:
+        blockers.append("discovery_report_not_verified")
+    if not safe_discovery:
+        if integrity.get("status") == "failed":
+            blockers.append(str(integrity.get("error_code") or "report_integrity_failed"))
+        if occurrences:
+            actual_integrity = assess_report_integrity(occurrences, scope_bundle=evidence)
+            if actual_integrity.status != "passed":
+                blockers.append(actual_integrity.error_code or "report_integrity_failed")
+            if actual_integrity.supported == 0:
+                blockers.append("no_supported_citations")
+        else:
+            blockers.append("final_claim_validation_missing")
+    requirements = contract.get("requirements") or []
+    assessment = None
+    if requirements:
+        from app.research.assessor import assess_requirements
+        from app.agent.source_context import build_source_context
+        assessment = assess_requirements(contract, build_source_context(actual_traces),
+                                         traces=actual_traces, scope_evidence=evidence)
+        required_ids = {str(item.get("requirement_id") or "") for item in requirements
+                        if isinstance(item, dict) and item.get("required", item.get("mandatory", True))}
+        assessed = {str(item.get("requirement_id") or ""): item
+                    for item in assessment.get("requirements") or []}
+        if any(not rid or assessed.get(rid, {}).get("status") != "satisfied" for rid in required_ids):
+            blockers.append("required_evidence_coverage_incomplete")
+    coverage = scope.get("coverage_matrix") or plan.get("coverage_matrix") or {}
+    if coverage.get("applicable") and coverage.get("complete") is not True:
+        blockers.append("required_evidence_coverage_incomplete")
+
+    # Freeze the materialized Source/View/Claim facts, not volatile run status
+    # or gate traces. Scope bundles include every contributing child source.
+    evidence_facts = {key: evidence.get(key) for key in (
+        "source_documents", "source_snapshots", "passages", "claims", "edges",
+        "citations", "reliability_scores", "resolutions", "scope_claim_groups",
+        "scope_resolutions", "scope_identity")}
+    decision_inputs = {"evidence": evidence_facts, "contract": contract,
+        "assessment": assessment, "coverage": coverage, "outcome": outcome,
+        "scope_outcome": scope, "report_integrity": integrity,
+        "occurrences": occurrences, "force_failure": force_failure}
+    evidence_hash = hashlib.sha256(json.dumps(decision_inputs, ensure_ascii=False,
+        sort_keys=True, default=str).encode()).hexdigest()
+    existing = plan.get("terminal_decision") or {}
+    if (existing.get("version") == TERMINAL_DECISION_VERSION
+        and existing.get("report_sha256") == report_hash
+        and existing.get("evidence_snapshot_id") == evidence_hash
+        and existing.get("status") == run.status):
+        return existing
+    hard_failure = bool(force_failure) or outcome.get("error_code") in {
+        "execution_failed", "report_synthesis_failed", "budget_exhausted",
+        "configuration_not_ready", "provider_failure"}
+    status = ("failed" if hard_failure else "incomplete") if blockers else "completed"
+    error_code = next(iter(blockers), None)
+    decision = {"version": TERMINAL_DECISION_VERSION, "status": status,
+        "error_code": error_code, "blockers": list(dict.fromkeys(blockers)),
+        "warnings": list(dict.fromkeys(warnings)), "report_sha256": report_hash,
+        "evidence_snapshot_id": evidence_hash,
+        "report_revision_id": revision.report_revision_id if revision else None,
+        "task_contract_version": contract.get("version"),
+        "research_outcome_version": outcome.get("version"),
+        "report_integrity_version": integrity.get("version")}
+    plan["terminal_decision"] = decision
+    if assessment is not None:
+        plan["terminal_requirement_assessment"] = assessment
+    message = None if status == "completed" else (
+        outcome.get("message") if hard_failure and outcome.get("status") == "failed"
+        else f"{status}: {error_code}. Inspect the persisted evidence and Trace.")
+    # Compare-and-set avoids overwriting a concurrent cancellation, approval,
+    # retry metadata change or another finalizer's terminal transition.
+    changed = db.execute(update(AgentRun).where(
+        AgentRun.run_id == run.run_id, AgentRun.status == expected_status,
+        AgentRun.plan_json == expected_plan).values(
+            plan_json=json.dumps(plan, ensure_ascii=False, default=str), status=status,
+            error_message=message, updated_at=datetime.now(timezone.utc)))
+    db.commit()
+    db.refresh(run)
+    if changed.rowcount != 1:
+        return (json.loads(run.plan_json or "{}").get("terminal_decision") or
+                {"status": run.status, "error_code": "finalization_state_changed"})
+    record_trace_event(db, run.run_id, max((t.step_no for t in actual_traces), default=0) + 1,
+        "terminal_decision", "success" if status == "completed" else "failed", {},
+        message or "Research terminal decision passed.", decision, error_message=message)
+    return decision
 
 
 def result_integrity(run) -> dict[str, Any]:
@@ -163,10 +358,12 @@ def result_integrity(run) -> dict[str, Any]:
         plan = json.loads(run.plan_json or "{}")
         outcome = plan.get("research_outcome") or {}
         report_integrity = plan.get("report_integrity") or {}
+        terminal_decision = plan.get("terminal_decision") or {}
     except (ValueError, TypeError, AttributeError):
         plan = {}
         outcome = {}
         report_integrity = {}
+        terminal_decision = {}
     deep_v2 = (
         plan.get("execution_mode") == "deep_research_v2"
         or getattr(run, "engine_version", None) == "v2"
@@ -186,19 +383,24 @@ def result_integrity(run) -> dict[str, Any]:
     warnings = [
         *list(outcome.get("warnings") or []),
         *list(report_integrity.get("warnings") or []),
+        *list(terminal_decision.get("warnings") or []),
+        *list(terminal_decision.get("blockers") or []),
     ]
     if outcome.get("status") == "failed" and outcome.get("message"):
         warnings.append(outcome["message"])
-    return {"research_outcome": outcome or None, "requires_review": legacy,
+    return {"research_outcome": outcome or None,
+            "terminal_decision": terminal_decision or None,
+            "requires_review": legacy or terminal_decision.get("status") in {"incomplete", "failed"},
             "citation_evaluated": bool(
                 run.citation_total
                 and not legacy
                 and run.status == "completed"
                 and outcome.get("status") == "passed"
+                and terminal_decision.get("status", "completed") == "completed"
                 and (not deep_v2 or report_gate_passed)
             ),
             "quality_warnings": (["Historical result predates current integrity or trace-to-source mapping checks; re-run before relying on its quality metrics."]
-                                 if legacy else warnings)}
+                                 if legacy else list(dict.fromkeys(warnings)))}
 
 
 def report_block_reason(run) -> str | None:
@@ -211,16 +413,35 @@ def report_block_reason(run) -> str | None:
         plan = {}
     outcome = result_integrity(run)["research_outcome"]
     report_integrity = plan.get("report_integrity") or {}
+    terminal_decision = plan.get("terminal_decision") or {}
     deep_v2 = (
         plan.get("execution_mode") == "deep_research_v2"
         or getattr(run, "engine_version", None) == "v2"
     )
+    if terminal_decision.get("version") == TERMINAL_DECISION_VERSION:
+        if terminal_decision.get("status") != run.status:
+            return "Run status does not match its persisted terminal decision."
+        current_report_hash = None
+        if getattr(run, "report_path", None):
+            try:
+                from app.agent.report_exporter import resolve_report_path
+                path = resolve_report_path(run.report_path)
+                current_report_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            except (OSError, ValueError):
+                current_report_hash = None
+        if current_report_hash != terminal_decision.get("report_sha256"):
+            return "The persisted report changed after its final integrity decision; re-run final validation."
     if (run.status in {"failed", "cancelled"}
         or plan.get("adaptive_gate_pending") or plan.get("deepening_pending")
-        or (run.report_path and run.status != "completed")
-        or (outcome and (run.status != "completed" or outcome.get("status") != "passed"))
+        or (run.report_path and run.status not in {"completed", "incomplete"})
+        or (outcome and (
+            (outcome.get("status") == "failed" and not (
+                run.status == "incomplete" and terminal_decision.get("status") == "incomplete"))
+            or run.status not in {"completed", "incomplete"}
+        ))
         or (
             deep_v2
+            and run.status == "completed"
             and (
                 report_integrity.get("version") != REPORT_INTEGRITY_VERSION
                 or report_integrity.get("status") != "passed"
@@ -258,7 +479,8 @@ def fail_execution(db: Session, run_id: str, exc: Exception):
     store.replace_agent_run_plan(db, run_id, plan)
     record_trace_event(db, run_id, run.current_step, "execution_failure", "failed", {},
                        message, {"error_type": code}, error_message=message)
-    return store.update_agent_run_status(db, run_id, "failed", message)
+    finalize_terminal_decision(db, run, plan, force_failure=code)
+    return store.get_fresh_agent_run(db, run_id)
 
 
 def trusted_run_ids():
@@ -283,6 +505,9 @@ def trusted_run_ids():
         func.json_extract(safe_plan, "$.research_outcome.status") == "passed",
         func.json_extract(safe_plan, "$.research_outcome.effective_evidence_count") > 0,
         or_(~deep_v2, report_gate_passed),
+        or_(func.json_extract(safe_plan, "$.terminal_decision.version").is_(None),
+            and_(func.json_extract(safe_plan, "$.terminal_decision.version") == TERMINAL_DECISION_VERSION,
+                 func.json_extract(safe_plan, "$.terminal_decision.status") == "completed")),
         ~((execution_mode == "react")
           & (func.coalesce(func.json_array_length(safe_plan, "$.steps"), 0) > 0)
           & (func.coalesce(func.json_extract(safe_plan, "$.evidence_mapping_version"), "legacy") != "trace-source-v2")),

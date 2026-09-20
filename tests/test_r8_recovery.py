@@ -21,6 +21,7 @@ from app.tools import registry
 from app.tools.base import ToolResult
 from app.tools.defaults import register_default_tools
 from app.trace import store
+from app.agent.reporter import save_report as real_save_report
 
 
 URL = "https://example.org/framework-docs"
@@ -61,6 +62,14 @@ class FailedLLM(ScriptedLLM):
             error_message=f"Fixture {self.error_type}.",
             metadata={"error_type": self.error_type},
         )
+
+
+def accept_synthetic_terminal(db, run, plan, **kwargs):
+    """Accept the synthetic report boundary for recovery and budget fixtures."""
+    current = store.get_fresh_agent_run(db, run.run_id)
+    if current.status == "running":
+        store.update_agent_run_status(db, run.run_id, "completed", None)
+    return {"status": "completed", "version": "terminal-decision-v1"}
 
 
 class RecoveryTests(unittest.TestCase):
@@ -109,7 +118,13 @@ class RecoveryTests(unittest.TestCase):
 
         with (patch("app.agent.react_executor.execute_tool", side_effect=handler or fixture) as execute,
               patch("app.agent.react_executor.generate_markdown_report", return_value="# Fixture report"),
-              patch("app.agent.react_executor.save_report", return_value="fixture-not-written.md")):
+              patch("app.agent.react_executor.save_report", side_effect=real_save_report),
+              # These recovery tests exercise tool admission/recovery.  Their
+              # synthetic report is intentionally not a citation fixture; keep
+              # the production terminal gate covered by the real pipeline
+              # tests instead of treating this mock as a valid report.
+              patch("app.agent.react_executor.finalize_terminal_decision",
+                    side_effect=accept_synthetic_terminal)):
             result = run_react_task(self.db, run.run_id, settings or self.settings, client)
         return run, result, client, execute
 

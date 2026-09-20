@@ -14,7 +14,7 @@ from app.trace.models import AgentRun, ToolTrace
 from app.agent.outcome import report_block_reason, result_integrity
 
 
-TERMINAL_STREAM_STATUSES = {"completed", "failed", "cancelled", "waiting_human"}
+TERMINAL_STREAM_STATUSES = {"completed", "incomplete", "failed", "cancelled", "waiting_human"}
 REVIEWABLE_STATUSES = {"waiting_human_plan"}
 
 
@@ -88,8 +88,11 @@ def build_incremental_events(
         cursor.trace_versions[trace.trace_id] = version
         events.append(_trace_event(trace))
 
-    if run.report_path and visible_status == "completed" and not cursor.report_ready_sent and not report_block_reason(run):
-        events.append(_report_ready_event(run))
+    if run.report_path and visible_status in {"completed", "incomplete"} and not cursor.report_ready_sent and not report_block_reason(run):
+        event = _report_ready_event(run)
+        event["report_status"] = visible_status
+        event["partial"] = visible_status == "incomplete"
+        events.append(event)
         cursor.report_ready_sent = True
 
     should_close = visible_status in TERMINAL_STREAM_STATUSES or visible_status in REVIEWABLE_STATUSES
@@ -235,10 +238,12 @@ def _report_ready_event(run: AgentRun) -> dict[str, Any]:
         current_step=run.current_step,
         total_steps=run.total_steps,
         report_path=run.report_path,
+        metadata=result_integrity(run),
     )
 
 
 def _done_event(run: AgentRun) -> dict[str, Any]:
+    partial = run.status == "incomplete"
     return _base_event(
         run.run_id,
         "done",
@@ -249,6 +254,7 @@ def _done_event(run: AgentRun) -> dict[str, Any]:
         current_step=run.current_step,
         total_steps=run.total_steps,
         report_path=run.report_path,
+        metadata={**result_integrity(run), "partial": partial, "report_status": run.status},
     )
 
 

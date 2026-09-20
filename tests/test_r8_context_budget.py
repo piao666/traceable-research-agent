@@ -10,6 +10,7 @@ from app.trace import store
 from app.trace.logger import record_trace_event
 from app.tools.base import ToolResult
 from tests import test_r8_recovery as recovery
+from app.agent.reporter import save_report as real_save_report
 from tests.test_r8_recovery import decision, URL
 
 
@@ -231,11 +232,17 @@ class ContextIdentityTests(unittest.TestCase):
             run = store.create_agent_run(self.db, "Compare graph frameworks", "summary", "real")
             store.update_agent_run_plan(self.db, run.run_id, self.skill_plan())
             client = ContextDrivenLLM([decision("tavily_search", query="official"), decision("mcp_github_search", query="repos"),
-                                      decision("web_fetcher"), decision("finish")])
+                                      decision("web_fetcher"), decision("finish", summary="The framework supports deterministic graph execution.")])
             with (patch("app.agent.react_executor.execute_tool", side_effect=handler),
+                  patch("app.agent.react_executor.save_report", side_effect=real_save_report),
+                  patch("app.agent.reporter.ROOT", root),
+                  patch("app.agent.reporter.REPORTS_ROOT", root / "workspace" / "reports"),
+                  patch("app.agent.report_exporter.ROOT", root),
+                  patch("app.agent.report_exporter.REPORTS_ROOT", root / "workspace" / "reports"),
+                  patch("app.agent.report_exporter.resolve_report_path",
+                        side_effect=lambda path, **kwargs: root / path),
                   patch("app.agent.executor._after_run_completed"),
-                  patch("app.config.settings", settings),
-                  patch("app.agent.reporter.ROOT", root), patch("app.agent.reporter.REPORTS_ROOT", root / "reports")):
+                  patch("app.config.settings", settings)):
                 result = run_react_task(self.db, run.run_id, settings, client)
             self.assertEqual(result["status"], "completed", result)
             # R8.6: actual executor output must satisfy the page's typed API,

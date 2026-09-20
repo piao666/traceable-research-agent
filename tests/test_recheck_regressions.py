@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import asyncio
+import hashlib
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -13,12 +16,15 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api.events import _seed_cursor_after_event_id
+from app.api.reports import download_report, get_report
 from app.api.tasks import (
     _run_task_in_background,
     _tool_trace_response,
     cancel_task,
     list_tasks,
     retry_task,
+    run_task,
+    run_task_async,
 )
 from app.config import Settings
 from app.database import Base
@@ -220,6 +226,7 @@ class ApiRegressionTests(unittest.TestCase):
             "deepening_pending",
         ):
             self.assertNotIn(stale_key, new_plan)
+
         self.assertEqual(new_plan["version"], "retry-plan-v1")
         self.assertEqual(new_run.engine_version, "legacy")
         self.assertIsNone(new_run.research_scope_id)
@@ -282,6 +289,79 @@ class ApiRegressionTests(unittest.TestCase):
             )
         self.assertEqual(result["status"], "completed")
         standard.assert_called_once()
+
+
+    def test_incomplete_is_terminal_retryable_and_fresh(self) -> None:
+        incomplete = self._create_run(status="incomplete")
+        plan = json.loads(incomplete.plan_json)
+        plan.update({
+            "terminal_decision": {"status": "incomplete", "report_sha256": "old"},
+            "report_revision_id": "revision-old",
+            "citation_revision": "citation-old",
+        })
+        store.replace_agent_run_plan(self.db, incomplete.run_id, plan)
+        with self.assertRaises(HTTPException) as caught:
+            run_task(incomplete.run_id, self.db)
+        self.assertEqual(caught.exception.status_code, 409)
+
+        retried = retry_task(incomplete.run_id, TaskRetryRequest(), self.db)
+        self.assertNotEqual(retried.run_id, incomplete.run_id)
+        new_run = store.get_agent_run(self.db, retried.run_id)
+        new_plan = json.loads(new_run.plan_json)
+        self.assertNotIn("terminal_decision", new_plan)
+        self.assertNotIn("report_revision_id", new_plan)
+        self.assertNotIn("citation_revision", new_plan)
+
+    def test_incomplete_async_run_is_rejected(self) -> None:
+        incomplete = self._create_run(status="incomplete")
+        async def invoke():
+            return await run_task_async(incomplete.run_id, [], self.db)
+        with self.assertRaises(HTTPException) as caught:
+            asyncio.run(invoke())
+        self.assertEqual(caught.exception.status_code, 409)
+
+    def test_incomplete_report_api_and_sse_share_hash_boundary(self) -> None:
+        report_path = Path("workspace/reports") / "incomplete-boundary.md"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(
+            "# Partial research\n\nResearch requirements were not fully established.\n",
+            encoding="utf-8",
+        )
+        try:
+            report_hash = hashlib.sha256(report_path.read_bytes()).hexdigest()
+            plan = _plan()
+            plan["terminal_decision"] = {
+                "version": "terminal-decision-v1",
+                "status": "incomplete",
+                "report_sha256": report_hash,
+                "blockers": ["required_evidence_coverage_incomplete"],
+            }
+            run = self._create_run(status="incomplete")
+            store.replace_agent_run_plan(self.db, run.run_id, plan)
+            store.update_agent_run_report(self.db, run.run_id, str(report_path))
+
+            response = asyncio.run(get_report(run.run_id, self.db))
+            self.assertTrue(response.exists)
+            self.assertEqual(response.availability, "partial")
+            self.assertIn("requirements were not fully established", response.markdown)
+            self.assertIn("partial", response.message.lower())
+            download = asyncio.run(download_report(run.run_id, "markdown", self.db))
+            self.assertEqual(download.media_type, "text/markdown")
+
+            report_path.write_text("# Tampered\n", encoding="utf-8")
+            blocked = asyncio.run(get_report(run.run_id, self.db))
+            self.assertFalse(blocked.exists)
+            self.assertEqual(blocked.availability, "blocked")
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(download_report(run.run_id, "markdown", self.db))
+            self.assertEqual(caught.exception.status_code, 409)
+            events, should_close = build_incremental_events(
+                self.db, run.run_id, TraceEventCursor()
+            )
+            self.assertTrue(should_close)
+            self.assertNotIn("report_ready", [event["event_type"] for event in events])
+        finally:
+            report_path.unlink(missing_ok=True)
 
     def test_background_failure_is_persisted(self) -> None:
         run = self._create_run()

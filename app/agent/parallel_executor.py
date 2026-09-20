@@ -29,6 +29,7 @@ from app.agent.executor import (
     _parse_plan,
     _persist_citation_validation,
     _persist_reference_verification,
+    _persist_final_report_gate,
     _summary,
 )
 from app.agent.reporter import generate_markdown_report, save_report
@@ -36,7 +37,7 @@ from app.agent.source_intake import execute_governed_operation, prepare_tool_arg
 from app.config import Settings, settings
 from app.evidence.service import materialize_execution_provenance
 from app.agent.preflight import enforce_execution_readiness
-from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, load_observations, report_subject, skip_dependency
+from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, finalize_terminal_decision, load_observations, report_subject, skip_dependency
 from app.agent.budget import budgeted_execution, reserve_tool, BudgetExceeded
 from app.mcp.policy import is_parallel_safe_tool
 from app.research.models import ResearchOperation
@@ -631,11 +632,41 @@ def run_plan_parallel(
             traces,
         )
         traces = store.list_tool_traces(db, run_id)
+        current_plan = json.loads(run.plan_json or "{}")
+        _persist_final_report_gate(
+            db, run, current_plan, markdown, provenance_bundle, report_path,
+            citation_validation_reports,
+        )
+        run = store.get_fresh_agent_run(db, run_id)
+        gate = json.loads(run.plan_json or {}).get("report_integrity") or {}
+        if gate.get("status") == "failed" and "未完成" not in markdown:
+            markdown = markdown.rstrip() + "\n\n## 12. 完成状态审计\n\n> 本报告未完成最终研究完整性核验，内容仅作为审计中间结果。\n"
+            report_path = save_report(run_id, markdown)
+            run = store.update_agent_run_report(db, run_id, report_path)
+            current_plan = json.loads(run.plan_json or "{}")
+            _persist_final_report_gate(
+                db, run, current_plan, markdown, provenance_bundle, report_path,
+                citation_validation_reports,
+            )
+            run = store.get_fresh_agent_run(db, run_id)
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _message_summary(cancelled, "Run cancelled by user.")
-        run = store.update_agent_run_status(db, run_id, completion_status, None)
-        _after_run_completed(db, run, markdown, step_no=0)
+        if completion_status != "running":
+            current_plan = json.loads(run.plan_json or "{}")
+            finalize_terminal_decision(db, run, current_plan, traces=traces)
+            run = store.get_fresh_agent_run(db, run_id)
+            if run.status == "incomplete" and "未完成" not in markdown:
+                markdown = markdown.rstrip() + "\n\n## 12. 完成状态审计\n\n> 本报告未完成最终研究完整性核验，内容仅作为审计中间结果。\n"
+                report_path = save_report(run_id, markdown)
+                run = store.update_agent_run_report(db, run_id, report_path)
+                current_plan = json.loads(run.plan_json or "{}")
+                _persist_final_report_gate(db, run, current_plan, markdown, provenance_bundle, report_path, citation_validation_reports)
+                run = store.get_fresh_agent_run(db, run_id)
+                finalize_terminal_decision(db, run, json.loads(run.plan_json or "{}"), traces=traces)
+                run = store.get_fresh_agent_run(db, run_id)
+        if run.status == "completed":
+            _after_run_completed(db, run, markdown, step_no=0)
         return _summary(run)
     except Exception as exc:
         if store.is_agent_run_cancelled(db, run_id):

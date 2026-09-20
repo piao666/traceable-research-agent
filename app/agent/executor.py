@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 from time import perf_counter
 from typing import Any
@@ -12,13 +13,15 @@ from sqlalchemy.orm import Session
 
 from app.agent.file_access_policy import file_reader_execution_arguments
 from app.agent.preflight import enforce_execution_readiness
-from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, load_observations, report_subject, result_integrity, skip_dependency
+from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, finalize_terminal_decision, load_observations, report_subject, result_integrity, skip_dependency
 from app.agent.budget import budgeted_execution
 from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
-from app.agent.reporter import generate_markdown_report, save_report
+from app.agent.reporter import generate_markdown_report, render_discovery_report, save_report
 from app.agent.source_intake import execute_governed_operation, prepare_tool_arguments
 from app.config import Settings, settings as _exec_settings
 from app.evidence.service import materialize_execution_provenance
+from app.evidence.citation_validator import materialize_final_report_occurrences
+from app.reporting.integrity import assess_report_integrity
 from app.llm.base import LLMClient
 from app.mcp.policy import MCPChannel, is_tool_read_only, requires_interactive_confirmation, tool_channel
 from app.tools.base import ToolResult
@@ -121,6 +124,67 @@ def _persist_reference_verification(
         output_data=report.to_dict(),
     )
     return run
+
+
+def _persist_final_report_gate(
+    db: Session,
+    run: AgentRun,
+    plan: dict[str, Any],
+    markdown: str,
+    provenance_bundle: dict[str, Any],
+    report_path: str,
+    validation_reports: list[Any],
+) -> dict[str, Any]:
+    """Materialize the final report revision before terminal status is chosen."""
+    provenance_bundle = provenance_bundle if isinstance(provenance_bundle, dict) else {
+        "passages": [], "citations": [], "source_documents": [], "integrity": {}
+    }
+    bundle = materialize_final_report_occurrences(
+        db,
+        root_run_id=run.run_id,
+        markdown=markdown,
+        provenance_bundle=provenance_bundle,
+        report_path=report_path,
+        validation_report=validation_reports[-1] if validation_reports else None,
+    )
+    integrity = assess_report_integrity(bundle, scope_bundle=provenance_bundle)
+    passages = provenance_bundle.get("passages") or []
+    if (
+        plan.get("research_mode") == "quick"
+        and plan.get("quick_output_mode") != "discovery"
+        and not any(
+            str(item.get("content_basis") or "").casefold()
+            in {"full_text", "table", "structured"}
+            for item in passages
+        )
+    ):
+        integrity_payload = integrity.to_plan_dict()
+        integrity_payload.update({
+            "status": "failed",
+            "error_code": "quick_requires_full_text",
+            "warnings": [
+                *integrity_payload.get("warnings", []),
+                "Quick substantive research requires content-bearing evidence; discovery snippets are contextual only.",
+            ],
+        })
+    else:
+        integrity_payload = integrity.to_plan_dict()
+    plan["report_integrity"] = integrity_payload
+    plan["report_revision_id"] = bundle["report_revision"]["report_revision_id"]
+    if plan.get("quick_output_mode") == "discovery":
+        # The discovery hash is a capability binding: only the deterministic
+        # source/title/url renderer is eligible.  A marker in an arbitrary
+        # report is insufficient because it could contain substantive text.
+        traces = store.list_tool_traces(db, run.run_id)
+        expected = render_discovery_report(
+            report_subject(run), plan, load_observations(traces), traces,
+        )
+        if markdown == expected:
+            plan["discovery_report_sha256"] = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+        else:
+            plan.pop("discovery_report_sha256", None)
+    store.replace_agent_run_plan(db, run.run_id, plan)
+    return integrity_payload
 
 
 def _after_run_completed(
@@ -556,10 +620,43 @@ def run_plan(
         )
         traces = store.list_tool_traces(db, run_id)
 
+        plan = json.loads(run.plan_json or "{}")
+        _persist_final_report_gate(
+            db, run, plan, markdown, provenance_bundle, report_path,
+            citation_validation_reports,
+        )
+        run = store.get_fresh_agent_run(db, run_id)
+        # Persist an explicit limitation in the artifact itself whenever the
+        # final gate rejects it.  Re-save and rematerialize so the revision and
+        # terminal hash describe this exact body.
+        gate = json.loads(run.plan_json or {}).get("report_integrity") or {}
+        if gate.get("status") == "failed" and "未完成" not in markdown:
+            markdown = markdown.rstrip() + "\n\n## 12. 完成状态审计\n\n> 本报告未完成最终研究完整性核验，内容仅作为审计中间结果。\n"
+            report_path = save_report(run_id, markdown)
+            run = store.update_agent_run_report(db, run_id, report_path)
+            plan = json.loads(run.plan_json or "{}")
+            _persist_final_report_gate(
+                db, run, plan, markdown, provenance_bundle, report_path,
+                citation_validation_reports,
+            )
+            run = store.get_fresh_agent_run(db, run_id)
+
         if store.is_agent_run_cancelled(db, run_id):
             cancelled = store.get_fresh_agent_run(db, run_id)
             return _message_summary(cancelled, "Run cancelled by user.")
-        run = store.update_agent_run_status(db, run_id, completion_status, None)
+        if completion_status != "running":
+            plan = json.loads(run.plan_json or "{}")
+            finalize_terminal_decision(db, run, plan, traces=traces)
+            run = store.get_fresh_agent_run(db, run_id)
+            if run.status == "incomplete" and "未完成" not in markdown:
+                markdown = markdown.rstrip() + "\n\n## 12. 完成状态审计\n\n> 本报告未完成最终研究完整性核验，内容仅作为审计中间结果。\n"
+                report_path = save_report(run_id, markdown)
+                run = store.update_agent_run_report(db, run_id, report_path)
+                plan = json.loads(run.plan_json or "{}")
+                _persist_final_report_gate(db, run, plan, markdown, provenance_bundle, report_path, citation_validation_reports)
+                run = store.get_fresh_agent_run(db, run_id)
+                finalize_terminal_decision(db, run, json.loads(run.plan_json or "{}"), traces=traces)
+                run = store.get_fresh_agent_run(db, run_id)
 
         # ── Phase 6: Summarize LLM token/cost from traces ─────────────
         try:
@@ -582,7 +679,8 @@ def run_plan(
         except Exception:
             pass  # Cost tracking failure must not block run completion
 
-        _after_run_completed(db, run, markdown, step_no=0)
+        if run.status == "completed":
+            _after_run_completed(db, run, markdown, step_no=0)
 
         return _summary(run)
     except Exception as exc:

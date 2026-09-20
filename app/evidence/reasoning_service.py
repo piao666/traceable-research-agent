@@ -25,10 +25,11 @@ from app.evidence.models import (
     SourceSnapshot,
 )
 from app.evidence.policy import load_source_policy, score_reliability, source_cluster_id
-from app.evidence.policy import classify_claim
+from app.evidence.policy import classify_claim, evidence_role_supports_claim
 from app.evidence.reasoning import (
     REASONING_ENGINE_VERSION,
     ScoredRelation,
+    RelationDecision,
     classify_relation,
     normalize_fact,
     resolve_conflict,
@@ -168,6 +169,12 @@ def materialize_reasoning(
                 ),
                 prior_relation=edge.relation,
             )
+            if relation.relation in {"supports", "refutes"} and not evidence_role_supports_claim(
+                passage_metadata.get("evidence_role", "unknown"), claim.claim_text
+            ):
+                relation = RelationDecision(
+                    "contextualizes", "Evidence role cannot establish this claim.", relation.scope_difference
+                )
             edge.relation = relation.relation
             edge.score = breakdown.total_score
             edge.rationale = relation.rationale

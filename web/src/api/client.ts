@@ -22,7 +22,7 @@ export type SessionDetail = components["schemas"]["SessionDetailResponse"];
 export type Memory = components["schemas"]["UserMemoryResponse"];
 export type Skill = components["schemas"]["SkillSummary"];
 export type Tool = components["schemas"]["ToolInfo"];
-type Integrity = Pick<TaskStatusResponse, "requires_review" | "quality_warnings" | "citation_evaluated" | "research_outcome">;
+type Integrity = Pick<TaskStatusResponse, "requires_review" | "quality_warnings" | "citation_evaluated" | "research_outcome" | "terminal_decision">;
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
@@ -139,12 +139,13 @@ export const api = {
 };
 
 export function statusLabel(status: string): string {
-  return ({ running: "运行中", waiting_human: "等待人工", waiting_human_plan: "等待计划", completed: "已完成", failed: "失败", cancelled: "已取消", pending: "待运行" } as Record<string, string>)[status] ?? status;
+  return ({ running: "运行中", waiting_human: "等待人工", waiting_human_plan: "等待计划", completed: "已完成", incomplete: "未完成 · 可重试", failed: "失败", cancelled: "已取消", pending: "待运行" } as Record<string, string>)[status] ?? status;
 }
 
 export function statusTone(status: string): "plan" | "running" | "success" | "warning" | "danger" | "neutral" {
   if (status === "running") return "running";
   if (status === "completed") return "success";
+  if (status === "incomplete") return "warning";
   if (status === "waiting_human_plan") return "plan";
   if (status === "waiting_human") return "warning";
   if (status === "failed") return "danger";

@@ -35,8 +35,8 @@ it("shows failed real probes as verification failures instead of unverified conf
     llm_configured: true,
     tavily_configured: true,
     items: [
-      { name: "web_fetcher", category: "fetch", configured: true, usable: true, mode: "local_http", detail: "可用", checked_at: "2026-09-09T00:00:00Z" },
-      { name: "pdf_reader", category: "pdf", configured: true, usable: true, mode: "local", detail: "可用", checked_at: "2026-09-09T00:00:00Z" },
+      { name: "web_fetcher", category: "fetch", configured: true, verification: "probed", usable: true, mode: "local_http", detail: "可用", checked_at: "2026-09-09T00:00:00Z" },
+      { name: "pdf_reader", category: "pdf", configured: true, verification: "probed", usable: true, mode: "local", detail: "可用", checked_at: "2026-09-09T00:00:00Z" },
     ],
   });
   vi.spyOn(api, "runtimePreflight").mockResolvedValue({
@@ -47,9 +47,9 @@ it("shows failed real probes as verification failures instead of unverified conf
     blockers: [{ capability: "llm_basic", error_type: "auth_error", message: "模型验证失败" }],
     warnings: [],
     capabilities: [
-      { name: "llm_basic", category: "llm", configured: true, reachable: false, usable: false, mode: "real", detail: "失败", error_type: "auth_error", checked_at: "2026-09-09T00:00:00Z" },
-      { name: "tavily", category: "search", configured: true, reachable: false, usable: false, mode: "real", detail: "失败", error_type: "provider_unavailable", checked_at: "2026-09-09T00:00:00Z" },
-      { name: "web_fetcher", category: "fetch", configured: true, reachable: false, usable: false, mode: "local_http", detail: "失败", error_type: "dependency_unavailable", checked_at: "2026-09-09T00:00:00Z" },
+      { name: "llm_basic", category: "llm", configured: true, reachable: false, verification: "probed", usable: false, mode: "real", detail: "失败", error_type: "auth_error", checked_at: "2026-09-09T00:00:00Z" },
+      { name: "tavily", category: "search", configured: true, reachable: false, verification: "probed", usable: false, mode: "real", detail: "失败", error_type: "provider_unavailable", checked_at: "2026-09-09T00:00:00Z" },
+      { name: "web_fetcher", category: "fetch", configured: true, reachable: false, verification: "probed", usable: false, mode: "local_http", detail: "失败", error_type: "dependency_unavailable", checked_at: "2026-09-09T00:00:00Z" },
     ],
   });
   render(<MemoryRouter><NewResearchPage /></MemoryRouter>);

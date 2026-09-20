@@ -1065,6 +1065,28 @@ def _enforce_research_mode(
     })
     plan["execution_routing"] = routing
     plan["quick_mode"] = True
+    task_text = str(plan.get("task") or "").casefold()
+    discovery_only = bool(
+        re.search(r"(?:来源|链接|搜索结果|source list|find sources|discover|lookup)", task_text)
+        and not re.search(r"(?:证明|核实|比较|对比|精确|数字|数据|图表|论文结论|substantive|verify|compare)", task_text)
+    )
+    plan["quick_output_mode"] = "discovery" if discovery_only else "limited_research"
+    plan["evidence_policy"] = {
+        **dict(plan.get("evidence_policy") or {}),
+        "discovery_only": discovery_only,
+        "snippet_support": False,
+    }
+    if not discovery_only:
+        contract = dict(plan.get("task_contract") or {})
+        contract["quick_snippet_only"] = True
+        contract.setdefault("required_content_basis", ["full_text", "table", "structured"])
+        plan["task_contract"] = contract
+    if discovery_only:
+        # A discovery Quick run never silently invokes a body-fetch phase.
+        plan["steps"] = [step for step in plan.get("steps") or []
+                          if step.get("tool_name") in {"tavily_search", "report_writer"}]
+        plan["required_tools"] = [name for name in plan.get("required_tools") or []
+                                   if name in {"tavily_search", "report_writer"}]
     return plan
 
 

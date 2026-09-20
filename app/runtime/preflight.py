@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -13,13 +16,34 @@ from app.llm.providers import create_llm_client
 from app.runtime.capabilities import local_capability_items
 from app.tools.base import ToolResult
 from app.tools.tavily_search import tavily_search
+
+_PROBE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+
+def _config_fingerprint(settings: Settings) -> str:
+    # Hash credentials as part of the opaque cache key so rotation invalidates
+    # health, but never retain or expose them in the cached/public payload.
+    payload = {"settings": settings.model_dump(mode="json"),
+               "remote": {name: os.environ.get(name) for name in (
+                   "FIRECRAWL_API_KEY", "FIRECRAWL_BASE_URL", "EXA_API_KEY", "EXA_BASE_URL")}}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def latest_runtime_probe(settings: Settings, ttl_seconds: int = 900) -> dict[str, Any] | None:
+    entry = _PROBE_CACHE.get(_config_fingerprint(settings))
+    if not entry or (datetime.now(timezone.utc).timestamp() - entry[0]) > ttl_seconds:
+        return None
+    return deepcopy(entry[1])
+
+
 from app.tools.web_fetcher import web_fetch
 
 
 def _replace(items: list[dict[str, Any]], name: str, **updates: Any) -> None:
     for item in items:
         if item.get("name") == name:
-            item.update(updates, checked_at=datetime.now(timezone.utc).isoformat())
+            item.update(updates)
+            item["verification"] = updates.pop("verification", "probed")
+            item["checked_at"] = datetime.now(timezone.utc).isoformat()
             return
 
 
@@ -304,6 +328,7 @@ def _llm_capability(
         **template,
         "name": name,
         "reachable": result["success"],
+        "verification": "probed",
         "usable": result["success"],
         "detail": result["detail"],
         "error_type": result["error_type"],
@@ -414,6 +439,7 @@ def run_runtime_preflight(
             "category": "llm",
             "configured": True,
             "reachable": result["success"],
+            "verification": "probed",
             "usable": result["success"],
             "mode": "real",
             "detail": result["detail"],
@@ -524,12 +550,33 @@ def run_runtime_preflight(
             "attempted_backends": [],
             "detail": "网页抓取验证失败",
         }
+        # A URL-specific denial (for example one 403) is evidence about that
+        # resource, not a global backend health result. Keep the capability
+        # configured/unknown so later task execution can try another source.
+        pages = fetch_output.get("pages") or []
+        # Failure of one resource is not proof that a backend is globally down.
+        failures = [page.get("error_detail") or {} for page in pages if isinstance(page, dict)]
+        backend_failure = bool(failures) and all(
+            failure.get("tool_scoped") is True for failure in failures)
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            failure = page.get("error_detail") or {}
+            backend = str(page.get("fetch_backend") or "")
+            if failure.get("tool_scoped") is True and backend in {"http", "browser", "remote_extract"}:
+                items.append({"name": backend, "category": "fetch", "configured": True,
+                    "reachable": False, "usable": False, "verification": "probed",
+                    "mode": "real", "detail": "Backend reported a tool-scoped failure.",
+                    "error_type": str(failure.get("code") or "backend_unavailable"),
+                    "checked_at": datetime.now(timezone.utc).isoformat()})
+        url_specific = not fetched and not backend_failure
         _replace(
             items,
             "web_fetcher",
-            reachable=fetched,
-            usable=fetched,
-            detail=backend_check["detail"] if fetched else "静态 HTTP 或正文抽取验证失败",
+            reachable=(None if url_specific and not fetched else fetched),
+            usable=(True if url_specific and not fetched else fetched),
+            detail=("单个 URL 被拒绝；网页抓取后端状态未验证" if url_specific and not fetched
+                    else backend_check["detail"] if fetched else "静态 HTTP 或正文抽取验证失败"),
             error_type=fetch_error,
             fetch_backend=backend_check["fetch_backend"],
             provider=backend_check["provider"],
@@ -537,15 +584,18 @@ def run_runtime_preflight(
             attempted_backends=backend_check["attempted_backends"],
         )
         if not fetched:
+            if url_specific:
+                _replace(items, "web_fetcher", reachable=None, usable=True, verification="unknown")
             blockers.append({"capability": "web_fetcher", "error_type": str(fetch_error), "message": "网页抓取验证失败。"})
     else:
-        _replace(items, "web_fetcher", reachable=False, usable=False, detail="搜索未返回 URL，未执行网页抓取", error_type="dependency_unavailable")
+        _replace(items, "web_fetcher", reachable=None, usable=True, verification="unknown",
+                 detail="搜索未返回 URL，未执行网页抓取", error_type="dependency_unavailable")
         blockers.append({"capability": "web_fetcher", "error_type": "dependency_unavailable", "message": "搜索不可用，无法验证网页抓取。"})
 
     optional = [item["name"] for item in items if item["category"] in {"academic", "mcp"} and not item["usable"]]
     if optional:
         warnings.append("可选能力未就绪：" + "、".join(optional))
-    return {
+    result = {
         "checked_at": checked_at,
         "profile": settings.research_profile,
         "ready": not blockers,
@@ -554,3 +604,7 @@ def run_runtime_preflight(
         "blockers": blockers,
         "warnings": warnings,
     }
+    if len(_PROBE_CACHE) >= 16:
+        _PROBE_CACHE.pop(next(iter(_PROBE_CACHE)))
+    _PROBE_CACHE[_config_fingerprint(settings)] = (datetime.now(timezone.utc).timestamp(), deepcopy(result))
+    return result

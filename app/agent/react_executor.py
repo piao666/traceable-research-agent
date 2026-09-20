@@ -18,6 +18,7 @@ from app.agent.file_access_policy import (
     resolve_file_reader_path,
 )
 from app.agent.executor import (
+    _persist_final_report_gate,
     _persist_citation_validation,
     _persist_reference_verification,
     run_plan,
@@ -38,7 +39,7 @@ from app.agent.budget import (
     budgeted_execution,
     limits as budget_limits,
 )
-from app.agent.outcome import enforce_research_outcome, fail_execution, load_observations, report_subject
+from app.agent.outcome import enforce_research_outcome, fail_execution, finalize_terminal_decision, load_observations, report_subject
 from app.agent.react_prompt import build_react_messages
 from app.agent.react_schema import (
     ReActDecision,
@@ -581,10 +582,31 @@ def _complete_report(
         traces,
     )
     traces = store.list_tool_traces(db, run_id)
+    run = store.get_fresh_agent_run(db, run_id)
+    _persist_final_report_gate(
+        db, run, plan, markdown, provenance_bundle, report_path,
+        citation_validation_reports,
+    )
+    run = store.get_fresh_agent_run(db, run_id)
     if store.is_agent_run_cancelled(db, run_id):
         cancelled = store.get_fresh_agent_run(db, run_id)
         return _summary(cancelled, plan, "Run cancelled by user.")
-    run = store.update_agent_run_status(db, run_id, "completed", None)
+    plan = json.loads(run.plan_json or "{}")
+    finalize_terminal_decision(db, run, plan, traces=traces)
+    run = store.get_fresh_agent_run(db, run_id)
+    if run.status == "incomplete" and "未完成" not in markdown:
+        markdown = markdown.rstrip() + "\n\n## 12. 完成状态审计\n\n> 本报告未完成最终研究完整性核验，内容仅作为审计中间结果。\n"
+        report_path = save_report(run_id, markdown)
+        run = store.update_agent_run_report(db, run_id, report_path)
+        plan = json.loads(run.plan_json or "{}")
+        _persist_final_report_gate(
+            db, run, plan, markdown, provenance_bundle, report_path,
+            citation_validation_reports,
+        )
+        run = store.get_fresh_agent_run(db, run_id)
+        plan = json.loads(run.plan_json or "{}")
+        finalize_terminal_decision(db, run, plan, traces=traces)
+        run = store.get_fresh_agent_run(db, run_id)
 
     # ── Phase 6: Summarize LLM token/cost ─────────────────────────────
     token_in = int(state.get("_llm_token_in") or 0)

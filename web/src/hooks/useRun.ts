@@ -3,7 +3,7 @@ import { api, errorMessage, taskEventsUrl, type TaskPlanResponse, type TaskStatu
 
 export type ConnectionState = "loading" | "connecting" | "live" | "polling" | "paused" | "closed";
 const activeStatuses = new Set(["pending", "running"]);
-const finalStatuses = new Set(["completed", "failed", "cancelled"]);
+const finalStatuses = new Set(["completed", "incomplete", "failed", "cancelled"]);
 const eventTypes = ["run_status", "trace_created", "trace_finished", "waiting_human", "plan_review", "report_ready", "done"];
 
 export function useRun(runId: string) {

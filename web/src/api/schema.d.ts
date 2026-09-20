@@ -1145,6 +1145,10 @@ export interface components {
             research_outcome?: {
                 [key: string]: unknown;
             } | null;
+            /** Terminal Decision */
+            terminal_decision?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Requires Review
              * @default false
@@ -2175,6 +2179,10 @@ export interface components {
             research_outcome?: {
                 [key: string]: unknown;
             } | null;
+            /** Terminal Decision */
+            terminal_decision?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Requires Review
              * @default false
@@ -2203,7 +2211,7 @@ export interface components {
              * @default not_generated
              * @enum {string}
              */
-            availability: "available" | "not_generated" | "missing" | "blocked";
+            availability: "available" | "partial" | "not_generated" | "missing" | "blocked";
             /** Message */
             message?: string | null;
         };
@@ -2426,6 +2434,12 @@ export interface components {
             configured: boolean;
             /** Reachable */
             reachable?: boolean | null;
+            /**
+             * Verification
+             * @default unknown
+             * @enum {string}
+             */
+            verification: "unknown" | "probed";
             /** Usable */
             usable: boolean;
             /** Mode */
@@ -2916,6 +2930,10 @@ export interface components {
             research_outcome?: {
                 [key: string]: unknown;
             } | null;
+            /** Terminal Decision */
+            terminal_decision?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Requires Review
              * @default false
@@ -3127,6 +3145,10 @@ export interface components {
             research_outcome?: {
                 [key: string]: unknown;
             } | null;
+            /** Terminal Decision */
+            terminal_decision?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Requires Review
              * @default false
@@ -3198,6 +3220,10 @@ export interface components {
         TaskStatusResponse: {
             /** Research Outcome */
             research_outcome?: {
+                [key: string]: unknown;
+            } | null;
+            /** Terminal Decision */
+            terminal_decision?: {
                 [key: string]: unknown;
             } | null;
             /**

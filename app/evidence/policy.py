@@ -389,6 +389,11 @@ def classify_evidence_role(
 ) -> str:
     """Classify what a source can prove independently from its authority tier."""
 
+    # Search snippets remain discovery even when their URL is official or a
+    # provider attached a primary-content hint. Authority cannot upgrade the
+    # material that was actually read.
+    if str(metadata.get("content_basis") or "").casefold() in {"snippet_only", "search_snippet"}:
+        return "discovery_index"
     explicit = str(metadata.get("evidence_role") or "").casefold()
     if explicit in EVIDENCE_ROLES:
         return explicit

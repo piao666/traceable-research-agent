@@ -33,7 +33,7 @@ from app.evidence.normalizers import (
     source_organization,
     source_provider,
 )
-from app.evidence.policy import classify_evidence_role, classify_source, load_source_policy
+from app.evidence.policy import classify_evidence_role, classify_source, evidence_role_supports_claim, load_source_policy
 from app.evidence.reasoning_service import get_reasoning_bundle, materialize_reasoning
 from app.trace.models import AgentRun, ToolTrace
 
@@ -88,7 +88,7 @@ def materialize_provenance_bundle(
     revision = f"{extractor_version[:40]}:{fingerprint}"
     existing = db.get(EvidencePipelineRun, run.run_id)
     if existing is not None and existing.status == "complete":
-        if existing.extractor_version == revision or run.status in {"completed", "failed", "cancelled"}:
+        if existing.extractor_version == revision or run.status in {"completed", "incomplete", "failed", "cancelled"}:
             return get_provenance_bundle(db, run.run_id)
     extractor_version = revision
 
@@ -170,6 +170,9 @@ def materialize_provenance_bundle(
                 if assertion is None or passage is None:
                     continue
                 relation = "supports" if claim_map.support_level not in {"unsupported", "none"} else "contextualizes"
+                role = json.loads(passage.metadata_json or "{}").get("evidence_role", "unknown")
+                if not evidence_role_supports_claim(role, claim.claim_text):
+                    relation = "contextualizes"
                 edge = ClaimEvidenceEdge(
                     edge_id=_stable_id("edge", claim.claim_id, assertion.assertion_id),
                     claim_id=claim.claim_id,

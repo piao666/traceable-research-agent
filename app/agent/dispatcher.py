@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.agent.executor import run_plan
 from app.agent.preflight import RoleAvailability, enforce_execution_readiness
-from app.agent.outcome import fail_execution, result_integrity
+from app.agent.outcome import fail_execution, finalize_terminal_decision, result_integrity
 from app.config import Settings, settings
 from app.llm.base import LLMClient
 
@@ -424,5 +424,13 @@ def run_task_by_mode(
     final_plan["adaptive_gate_pending"] = False
     final_plan["adaptive_phase"] = "completed"
     _store.replace_agent_run_plan(db, run_id, final_plan)
-    _store.update_agent_run_status(db, run_id, "completed", None)
+    # The finalizer owns the terminal CAS and re-reads persisted diagnostics;
+    # never copy a stale terminal status onto a run that may have been
+    # cancelled or paused while adaptive work was finishing.
+    final_run = _store.get_fresh_agent_run(db, run_id)
+    if final_run is not None and final_run.status not in {"cancelled", "waiting_human", "waiting_human_plan"}:
+        finalize_terminal_decision(
+            db, final_run, json.loads(final_run.plan_json or "{}"),
+            traces=_store.list_tool_traces(db, run_id),
+        )
     return _finalize_result(db, run_id, result)

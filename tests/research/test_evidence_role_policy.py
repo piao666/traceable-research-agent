@@ -59,3 +59,30 @@ def test_unknown_and_legacy_discovery_roles_fail_closed_for_substantive_claims(r
 
 def test_legacy_discovery_alias_keeps_bibliographic_capability() -> None:
     assert evidence_role_supports_claim("discovery", "The paper was published in 2025.") is True
+
+
+def test_official_search_snippet_stays_contextual_through_materialization_and_reasoning(db, tmp_path):
+    from pathlib import Path
+    from app.agent.evidence import EvidenceItem, EvidenceBundle, ClaimEvidenceMap
+    from app.evidence.artifact_store import ArtifactStore
+    from app.evidence.service import materialize_provenance_bundle, get_provenance_bundle
+    from app.evidence.reasoning_service import materialize_reasoning
+    from .conftest import create_root
+
+    run = create_root(db, "Verify performance")
+    item = EvidenceItem(
+        evidence_id="E1", run_id=run.run_id, trace_id=None, step_no=1,
+        tool_name="tavily_search", source_type="tavily_api",
+        source_ref="https://www.sec.gov/official", title="Official result",
+        snippet="The method reduced latency by 17%.", status="success", confidence="high",
+        metadata={"content_basis": "snippet_only", "evidence_role": "primary_content"},
+    )
+    bundle = EvidenceBundle(run.run_id, run.task, 1, [],
+        [ClaimEvidenceMap("C1", item.snippet, ["E1"], "high")], [item], [])
+    materialized = materialize_provenance_bundle(db, run, bundle, [],
+        ArtifactStore(tmp_path), extractor_version="discovery-regression")
+    assert materialized["passages"][0]["metadata"]["evidence_role"] == "discovery_index"
+    assert {edge["relation"] for edge in materialized["edges"]} == {"contextualizes"}
+    materialize_reasoning(db, run.run_id, Path(__file__).resolve().parents[2] / "config/source_policy.v1.json")
+    reasoned = get_provenance_bundle(db, run.run_id)
+    assert {edge["relation"] for edge in reasoned["edges"]} == {"contextualizes"}

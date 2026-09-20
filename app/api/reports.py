@@ -71,8 +71,9 @@ async def get_report(
                 markdown=report_path.read_text(encoding="utf-8"),
                 report_path=run.report_path,
                 exists=True,
-                availability="available",
-                message=None,
+                availability="partial" if run.status == "incomplete" else "available",
+                message=("Report contains partial results; research requirements were not fully established."
+                         if run.status == "incomplete" else None),
             )
 
     missing = bool(run.report_path)

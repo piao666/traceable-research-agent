@@ -28,7 +28,14 @@ def capability_summary(settings: Settings) -> dict[str, Any]:
     provider = settings.llm_provider
     react_provider = settings.react_llm_provider or provider
     items = local_capability_items(settings)
-    llm_item = next((item for item in items if item.get("name") == "llm"), {})
+    try:
+        from app.runtime.preflight import latest_runtime_probe
+        probe = latest_runtime_probe(settings)
+        if probe and probe.get("capabilities"):
+            items = probe["capabilities"]
+    except Exception:
+        pass
+    llm_item = next((item for item in items if item.get("name") in {"llm", "llm_basic"}), {})
     react_config = settings.get_llm_provider_config(react_provider)
     react_base = urlsplit(str(react_config.get("base_url") or ""))
     react_configured = react_provider == "deterministic" or bool(
@@ -83,6 +90,15 @@ def check_plan_readiness(
 
     allowed = set(allowed_tool_names(plan))
     contract = plan.get("task_contract") or {}
+    # Task-level capabilities are derived from the persisted contract and
+    # trusted server settings. Unknown probe state is a warning, while explicit
+    # configuration gaps are hard blockers.
+    from app.agent.capability_requirements import admit_task_capabilities
+    capability_blockers, capability_warnings = admit_task_capabilities(
+        plan, settings, (capability_summary(settings).get("items") or [])
+    )
+    blockers.extend(capability_blockers)
+    warnings.extend(capability_warnings)
     unresolved = contract.get("unresolved_fields") or []
     if unresolved:
         labels = {"adjustment": "复权/总回报口径", "interval": "年度、每日或累计等统计间隔", "period": "起止日期"}
@@ -148,7 +164,7 @@ def enforce_execution_readiness(
 ) -> bool:
     """Last-line guard for workers/direct executors (HTTP preflight preserves drafts)."""
     run = store.get_fresh_agent_run(db, run_id)
-    if run is None or run.status in {"cancelled", "failed", "completed"}:
+    if run is None or run.status in {"cancelled", "failed", "completed", "incomplete"}:
         return False
     if not plan.get("task_contract"):
         from app.agent.research_goal import build_task_contract
@@ -164,7 +180,7 @@ def enforce_execution_readiness(
     plan["preflight"] = result
     store.replace_agent_run_plan(db, run_id, plan)
     run = store.get_fresh_agent_run(db, run_id)
-    if run is None or run.status in {"cancelled", "failed", "completed"}:
+    if run is None or run.status in {"cancelled", "failed", "completed", "incomplete"}:
         return False
     snapshot = settings.get_safe_runtime_config_summary()
     snapshot.update({key: plan.get(key) for key in (
@@ -188,5 +204,6 @@ def enforce_execution_readiness(
     plan["deepening_pending"] = False
     store.replace_agent_run_plan(db, run_id, plan)
     if not store.is_agent_run_cancelled(db, run_id):
-        store.update_agent_run_status(db, run_id, "failed", message)
+        from app.agent.outcome import finalize_terminal_decision
+        finalize_terminal_decision(db, run, plan, force_failure=readiness_error_code(result))
     return False

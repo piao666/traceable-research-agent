@@ -66,6 +66,9 @@ class RuntimeCapability(BaseModel):
     category: str
     configured: bool
     reachable: bool | None = None
+    # ``usable`` is a configured candidate until an explicit runtime probe
+    # records verification. Consumers must use this field with reachable.
+    verification: Literal["unknown", "probed"] = "unknown"
     usable: bool
     mode: str
     detail: str
@@ -136,6 +139,7 @@ class TaskCreateResponse(BaseModel):
 
 class ResearchIntegrityResponse(BaseModel):
     research_outcome: dict[str, Any] | None = None
+    terminal_decision: dict[str, Any] | None = None
     requires_review: bool = False
     citation_evaluated: bool = False
     quality_warnings: list[str] = Field(default_factory=list)
@@ -707,7 +711,7 @@ class ReportResponse(ResearchIntegrityResponse):
     markdown: str
     report_path: str | None = None
     exists: bool = False
-    availability: Literal["available", "not_generated", "missing", "blocked"] = "not_generated"
+    availability: Literal["available", "partial", "not_generated", "missing", "blocked"] = "not_generated"
     message: str | None = None
 
 

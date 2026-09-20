@@ -20,6 +20,7 @@ from app.tools.base import ToolResult
 from app.tools.web_fetcher import web_fetch
 from app.trace import store
 from app.trace.logger import record_trace_event
+from app.agent.reporter import save_report as real_save_report
 
 
 def web_plan() -> dict:
@@ -262,7 +263,7 @@ class ResearchIntegrityTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as directory,
             patch("app.agent.executor.is_executable_tool", return_value=True),
             patch("app.agent.executor.execute_tool", side_effect=results),
-            patch("app.agent.executor.save_report", return_value="workspace/reports/test-fixture.md"),
+              patch("app.agent.executor.save_report", side_effect=real_save_report),
             patch("app.agent.executor._after_run_completed"),
         ):
             result = run_plan(self.db, self.run.run_id, settings_obj=Settings(
@@ -372,7 +373,7 @@ class ResearchIntegrityTests(unittest.TestCase):
               patch("app.agent.executor.is_executable_tool", return_value=True),
               patch("app.agent.executor.execute_tool", return_value=ToolResult(success=True,
                   output={"path": "fixture.txt", "content": "Actual local material"})),
-              patch("app.agent.executor.save_report", return_value="test-fixture.md"),
+              patch("app.agent.executor.save_report", side_effect=real_save_report),
               patch("app.agent.executor._after_run_completed")):
             result = run_plan(self.db, self.run.run_id, Settings(offline_mode=False,
                 tavily_api_key=None, qwen_api_key=None, evidence_artifact_root=directory,
@@ -385,8 +386,9 @@ class ResearchIntegrityTests(unittest.TestCase):
         run = fail_execution(self.db, self.run.run_id, RuntimeError("private-provider-token-123"))
         self.assertEqual(run.status, "failed")
         traces = store.list_tool_traces(self.db, run.run_id)
-        self.assertEqual(traces[-1].tool_name, "execution_failure")
-        self.assertNotIn("private-provider-token-123", run.plan_json + run.error_message + traces[-1].output_json)
+        failures = [trace for trace in traces if trace.tool_name == "execution_failure"]
+        self.assertTrue(failures)
+        self.assertNotIn("private-provider-token-123", run.plan_json + run.error_message + "".join(trace.output_json for trace in traces))
 
     def test_sse_failure_has_no_report_ready_event(self):
         from app.agent.outcome import fail_execution
@@ -515,11 +517,11 @@ class ResearchIntegrityTests(unittest.TestCase):
 
         with (tempfile.TemporaryDirectory() as directory,
               patch("app.agent.deepening.run_react_task", side_effect=initial),
-              patch("app.agent.deepening.save_report", return_value="workspace/reports/fixture.md")):
+              patch("app.agent.deepening.save_report", side_effect=real_save_report)):
             result = run_deepening(self.db, self.run.run_id, Settings(
                 deep_research_enabled=True, evidence_reasoning_enabled=False,
                 evidence_artifact_root=directory), client)
-        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["status"], "incomplete")
         outcome = json.loads(self.run.plan_json)["research_outcome"]
         self.assertTrue(any("completeness was not established" in text for text in outcome["warnings"]))
         rounds = [trace for trace in store.list_tool_traces(self.db, self.run.run_id) if trace.tool_name == "deepening_round"]
