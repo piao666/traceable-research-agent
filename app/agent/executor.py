@@ -15,12 +15,13 @@ from app.agent.file_access_policy import file_reader_execution_arguments
 from app.agent.preflight import enforce_execution_readiness
 from app.agent.outcome import dependency_missing, enforce_research_outcome, fail_execution, finalize_terminal_decision, load_observations, report_subject, result_integrity, skip_dependency
 from app.agent.budget import budgeted_execution
-from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
+from app.agent.report_generation import ReportGenerationAudit, check_report_generation_not_cancelled, resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, render_discovery_report, save_report
-from app.agent.source_intake import execute_governed_operation, prepare_tool_arguments
+from app.agent.source_intake import execute_governed_operation, prepare_tool_arguments, research_profile
+from app.agent.evidence_requirements import assess_required_evidence
 from app.config import Settings, settings as _exec_settings
 from app.evidence.service import materialize_execution_provenance
-from app.evidence.citation_validator import materialize_final_report_occurrences
+from app.evidence.citation_validator import materialize_final_report_occurrences, validator_version_for
 from app.reporting.integrity import assess_report_integrity
 from app.llm.base import LLMClient
 from app.mcp.policy import MCPChannel, is_tool_read_only, requires_interactive_confirmation, tool_channel
@@ -44,6 +45,16 @@ def _persist_citation_validation(
             raise ValueError("Task run not found")
         return run
     validation = validation_reports[-1]
+    multilingual = getattr(validation, "multilingual_adjudication", {}) or {}
+    multilingual_token_in = int(multilingual.get("token_in") or 0) if isinstance(multilingual, dict) else 0
+    multilingual_token_out = int(multilingual.get("token_out") or 0) if isinstance(multilingual, dict) else 0
+    # A report-generation callback already records each actual multilingual
+    # provider call as ``citation_adjudication``.  The final validator trace
+    # must retain the verdict but exclude those tokens/costs to avoid charging
+    # the same call twice; cached final validation has zero local usage.
+    callback_accounted = bool(isinstance(multilingual, dict) and multilingual.get("usage_traced"))
+    trace_token_in = max(0, int(validation.token_in) - (multilingual_token_in if callback_accounted else 0))
+    trace_token_out = max(0, int(validation.token_out) - (multilingual_token_out if callback_accounted else 0))
     run = store.update_agent_run_citation_validation(
         db,
         run_id,
@@ -57,15 +68,15 @@ def _persist_citation_validation(
         return run
 
     estimated_cost = 0.0
-    if validation.llm_used:
+    if validation.llm_used or (multilingual and not callback_accounted):
         try:
             from app.llm.cost import estimate_cost_from_tokens
 
             estimated_cost = estimate_cost_from_tokens(
-                validation.llm_provider or "unknown",
-                validation.llm_model,
-                validation.token_in,
-                validation.token_out,
+                validation.llm_provider or str(multilingual.get("provider") or "unknown"),
+                validation.llm_model or multilingual.get("model"),
+                trace_token_in,
+                trace_token_out,
             )
         except Exception:
             estimated_cost = 0.0
@@ -82,8 +93,8 @@ def _persist_citation_validation(
             f"{validation.weakly_supported} weak, {validation.unsupported} unsupported"
         ),
         output_data=validation.to_dict(),
-        token_in=validation.token_in,
-        token_out=validation.token_out,
+        token_in=trace_token_in,
+        token_out=trace_token_out,
         estimated_cost=estimated_cost,
     )
     return run
@@ -148,29 +159,71 @@ def _persist_final_report_gate(
         validation_report=validation_reports[-1] if validation_reports else None,
     )
     integrity = assess_report_integrity(bundle, scope_bundle=provenance_bundle)
-    passages = provenance_bundle.get("passages") or []
-    if (
-        plan.get("research_mode") == "quick"
-        and plan.get("quick_output_mode") != "discovery"
-        and not any(
-            str(item.get("content_basis") or "").casefold()
-            in {"full_text", "table", "structured"}
-            for item in passages
-        )
-    ):
+    quick_evidence_assessment = _quick_evidence_gate_failure(plan, provenance_bundle)
+    if quick_evidence_assessment is not None:
         integrity_payload = integrity.to_plan_dict()
         integrity_payload.update({
             "status": "failed",
             "error_code": "quick_requires_full_text",
             "warnings": [
                 *integrity_payload.get("warnings", []),
-                "Quick substantive research requires content-bearing evidence; discovery snippets are contextual only.",
+                "Quick substantive research requires task-eligible, traceable body evidence; discovery snippets are contextual only.",
             ],
+            "evidence_assessment": quick_evidence_assessment.as_dict(),
         })
     else:
         integrity_payload = integrity.to_plan_dict()
     plan["report_integrity"] = integrity_payload
     plan["report_revision_id"] = bundle["report_revision"]["report_revision_id"]
+    # Freeze the adopted revision and validator inputs in one public identity.
+    # This is deliberately derived from persisted bytes and occurrence data,
+    # never from a client-provided marker.
+    revision = bundle["report_revision"]
+    validation_payload = (
+        validation_reports[-1].to_dict() if validation_reports and hasattr(validation_reports[-1], "to_dict")
+        else validation_reports[-1] if validation_reports else {}
+    )
+    audit_manifest = plan.get("report_generation") if isinstance(plan.get("report_generation"), dict) else {}
+    writing_manifest_hash = audit_manifest.get("manifest_sha256") or audit_manifest.get("manifest_hash")
+    evidence_snapshot_id = hashlib.sha256(
+        json.dumps(provenance_bundle, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    validator_version = validator_version_for(validation_reports[-1] if validation_reports else None)
+    manifest_payload = {
+        "version": "report-generation-v1",
+        "report_revision_id": revision.get("report_revision_id"),
+        "content_hash": revision.get("content_hash"),
+        "final_answer_hash": revision.get("final_answer_hash"),
+        "integrity": integrity_payload,
+        "validation": validation_payload,
+        "attempt_manifest": audit_manifest,
+    }
+    manifest_sha256 = hashlib.sha256(
+        json.dumps(manifest_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    validation_identity = hashlib.sha256(
+        json.dumps({"content_hash": revision.get("content_hash"),
+                    "evidence_snapshot_id": evidence_snapshot_id,
+                    "writing_manifest_hash": writing_manifest_hash,
+                    "validator_version": validator_version,
+                    "validation": validation_payload},
+                   ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    plan["report_sha256"] = revision.get("content_hash")
+    plan["report_manifest_sha256"] = manifest_sha256
+    plan["report_generation"] = {
+        **manifest_payload,
+        "manifest_sha256": manifest_sha256,
+        "validation_identity": validation_identity,
+        "evidence_snapshot_id": evidence_snapshot_id,
+        "writing_manifest_hash": writing_manifest_hash,
+        "validator_version": validator_version,
+        # Adoption identifies the final displayed revision, not quality
+        # success.  A failed/incomplete quality gate may still have a fully
+        # validated final artifact whose citation evaluation must remain
+        # visible; only an absent validator result is non-adopted.
+        "adopted": bool(validation_reports),
+    }
     if plan.get("quick_output_mode") == "discovery":
         # The discovery hash is a capability binding: only the deterministic
         # source/title/url renderer is eligible.  A marker in an arbitrary
@@ -185,6 +238,158 @@ def _persist_final_report_gate(
             plan.pop("discovery_report_sha256", None)
     store.replace_agent_run_plan(db, run.run_id, plan)
     return integrity_payload
+
+
+def _quick_evidence_gate_failure(
+    plan: dict[str, Any],
+    provenance_bundle: dict[str, Any],
+) -> Any | None:
+    """Return the shared evidence failure for a substantive Quick report.
+
+    A fetched ``partial`` passage remains partial.  It may nevertheless be a
+    task-relevant, persisted body read and therefore satisfy the same A2
+    evidence contract that governs execution.  This prevents the final-report
+    gate from contradicting the earlier evidence assessment while retaining
+    every role, provenance, source-constraint, relevance, and quality check.
+    """
+    if (
+        plan.get("research_mode") != "quick"
+        or plan.get("quick_output_mode") == "discovery"
+    ):
+        return None
+    from app.agent.evidence_requirements import assess_required_evidence
+
+    assessment = assess_required_evidence(plan.get("task_contract"), provenance_bundle)
+    return None if assessment.passed else assessment
+
+
+def _run_quick_refetches(
+    db: Session,
+    run: AgentRun,
+    plan: dict[str, Any],
+    settings_obj: Settings,
+    observations: list[dict[str, Any]],
+    traces: list[Any],
+    provenance_bundle: dict[str, Any] | None,
+    assessment: Any,
+    *,
+    report_feedback: bool = False,
+) -> tuple[list[Any], dict[str, Any] | None, Any]:
+    """Try bounded, undispatched discoveries when Quick body evidence is incomplete."""
+    if (
+        plan.get("research_mode") != "quick"
+        or plan.get("quick_output_mode") == "discovery"
+        or assessment is None
+        or (assessment.passed and not report_feedback)
+    ):
+        return traces, provenance_bundle, assessment
+
+    from app.agent.quick_refetch import select_pending_candidates
+
+    profile = research_profile(plan, settings_obj)
+    max_candidates = max(0, int(getattr(settings_obj, "max_fetch_candidates", 0)))
+    max_rounds = min(
+        max(0, int(getattr(settings_obj, "max_refetch_rounds", 0))),
+        max(0, int(profile.max_recovery_rounds)),
+    )
+    state = plan.setdefault("quick_refetch", {
+        "version": "quick-refetch-v1",
+        "status": "incomplete",
+        "max_candidates": max_candidates,
+        "max_rounds": max_rounds,
+        "attempts": [],
+    })
+    if not isinstance(state, dict):
+        state = plan["quick_refetch"] = {
+            "version": "quick-refetch-v1", "status": "incomplete",
+            "max_candidates": max_candidates, "max_rounds": max_rounds, "attempts": [],
+        }
+    attempts = state.setdefault("attempts", [])
+    if not isinstance(attempts, list):
+        attempts = state["attempts"] = []
+
+    used_rounds = min(max_rounds, len(attempts))
+    if used_rounds >= max_rounds:
+        state["status"] = "round_limit_reached"
+    last_round = min(max_rounds, used_rounds + 1) if report_feedback else max_rounds
+    for round_no in range(used_rounds + 1, last_round + 1):
+        if (assessment.passed and not report_feedback) or store.is_agent_run_cancelled(db, run.run_id):
+            break
+        candidates = select_pending_candidates(
+            traces,
+            max_total_candidates=max_candidates,
+            remaining_rounds=max_rounds - round_no + 1,
+        )
+        if not candidates:
+            state["status"] = "exhausted"
+            break
+        arguments = prepare_tool_arguments(
+            "web_fetcher", {"urls": candidates}, plan, settings_obj
+        )
+        urls = arguments.get("urls") if isinstance(arguments.get("urls"), list) else []
+        if not urls:
+            state["status"] = "no_eligible_candidates"
+            break
+
+        step_no = max(
+            [int(getattr(trace, "step_no", 0) or 0) for trace in traces]
+            + [int(step.get("step_no") or 0) for step in plan.get("steps") or [] if isinstance(step, dict)]
+            + [0]
+        ) + 1
+        started = perf_counter()
+        result = execute_governed_operation(
+            "web_fetcher",
+            arguments,
+            plan,
+            settings_obj,
+            execute_tool,
+            arguments_prepared=True,
+        )
+        latency_ms = int((perf_counter() - started) * 1000)
+        trace = record_tool_result(
+            db, run.run_id, step_no, "web_fetcher", arguments, result, latency_ms
+        )
+        observations.append({
+            "trace_id": trace.trace_id,
+            "step_no": step_no,
+            "tool_name": "web_fetcher",
+            "success": result.success,
+            "output_summary": result.output_summary,
+            "error_message": result.error_message,
+            "output": result.output,
+            "metadata": result.metadata,
+        })
+        attempts.append({
+            "trigger": "report_evidence_gap" if report_feedback else "body_evidence_gap",
+            "round": round_no,
+            "step_no": step_no,
+            "urls": list(urls),
+            "status": "success" if result.success else "failed",
+            "trace_id": trace.trace_id,
+        })
+        run = store.update_agent_run_progress(
+            db,
+            run.run_id,
+            step_no,
+            total_tool_calls_delta=0 if (result.metadata or {}).get("executed") is False else 1,
+            latency_ms_delta=latency_ms,
+        )
+        # Persist the attempt before rematerializing so crashes retain a
+        # reviewable record even when the new evidence revision is incomplete.
+        store.replace_agent_run_plan(db, run.run_id, plan)
+        traces = store.list_tool_traces(db, run.run_id)
+        provenance_bundle = materialize_execution_provenance(
+            db, run, plan, observations, traces, settings_obj
+        )
+        assessment = assess_required_evidence(
+            plan.get("task_contract"), provenance_bundle
+        )
+        plan["evidence_assessment"] = assessment.as_dict()
+        state["status"] = "passed" if assessment.passed else "incomplete"
+        state["remaining_rounds"] = max_rounds - round_no
+        store.replace_agent_run_plan(db, run.run_id, plan)
+
+    return traces, provenance_bundle, assessment
 
 
 def _after_run_completed(
@@ -560,6 +765,27 @@ def run_plan(
             return _message_summary(cancelled, "Run cancelled by user.")
 
         traces = store.list_tool_traces(db, run_id)
+        if (
+            plan.get("research_mode") == "quick"
+            and plan.get("quick_output_mode") != "discovery"
+        ):
+            # A substantive Quick run gets its bounded alternate-candidate
+            # window before the broader operational outcome gate can finalize
+            # a fetch-quality failure. Provider, budget, permission, and
+            # execution failures remain visible to that gate after retries.
+            provenance_bundle = materialize_execution_provenance(
+                db, run, plan, observations, traces, settings_obj
+            )
+            evidence_assessment = assess_required_evidence(
+                plan.get("task_contract"), provenance_bundle
+            )
+            traces, provenance_bundle, evidence_assessment = _run_quick_refetches(
+                db, run, plan, settings_obj, observations, traces,
+                provenance_bundle, evidence_assessment,
+            )
+            plan["evidence_assessment"] = evidence_assessment.as_dict()
+            store.replace_agent_run_plan(db, run_id, plan)
+
         if not enforce_research_outcome(db, run, plan, observations, traces, settings_obj):
             return _summary(store.get_fresh_agent_run(db, run_id))
         provenance_bundle = materialize_execution_provenance(
@@ -570,10 +796,56 @@ def run_plan(
             traces,
             settings_obj,
         )
+        evidence_assessment = assess_required_evidence(plan.get("task_contract"), provenance_bundle)
+        plan["evidence_assessment"] = evidence_assessment.as_dict()
+        if not evidence_assessment.passed:
+            # This is deliberately before Reporter: discovery snippets, page
+            # shells, and unrelated local text must never reach factual prose.
+            # The original traces and structured, retryable gaps remain the
+            # diagnostic artifact for a later retry run.
+            outcome = dict(plan.get("research_outcome") or {})
+            outcome.update({
+                "status": "failed",
+                "error_code": "required_evidence_coverage_incomplete",
+                "message": "Required task-relevant body evidence is incomplete.",
+                "evidence_assessment": evidence_assessment.as_dict(),
+            })
+            plan["research_outcome"] = outcome
+            store.replace_agent_run_plan(db, run_id, plan)
+            record_trace_event(
+                db, run_id, max((trace.step_no for trace in traces), default=0) + 1,
+                "required_evidence_gate", "failed", {}, outcome["message"],
+                evidence_assessment.as_dict(), error_message=outcome["message"],
+            )
+            finalize_terminal_decision(db, run, plan, traces=traces)
+            return _summary(store.get_fresh_agent_run(db, run_id))
         _llm = resolve_report_llm_client(settings_obj, report_llm_client)
-        report_llm_responses: list[Any] = []
+        report_audit = ReportGenerationAudit(db, run_id, traces)
+        report_llm_responses = report_audit.responses
         citation_validation_reports: list[Any] = []
         reference_verification_reports: list[Any] = []
+        def refresh_report_evidence(feedback: dict[str, Any]) -> dict[str, Any] | None:
+            nonlocal traces, provenance_bundle
+            from app.agent.budget import acquisition_budget, FinalizationRequired
+            if not (feedback.get("must_remove_or_rewrite_unsupported")
+                    or feedback.get("weak_citations_to_improve_only_if_needed")):
+                return None
+            before = len((plan.get("quick_refetch") or {}).get("attempts") or [])
+            try:
+                with acquisition_budget():
+                    refreshed_traces, provenance_bundle, _ = _run_quick_refetches(
+                        db, store.get_fresh_agent_run(db, run_id), plan, settings_obj,
+                        observations, store.list_tool_traces(db, run_id), provenance_bundle,
+                        assess_required_evidence(plan.get("task_contract"), provenance_bundle),
+                        report_feedback=True,
+                    )
+                    traces[:] = refreshed_traces
+            except FinalizationRequired:
+                # Preserve the existing candidate and remaining report budget.
+                # Hard exhaustion/cancellation still escapes normally.
+                return None
+            after = len((plan.get("quick_refetch") or {}).get("attempts") or [])
+            return provenance_bundle if after > before else None
         try:
             markdown = generate_markdown_report(
                 report_subject(run),
@@ -583,24 +855,17 @@ def run_plan(
                 llm_client=_llm,
                 provenance_bundle=provenance_bundle,
                 report_type=run.report_type,
-                usage_callback=report_llm_responses.append,
+                usage_callback=report_audit.usage_callback,
                 citation_validation_callback=citation_validation_reports.append,
                 reference_verification_callback=reference_verification_reports.append,
+                revision_attempt_callback=report_audit.persist_attempt,
+                cancellation_check=lambda: check_report_generation_not_cancelled(db, run_id),
+                evidence_refresh_callback=refresh_report_evidence,
             )
         finally:
-            if report_llm_responses:
-                response = report_llm_responses[-1]
-                record_report_synthesis_trace(
-                    db,
-                    run_id,
-                    traces,
-                    response,
-                    success=bool(
-                        response.success
-                        and str(response.content or "").strip()
-                        and not response.metadata.get("error_type")
-                    ),
-                )
+            # ReportGenerationAudit records each provider attempt and usage.
+            pass
+        draft_result = plan.get("report_draft_result")
         if report_llm_responses:
             traces = store.list_tool_traces(db, run_id)
         report_path = save_report(run_id, markdown)
@@ -621,6 +886,15 @@ def run_plan(
         traces = store.list_tool_traces(db, run_id)
 
         plan = json.loads(run.plan_json or "{}")
+        if isinstance(draft_result, dict):
+            plan["report_draft_result"] = draft_result
+        if report_audit.attempts:
+            plan["report_revision_attempts"] = report_audit.attempts
+        plan["report_generation"] = {
+            **report_audit.manifest(),
+            "adopted": bool((plan.get("report_draft_result") or {}).get("adopted")),
+            "validator_version": validator_version_for(citation_validation_reports[-1] if citation_validation_reports else None),
+        }
         _persist_final_report_gate(
             db, run, plan, markdown, provenance_bundle, report_path,
             citation_validation_reports,
@@ -648,15 +922,8 @@ def run_plan(
             plan = json.loads(run.plan_json or "{}")
             finalize_terminal_decision(db, run, plan, traces=traces)
             run = store.get_fresh_agent_run(db, run_id)
-            if run.status == "incomplete" and "未完成" not in markdown:
-                markdown = markdown.rstrip() + "\n\n## 12. 完成状态审计\n\n> 本报告未完成最终研究完整性核验，内容仅作为审计中间结果。\n"
-                report_path = save_report(run_id, markdown)
-                run = store.update_agent_run_report(db, run_id, report_path)
-                plan = json.loads(run.plan_json or "{}")
-                _persist_final_report_gate(db, run, plan, markdown, provenance_bundle, report_path, citation_validation_reports)
-                run = store.get_fresh_agent_run(db, run_id)
-                finalize_terminal_decision(db, run, json.loads(run.plan_json or "{}"), traces=traces)
-                run = store.get_fresh_agent_run(db, run_id)
+            # Incomplete state is represented by the terminal decision and
+            # UI; never rewrite the report after its hash was finalized.
 
         # ── Phase 6: Summarize LLM token/cost from traces ─────────────
         try:

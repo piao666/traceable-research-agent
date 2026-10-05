@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -365,23 +366,53 @@ def _web_page_items(run_id: str, record: dict[str, Any], existing_count: int) ->
     for page in record["output"].get("pages") or []:
         if not isinstance(page, dict) or page.get("error") or page.get("deduplicated"):
             continue
-        content = str(page.get("content") or "").strip()
+        content = str(page.get("content") or "")
         url = str(page.get("canonical_url") or page.get("final_url") or page.get("url") or "")
-        if not content or page_content_issue(content) or not url.startswith(("https://", "http://")):
+        if not content.strip() or page_content_issue(content) or not url.startswith(("https://", "http://")):
             continue
-        item = _make_item(run_id, record, existing_count + len(items) + 1,
-                          title=str(page.get("title") or url), snippet=content,
-                          source_ref=url, source_type="web")
-        item.metadata.update({key: page[key] for key in (
-            "content_basis", "extraction_method", "extraction_confidence", "content_hash",
-            "source_cluster_id", "hostname", "truncated", "requested_url",
-            "final_url", "canonical_url", "canonical_hint", "published_at", "content_type",
-            "fetch_status", "fetch_backend", "provider", "quality", "source_identity",
-            "redirect_chain", "retrieval_attempts", "fragment_locator",
-        ) if key in page})
-        item.metadata.setdefault("content_basis", "partial")
-        items.append(item)
+        # Preserve bounded, exact slices of the fetched body. The generic
+        # EvidenceItem constructor's 900-character cap used to discard most
+        # of every real page before provenance and report writing saw it.
+        body = content[:12000]
+        body_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        for start, end in _web_body_windows(body):
+            item = _make_item(run_id, record, existing_count + len(items) + 1,
+                              title=str(page.get("title") or url), snippet=body[start:end],
+                              source_ref=url, source_type="web", max_snippet_chars=2400)
+            item.metadata.update({key: page[key] for key in (
+                "content_basis", "extraction_method", "extraction_confidence", "content_hash",
+                "source_cluster_id", "hostname", "truncated", "requested_url",
+                "final_url", "canonical_url", "canonical_hint", "published_at", "content_type",
+                "fetch_status", "fetch_backend", "provider", "quality", "source_identity",
+                "official", "source_tier", "source_class", "evidence_role",
+                "classification_rule", "classification_confidence",
+                "redirect_chain", "retrieval_attempts",
+            ) if key in page})
+            item.metadata["fragment_locator"] = {
+                "char_start": start, "char_end": end,
+                "source_content_sha256": body_hash,
+            }
+            if len(content) > len(body):
+                item.metadata["content_basis"] = "partial"
+                item.metadata["evidence_body_truncated"] = True
+            item.metadata.setdefault("content_basis", "partial")
+            items.append(item)
     return items
+
+
+def _web_body_windows(content: str) -> list[tuple[int, int]]:
+    """Cover a fetched body without overlap or lost characters."""
+    windows: list[tuple[int, int]] = []
+    start = 0
+    while start < len(content):
+        end = min(len(content), start + 2400)
+        if end < len(content):
+            boundary = max(content.rfind("\n", start + 1200, end), content.rfind(". ", start + 1200, end))
+            if boundary >= 0:
+                end = boundary + (2 if content[boundary:boundary + 2] == ". " else 1)
+        windows.append((start, end))
+        start = end
+    return windows
 
 
 def _pdf_page_items(run_id: str, record: dict[str, Any], existing_count: int) -> list[EvidenceItem]:
@@ -822,6 +853,7 @@ def _make_item(
     source_ref: str | None,
     source_type: str | None = None,
     unsupported_reason: str | None = None,
+    max_snippet_chars: int = 900,
 ) -> EvidenceItem:
     metadata = dict(record.get("metadata") or {})
     data_source = str(metadata.get("data_source") or "")
@@ -846,7 +878,7 @@ def _make_item(
         source_type=source_type or _source_type(record),
         source_ref=source_ref,
         title=title,
-        snippet=str(snippet or "")[:900],
+        snippet=str(snippet or "")[:max_snippet_chars],
         status=str(record.get("status") or ("success" if record.get("success") else "failed")),
         confidence=confidence,
         metadata=metadata,

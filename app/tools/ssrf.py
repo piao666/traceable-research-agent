@@ -10,8 +10,10 @@ before a request is sent.
 from __future__ import annotations
 
 import ipaddress
+import os
 import socket
-from urllib.parse import urlparse
+from pathlib import Path
+from urllib.parse import urlparse, urlsplit
 
 # Comprehensive private / reserved ranges (IPv4 + IPv6).
 BLOCKED_NETWORKS = (
@@ -40,8 +42,21 @@ BLOCKED_NETWORKS = (
     ipaddress.ip_network("ff00::/8"),
 )
 
+# RFC 2544 benchmarking space is commonly used by Fake-IP proxy DNS
+# implementations.  It remains blocked for literal URLs and by default.  A
+# caller may opt into it only after proving that the request's effective
+# HTTP(S) proxy is an explicitly configured loopback proxy.
+FAKE_IP_NETWORKS = (ipaddress.ip_network("198.18.0.0/15"),)
+DOCKER_HOST_PROXY_NAME = "host.docker.internal"
 
-def _is_blocked_ip(address: object) -> bool:
+
+def _is_fake_ip(address: object) -> bool:
+    return any(address in net for net in FAKE_IP_NETWORKS)
+
+
+def _is_blocked_ip(address: object, *, allow_fake_ip: bool = False) -> bool:
+    if allow_fake_ip and _is_fake_ip(address):
+        return False
     return any(address in net for net in BLOCKED_NETWORKS)
 
 
@@ -97,8 +112,13 @@ def _check_numeric_host(host: str) -> bool | None:
     return None
 
 
-def is_blocked_host(host: str) -> bool:
-    """Return True when a host is (or resolves to) a blocked address."""
+def is_blocked_host(host: str, *, allow_fake_ip: bool = False) -> bool:
+    """Return True when a host is (or resolves to) a blocked address.
+
+    ``allow_fake_ip`` only affects DNS answers.  Literal and obfuscated IP
+    URLs are always checked against the complete blocked-network policy so a
+    caller cannot turn the proxy compatibility mode into a private-IP bypass.
+    """
     if not host:
         return True
     host = host.split("%")[0].strip("[]")
@@ -131,17 +151,130 @@ def is_blocked_host(host: str) -> bool:
             address = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if _is_blocked_ip(address):
+        if _is_blocked_ip(address, allow_fake_ip=allow_fake_ip):
             return True
     return False
 
 
-def validate_url(raw: str) -> str | None:
-    """Return a normalized http(s) URL, or None if the host is unsafe."""
+def validate_url(
+    raw: str,
+    *,
+    trusted_local_proxy_url: str | None = None,
+    proxy_environment: dict[str, str] | None = None,
+) -> str | None:
+    """Return a normalized safe URL, optionally accepting proxy Fake-IP DNS.
+
+    Fake-IP acceptance is deliberately capability-based rather than a global
+    exception: the caller must provide the exact expected proxy URL, that URL
+    must be loopback, and the matching HTTP(S)/ALL_PROXY environment value
+    must point to it.  Without all of those conditions the normal strict
+    policy applies.
+    """
     parsed = urlparse(raw)
     if parsed.scheme not in ("http", "https"):
         return None
     host = (parsed.hostname or "").lower()
-    if not host or is_blocked_host(host):
+    allow_fake_ip = _trusted_proxy_for_request(
+        parsed.scheme,
+        host,
+        trusted_local_proxy_url,
+        proxy_environment,
+    )
+    if not host or is_blocked_host(host, allow_fake_ip=allow_fake_ip):
         return None
     return parsed.geturl()
+
+
+def _trusted_proxy_for_request(
+    scheme: str,
+    host: str,
+    trusted_local_proxy_url: str | None,
+    proxy_environment: dict[str, str] | None,
+) -> bool:
+    """Verify that this request will use the configured local proxy."""
+    if not trusted_local_proxy_url or _host_in_no_proxy(host, proxy_environment):
+        return False
+    expected = _normalize_proxy_url(trusted_local_proxy_url)
+    if expected is None or not _is_trusted_proxy(expected):
+        return False
+    env = proxy_environment if proxy_environment is not None else dict(os.environ)
+    values = {str(key).lower(): str(value).strip() for key, value in env.items() if value}
+    key = f"{scheme.lower()}_proxy"
+    actual = values.get(key) or values.get("all_proxy")
+    if not actual:
+        return False
+    return _normalize_proxy_url(actual) == expected
+
+
+def _normalize_proxy_url(
+    value: str,
+) -> tuple[str, str, int | None, str | None, str | None] | None:
+    try:
+        parsed = urlsplit(str(value).strip())
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return None
+        if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            return None
+        return (
+            parsed.scheme.lower(),
+            parsed.hostname.lower().strip("[]"),
+            parsed.port,
+            parsed.username,
+            parsed.password,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_loopback_proxy(
+    proxy: tuple[str, str, int | None, str | None, str | None],
+) -> bool:
+    try:
+        address = ipaddress.ip_address(proxy[1])
+    except ValueError:
+        # Do not resolve proxy hostnames here: only a literal loopback
+        # address is sufficiently explicit to grant the Fake-IP exception.
+        return False
+    return address.is_loopback
+
+
+def _running_in_docker() -> bool:
+    return Path("/.dockerenv").exists()
+
+
+def _is_trusted_proxy(
+    proxy: tuple[str, str, int | None, str | None, str | None],
+) -> bool:
+    if _is_loopback_proxy(proxy):
+        return True
+    # Docker Desktop exposes the host through this DNS name.  Accept it only
+    # from an actual container and only when the operator configured the exact
+    # proxy URL; arbitrary private/remote proxy hosts remain ineligible.
+    return _running_in_docker() and proxy[1] == DOCKER_HOST_PROXY_NAME
+
+
+def is_trusted_proxy_url(value: str | None) -> bool:
+    """Return whether *value* is an eligible explicit local proxy URL."""
+    normalized = _normalize_proxy_url(value) if value else None
+    return normalized is not None and _is_trusted_proxy(normalized)
+
+
+def _host_in_no_proxy(host: str, environment: dict[str, str] | None) -> bool:
+    env = environment if environment is not None else dict(os.environ)
+    values = {str(key).lower(): str(value).strip() for key, value in env.items() if value}
+    raw = values.get("no_proxy")
+    if not raw:
+        return False
+    hostname = host.casefold().strip("[]")
+    for item in raw.split(","):
+        token = item.strip().casefold()
+        if not token:
+            continue
+        if token == "*":
+            return True
+        token = token.rsplit(":", 1)[0].strip("[]")
+        if token.startswith("."):
+            token = token[1:]
+        if hostname == token or hostname.endswith("." + token):
+            return True
+    return False

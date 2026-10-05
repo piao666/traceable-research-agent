@@ -14,6 +14,12 @@
     "unknown": {"authority": 0.35, "score_cap": 0.55}
   },
   "domain_classes": {"sec.gov": "regulatory", "gov.cn": "regulatory", "stats.gov.cn": "regulatory", "docs.python.org": "official"},
+  "current_documentation_channels": {
+    "docs.python.org": {
+      "current_path_prefix": "/3/",
+      "sibling_path_pattern": "^/(?:[a-z]{2}/)?(?:3(?:\\.[0-9]+)?|dev|release/3\\.[0-9]+(?:\\.[0-9]+)?)/"
+    }
+  },
   "blocked_domains": [],
   "claim_types": {
     "financial": {"keywords": ["revenue", "profit", "earnings", "financial", "quarter", "营收", "收入", "利润", "财务", "季度"], "preferred_source_classes": ["regulatory", "governed_sql", "official"], "max_age_days": 550, "minimum_reliability": 0.70, "minimum_independent_sources": 2, "allowed_domains": []},

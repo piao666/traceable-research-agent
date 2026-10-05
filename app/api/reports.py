@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.agent.report_exporter import (
     export_report,
+    normalize_report_format,
     read_report_markdown,
     report_filename,
     report_media_type,
@@ -103,9 +104,20 @@ async def download_report(
     blocker = report_block_reason(run)
     if blocker:
         raise HTTPException(status_code=409, detail=blocker)
-    _report_path, markdown = _resolve_existing_report(run_id, run.report_path)
+    report_path, markdown = _resolve_existing_report(run_id, run.report_path)
+    normalized_format = normalize_report_format(format)
+    # The adopted Markdown file is bound to the final report revision and
+    # terminal SHA256.  Re-exporting it to the same canonical `.md` path on
+    # Windows rewrites LF bytes as CRLF, invalidating that identity merely by
+    # downloading it.  Serve those exact persisted bytes directly instead.
+    if normalized_format == "markdown":
+        return FileResponse(
+            path=report_path,
+            media_type=report_media_type(normalized_format),
+            filename=report_filename(run_id, normalized_format),
+        )
     try:
-        result = export_report(run_id, markdown, format)
+        result = export_report(run_id, markdown, normalized_format)
         export_path = resolve_report_path(result.report_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

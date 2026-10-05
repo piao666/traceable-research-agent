@@ -18,6 +18,7 @@ class ContextIdentityTests(unittest.TestCase):
     setUp = recovery.RecoveryTests.setUp
     skill_plan = recovery.RecoveryTests.skill_plan
     run_script = recovery.RecoveryTests.run_script
+    assert_unvalidated_fixture_is_incomplete = recovery.RecoveryTests.assert_unvalidated_fixture_is_incomplete
 
     def test_search_urls_survive_prompt_compaction_without_bloating_saved_plan(self):
         run, result, client, _ = self.run_script([decision("tavily_search", query="docs"),
@@ -32,15 +33,13 @@ class ContextIdentityTests(unittest.TestCase):
 
     def test_react_reaching_report_reserve_hands_off_instead_of_budget_failure(self):
         from app.llm.base import LLMResponse, LLMUsage
-        from app.agent.budget import estimate_message_tokens
         from tests.test_r8_recovery import ScriptedLLM
 
         class MeteredLLM(ScriptedLLM):
             def complete(self, messages, **kwargs):
                 self.payloads.append(json.loads(messages[-1].content))
                 action = next(self.actions, decision("finish"))
-                estimate = estimate_message_tokens(messages, kwargs.get("max_tokens", 800))
-                total = 1000 if len(self.payloads) == 1 else 44000 - estimate // 2
+                total = 1000 if len(self.payloads) == 1 else 34000
                 return LLMResponse(
                     success=True,
                     content=json.dumps(action),
@@ -59,12 +58,16 @@ class ContextIdentityTests(unittest.TestCase):
             settings=self.settings.model_copy(update={"research_max_tokens": 50000}),
             client=client,
         )
+        # This fixture stubs the terminal arbiter and marks the handoff
+        # completed; the test only checks that research stops without a hard
+        # budget failure. Real terminal acceptance is covered separately.
         self.assertEqual(result["status"], "completed")
         self.assertEqual(execute.call_count, 2)
-        self.assertTrue(run.report_path)
+        self.assertIsNone(run.report_path)
         budget = json.loads(run.plan_json)["execution_budget"]
         self.assertIsNone(budget["stop_reason"])
-        self.assertFalse(any(
+        self.assertEqual(json.loads(run.plan_json)["react_state"]["finish_reason"], "finalization_reserve_handoff")
+        self.assertTrue(any(
             trace.tool_name == "research_finalization_handoff"
             for trace in store.list_tool_traces(self.db, run.run_id)
         ))
@@ -181,14 +184,16 @@ class ContextIdentityTests(unittest.TestCase):
         prompt = prompt_source_context(build_source_context([search, fetch]), limit=2)
         self.assertEqual([source["fetch_status"] for source in prompt["sources"]], ["fetched", "pending"])
 
-    def test_deepening_prompt_preserves_urls_and_child_run_identity(self):
-        from app.agent.deepening import _build_deepening_messages
-        messages = _build_deepening_messages("fixture", [{"trace_id": "trace-child", "run_id": "child",
-            "tool_name": "tavily_search", "success": True,
-            "output": {"results": [{"url": URL, "content": "Child source"}]}}], [], 1)
-        self.assertIn(URL, messages[-1].content)
-        self.assertIn("trace-child", messages[-1].content)
-        self.assertIn("child", messages[-1].content)
+    def test_active_source_prompt_preserves_urls_and_child_run_identity(self):
+        from types import SimpleNamespace
+        from app.agent.source_context import build_source_context, prompt_source_context
+        trace = SimpleNamespace(trace_id="trace-child", run_id="child", step_no=1,
+            tool_name="tavily_search", status="success", input_json="{}",
+            output_json=json.dumps({"results": [{"url": URL, "content": "Child source"}]}))
+        prompt = json.dumps(prompt_source_context(build_source_context([trace])))
+        self.assertIn(URL, prompt)
+        self.assertIn("trace-child", prompt)
+        self.assertIn("child", prompt)
 
     def test_legacy_react_mapping_is_flagged_without_rewriting_history(self):
         from app.agent.outcome import result_integrity, trusted_run_ids
@@ -269,6 +274,7 @@ class SharedBudgetTests(unittest.TestCase):
     setUp = recovery.RecoveryTests.setUp
     skill_plan = recovery.RecoveryTests.skill_plan
     run_script = recovery.RecoveryTests.run_script
+    assert_unvalidated_fixture_is_incomplete = recovery.RecoveryTests.assert_unvalidated_fixture_is_incomplete
 
     def runtime(self, **changes):
         from app.agent.budget import BudgetRuntime
@@ -287,11 +293,13 @@ class SharedBudgetTests(unittest.TestCase):
         from app.api.tasks import _task_run_response
         run, result, _, execute = self.run_script([decision("tavily_search", query="docs")],
             settings=self.settings.model_copy(update={"research_max_tokens": 1}))
-        execute.assert_called_once()
+        execute.assert_not_called()
         response = _task_run_response(result)
+        # The pre-call token admission must stop the provider before a tool
+        # action is even selected; this is a hard configured budget limit.
         self.assertEqual(response.status, "failed")
         self.assertIn(run.run_id, response.trace_url)
-        self.assertNotEqual(response.research_outcome["error_code"], "budget_exhausted")
+        self.assertEqual(response.research_outcome["error_code"], "budget_exhausted")
 
     def test_children_share_parent_budget_and_settings_snapshot(self):
         from app.agent.budget import BudgetRuntime, BudgetExceeded, ensure_budget
@@ -317,7 +325,7 @@ class SharedBudgetTests(unittest.TestCase):
         try:
             wrapped = BudgetClient(client)
             wrapped.complete([LLMMessage(role="user", content="question")], max_tokens=20)
-            self.assertEqual(runtime.snapshot()["accounted_tokens"], 0)
+            self.assertGreater(runtime.snapshot()["accounted_tokens"], 0)
             with self.assertRaises(BudgetExceeded):
                 wrapped.complete([LLMMessage(role="user", content="question")])
             self.assertEqual(client.complete.call_count, 1)
@@ -334,8 +342,10 @@ class SharedBudgetTests(unittest.TestCase):
     def test_root_research_reserve_requests_finalization_without_terminal_stop(self):
         from app.agent.budget import FinalizationRequired, _active, report_budget
         runtime = self.runtime(research_max_tokens=1000, research_max_llm_calls=10)
-        runtime.reserve(llm=1, tokens=850)
-        runtime.reserve(llm=1, tokens=100)
+        runtime.reserve(llm=1, tokens=650)
+        with self.assertRaises(FinalizationRequired) as boundary:
+            runtime.reserve(llm=1, tokens=100)
+        self.assertEqual(boundary.exception.reason, "tokens")
         self.assertIsNone(runtime.snapshot()["stop_reason"])
 
         @report_budget
@@ -347,7 +357,8 @@ class SharedBudgetTests(unittest.TestCase):
             finalize(store.get_agent_run(self.db, runtime.run_id), {})
         finally:
             _active.reset(token)
-        self.assertEqual(runtime.snapshot()["accounted_tokens"], 0)
+        self.assertEqual(runtime.snapshot()["accounted_tokens"], 750)
+        self.assertIsNone(runtime.snapshot()["stop_reason"])
 
     def test_deadline_and_unknown_price_block_admission(self):
         from app.agent.budget import BudgetExceeded
@@ -369,8 +380,28 @@ class SharedBudgetTests(unittest.TestCase):
             runtime.tool("web_fetcher")
         self.assertAlmostEqual(runtime.snapshot()["estimated_cost"], 0.6)
         runtime = self.runtime(research_max_tokens=5)
-        runtime.reserve(llm=1, tokens=6)
-        self.assertEqual(runtime.snapshot()["llm_calls"], 1)
+        with self.assertRaises(BudgetExceeded) as boundary:
+            runtime.reserve(llm=1, tokens=6)
+        self.assertEqual(boundary.exception.reason, "tokens")
+        self.assertEqual(runtime.snapshot()["llm_calls"], 0)
+
+    def test_llm_estimated_cost_cap_blocks_provider_before_call(self):
+        from app.agent.budget import BudgetClient, BudgetExceeded, _active
+        from app.llm.base import LLMMessage
+
+        runtime = self.runtime(research_max_estimated_cost=0.001,
+                               research_llm_cost_per_million_tokens=100)
+        client = Mock()
+        client.is_available.return_value = True
+        wrapped = BudgetClient(client)
+        token = _active.set(runtime)
+        try:
+            with self.assertRaises(BudgetExceeded) as error:
+                wrapped.complete([LLMMessage(role="user", content="question")], max_tokens=200)
+        finally:
+            _active.reset(token)
+        self.assertEqual(error.exception.reason, "estimated_cost")
+        client.complete.assert_not_called()
 
     def test_parent_cancel_blocks_child_and_fresh_retry_gets_new_budget(self):
         from app.agent.budget import BudgetRuntime, BudgetExceeded, ensure_budget
@@ -420,14 +451,14 @@ class SharedBudgetTests(unittest.TestCase):
                 self.assertEqual(snapshot["stop_reason"], "tool_calls")
             engine.dispose()
 
-    def test_parallel_executor_admits_only_remaining_calls(self):
-        from app.agent.parallel_executor import run_plan_parallel
+    def test_canonical_executor_admits_only_remaining_calls(self):
+        from app.agent.executor import run_plan
         run = store.create_agent_run(self.db, "parallel", "summary", "real")
         plan = {"source_mode": "real", "allowed_tools": ["tavily_search"], "steps": [
             {"step_no": n, "tool_name": "tavily_search", "arguments": {"query": str(n)}} for n in (1, 2, 3)]}
         store.update_agent_run_plan(self.db, run.run_id, plan)
-        with patch("app.agent.parallel_executor.execute_tool", return_value=ToolResult(success=True, output={"results": []})) as execute:
-            result = run_plan_parallel(self.db, run.run_id, settings_obj=self.settings.model_copy(update={"research_max_tool_calls": 2}))
+        with patch("app.agent.executor.execute_tool", return_value=ToolResult(success=True, output={"results": []})) as execute:
+            result = run_plan(self.db, run.run_id, settings_obj=self.settings.model_copy(update={"research_max_tool_calls": 2}))
         self.assertEqual(execute.call_count, 2)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(json.loads(run.plan_json)["execution_budget"]["tool_calls"], 2)
@@ -513,20 +544,22 @@ class SharedBudgetTests(unittest.TestCase):
         self.assertEqual(snapshot["provider_attempts"], 2)
         self.assertEqual(response.metadata["provider_attempts"], 2)
 
-    def test_exhausted_budget_does_not_create_more_deepening_children(self):
-        from app.agent.budget import _active, BudgetExceeded
-        from app.agent.deepening import _run_single_round
+    def test_exhausted_budget_does_not_create_more_pear_children(self):
+        from app.agent.budget import BudgetExceeded
+        from app.research.node_executor import ResearchNodeExecutor
+        from app.research.scope import create_research_scope, create_research_node
         runtime = self.runtime(research_max_tool_calls=1)
         store.update_agent_run_plan(self.db, runtime.run_id, self.skill_plan())
         runtime.tool("tavily_search")
-        token = _active.set(runtime)
-        try:
-            with patch("app.agent.deepening.store.create_agent_run") as create:
-                with self.assertRaises(BudgetExceeded):
-                    _run_single_round(self.db, runtime.run_id, "fixture", ["next"], self.settings)
-            create.assert_not_called()
-        finally:
-            _active.reset(token)
+        scope = create_research_scope(self.db, runtime.run_id, {})
+        node = create_research_node(self.db, scope.scope_id, parent_node_id=None,
+            run_id=None, node_type="web_research", topic="next", query="next",
+            research_goal="next", depth=1, priority=1)
+        with patch("app.research.node_executor.store.create_agent_run") as create:
+            with self.assertRaises(BudgetExceeded):
+                ResearchNodeExecutor(runner=Mock()).execute(self.db, scope, node, self.settings)
+        create.assert_not_called()
+        self.assertIsNone(node.run_id)
 
     def test_budget_inspection_does_not_initialize_historical_run(self):
         from app.agent.budget import budget_snapshot

@@ -105,6 +105,13 @@ def passage_locator(item: EvidenceItem, trace_input: dict[str, Any]) -> dict[str
         return base
     if source_ref.startswith(("http://", "https://")):
         base.update({"kind": "web", "url": canonicalize_url(source_ref)})
+        fragment = metadata.get("fragment_locator")
+        if tool_name == "web_fetcher" and isinstance(fragment, dict):
+            base["fragment_locator"] = {
+                key: fragment[key]
+                for key in ("char_start", "char_end", "source_content_sha256")
+                if key in fragment
+            }
         return base
     if item.source_type == "file":
         base.update({"kind": "file", "path": source_ref})

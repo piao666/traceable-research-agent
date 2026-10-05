@@ -14,6 +14,20 @@ from app.research.scope import list_scope_nodes, list_scope_runs, list_scope_tra
 
 SCOPE_OUTCOME_VERSION = SCOPE_INTEGRITY_VERSION
 
+# A partial report is allowed only for evidence gaps, never for execution,
+# integrity, security, unresolved user requirements or provider failures.
+RECOVERABLE_SCOPE_GAPS = frozenset({
+    "required_evidence_missing", "required_research_branch_has_no_evidence",
+    "required_research_branch_incomplete", "required_research_branch_goal_not_met",
+    "required_evidence_coverage_incomplete", "required_source_class_missing",
+})
+
+
+def can_write_partial_report(outcome: dict[str, Any]) -> bool:
+    errors = set(outcome.get("errors") or [])
+    return bool(errors and errors <= RECOVERABLE_SCOPE_GAPS
+                and (outcome.get("evidence_assessment") or {}).get("eligible_passage_ids"))
+
 
 def assess_scope_outcome(
     db: Session,
@@ -27,6 +41,8 @@ def assess_scope_outcome(
     """Conservatively decide whether one whole Research Scope may finalize."""
 
     contract = contract or {}
+    from app.agent.evidence_requirements import assess_required_evidence
+    evidence_assessment = assess_required_evidence(contract, scope_evidence)
     nodes = list_scope_nodes(db, scope.scope_id)
     passages_by_run: dict[str, int] = {}
     for passage in scope_evidence.get("passages") or []:
@@ -37,6 +53,12 @@ def assess_scope_outcome(
     warnings: list[str] = []
     if not scope_evidence.get("passages"):
         errors.append("no_usable_evidence")
+    if not evidence_assessment.passed:
+        errors.append("required_evidence_missing")
+        warnings.extend(
+            "Evidence gap: " + gap.code
+            for gap in evidence_assessment.gaps
+        )
     if orchestration_incomplete:
         errors.append("research_orchestration_incomplete")
     integrity = scope_evidence.get("integrity") or {}
@@ -138,6 +160,7 @@ def assess_scope_outcome(
         "run_count": len(scope_evidence.get("runs") or []),
         "node_count": len(nodes),
         "coverage_matrix": coverage if coverage else None,
+        "evidence_assessment": evidence_assessment.as_dict(),
         "message": (
             "Research Scope passed the evidence and lineage gate."
             if not errors

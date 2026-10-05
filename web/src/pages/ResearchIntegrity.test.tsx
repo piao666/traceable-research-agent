@@ -100,7 +100,7 @@ it("distinguishes missing task requirements from missing API keys", async () => 
 it("labels old completed tasks as requiring review", async () => {
   vi.spyOn(api, "listTasks").mockResolvedValue({ total: 1, limit: 50, offset: 0, tasks: [{
     run_id: "legacy", task: "Old task", status: "completed", execution_mode: "planned",
-    report_type: "summary", total_tool_calls: 2, requires_review: true, citation_evaluated: false, estimated_cost: 0,
+    report_type: "summary", total_tool_calls: 2, is_legacy_result: true, requires_review: true, citation_evaluated: false, estimated_cost: 0,
     run_role: "root", engine_version: "legacy",
     created_at: "2026-09-01T00:00:00Z", updated_at: "2026-09-01T00:00:00Z",
   }] });

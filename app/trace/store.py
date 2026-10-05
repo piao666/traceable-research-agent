@@ -185,7 +185,37 @@ def update_agent_run_plan(db: Session, run_id: str, plan: dict) -> AgentRun:
     # Requirements are application-derived, not an LLM-authored plan field.
     parent = db.get(AgentRun, plan.get("parent_run_id")) if plan.get("version") == "deepening-v1" and plan.get("parent_run_id") else None
     parent_contract = json.loads(parent.plan_json or "{}").get("task_contract") if parent else None
-    plan["task_contract"] = parent_contract or build_task_contract(run.task, run.created_at)
+    # ResearchNodeExecutor constructs a child plan, but the generic plan
+    # writer must independently derive its scoped contract from persisted
+    # lineage. Otherwise this method replaces it with a contract inferred
+    # from the terse search query, dropping the root's evidence requirements.
+    if plan.get("version") == "research-node-v2" and run.root_run_id:
+        from app.research.models import ResearchNode
+        from app.research.node_executor import _node_task_contract
+
+        node = db.execute(select(ResearchNode).where(ResearchNode.run_id == run.run_id)).scalar_one_or_none()
+        root = db.get(AgentRun, run.root_run_id)
+        if node is not None and root is not None:
+            try:
+                root_contract = json.loads(root.plan_json or "{}").get("task_contract")
+            except (TypeError, ValueError):
+                root_contract = None
+            if isinstance(root_contract, dict):
+                parent_contract = _node_task_contract(root_contract, node)
+    # A contract is parsed by this trusted service at creation time.  Later
+    # planner, approval, and recovery writes may update execution details but
+    # must not replace it with a client- or model-authored plan field.
+    try:
+        persisted_contract = json.loads(run.plan_json or "{}").get("task_contract")
+    except (TypeError, ValueError):
+        persisted_contract = None
+    plan["task_contract"] = (
+        parent_contract
+        if isinstance(parent_contract, dict)
+        else persisted_contract
+        if isinstance(persisted_contract, dict)
+        else build_task_contract(run.task, run.created_at)
+    )
     run.plan_json = json.dumps(plan, ensure_ascii=False, default=str)
     run.total_steps = len(plan.get("steps") or [])
     run.current_step = 0

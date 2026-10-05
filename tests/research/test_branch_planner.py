@@ -1,4 +1,4 @@
-from app.eval.fake_react_llm import FakeReActLLMClient
+from tests.support.fake_react_llm import FakeReActLLMClient
 from app.llm.base import LLMResponse, LLMUsage
 from app.research.branch_planner import plan_research_branches
 
@@ -77,7 +77,35 @@ def test_branch_planner_accepts_only_r12_evidence_node_types():
     assert [branch["node_type"] for branch in result["branches"]] == allowed
 
 
-def test_branch_planner_omits_output_cap_and_reports_truncation():
+def test_branch_query_does_not_invent_year_for_undated_task():
+    client = FakeReActLLMClient([{"branches": [
+        {"query": "Jev agent model 2025", "node_type": "web_research"},
+    ], "is_comprehensive": False}])
+    result = plan_research_branches(
+        client, task="Jev agent impact", observations=[], prior_queries=[],
+        breadth=2, depth=1, contract={"original_task": "Jev agent impact"},
+    )
+    assert result["branches"][0]["query"] == "Jev agent model"
+
+
+def test_cross_branch_is_optional_when_both_named_requirements_have_dedicated_branches():
+    client = FakeReActLLMClient([{"branches": [
+        {"topic": "Muse Agent impact", "query": "Muse Agent workflow impact", "node_type": "web_research"},
+        {"topic": "Jev Agent impact", "query": "Jev Agent decision impact", "node_type": "web_research"},
+        {"topic": "Muse and Jev comparison", "query": "Muse Jev Agent comparison", "node_type": "verification", "required": True},
+    ], "is_comprehensive": False}])
+    contract = {"evidence_scope_requirements": [
+        {"requirement_id": "muse", "entity": "Muse"},
+        {"requirement_id": "jev", "entity": "Jev"},
+    ]}
+    result = plan_research_branches(
+        client, task="Muse and Jev", observations=[], prior_queries=[],
+        breadth=3, depth=1, contract=contract,
+    )
+    assert [branch["required"] for branch in result["branches"]] == [True, True, False]
+
+
+def test_branch_planner_reserves_bounded_output_and_reports_truncation():
     client = PlannerResponseClient(
         LLMResponse(
             success=False,
@@ -103,7 +131,7 @@ def test_branch_planner_omits_output_cap_and_reports_truncation():
         contract={},
     )
 
-    assert client.max_tokens is None
+    assert client.max_tokens == 3000
     assert result["planner_failed"] is True
     assert result["error_type"] == "structured_output_truncated"
     assert result["finish_reason"] == "length"

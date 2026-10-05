@@ -1,1 +1,0 @@
-"""Smoke scripts for the evaluation subsystem."""

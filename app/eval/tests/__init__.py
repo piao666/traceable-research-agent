@@ -1,1 +1,0 @@
-"""Self-tests for the evaluation subsystem."""

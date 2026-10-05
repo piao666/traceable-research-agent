@@ -1,5 +1,6 @@
 import json
 from unittest.mock import patch
+import pytest
 
 from app.agent.outcome import report_block_reason, result_integrity, trusted_run_ids
 from app.agent.outcome import load_observations
@@ -10,9 +11,10 @@ from app.evidence.citation_validator import (
 )
 from app.evidence.service import materialize_execution_provenance
 from app.evidence.reference_verifier import ReferenceVerificationReport
-from app.eval.fake_react_llm import FakeReActLLMClient
+from tests.support.fake_react_llm import FakeReActLLMClient
 from app.reporting.integrity import (
     REPORT_INTEGRITY_VERSION,
+    ReportIntegrityResult,
     append_report_integrity_warnings,
     assess_report_integrity,
 )
@@ -132,14 +134,15 @@ def test_unresolved_citation_target_fails_report_gate():
     assert result.error_code == "unresolved_citation_target"
 
 
-def test_low_strict_support_rate_is_warning_only():
+def test_low_strict_support_rate_blocks_completed_report():
     result = assess_report_integrity(
         _occurrences(
             *(["supported"] * 5),
             *(["weakly_supported"] * 5),
         )
     )
-    assert result.status == "passed"
+    assert result.status == "failed"
+    assert result.error_code == "strict_citation_support_below_threshold"
     assert result.support_rate == 1.0
     assert result.strict_support_rate == 0.5
     assert result.warnings
@@ -291,7 +294,7 @@ def test_validator_exception_fails_deep_v2_and_keeps_audit_report(
     db,
     r12_settings,
 ):
-    root = create_root(db)
+    root = create_root(db, "Explain report integrity")
 
     def fake_root_runner(session, run_id, settings, _client):
         run = store.mark_agent_run_running_unless_cancelled(session, run_id)
@@ -355,6 +358,70 @@ def test_validator_exception_fails_deep_v2_and_keeps_audit_report(
     assert report_block_reason(run)
 
 
+def test_deep_report_quality_failure_is_incomplete_not_execution_failure(
+    db,
+    r12_settings,
+):
+    """Deep preserves a validated quality gap as a partial, retryable result."""
+    root = create_root(db, "Explain report integrity")
+
+    def fake_root_runner(session, run_id, settings, _client):
+        run = store.mark_agent_run_running_unless_cancelled(session, run_id)
+        add_web_trace(session, run_id, "Verified evidence for report integrity.", "root")
+        traces = store.list_tool_traces(session, run_id)
+        materialize_execution_provenance(
+            session, run, json.loads(run.plan_json or "{}"),
+            load_observations(traces), traces, settings,
+        )
+        store.update_agent_run_status(session, run_id, "completed", None)
+        return {"run_id": run_id, "status": "completed"}
+
+    def report_generator(_run, _plan, _observations, _traces, **kwargs):
+        bundle = kwargs["provenance_bundle"]
+        citation = bundle["citations"][0]
+        passage = next(item for item in bundle["passages"]
+                       if item["passage_id"] == citation["passage_id"])
+        return ("# Scope report\n\n## 3. 最终回答\n\n"
+                f"{passage['text']} [{citation['citation_label']}]\n")
+
+    quality_failure = ReportIntegrityResult(
+        version=REPORT_INTEGRITY_VERSION,
+        status="failed",
+        error_code="unsupported_citation_rate_exceeded",
+        warnings=["Citation support needs revision."],
+        claim_total=1, claim_with_citation=1, claim_without_citation=0,
+        claim_citation_coverage_rate=1.0, occurrence_total=1,
+        supported=0, weakly_supported=0, unsupported=1,
+        support_rate=0.0, strict_support_rate=0.0,
+    )
+    with (
+        patch("app.research.orchestrator.run_react_task", side_effect=fake_root_runner),
+        patch("app.research.orchestrator.assess_report_integrity", return_value=quality_failure),
+    ):
+        result = run_deep_research_v2(
+            db, root.run_id, r12_settings, FakeReActLLMClient([]),
+            branch_planner=lambda *_args, **_kwargs: {
+                "branches": [], "is_comprehensive": True,
+            },
+            report_generator=report_generator,
+        )
+
+    run = store.get_agent_run(db, root.run_id)
+    plan = json.loads(run.plan_json)
+    assert result["status"] == "incomplete"
+    assert run.status == "incomplete"
+    assert plan["terminal_decision"]["error_code"] == "unsupported_citation_rate_exceeded"
+    generation = plan["report_generation"]
+    decision = plan["terminal_decision"]
+    assert decision["report_revision_id"] == generation["report_revision_id"]
+    assert decision["report_sha256"] == generation["content_hash"]
+    assert decision["evidence_snapshot_id"] == generation["evidence_snapshot_id"]
+    assert decision["manifest_sha256"] == generation["manifest_sha256"]
+    assert decision["validation_identity"] == generation["validation_identity"]
+    assert resolve_research_scope(db, root.run_id).status == "incomplete"
+    assert report_block_reason(run) is None
+
+
 def test_legacy_planned_validator_exception_remains_warning_only(db):
     run = create_root(db)
     plan = {"execution_mode": "planned", "steps": []}
@@ -375,6 +442,23 @@ def test_legacy_planned_validator_exception_remains_warning_only(db):
         )
     assert validator.called
     assert "## 3. 最终回答" in markdown
+
+
+def test_legacy_planned_validator_budget_exhaustion_propagates(db):
+    from app.agent.budget import BudgetExceeded
+
+    run = create_root(db)
+    plan = {"execution_mode": "planned", "steps": []}
+    provenance = {
+        "passages": [{"passage_id": "p1", "text": "Verified evidence."}],
+        "citations": [{"citation_label": "CIT-001-01", "passage_id": "p1"}],
+    }
+    with patch(
+        "app.evidence.citation_validator.validate_citations",
+        side_effect=BudgetExceeded("citation validation budget exhausted"),
+    ):
+        with pytest.raises(BudgetExceeded):
+            generate_markdown_report(run, plan, [], [], provenance_bundle=provenance)
 
 
 def test_deep_v2_trust_and_citation_metrics_require_both_gates(db):
@@ -430,7 +514,9 @@ def test_deep_v2_trust_and_citation_metrics_require_both_gates(db):
     store.replace_agent_run_plan(db, run.run_id, plan)
     run = store.get_agent_run(db, run.run_id)
     integrity = result_integrity(run)
-    assert integrity["citation_evaluated"] is True
+    # A historical metrics row is not a validation identity for an adopted
+    # revision.  A5 requires the terminal/revision/manifest binding.
+    assert integrity["citation_evaluated"] is False
     assert integrity["quality_warnings"] == plan["report_integrity"]["warnings"]
     assert run.run_id in set(db.scalars(trusted_run_ids()))
     assert report_block_reason(run) is None

@@ -27,7 +27,7 @@ from app.evidence.models import (
 from app.evidence.reference_verifier import extract_cited_academic_references
 from app.evidence.scope_service import get_scope_provenance_bundle
 from app.evidence.service import materialize_execution_provenance
-from app.eval.fake_react_llm import FakeReActLLMClient
+from tests.support.fake_react_llm import FakeReActLLMClient
 from app.improvement.evaluator import auto_evaluate_and_log
 from app.reporting.integrity import assess_report_integrity
 from app.research.node_executor import ResearchNodeExecutor
@@ -106,7 +106,13 @@ def _set_academic_identity(db, run_id: str) -> None:
 def test_integrated_scope_result_governance_chain(db, r12_settings):
     """Exercise the mandatory Root + Child A/B/C R12.1 integration fixture."""
 
-    root = create_root(db, "Integrated research result governance fixture")
+    # This scope intentionally joins three distinct factual branches.  Keep
+    # those subjects in the user task so the production task-relevance gate
+    # can distinguish this integration fixture from unrelated demo bodies.
+    root = create_root(
+        db,
+        "Research the 2025 market size, Reuters 2025 context, and the Integrated Scope Study.",
+    )
     child_run_ids: dict[str, str] = {}
 
     def runner(session, run_id, settings, _client):

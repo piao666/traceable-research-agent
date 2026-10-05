@@ -178,6 +178,7 @@ class Settings(BaseModel):
     semantic_scholar_api_key: str | None = None
     citation_validation_enabled: bool = True   # Phase 7.5
     citation_validation_llm_enabled: bool = False  # Phase 7.5
+    citation_validation_multilingual_enabled: bool = True
     # ── Phase 8.1: source tier governance ────────────────────────
     default_retrieval_profile: str = "generic"
     oversample_factor: int = 2
@@ -202,6 +203,10 @@ class Settings(BaseModel):
     fetch_quality_min_score: float = Field(default=0.55, ge=0.0, le=1.0)
     url_canonicalization_enabled: bool = True
     content_dedup_enabled: bool = True
+    # Fake-IP DNS is accepted only when an operator explicitly names the
+    # loopback proxy used by httpx.  The default remains strict SSRF blocking.
+    ssrf_trusted_local_proxy_enabled: bool = False
+    ssrf_trusted_local_proxy_url: str | None = None
     # ── Phase 8.3: PDF reader ──────────────────────────────────────
     pdf_reader_enabled: bool = True
     pdf_reader_max_pages: int = 50
@@ -553,6 +558,7 @@ class Settings(BaseModel):
             semantic_scholar_api_key=_env_optional("SEMANTIC_SCHOLAR_API_KEY"),
             citation_validation_enabled=_env_bool("CITATION_VALIDATION_ENABLED", True),
             citation_validation_llm_enabled=_env_bool("CITATION_VALIDATION_LLM_ENABLED", False),
+            citation_validation_multilingual_enabled=_env_bool("CITATION_VALIDATION_MULTILINGUAL_ENABLED", True),
             # Phase 8.1
             default_retrieval_profile=_env_str("DEFAULT_RETRIEVAL_PROFILE", "generic"),
             oversample_factor=_env_bounded_int("OVERSAMPLE_FACTOR", 2, 1, 3),
@@ -577,6 +583,8 @@ class Settings(BaseModel):
             fetch_quality_min_score=_env_bounded_float("FETCH_QUALITY_MIN_SCORE", 0.55, 0.0, 1.0),
             url_canonicalization_enabled=_env_bool("URL_CANONICALIZATION_ENABLED", True),
             content_dedup_enabled=_env_bool("CONTENT_DEDUP_ENABLED", True),
+            ssrf_trusted_local_proxy_enabled=_env_bool("SSRF_TRUSTED_LOCAL_PROXY_ENABLED", False),
+            ssrf_trusted_local_proxy_url=_env_optional("SSRF_TRUSTED_LOCAL_PROXY_URL"),
             # Phase 8.3
             pdf_reader_enabled=_env_bool("PDF_READER_ENABLED", True),
             pdf_reader_max_pages=_env_bounded_int("PDF_READER_MAX_PAGES", 50, 1, 200),
@@ -718,6 +726,7 @@ class Settings(BaseModel):
             "semantic_scholar_configured": bool(self.semantic_scholar_api_key),
             "citation_validation_enabled": self.citation_validation_enabled,
             "citation_validation_llm_enabled": self.citation_validation_llm_enabled,
+            "citation_validation_multilingual_enabled": self.citation_validation_multilingual_enabled,
             # Phase 8.1
             "default_retrieval_profile": self.default_retrieval_profile,
             "oversample_factor": self.oversample_factor,
@@ -740,6 +749,8 @@ class Settings(BaseModel):
             "fetch_quality_min_score": self.fetch_quality_min_score,
             "url_canonicalization_enabled": self.url_canonicalization_enabled,
             "content_dedup_enabled": self.content_dedup_enabled,
+            "ssrf_trusted_local_proxy_enabled": self.ssrf_trusted_local_proxy_enabled,
+            "ssrf_trusted_local_proxy_configured": bool(self.ssrf_trusted_local_proxy_url),
             # Phase 8.3
             "pdf_reader_enabled": self.pdf_reader_enabled,
             "pdf_reader_max_pages": self.pdf_reader_max_pages,

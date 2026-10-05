@@ -11,6 +11,7 @@ from typing import Any
 CITATION_PATTERN = re.compile(r"CIT-\d{3}-\d{2}")
 _FENCE_PATTERN = re.compile(r"^\s*(?:```|~~~)")
 _HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+")
+_BOLD_HEADING_PATTERN = re.compile(r"(?:\*\*|__)[^\n.!?。！？]{1,100}(?:\*\*|__)")
 _LIST_PREFIX_PATTERN = re.compile(r"^\s*(?:[-+*]|\d+[.)、])\s+")
 _QUOTE_PREFIX_PATTERN = re.compile(r"^\s*>\s?")
 _PURE_URL_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
@@ -54,7 +55,10 @@ def segment_final_answer_claims(final_answer: str) -> list[FinalClaimSpan]:
 
         content_start = offset + len(line_body) - len(line_body.lstrip())
         content_end = offset + len(line_body)
-        is_heading = bool(_HEADING_PATTERN.match(line_body))
+        is_heading = bool(
+            _HEADING_PATTERN.match(line_body)
+            or _BOLD_HEADING_PATTERN.fullmatch(stripped)
+        )
         prefix = _LIST_PREFIX_PATTERN.match(line_body)
         if prefix:
             content_start = offset + prefix.end()
@@ -109,6 +113,30 @@ def normalize_claim_text(claim_text: str) -> str:
 
     normalized = unicodedata.normalize("NFKC", str(claim_text or "")).casefold()
     return " ".join(normalized.split())
+
+
+def is_evidence_limitation_statement(claim_text: str) -> bool:
+    """Recognize a narrow statement about missing evidence, not a world fact.
+
+    This may suppress a missing-citation warning for a self-describing evidence
+    limit; it never grants a citation or changes Scope/citation support gates.
+    """
+    text = normalize_claim_text(claim_text)
+    if re.search(r"\d", text):
+        return False
+    if re.fullmatch(
+        r"(?:关于[^。；;:：]{1,80}[,，])?(?:现有|当前|本次)证据(?:同样)?(?:只|仅)能支持有限结论[。.]?",
+        text,
+    ):
+        return True
+    if "以下仅就" in text and "说明" in text:
+        return True
+    if "不作进一步推断" in text and "证据" in text:
+        return True
+    return bool(
+        ("现有证据" in text or "当前证据" in text or "本次证据" in text)
+        and any(term in text for term in ("未提供", "缺少", "不足以", "内容片段有限"))
+    )
 
 
 def claim_span_for_offset(
@@ -254,5 +282,6 @@ __all__ = [
     "claim_span_for_citation_detail",
     "clean_claim_text",
     "normalize_claim_text",
+    "is_evidence_limitation_statement",
     "segment_final_answer_claims",
 ]

@@ -22,8 +22,8 @@ from app.research.node_executor import ResearchNodeExecutor
 class SerialPearExecutor:
     """Execute PEAR nodes in deterministic depth/priority order.
 
-    ``ResearchNodeExecutor`` remains the compatibility adapter for the legacy
-    ReAct runtime.  This class owns the PEAR scheduling boundary: it never
+    ``ResearchNodeExecutor`` invokes the shared governed ReAct tool loop.
+    This class owns the PEAR scheduling boundary: it never
     submits work to a pool and never starts a second node before the previous
     node has returned a terminal or waiting result.
     """
@@ -79,6 +79,7 @@ class SerialPearExecutor:
                 "waiting_human",
                 "waiting_human_plan",
                 "failed",
+                "incomplete",
                 "cancelled",
             }:
                 break

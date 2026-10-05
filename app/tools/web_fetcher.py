@@ -201,6 +201,8 @@ def _build_router(active: Settings, client: httpx.Client | None, cache: FetchCac
         trafilatura_enabled=active.web_fetcher_trafilatura_enabled,
         enabled=active.fetch_http_enabled,
         quality_min_score=active.fetch_quality_min_score,
+        ssrf_trusted_local_proxy_enabled=active.ssrf_trusted_local_proxy_enabled,
+        ssrf_trusted_local_proxy_url=active.ssrf_trusted_local_proxy_url,
     )
     browser_enabled = bool(active.fetch_browser_enabled or active.web_fetcher_playwright_enabled)
     remote_enabled = bool(active.fetch_remote_extract_enabled)

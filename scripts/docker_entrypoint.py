@@ -25,18 +25,20 @@ def main() -> None:
     else:
         print("[docker-entrypoint] DOCKER_INIT_DEMO_DATA=false; skipping demo init.", flush=True)
 
-    _run(
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "app.main:app",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "8000",
-        ]
-    )
+    server = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+    ]
+    print(f"[docker-entrypoint] running: {' '.join(server)}", flush=True)
+    # Replace PID 1 after one-time setup so Docker SIGTERM reaches Uvicorn
+    # directly and it can close requests and SQLite connections gracefully.
+    os.execv(sys.executable, server)
 
 
 if __name__ == "__main__":

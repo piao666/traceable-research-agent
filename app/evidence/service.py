@@ -33,7 +33,7 @@ from app.evidence.normalizers import (
     source_organization,
     source_provider,
 )
-from app.evidence.policy import classify_evidence_role, classify_source, evidence_role_supports_claim, load_source_policy
+from app.evidence.policy import classify_evidence_role, classify_source, current_documentation_channel, evidence_role_supports_claim, load_source_policy
 from app.evidence.reasoning_service import get_reasoning_bundle, materialize_reasoning
 from app.trace.models import AgentRun, ToolTrace
 
@@ -356,12 +356,20 @@ def _materialize_item(
                 "canonical_url",
                 "official",
                 "source_class",
-                "evidence_role",
             )
             if key in item.metadata
         },
     }
+    if item.tool_name == "file_reader":
+        metadata_doc.update({
+            "file_allowed_root": item.metadata.get("allowed_root"),
+            "file_docs_root": item.metadata.get("docs_root"),
+            "file_safe_path": item.metadata.get("safe_path") is True,
+            "file_approved_outside_allowed_roots": item.metadata.get("approved_outside_allowed_roots") is True,
+        })
     evidence_role = "unknown"
+    current_channel_verified = False
+    current_channel_policy_version = None
     try:
         evidence_policy = load_source_policy(_svc_settings.source_policy_path)
         evidence_role = classify_evidence_role(
@@ -370,16 +378,20 @@ def _materialize_item(
             item.metadata,
             evidence_policy,
         )
-        metadata_doc["evidence_role"] = evidence_role
         metadata_doc["source_class"] = classify_source(
             item.source_type,
             canonical_uri,
             item.metadata,
             evidence_policy,
         )
+        if item.tool_name == "web_fetcher" and metadata_doc["source_class"] == "official":
+            final_url = str(item.metadata.get("final_url") or "")
+            final_current, _ = current_documentation_channel(final_url, evidence_policy)
+            canonical_current, _ = current_documentation_channel(canonical_uri, evidence_policy)
+            current_channel_verified = final_current and canonical_current
+            current_channel_policy_version = evidence_policy.version
     except Exception:
         metadata_doc["source_class"] = "unknown"
-        metadata_doc["evidence_role"] = evidence_role
 
     document = SourceDocument(
         document_id=document_id,
@@ -428,6 +440,8 @@ def _materialize_item(
                     if key in item.metadata
                 },
                 "evidence_role": evidence_role,
+                "current_channel_verified": current_channel_verified,
+                "current_channel_policy_version": current_channel_policy_version,
             }
         ),
     )

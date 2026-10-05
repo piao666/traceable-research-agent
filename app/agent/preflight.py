@@ -76,6 +76,10 @@ def check_plan_readiness(
 ) -> dict[str, Any]:
     blockers: list[dict[str, str]] = []
     warnings: list[str] = []
+    from app.agent.plan_guardrails import validate_plan_for_execution
+    for issue in validate_plan_for_execution(plan, plan.get("task_contract"), plan.get("allowed_tools")):
+        blockers.append({"code": "invalid_plan", "capability": issue.tool_name or "plan",
+                         "environment_variable": issue.field, "message": issue.message})
     roles = role_availability or RoleAvailability(
         actor=llm_available,
         synthesizer=llm_available,
@@ -170,7 +174,19 @@ def enforce_execution_readiness(
         from app.agent.research_goal import build_task_contract
         plan["task_contract"] = build_task_contract(run.task, run.created_at)
     bind_run_policy(run, plan)
-    checked_plan = {**plan, "steps": [{"tool_name": decision_tool}], "required_tools": []} if decision_tool else plan
+    if decision_tool:
+        # A ReAct decision is an additional *capability* to admit, not a
+        # replacement plan step.  Replacing ``steps`` here used to discard the
+        # persisted step number and arguments, so the final-plan validator
+        # quite correctly rejected the synthetic, malformed step before any
+        # governed operation could run.  Keep the persisted plan intact and
+        # add the selected decision to the capability check.
+        required_tools = list(plan.get("required_tools") or [])
+        if decision_tool not in required_tools:
+            required_tools.append(decision_tool)
+        checked_plan = {**plan, "required_tools": required_tools}
+    else:
+        checked_plan = plan
     result = check_plan_readiness(
         checked_plan,
         settings,

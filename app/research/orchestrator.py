@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
-from app.agent.budget import BudgetExceeded, budget_client, budgeted_execution, current_budget
+from app.agent.budget import BudgetExceeded, FinalizationRequired, budget_client, budgeted_execution, current_budget
 from app.agent.executor import (
     _after_run_completed,
     _persist_citation_validation,
@@ -16,13 +16,14 @@ from app.agent.executor import (
 )
 from app.agent.outcome import fail_execution, finalize_terminal_decision, load_observations, report_subject
 from app.agent.react_executor import _summary, run_react_task
-from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
+from app.agent.report_generation import ReportGenerationAudit, check_report_generation_not_cancelled, resolve_report_llm_client
 from app.agent.reporter import generate_markdown_report, save_report
 from app.config import Settings, settings as _settings
 from app.evidence.citation_validator import (
     extract_final_answer_section,
     materialize_final_report_occurrences,
     validate_scope_citations,
+    validator_version_for,
 )
 from app.evidence.scope_service import get_scope_provenance_bundle
 from app.evidence.reference_verifier import (
@@ -42,7 +43,7 @@ from app.research.assessor import (
 from app.research.models import ResearchNode
 from app.research.node_executor import ResearchNodeExecutor
 from app.research.branch_executor import SerialPearExecutor
-from app.research.outcome import assess_scope_outcome
+from app.research.outcome import assess_scope_outcome, can_write_partial_report
 from app.research.scope import (
     create_research_node,
     create_research_scope,
@@ -70,6 +71,60 @@ from app.trace.logger import record_phase_event, record_trace_event
 
 BranchPlanner = Callable[..., dict[str, Any]]
 ReportGenerator = Callable[..., str]
+
+
+def _branch_has_budget(runtime: Any, settings_obj: Settings) -> bool:
+    """Reserve an entire bounded PEAR child before admitting it.
+
+    Existing usage provides a conservative, run-local prompt-size estimate.
+    The atomic budget remains authoritative for every actual provider call.
+    """
+
+    # react_executor caps PEAR children at seven decisions. One extra call
+    # covers a final handoff without reserving the unbounded generic ReAct
+    # allowance, which previously prevented every planned child from starting.
+    calls = 8
+    snapshot = runtime.snapshot()
+    average_tokens = max(
+        1024,
+        (int(snapshot["accounted_tokens"]) + max(1, int(snapshot["llm_calls"])) - 1)
+        // max(1, int(snapshot["llm_calls"])),
+    )
+    return runtime.can_deepen(
+        required_llm_calls=calls,
+        required_tokens=calls * average_tokens,
+    )
+
+
+def _explicit_scope_covered(db: Session, scope: Any, plan: dict[str, Any]) -> bool:
+    """Stop optional research only after every required node has eligible body evidence.
+
+    This is a scheduling decision, not a substitute for the later Scope,
+    citation, or report-integrity gates.
+    """
+    contract = plan.get("task_contract") or {}
+    if not (contract.get("evidence_scope_requirements") or contract.get("requirements")
+            or contract.get("evidence_requirement") == "substantive"):
+        return False
+    required_nodes = [
+        node for node in list_scope_nodes(db, scope.scope_id)
+        if _json_object(node.metadata_json).get("required", True)
+    ]
+    if not required_nodes or any(node.status != "completed" for node in required_nodes):
+        return False
+    from app.agent.evidence_requirements import assess_required_evidence
+
+    bundle = get_scope_provenance_bundle(db, scope)
+    assessment = assess_required_evidence(contract, bundle)
+    if not assessment.passed:
+        return False
+    eligible = set(assessment.eligible_passage_ids)
+    runs_with_body = {
+        str(passage.get("origin_run_id") or "")
+        for passage in bundle.get("passages") or []
+        if passage.get("passage_id") in eligible
+    }
+    return all(node.run_id in runs_with_body for node in required_nodes)
 
 
 def _run_pear_react_adapter(
@@ -228,6 +283,13 @@ def run_deep_research_v2(
         for node in serial_executor.order(nodes):
             if node.parent_node_id is None or node.status not in {"pending", "running"}:
                 continue
+            if (
+                node.status == "pending"
+                and not _json_object(node.metadata_json).get("required", True)
+                and _explicit_scope_covered(db, scope, plan)
+            ):
+                update_node_metadata(db, node, deferred_reason="explicit_scope_covered")
+                continue
             if store.is_agent_run_cancelled(db, run_id):
                 update_scope_status(db, scope.scope_id, "cancelled")
                 cancelled = store.get_fresh_agent_run(db, run_id)
@@ -235,7 +297,7 @@ def run_deep_research_v2(
             runtime = current_budget()
             if runtime is not None:
                 try:
-                    if not runtime.can_deepen():
+                    if not _branch_has_budget(runtime, settings_obj):
                         finalization_limited = True
                         break
                 except BudgetExceeded:
@@ -277,6 +339,19 @@ def run_deep_research_v2(
     while frontier:
         if finalization_limited:
             break
+        # An explicit multi-topic contract can be satisfied by the first
+        # complete frontier. Do not recursively generate more required work
+        # after every topic already has trace-backed body evidence. The
+        # report/citation gates still decide whether those bodies support the
+        # final claims; this only bounds redundant research branching.
+        if frontier[0].depth > 0 and _explicit_scope_covered(db, scope, plan):
+            for node in frontier:
+                update_node_metadata(db, node, branch_planning_status="completed")
+            record_phase_event(
+                db, run_id, "branch_planning", "success",
+                details={"reason": "explicit_scope_covered", "branch_count": 0},
+            )
+            break
         parent_node = frontier.popleft()
         planning_status = _json_object(parent_node.metadata_json).get(
             "branch_planning_status", "pending"
@@ -314,6 +389,14 @@ def run_deep_research_v2(
                 depth=parent_node.depth + 1,
                 contract=plan.get("task_contract"),
             )
+        except FinalizationRequired:
+            finalization_limited = True
+            record_phase_event(
+                db, run_id, "branch_planning", "warning",
+                parent_trace_id=planning_trace.trace_id,
+                error_message="Research reached the protected final-report budget.",
+            )
+            break
         except BudgetExceeded:
             update_scope_status(db, scope.scope_id, "failed")
             record_phase_event(
@@ -436,16 +519,8 @@ def run_deep_research_v2(
             update_node_metadata(db, parent_node, branch_planning_status="completed")
             record_phase_event(db, run_id, "branch_planning", "success", parent_trace_id=planning_trace.trace_id, details={"branch_count": 0, "is_comprehensive": True})
             continue
+        scheduled_nodes = []
         for branch in branches:
-            runtime = current_budget()
-            if runtime is not None:
-                try:
-                    if not runtime.can_deepen():
-                        finalization_limited = True
-                        break
-                except BudgetExceeded:
-                    update_scope_status(db, scope.scope_id, "failed")
-                    raise
             node = create_research_node(
                 db,
                 scope.scope_id,
@@ -457,9 +532,40 @@ def run_deep_research_v2(
                 research_goal=branch["research_goal"],
                 depth=parent_node.depth + 1,
                 priority=branch["priority"],
-                metadata={"required": branch.get("required", True)},
+                metadata={
+                    "required": branch.get("required", True),
+                    **({"assigned_requirement_ids": branch["assigned_requirement_ids"]}
+                       if "assigned_requirement_ids" in branch else {}),
+                },
             )
             prior_queries.append(node.query)
+            scheduled_nodes.append((branch, node))
+        # Persist the whole frontier before spending budget. An unexecuted
+        # required branch remains pending and therefore cannot be silently
+        # treated as a comprehensive, passed Scope.
+        update_node_metadata(db, parent_node, branch_planning_status="completed")
+        deferred_optional = 0
+        # Required obligations must be admitted before optional exploration,
+        # independently of the model's JSON array order.
+        scheduled_nodes.sort(key=lambda item: (
+            not item[0].get("required", True), item[1].priority,
+        ))
+        for branch, node in scheduled_nodes:
+            if not branch.get("required", True) and _explicit_scope_covered(db, scope, plan):
+                # Keep the planned node pending for audit; a deferred optional
+                # branch must never be rewritten as successfully researched.
+                update_node_metadata(db, node, deferred_reason="explicit_scope_covered")
+                deferred_optional += 1
+                continue
+            runtime = current_budget()
+            if runtime is not None:
+                try:
+                    if not _branch_has_budget(runtime, settings_obj):
+                        finalization_limited = True
+                        break
+                except BudgetExceeded:
+                    update_scope_status(db, scope.scope_id, "failed")
+                    raise
             try:
                 result = serial_executor.execute_one(
                     db, scope, node, settings_obj, actor_client
@@ -478,8 +584,7 @@ def run_deep_research_v2(
             if child_state.get("finish_reason") == "finalization_reserve_handoff":
                 finalization_limited = True
                 break
-        update_node_metadata(db, parent_node, branch_planning_status="completed")
-        record_phase_event(db, run_id, "branch_planning", "success", parent_trace_id=planning_trace.trace_id, details={"branch_count": len(branches)})
+        record_phase_event(db, run_id, "branch_planning", "success", parent_trace_id=planning_trace.trace_id, details={"branch_count": len(branches), "deferred_optional_count": deferred_optional})
         if orchestration_incomplete:
             break
         if finalization_limited:
@@ -577,14 +682,30 @@ def run_deep_research_v2(
         outcome,
         error_message=outcome["message"] if outcome["status"] == "failed" else None,
     )
-    if outcome["status"] != "passed":
+    partial_report = can_write_partial_report(outcome)
+    if partial_report:
+        outcome["warnings"] = list(outcome.get("warnings") or []) + [
+            "部分报告：下列研究要求尚未完成，不得用已取得材料推断缺失结论："
+            + ", ".join(outcome.get("errors") or []),
+        ]
+        plan["research_outcome"] = outcome
+        store.replace_agent_run_plan(db, run_id, plan)
+    if outcome["status"] != "passed" and not partial_report:
         update_scope_status(db, scope.scope_id, "failed")
         failed_root = store.get_fresh_agent_run(db, run_id)
         finalize_terminal_decision(
             db, failed_root, plan,
             traces=list_scope_traces(db, scope.scope_id),
             scope_outcome=outcome,
-            force_failure=outcome.get("error_code") or "scope_outcome_failed",
+            # An empty, non-comprehensive research frontier has an auditable
+            # diagnosis but is a recoverable evidence gap, not an execution
+            # crash. Keep the scope outcome/errors while allowing the shared
+            # terminal arbiter to classify this path as incomplete.
+            force_failure=(
+                None
+                if outcome.get("error_code") == "no_usable_evidence"
+                else outcome.get("error_code") or "scope_outcome_failed"
+            ),
         )
         failed_root = store.get_fresh_agent_run(db, run_id)
         return _summary(failed_root, _json_object(failed_root.plan_json), outcome["message"])
@@ -592,9 +713,12 @@ def run_deep_research_v2(
     traces = list_scope_traces(db, scope.scope_id)
     observations = load_observations(traces)
     report_client = resolve_report_llm_client(settings_obj, report_llm_client)
-    report_responses: list[Any] = []
+    report_audit = ReportGenerationAudit(db, run_id, traces)
+    report_responses = report_audit.responses
     citation_reports: list[Any] = []
     reference_reports: list[Any] = []
+    occurrence_preview: dict[str, list[dict[str, Any]]] | None = None
+    audit_report_path: str | None = None
     try:
         report_phase_trace = record_phase_event(db, run_id, "report_generation", "started")
         markdown = report_generator(
@@ -605,9 +729,11 @@ def run_deep_research_v2(
             llm_client=report_client,
             provenance_bundle=scope_evidence,
             report_type=root.report_type,
-            usage_callback=report_responses.append,
+            usage_callback=report_audit.usage_callback,
             citation_validation_callback=citation_reports.append,
             reference_verification_callback=reference_reports.append,
+            revision_attempt_callback=report_audit.persist_attempt,
+            cancellation_check=lambda: check_report_generation_not_cancelled(db, run_id),
         )
     except BudgetExceeded:
         update_scope_status(db, scope.scope_id, "failed")
@@ -618,8 +744,6 @@ def run_deep_research_v2(
         record_phase_event(db, run_id, "report_generation", "failed", parent_trace_id=locals().get("report_phase_trace").trace_id if locals().get("report_phase_trace") else None, details={"error_type": type(exc).__name__}, error_message="Report generation failed.")
         return _summary(fail_execution(db, run_id, exc), plan)
     record_phase_event(db, run_id, "report_generation", "success", parent_trace_id=report_phase_trace.trace_id)
-    if report_responses:
-        record_report_synthesis_trace(db, run_id, traces, report_responses[-1], success=True)
     expected_report_path = f"workspace/reports/{run_id}.md"
     try:
         citation_validation = (
@@ -722,6 +846,13 @@ def run_deep_research_v2(
                 reference_reports = [reference_report]
                 deterministic_fallback_used = True
         plan.setdefault("report_diagnostics", {})
+        if report_audit.attempts:
+            plan["report_revision_attempts"] = report_audit.attempts
+        plan["report_generation"] = {
+            **report_audit.manifest(),
+            "adopted": bool((plan.get("report_draft_result") or {}).get("adopted")),
+            "validator_version": validator_version_for(citation_validation),
+        }
         plan["report_diagnostics"].update(
             {
                 "repair_attempted": repair_attempted,
@@ -746,6 +877,11 @@ def run_deep_research_v2(
             occurrence_preview=occurrence_preview,
         )
     except Exception:
+        # A validator failure is a quality failure, not a reason to discard
+        # the generated bytes.  Retain the draft immediately as a local audit
+        # artifact before continuing through the failed terminal path.
+        audit_report_path = save_report(run_id, markdown)
+        store.update_agent_run_report(db, run_id, audit_report_path)
         citation_validation = None
         report_integrity = ReportIntegrityResult(
             version=REPORT_INTEGRITY_VERSION,
@@ -784,23 +920,105 @@ def run_deep_research_v2(
     root_traces = store.list_tool_traces(db, run_id)
     _persist_reference_verification(db, run_id, reference_reports, root_traces)
     plan = _persist_report_integrity(db, run_id, report_integrity)
-    report_path = save_report(run_id, markdown)
-    store.update_agent_run_report(db, run_id, report_path)
+    report_path = audit_report_path or save_report(run_id, markdown)
+    root = store.update_agent_run_report(db, run_id, report_path)
+    # The bytes saved for download are the only revision permitted to inform a
+    # terminal decision.  Re-materialize after all controlled warnings/indexes
+    # are rendered; never mutate the file after this identity is recorded.
+    revision_bundle = None
+    if citation_validation is not None:
+        revision_bundle = materialize_final_report_occurrences(
+            db, root_run_id=run_id, scope_id=scope.scope_id, markdown=markdown,
+            provenance_bundle=scope_evidence, report_path=report_path,
+            validation_report=citation_validation, occurrence_preview=occurrence_preview,
+        )
+    plan = _json_object((store.get_fresh_agent_run(db, run_id) or root).plan_json)
+    report_generation = dict(plan.get("report_generation") or {})
+    if revision_bundle is not None:
+        revision = revision_bundle["report_revision"]
+        # Preserve the pre-adoption audit manifest as a value.  Referencing
+        # ``report_generation`` itself and then updating that dictionary would
+        # create a recursive plan object that SQLite JSON persistence rejects.
+        attempt_manifest = dict(report_generation)
+        validation_payload = (
+            citation_validation.to_dict()
+            if hasattr(citation_validation, "to_dict") else {}
+        )
+        writing_manifest_hash = (
+            report_generation.get("manifest_sha256")
+            or report_generation.get("manifest_hash")
+        )
+        evidence_snapshot_id = __import__("hashlib").sha256(
+            json.dumps(scope_evidence, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        validator_version = validator_version_for(citation_validation)
+        manifest_payload = {
+            "version": "report-generation-v1",
+            "report_revision_id": revision["report_revision_id"],
+            "content_hash": revision["content_hash"],
+            "final_answer_hash": revision["final_answer_hash"],
+            "integrity": report_integrity.to_plan_dict(),
+            "validation": validation_payload,
+            "attempt_manifest": attempt_manifest,
+        }
+        manifest_sha256 = __import__("hashlib").sha256(
+            json.dumps(manifest_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        report_generation.update({
+            **manifest_payload,
+            "manifest_sha256": manifest_sha256,
+            "report_revision_id": revision["report_revision_id"],
+            "content_hash": revision["content_hash"],
+            "report_sha256": revision["content_hash"],
+            "evidence_snapshot_id": evidence_snapshot_id,
+            "writing_manifest_hash": writing_manifest_hash,
+            "validator_version": validator_version,
+            "validation_identity": __import__("hashlib").sha256(
+                json.dumps({"content_hash": revision["content_hash"], "evidence_snapshot_id": evidence_snapshot_id,
+                            "writing_manifest_hash": writing_manifest_hash, "validator_version": validator_version,
+                            "validation": validation_payload}, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest(),
+            # Persisting a readable audit report is not the same as adopting
+            # the writer's final-answer revision for a completed result.
+            "adopted": bool(
+                deterministic_fallback_used
+                or not isinstance(plan.get("report_draft_result"), dict)
+                or plan["report_draft_result"].get("adopted")
+            ),
+        })
+    plan["report_generation"] = report_generation
+    store.replace_agent_run_plan(db, run_id, plan)
     if report_integrity.status == "failed":
         message = (
             "Report integrity gate failed: "
             f"{report_integrity.error_code}. The report is retained only as an audit artifact."
         )
-        update_scope_status(db, scope.scope_id, "failed")
         failed_root = store.get_fresh_agent_run(db, run_id)
         decision = finalize_terminal_decision(
             db, failed_root, plan,
             traces=store.list_tool_traces(db, run_id),
             report_integrity=report_integrity.to_plan_dict(),
             scope_outcome=outcome,
-            force_failure="report_integrity_failed",
+            # Citation/evidence quality gaps are recoverable and must remain
+            # incomplete.  A validator execution failure has no trustworthy
+            # quality result and remains a hard failure.
+            force_failure=(
+                "citation_validation_failed"
+                if report_integrity.error_code == "citation_validation_failed"
+                else None
+            ),
         )
         failed_root = store.get_fresh_agent_run(db, run_id)
+        # Failed validation retains the already saved report as a local audit
+        # artifact.  A terminal transition must never erase that pointer.
+        if failed_root is not None and failed_root.report_path != report_path:
+            failed_root = store.update_agent_run_report(db, run_id, report_path)
+        decision_status = str(decision.get("status") or "failed")
+        update_scope_status(
+            db,
+            scope.scope_id,
+            decision_status if decision_status in {"failed", "incomplete"} else "failed",
+        )
         return _summary(failed_root, _json_object(failed_root.plan_json), message)
 
     root = store.get_fresh_agent_run(db, run_id)

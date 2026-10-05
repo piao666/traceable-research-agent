@@ -123,12 +123,15 @@ it("connects empty research validation to and focuses the input", async () => {
   expect(input).toHaveAttribute("aria-describedby", "research-error research-help");
 });
 it("does not crash or promise saved drafts when browser storage is denied", async () => {
-  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new DOMException("denied"); });
-  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("denied"); });
-  vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => { throw new DOMException("denied"); });
+  vi.stubGlobal("sessionStorage", {
+    getItem() { throw new DOMException("denied"); },
+    setItem() { throw new DOMException("denied"); },
+    removeItem() { throw new DOMException("denied"); },
+  });
   expect(readDraft("a")).toBe(""); expect(saveDraft("a", "b")).toBe(false); expect(() => removeDraft("a")).not.toThrow();
   show(<NewResearchPage />); await screen.findByText(/浏览器存储不可用/);
   expect(screen.getByRole("button", { name: "创建并审阅计划" })).toBeEnabled();
+  vi.unstubAllGlobals();
 });
 it("loads only concise capabilities while preserving the research question", async () => {
   show(<NewResearchPage />); fireEvent.change(screen.getByRole("textbox", { name: /研究问题或目标/ }), { target: { value: "保留问题" } });

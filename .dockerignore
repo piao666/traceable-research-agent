@@ -18,6 +18,7 @@ venv
 __pycache__
 **/__pycache__
 .pytest_cache
+**/.pytest_cache
 workspace/*.sqlite
 workspace/*.db
 workspace/reports
@@ -28,6 +29,8 @@ workspace/tmp
 workspace/eval_outputs
 output
 tmp
+.tmp_*
+**/.tmp_*
 .playwright-cli
 .env
 .env.*

@@ -4,7 +4,9 @@ from pathlib import Path
 import re
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from scripts import docker_entrypoint
 from scripts.requirements_manifest import read_pinned_requirements
 from scripts.smoke_docker_config import main as smoke_docker_config
 
@@ -13,6 +15,20 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DockerDependencyTests(unittest.TestCase):
+    def test_entrypoint_execs_server_after_one_time_setup(self) -> None:
+        with (
+            patch.dict("os.environ", {"DOCKER_INIT_DEMO_DATA": "true"}),
+            patch.object(docker_entrypoint, "_run") as setup,
+            patch.object(docker_entrypoint.os, "execv") as execv,
+        ):
+            docker_entrypoint.main()
+        self.assertEqual(setup.call_count, 2)
+        self.assertEqual(setup.call_args_list[0].args[0][1], "scripts/migrate_database.py")
+        self.assertEqual(setup.call_args_list[1].args[0][1], "scripts/init_demo_db.py")
+        executable, command = execv.call_args.args
+        self.assertEqual(executable, command[0])
+        self.assertEqual(command[1:4], ["-m", "uvicorn", "app.main:app"])
+
     def test_full_environment_preserves_existing_direct_pins(self) -> None:
         self.assertEqual(read_pinned_requirements(ROOT / "requirements.txt"), {
             "alembic": "1.18.5", "beautifulsoup4": "4.13.4", "fastapi": "0.139.2",

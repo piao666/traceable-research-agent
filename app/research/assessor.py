@@ -27,7 +27,7 @@ from app.research.models import (
 )
 
 
-ASSESSOR_VERSION = "pear-assessor-v1"
+ASSESSOR_VERSION = "pear-assessor-v2"
 
 
 def _scoped_contract_id(prefix: str, revision_id: str, source_id: str, limit: int = 160) -> str:
@@ -297,7 +297,11 @@ def assess_requirements(
     for requirement in normalized:
         requirement_id = str(requirement["requirement_id"])
         links = _links_for(contract, requirement_id)
-        if requirement_id in comparison_rows:
+        if requirement.get("predicate") == "invalid_requirement":
+            # Malformed obligations cannot be fulfilled by attaching an
+            # otherwise valid source or by passing the comparison matrix.
+            status, missing, details = "blocked", ["invalid_requirement"], {}
+        elif requirement_id in comparison_rows:
             legacy = comparison_rows[requirement_id]
             status = "satisfied" if legacy.get("status") == "covered" else str(legacy.get("status") or "uncovered")
             missing = [] if status == "satisfied" else ["missing_evidence"]

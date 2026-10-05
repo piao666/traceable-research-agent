@@ -1,5 +1,22 @@
 # Traceable Research Agent
 
+## Runtime consolidation checkpoint
+
+New task execution now selects one controller: Quick uses the sequential
+planned executor; Deep uses the PEAR Scope controller. An `auto` plan whose
+execution route is ReAct uses PEAR; other `auto` plans stay planned. A failed or
+incomplete result does not trigger a second engine. Deep requires both
+`DEEP_RESEARCH_ENABLED` and `REACT_ENABLED`; disabling either fails explicitly.
+The old parallel/percentage-rollout/adaptive-fallback dispatcher paths are
+retired. Their configuration fields are retained temporarily for configuration
+compatibility and no longer select a task executor.
+
+Root and child runs still share the configured hard budget. Report generation
+reserves up to 16 model calls (at most one third of the configured call limit)
+for drafting and batched citation validation; this does not increase the total
+limit. This consolidation is an engineering checkpoint, not acceptance of all
+real research tasks. Historical data and report verification remain intact.
+
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](#quick-start)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](#quick-start)
 
@@ -29,9 +46,9 @@ one final report from the complete Scope; node completion no longer writes an
 intermediate report that omits sibling evidence. Standard and Offline profiles
 continue to use their existing executors.
 
-The legacy `app.agent.deepening.run_deepening` symbol remains for one
-compatibility release as a deprecation-warning adapter to Engine V2; the
-Dispatcher no longer calls the legacy round engine. Research intelligence,
+The legacy deepening round engine, its deprecated adapter, and the alternate
+parallel planned executor have been removed. New tasks enter the canonical
+dispatcher; historical Run readers and lineage migrations remain. Research intelligence,
 coverage/gap policy and hierarchical long-report composition remain R13/R14.
 
 ### Scope-first research result governance (R12.1)
@@ -245,6 +262,13 @@ explicit R10 `POST /api/runtime/preflight` does.
   Trace but are not sources. Search snippets and fetched page text are distinct.
   Citation checks evaluate answer text, not the citation index; no citations means
   not evaluated, never 100%. Citation IDs are never repaired by numeric proximity.
+- An explicit request for *current official documentation* uses the configured
+  current channel in `config/evidence_policy.v3.json`. Matching older,
+  localized, development, or release-page siblings are deferred when a current
+  candidate is available. A fetched source counts only when its actual final
+  URL and canonical URL both verify that channel; an official hostname, search
+  date, or canonical hint alone does not prove currentness. A missing verified
+  current body leaves an auditable incomplete result rather than a stale citation.
 - Failed/cancelled runs can be fully retried as a new Run with current configuration
   and fresh approvals. Cancellation cannot be overwritten by late completion.
 - Old reports and traces are retained and labelled for review. Legacy quality

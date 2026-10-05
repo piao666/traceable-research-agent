@@ -205,6 +205,7 @@ class SourcePolicy:
     tier_hints: TierHintTable = field(default_factory=TierHintTable)
     retrieval_profiles: dict[str, RetrievalProfile] = field(default_factory=dict)
     research_profiles: dict[str, ResearchProfile] = field(default_factory=dict)
+    current_documentation_channels: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -319,6 +320,25 @@ def load_source_policy(path: str | Path) -> SourcePolicy:
             minimum_evidence_gain=max(0.0, float(pdata.get("minimum_evidence_gain", 0.05))),
         )
 
+    current_channels: dict[str, dict[str, str]] = {}
+    for domain, rule in (raw.get("current_documentation_channels") or {}).items():
+        if not isinstance(rule, dict):
+            raise ValueError(f"Invalid current documentation channel: {domain}")
+        prefix = str(rule.get("current_path_prefix") or "")
+        sibling_pattern = str(rule.get("sibling_path_pattern") or "")
+        if not prefix.startswith("/") or not prefix.endswith("/") or not sibling_pattern.startswith("^/"):
+            raise ValueError(f"Invalid current documentation channel: {domain}")
+        try:
+            compiled = re.compile(sibling_pattern)
+        except re.error as exc:
+            raise ValueError(f"Invalid current documentation channel: {domain}") from exc
+        if compiled.groups != 0:
+            raise ValueError(f"Invalid current documentation channel: {domain}")
+        current_channels[str(domain).casefold()] = {
+            "current_path_prefix": prefix,
+            "sibling_path_pattern": sibling_pattern,
+        }
+
     return SourcePolicy(
         version=version,
         weights=weights,
@@ -330,7 +350,30 @@ def load_source_policy(path: str | Path) -> SourcePolicy:
         tier_hints=tier_hints,
         retrieval_profiles=retrieval_profiles,
         research_profiles=research_profiles,
+        current_documentation_channels=current_channels,
     )
+
+
+def current_documentation_channel(
+    uri: str, policy: SourcePolicy,
+) -> tuple[bool, tuple[str, str] | None]:
+    """Classify a configured stable docs URL and its version/locale siblings.
+
+    The configured hostname must match exactly. Search dates and model labels
+    are not authority for a current channel; the fetched final URL is checked
+    again when a source snapshot is materialized.
+    """
+    parsed = urlsplit(uri)
+    hostname = (parsed.hostname or "").casefold()
+    rule = policy.current_documentation_channels.get(hostname)
+    if parsed.scheme != "https" or not rule or classify_source("web", uri, {}, policy) != "official":
+        return False, None
+    match = re.match(rule["sibling_path_pattern"], parsed.path)
+    if not match:
+        return False, None
+    sibling = (hostname, parsed.path[match.end():].casefold().rstrip("/"))
+    current = parsed.path.startswith(rule["current_path_prefix"])
+    return current, sibling
 
 
 # ── Claim classification ────────────────────────────────────────────────

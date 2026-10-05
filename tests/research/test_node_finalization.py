@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.agent.react_executor import _complete_report
+from app.agent.react_executor import _branch_evidence_goal_met_at_limit, _complete_report
 from app.agent.budget import BudgetRuntime, FinalizationRequired, budget_snapshot, ensure_budget
 from app.research.scope import create_research_scope
 from app.trace import store
@@ -57,6 +57,38 @@ def test_child_node_finalization_completes_child_run(db, r12_settings):
     assert result["status"] == "completed"
 
 
+def test_child_limit_can_complete_only_with_task_eligible_body(db, r12_settings):
+    root = create_root(db)
+    scope = create_research_scope(db, root.run_id, {})
+    child = store.create_agent_run(
+        db, "Jev Agent routing", "summary", "real",
+        parent_run_id=root.run_id, root_run_id=root.run_id,
+        run_role="research_branch", research_scope_id=scope.scope_id,
+        engine_version="v2",
+    )
+    plan = {
+        "defer_to_research_scope": True, "run_role": "research_branch",
+        "task_contract": {
+            "original_task": "Jev Agent routing", "evidence_requirement": "substantive",
+            "evidence_scope_requirements": [{
+                "requirement_id": "jev_agent_impact", "entity": "Jev",
+                "dimension": "Agent 影响", "match_mode": "all_components",
+            }],
+        },
+    }
+    add_web_trace(db, child.run_id, "Jev routes Agent requests with calibrated decisions.", "jev")
+    assert _branch_evidence_goal_met_at_limit(db, child.run_id, plan, r12_settings)
+
+    unrelated = store.create_agent_run(
+        db, "Jev Agent routing", "summary", "real",
+        parent_run_id=root.run_id, root_run_id=root.run_id,
+        run_role="research_branch", research_scope_id=scope.scope_id,
+        engine_version="v2",
+    )
+    add_web_trace(db, unrelated.run_id, "Accounting ledger tables list quarterly revenue.", "accounting")
+    assert not _branch_evidence_goal_met_at_limit(db, unrelated.run_id, plan, r12_settings)
+
+
 def test_child_finalization_boundary_does_not_poison_root_budget(db, r12_settings):
     root = create_root(db)
     child = store.create_agent_run(
@@ -75,5 +107,7 @@ def test_child_finalization_boundary_does_not_poison_root_budget(db, r12_setting
     ensure_budget(db, root.run_id, tight)
     ensure_budget(db, child.run_id, tight, parent_run_id=root.run_id)
     runtime = BudgetRuntime(db, child.run_id, tight)
-    runtime.reserve(llm=1, tokens=91)
+    runtime.reserve(llm=1, tokens=70)
+    with pytest.raises(FinalizationRequired):
+        runtime.reserve(llm=1, tokens=1)
     assert budget_snapshot(db, root.run_id)["stop_reason"] is None

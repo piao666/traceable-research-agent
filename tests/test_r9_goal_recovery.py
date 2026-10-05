@@ -16,20 +16,26 @@ class GoalRecoveryTests(unittest.TestCase):
     setUp = recovery.RecoveryTests.setUp
     skill_plan = recovery.RecoveryTests.skill_plan
     run_script = recovery.RecoveryTests.run_script
+    assert_unvalidated_fixture_is_incomplete = recovery.RecoveryTests.assert_unvalidated_fixture_is_incomplete
 
     def test_unavailable_finish_cannot_be_completed_with_nonempty_evidence(self):
         stop = decision("finish", summary="Task cannot be completed with current capabilities.")
         stop["finish_reason"] = "tool_unavailable"
         run, result, _, _ = self.run_script([
             decision("tavily_search", query="data"), decision("web_fetcher", urls=[URL]), stop])
-        self.assertEqual(result["status"], "failed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         self.assertIsNone(run.report_path)
-        self.assertEqual(json.loads(run.plan_json)["research_outcome"]["error_code"], "goal_not_met")
+        # The explicit unavailable finish is retained in the trace, while the
+        # terminal evidence gate reports the more actionable retryable blocker.
+        self.assertEqual(
+            json.loads(run.plan_json)["research_outcome"]["error_code"],
+            "required_evidence_coverage_incomplete",
+        )
 
     def test_empty_dataset_summary_cannot_override_completion_status(self):
         run, result, _, _ = self.run_script([decision("web_fetcher", urls=[URL]),
             decision("finish", summary="No suitable dataset was found.", goal_status="achieved")])
-        self.assertEqual(result["status"], "failed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         self.assertIsNone(run.report_path)
 
     def test_child_plan_missing_steps_is_readable_without_rewriting(self):
@@ -125,7 +131,13 @@ class GoalRecoveryTests(unittest.TestCase):
             self.assertIn("ENDING", result.output["source_content"]["text"])
             self.assertEqual(result.output["source_content"]["origin_trace_id"], origin.trace_id)
             reread = record_trace_event(self.db, run.run_id, 2, "web_fetcher", "success", {}, "reread", result.output)
-            self.assertEqual(build_evidence_bundle(run, {}, [], [origin, reread]).total_evidence_items, 1)
+            original_items = build_evidence_bundle(run, {}, [], [origin]).evidence_items
+            reread_items = build_evidence_bundle(run, {}, [], [origin, reread]).evidence_items
+            self.assertGreater(len(original_items), 1)  # exact body windows, one source
+            self.assertEqual(
+                [(item.source_ref, item.snippet) for item in reread_items],
+                [(item.source_ref, item.snippet) for item in original_items],
+            )
             self.assertEqual(runtime.snapshot()["tool_calls"], 1)
         finally:
             _active.reset(token)
@@ -265,9 +277,14 @@ class GoalRecoveryTests(unittest.TestCase):
             settings=self.settings.model_copy(update={"react_max_steps": 2}),
         )
         plan = json.loads(run.plan_json)
-        self.assertEqual(result["status"], "completed")
+        # The sole replacement is exhausted; strict terminal evaluation still
+        # rejects the synthetic, unvalidated evidence as a failed goal.
+        self.assertEqual(result["status"], "failed")
+        self.assertFalse(result["citation_evaluated"])
+        self.assertIsNone(result["terminal_decision"]["validation_identity"])
         self.assertEqual(result["total_steps"], 3)
         self.assertEqual(plan["react_state"]["replacement_steps_granted"], 1)
+        self.assertEqual(len(plan["react_state"]["observation_history"]), 3)
         self.assertEqual(execute.call_count, 2)
 
     def test_react_plan_does_not_duplicate_large_tool_outputs(self):
@@ -290,7 +307,7 @@ class GoalRecoveryTests(unittest.TestCase):
             [decision("web_fetcher", urls=[URL]), decision("finish", goal_status="achieved")],
             handler=handler,
         )
-        self.assertEqual(result["status"], "completed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         self.assertNotIn("UNIQUE_TRACE_TAIL", run.plan_json)
         self.assertLess(len(run.plan_json), 30_000)
         self.assertIn(
@@ -362,7 +379,7 @@ class GoalRecoveryTests(unittest.TestCase):
             decision("web_fetcher", urls=[URL]),
             decision("web_fetcher", urls=[URL, second, second]),
             decision("finish", goal_status="achieved")], handler=handler)
-        self.assertEqual(result["status"], "completed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         self.assertEqual(calls, [[URL], [second]])
 
     def test_all_completed_fetch_is_rejected_without_spending_an_attempt(self):
@@ -370,7 +387,7 @@ class GoalRecoveryTests(unittest.TestCase):
             decision("web_fetcher", urls=[URL]),
             decision("web_fetcher", urls=[URL]),
             decision("finish", goal_status="achieved")])
-        self.assertEqual(result["status"], "completed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         self.assertEqual(execute.call_count, 1)
 
     def test_ambiguous_price_request_is_blocked_before_any_tool(self):
@@ -493,14 +510,14 @@ class GoalRecoveryTests(unittest.TestCase):
         runtime = BudgetRuntime(self.db, run.run_id, self.settings.model_copy(update={"research_max_tokens": 1000}))
         token = _active.set(runtime)
         try:
-            runtime.reserve(llm=1, tokens=850)
+            runtime.reserve(llm=1, tokens=650)
             self.assertTrue(runtime.can_deepen())
             @report_budget
             def report(run, plan):
                 runtime.reserve(llm=1, tokens=100)
                 return "final"
             self.assertEqual(report(run, {}), "final")
-            self.assertEqual(runtime.snapshot()["accounted_tokens"], 0)
+            self.assertEqual(runtime.snapshot()["accounted_tokens"], 750)
         finally:
             _active.reset(token)
 
@@ -541,18 +558,18 @@ class GoalRecoveryTests(unittest.TestCase):
         runtime = BudgetRuntime(self.db, run.run_id, self.settings.model_copy(update={"research_max_tokens": 1000}))
         token = _active.set(runtime)
         try:
-            runtime.reserve(llm=1, tokens=850)
+            runtime.reserve(llm=1, tokens=650)
             @report_budget
             def report(run, plan):
                 runtime.reserve(llm=1, tokens=100)
                 return "final"
             self.assertEqual(report(run, {"parent_run_id": "previous-failed-run"}), "final")
-            self.assertEqual(runtime.snapshot()["accounted_tokens"], 0)
+            self.assertEqual(runtime.snapshot()["accounted_tokens"], 750)
         finally:
             _active.reset(token)
 
     def test_child_cannot_spend_reserved_root_report_tokens(self):
-        from app.agent.budget import BudgetRuntime, _active, ensure_budget, report_budget
+        from app.agent.budget import BudgetRuntime, FinalizationRequired, _active, ensure_budget, report_budget
         root = store.create_agent_run(self.db, "root", "summary", "real")
         child = store.create_agent_run(self.db, "child", "summary", "real")
         settings = self.settings.model_copy(update={"research_max_tokens": 1000})
@@ -560,55 +577,16 @@ class GoalRecoveryTests(unittest.TestCase):
         runtime = BudgetRuntime(self.db, child.run_id, settings)
         token = _active.set(runtime)
         try:
-            runtime.reserve(llm=1, tokens=850)
+            runtime.reserve(llm=1, tokens=650)
             @report_budget
             def report(run, plan):
                 runtime.reserve(llm=1, tokens=100)
-            report(child, {})
-            self.assertEqual(runtime.snapshot()["accounted_tokens"], 0)
+            with self.assertRaises(FinalizationRequired):
+                report(child, {})
+            self.assertEqual(runtime.snapshot()["accounted_tokens"], 650)
+            self.assertIsNone(runtime.snapshot()["stop_reason"])
         finally:
             _active.reset(token)
-
-    def test_child_budget_stops_parent_and_preserves_exportable_child_link(self):
-        from app.agent.deepening import _legacy_run_deepening_v1 as run_deepening
-        from app.agent.budget import current_budget
-        from app.llm.base import LLMResponse
-        from app.tools.base import ToolResult
-        run = store.create_agent_run(self.db, "Research a documented feature", "summary", "real")
-        store.update_agent_run_plan(self.db, run.run_id, self.skill_plan())
-        parent_id = run.run_id
-
-        class FamilyLLM(recovery.ScriptedLLM):
-            def complete(inner, messages, **kwargs):
-                if "research director" in messages[0].content:
-                    return LLMResponse(success=True, provider="fixture", content=json.dumps({
-                        "learnings": ["Initial source available"], "follow_up_queries": ["Follow-up one", "Must not create two"]}))
-                if current_budget().run_id != parent_id:
-                    current_budget().stop("tokens")
-                return super(FamilyLLM, inner).complete(messages, **kwargs)
-
-        client = FamilyLLM([decision("web_fetcher", urls=[URL]), decision("finish")])
-        settings = self.settings.model_copy(update={"deep_research_enabled": True})
-        with (patch("app.agent.react_executor.execute_tool", return_value=ToolResult(success=True,
-                output={"pages": [{"url": URL, "content": "Documented feature behavior."}]})),
-              patch("app.agent.react_executor.generate_markdown_report", return_value="# Intermediate"),
-              patch("app.agent.react_executor.save_report", return_value="not-written.md"),
-              patch("app.agent.deepening.generate_markdown_report") as final_report,
-              patch("app.agent.react_executor.finalize_terminal_decision",
-                    side_effect=recovery.accept_synthetic_terminal)):
-            result = run_deepening(self.db, run.run_id, settings, client)
-        self.assertEqual(result["status"], "failed")
-        final_report.assert_not_called()
-        plan = json.loads(run.plan_json)
-        self.assertEqual(plan["research_outcome"]["error_code"], "budget_exhausted")
-        self.assertEqual(plan["deepening_phase"], "failed")
-        self.assertEqual(len(plan["deepening_sub_run_ids"]), 1)
-        child = store.get_agent_run(self.db, plan["deepening_sub_run_ids"][0])
-        self.assertEqual(child.status, "failed")
-        from app.api.tasks import get_task_plan
-        self.assertEqual(asyncio.run(get_task_plan(child.run_id, self.db)).steps, [])
-        gates = [t for t in store.list_tool_traces(self.db, run.run_id) if t.tool_name == "research_quality_gate"]
-        self.assertEqual(len(gates), 1)  # Initial gate only; no success gate after stop.
 
     def test_actual_csv_reader_goal_gate_and_saved_report_pipeline(self):
         import tempfile

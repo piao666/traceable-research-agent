@@ -17,6 +17,17 @@ from app.trace.logger import record_trace_event
 
 INTEGRITY_VERSION = "research-integrity-v2"
 SCOPE_INTEGRITY_VERSION = "research-scope-outcome-v2"
+# These are evidence-quality gates, not execution faults.  They deliberately
+# produce an auditable ``incomplete`` terminal state so the caller can retry
+# with different sources.  Provider/configuration/budget failures remain hard
+# failures through ``force_failure`` and the explicit execution error set.
+INCOMPLETE_RESEARCH_CODES = frozenset({
+    "required_fetch_failed",
+    "uncited_deterministic_claim",
+    "no_supported_citations",
+    "required_evidence_coverage_incomplete",
+    "report_revision_incomplete",
+})
 
 
 def report_subject(run):
@@ -235,6 +246,9 @@ def finalize_terminal_decision(
         blockers.append("report_integrity_missing")
     if outcome.get("status") != "passed":
         blockers.append(str(outcome.get("error_code") or "research_outcome_not_passed"))
+    draft_result = plan.get("report_draft_result") or {}
+    if isinstance(draft_result, dict) and draft_result.get("integrity") == "incomplete" and draft_result.get("adopted") is False:
+        blockers.append("report_revision_incomplete")
     if scope.get("status") == "failed":
         blockers.extend(str(error) for error in scope.get("errors") or [scope.get("error_code") or "scope_outcome_failed"])
 
@@ -255,6 +269,25 @@ def finalize_terminal_decision(
             blockers.append("evidence_snapshot_missing")
     if not evidence.get("passages"):
         blockers.append("no_usable_evidence")
+
+    # Re-run the canonical content-bearing evidence contract at the terminal
+    # boundary.  Earlier planner/executor gates may run before provenance is
+    # materialized; this is the first point where persisted lineage is
+    # authoritative.  Preserve all gap details and use one stable blocker so
+    # callers do not accidentally promote a gap's first code to a hard error.
+    from app.agent.evidence_requirements import assess_required_evidence
+    evidence_assessment = assess_required_evidence(contract, evidence)
+    outcome = dict(outcome)
+    outcome["evidence_assessment"] = evidence_assessment.as_dict()
+    plan["research_outcome"] = outcome
+    # When no distinct Scope outcome was supplied, its terminal snapshot is
+    # the persisted research outcome including this canonical assessment.
+    # Keeping the pre-assessment object here made an otherwise idempotent
+    # second finalization compute a different evidence snapshot hash.
+    if scope_outcome is None:
+        scope = outcome
+    if not evidence_assessment.passed:
+        blockers.append("required_evidence_coverage_incomplete")
 
     revision = db.scalar(select(ReportRevision).where(
         ReportRevision.root_run_id == run.run_id,
@@ -305,17 +338,38 @@ def finalize_terminal_decision(
         "scope_resolutions", "scope_identity")}
     decision_inputs = {"evidence": evidence_facts, "contract": contract,
         "assessment": assessment, "coverage": coverage, "outcome": outcome,
+        "evidence_assessment": evidence_assessment.as_dict(),
         "scope_outcome": scope, "report_integrity": integrity,
         "occurrences": occurrences, "force_failure": force_failure}
     evidence_hash = hashlib.sha256(json.dumps(decision_inputs, ensure_ascii=False,
         sort_keys=True, default=str).encode()).hexdigest()
     existing = plan.get("terminal_decision") or {}
+    generation = plan.get("report_generation") or {}
+    # The public evidence snapshot is the frozen snapshot used by the adopted
+    # report validation.  Keep the wider terminal-input digest separately so
+    # a changed requirement still reopens a decision without making the
+    # report/manifest identity disagree across API entry points.
+    decision_evidence_snapshot_id = (
+        generation.get("evidence_snapshot_id") or evidence_hash
+    )
     if (existing.get("version") == TERMINAL_DECISION_VERSION
         and existing.get("report_sha256") == report_hash
-        and existing.get("evidence_snapshot_id") == evidence_hash
+        and existing.get("evidence_snapshot_id") == decision_evidence_snapshot_id
+        and existing.get("decision_input_hash") == evidence_hash
+        and existing.get("manifest_sha256") == generation.get("manifest_sha256")
+        and existing.get("validation_identity") == generation.get("validation_identity")
         and existing.get("status") == run.status):
         return existing
-    hard_failure = bool(force_failure) or outcome.get("error_code") in {
+    # A materialized revision from different bytes must never inherit the
+    # successful decision of the currently saved report.  Add this blocker
+    # before selecting the terminal state so the CAS status, decision status,
+    # error message, and persisted plan are all derived from the same facts.
+    if revision is not None and generation.get("report_revision_id") not in {
+        None, revision.report_revision_id,
+    }:
+        blockers.append("report_revision_identity_mismatch")
+    forced_hard_failure = bool(force_failure) and force_failure not in INCOMPLETE_RESEARCH_CODES
+    hard_failure = forced_hard_failure or outcome.get("error_code") in {
         "execution_failed", "report_synthesis_failed", "budget_exhausted",
         "configuration_not_ready", "provider_failure"}
     status = ("failed" if hard_failure else "incomplete") if blockers else "completed"
@@ -323,11 +377,20 @@ def finalize_terminal_decision(
     decision = {"version": TERMINAL_DECISION_VERSION, "status": status,
         "error_code": error_code, "blockers": list(dict.fromkeys(blockers)),
         "warnings": list(dict.fromkeys(warnings)), "report_sha256": report_hash,
-        "evidence_snapshot_id": evidence_hash,
+        "evidence_snapshot_id": decision_evidence_snapshot_id,
+        "decision_input_hash": evidence_hash,
         "report_revision_id": revision.report_revision_id if revision else None,
         "task_contract_version": contract.get("version"),
         "research_outcome_version": outcome.get("version"),
         "report_integrity_version": integrity.get("version")}
+    decision.update({
+        "report_revision_id": revision.report_revision_id if revision else None,
+        "manifest_sha256": generation.get("manifest_sha256") or plan.get("report_manifest_sha256"),
+        "validation_identity": generation.get("validation_identity"),
+        "writing_manifest_hash": generation.get("writing_manifest_hash"),
+        "validator_version": generation.get("validator_version"),
+        "adopted": bool(generation.get("adopted")),
+    })
     plan["terminal_decision"] = decision
     if assessment is not None:
         plan["terminal_requirement_assessment"] = assessment
@@ -388,17 +451,28 @@ def result_integrity(run) -> dict[str, Any]:
     ]
     if outcome.get("status") == "failed" and outcome.get("message"):
         warnings.append(outcome["message"])
+    is_legacy_result = bool(legacy)
+    # Validation is a fact about the adopted revision, not a synonym for a
+    # successful run.  Preserve it when a later execution/provider failure
+    # changes the terminal outcome to failed.
+    generation = plan.get("report_generation") or {}
+    citation_evaluated = bool(
+        not is_legacy_result
+        and terminal_decision.get("version") == TERMINAL_DECISION_VERSION
+        and report_integrity.get("version") == REPORT_INTEGRITY_VERSION
+        and report_integrity.get("status") in {"passed", "failed"}
+        and generation.get("adopted") is True
+        and generation.get("report_revision_id") == terminal_decision.get("report_revision_id")
+        and generation.get("content_hash") == terminal_decision.get("report_sha256")
+        and generation.get("validation_identity") == terminal_decision.get("validation_identity")
+        and generation.get("writing_manifest_hash") == terminal_decision.get("writing_manifest_hash")
+        and generation.get("validator_version") == terminal_decision.get("validator_version")
+    )
     return {"research_outcome": outcome or None,
             "terminal_decision": terminal_decision or None,
+            "is_legacy_result": is_legacy_result,
             "requires_review": legacy or terminal_decision.get("status") in {"incomplete", "failed"},
-            "citation_evaluated": bool(
-                run.citation_total
-                and not legacy
-                and run.status == "completed"
-                and outcome.get("status") == "passed"
-                and terminal_decision.get("status", "completed") == "completed"
-                and (not deep_v2 or report_gate_passed)
-            ),
+            "citation_evaluated": citation_evaluated,
             "quality_warnings": (["Historical result predates current integrity or trace-to-source mapping checks; re-run before relying on its quality metrics."]
                                  if legacy else list(dict.fromkeys(warnings)))}
 
@@ -431,6 +505,8 @@ def report_block_reason(run) -> str | None:
                 current_report_hash = None
         if current_report_hash != terminal_decision.get("report_sha256"):
             return "The persisted report changed after its final integrity decision; re-run final validation."
+        if "report_revision_identity_mismatch" in (terminal_decision.get("blockers") or []):
+            return "The adopted report revision identity does not match the saved report; re-run final validation."
     if (run.status in {"failed", "cancelled"}
         or plan.get("adaptive_gate_pending") or plan.get("deepening_pending")
         or (run.report_path and run.status not in {"completed", "incomplete"})

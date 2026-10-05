@@ -258,9 +258,11 @@ def materialize_scope_reasoning(
                     prior_relation=_text(item["edge"].get("relation")) or "supports",
                 )
                 passage_metadata = _mapping(item["passage"].get("metadata"))
+                snapshot_metadata = _mapping(item["snapshot"].get("metadata"))
                 document_metadata = _mapping(item["document"].get("metadata"))
                 evidence_role = _text(
-                    document_metadata.get("evidence_role")
+                    snapshot_metadata.get("evidence_role")
+                    or document_metadata.get("evidence_role")
                     or passage_metadata.get("evidence_role")
                     or "unknown"
                 ).casefold()

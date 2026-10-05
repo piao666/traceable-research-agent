@@ -586,7 +586,12 @@ def run_runtime_preflight(
         if not fetched:
             if url_specific:
                 _replace(items, "web_fetcher", reachable=None, usable=True, verification="unknown")
-            blockers.append({"capability": "web_fetcher", "error_type": str(fetch_error), "message": "网页抓取验证失败。"})
+                warnings.append(
+                    "The sampled URL rejected retrieval; the fetch backend remains available "
+                    "and will be verified against each task's sources."
+                )
+            else:
+                blockers.append({"capability": "web_fetcher", "error_type": str(fetch_error), "message": "网页抓取验证失败。"})
     else:
         _replace(items, "web_fetcher", reachable=None, usable=True, verification="unknown",
                  detail="搜索未返回 URL，未执行网页抓取", error_type="dependency_unavailable")

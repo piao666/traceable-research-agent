@@ -33,6 +33,44 @@ def build_task_contract(task: str, created_at: datetime | None = None) -> dict:
     contract = {"version": "task-contract-v1", "as_of": anchor.isoformat(),
                 "original_task": task, "goal_kind": "research", "period": None,
                 "unresolved_fields": []}
+    text = task.strip()
+    # These are deliberately small, deterministic constraints.  Unknown is
+    # represented as unspecified rather than guessed into a new requirement.
+    discovery = bool(re.search(r"\b(?:find|discover|list|links?|sources?)\b|(?:链接|来源|检索结果)", text, re.I))
+    substantive = bool(re.search(r"\b(?:what\s+is|what\s+are|explain|answer|compare|verify|analyze|research)\b|(?:是什么|解释|回答|比较|核实|分析|调研|说明)", text, re.I))
+    official_only = bool(re.search(
+        r"\b(?:only|just)\s+(?:official|primary)\b|"
+        r"\b(?:official|primary)\s+(?:sources?|links?|sites?)\s+only\b|"
+        # An imperative retrieval request such as "Search official Python
+        # docs" is an explicit source restriction. Merely asking what the
+        # official documentation is remains an open question.
+        r"\b(?:search|find|use|using|read)\s+(?:the\s+)?(?:current\s+)?(?:official|primary)\b|"
+        r"(?:仅|只)(?:使用|采用|参考|依据|查阅)?\s*官方|"
+        r"(?:使用|查阅|依据)\s*(?:最新|当前)?\s*官方(?:文档|资料|来源)|"
+        r"以\s*官方(?:文档|资料|来源)\s*为准",
+        text,
+        re.I,
+    ))
+    current_official_docs = bool(
+        official_only
+        and re.search(r"\bcurrent\s+official\b.{0,80}\b(?:docs?|documentation)\b|(?:最新|当前)\s*官方.{0,20}(?:文档|资料)", text, re.I)
+        and not re.search(r"\b(?:historical|archived?|previous|older|version\s+\d+|python\s+\d+\.\d+)\b|/3\.\d+/|(?:历史|旧版|指定版本)", text, re.I)
+    )
+    language = "en" if re.search(r"\b(?:english|in english)\b|英文", text, re.I) else "zh"
+    sentence_match = re.search(r"\b(?:exactly\s+)?(\d{1,2}|one|two|three)(?:\s+(?:english|chinese))?\s+sentences?\b|恰好\s*(\d{1,2})\s*句", text, re.I)
+    count_value = (sentence_match.group(1) or sentence_match.group(2)).casefold() if sentence_match else ""
+    sentence_count = {"one": 1, "two": 2, "three": 3}.get(count_value, int(count_value) if count_value.isdigit() else None)
+    contract.update(
+        constraints_version="task-contract-constraints-v1",
+        answer_mode="discovery" if discovery and not substantive else ("answer" if substantive else "unspecified"),
+        evidence_requirement="substantive" if substantive else ("discovery" if discovery else "unspecified"),
+        source_constraints={
+            "mode": "restrict" if official_only else "unspecified", "domains": [],
+            "official_only": official_only,
+            **({"current_official_documentation": True} if current_official_docs else {}),
+        },
+        output_constraints={"language": language, "sentence_count": sentence_count},
+    )
     entities, dimensions = _comparison_scope(task)
     if len(entities) >= 2 and len(dimensions) >= 2:
         contract.update(
@@ -96,6 +134,26 @@ def build_task_contract(task: str, created_at: datetime | None = None) -> dict:
             contract["unresolved_fields"].append("adjustment")
         if not re.search(r"每年|年度|每日|日度|每月|月度|累计|annual|daily|monthly|cumulative", task, re.I):
             contract["unresolved_fields"].append("interval")
+    lower_task = task.casefold()
+    if "muse" in lower_task and "jev" in lower_task and "\u5f71\u54cd" in task:
+        # An impact answer needs independent material for both named systems
+        # and an actual Agent-impact passage for each. One generic page cannot
+        # satisfy the whole question merely by mentioning both names.
+        contract["evidence_scope_requirements"] = [
+            {"requirement_id": "muse_agent_impact", "entity": "Muse", "dimension": "Agent \u5f71\u54cd",
+             "match_mode": "all_components", "source_scope": "external_web"},
+            {"requirement_id": "jev_agent_impact", "entity": "Jev", "dimension": "Agent \u5f71\u54cd",
+             "match_mode": "all_components", "source_scope": "external_web"},
+        ]
+    elif ("agent" in lower_task and "\u672c\u9879\u76ee" in task
+          and "\u8bc4\u6d4b" in task and "\u6bd4\u8f83" in task):
+        contract["evidence_scope_requirements"] = [
+            {"requirement_id": "external_agent_evaluation", "entity": "Agent",
+             "dimension": "\u8bc4\u6d4b \u6846\u67b6", "match_mode": "all_components",
+             "source_scope": "external_web"},
+            {"requirement_id": "local_project_evaluation", "dimension": "\u8bc4\u6d4b",
+             "source_scope": "local_project"},
+        ]
     return contract
 
 

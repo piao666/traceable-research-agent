@@ -222,6 +222,31 @@ class FactNormalizationTests(unittest.TestCase):
         decision = classify_relation(claim, assertion, prior_relation="supports")
         self.assertEqual(decision.relation, "supports")
 
+    def test_identical_excerpt_cannot_refute_itself_due_to_polarity_metadata(self) -> None:
+        excerpt = (
+            "The event loop runs asynchronous tasks and callbacks. "
+            "The function raises RuntimeError if there is no running event loop."
+        )
+        claim = normalize_fact(excerpt)
+        assertion = normalize_fact(excerpt, polarity="negative")
+        self.assertEqual(claim.polarity, "positive")
+        self.assertEqual(assertion.polarity, "negative")
+        self.assertEqual(classify_relation(claim, assertion).relation, "supports")
+
+        opposing = normalize_fact("The event loop does not run asynchronous tasks.", polarity="negative")
+        self.assertEqual(classify_relation(claim, opposing).relation, "refutes")
+
+    def test_identical_numbered_excerpt_cannot_refute_itself(self) -> None:
+        excerpt = (
+            "September 9, 2026 17 min read. Muse runs multiple tasks, "
+            "but the consumer controls are not sufficient for enterprises."
+        )
+        claim = normalize_fact(excerpt, value=9, time_scope="2026")
+        assertion = normalize_fact(excerpt, value=9, time_scope="2026", polarity="negative")
+        self.assertEqual(classify_relation(claim, assertion).relation, "supports")
+        mismatched = normalize_fact(excerpt, value=10, time_scope="2026")
+        self.assertEqual(classify_relation(claim, mismatched).relation, "contextualizes")
+
 
 class ConflictResolutionTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -478,8 +503,8 @@ class ReasoningPersistenceTests(unittest.TestCase):
         self.assertEqual({edge["relation"] for edge in payload["edges"]}, {"supports", "refutes"})
         self.assertEqual(
             {
-                document["metadata"]["evidence_role"]
-                for document in payload["source_documents"]
+                snapshot["metadata"]["evidence_role"]
+                for snapshot in payload["source_snapshots"]
             },
             {"primary_content", "secondary_analysis"},
         )

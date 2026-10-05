@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from app.config import Settings
 from app.evidence.normalizers import canonicalize_url
-from app.evidence.policy import ResearchProfile, load_source_policy
+from app.evidence.policy import ResearchProfile, current_documentation_channel, load_source_policy
 from app.tools.base import ToolResult
 
 
@@ -37,10 +37,12 @@ class SourceConstraints:
     urls: tuple[str, ...] = ()
     preferred_source_classes: tuple[str, ...] = ()
     excluded_domains: tuple[str, ...] = ()
+    current_official_documentation: bool = False
 
     @classmethod
     def from_plan(cls, plan: dict[str, Any]) -> "SourceConstraints":
         raw = plan.get("source_constraints") or {}
+        contract_constraints = (plan.get("task_contract") or {}).get("source_constraints") or {}
         mode = str(raw.get("mode") or "open").casefold()
         if mode not in {"open", "prioritize", "restrict"}:
             mode = "open"
@@ -54,6 +56,7 @@ class SourceConstraints:
             excluded_domains=tuple(
                 _normalize_domain(value) for value in raw.get("excluded_domains") or [] if value
             ),
+            current_official_documentation=contract_constraints.get("current_official_documentation") is True,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -63,6 +66,7 @@ class SourceConstraints:
             "urls": list(self.urls),
             "preferred_source_classes": list(self.preferred_source_classes),
             "excluded_domains": list(self.excluded_domains),
+            "current_official_documentation": self.current_official_documentation,
         }
 
 
@@ -97,6 +101,8 @@ def execute_governed_operation(
     """
 
     from app.agent.execution_policy import execute_with_policy
+    from app.agent.plan_guardrails import validate_tool_arguments
+    from app.tools.base import ToolResult
 
     governed = dict(arguments or {}) if arguments_prepared else prepare_tool_arguments(
         tool_name, arguments, plan, settings
@@ -105,6 +111,19 @@ def execute_governed_operation(
         effective = execution_arguments(governed)
     else:
         effective = dict(execution_arguments) if execution_arguments is not None else governed
+    issues = validate_tool_arguments(tool_name, effective)
+    if issues:
+        # Keep the existing Registry/policy path authoritative for valid
+        # calls. Invalid dynamic ReAct actions are observable to its loop but
+        # never reach a handler or consume a second budget reservation.
+        details = [issue.as_dict() for issue in issues]
+        return ToolResult(
+            success=False,
+            output={"code": "invalid_request", "issues": details},
+            output_summary="Tool request rejected by parameter validation.",
+            error_message="invalid_request",
+            metadata={"error_code": "invalid_request", "plan_issues": details, "executed": False},
+        )
     result = execute_with_policy(
         tool_name,
         effective,
@@ -160,11 +179,16 @@ def prepare_tool_arguments(
         urls = prepared.get("urls")
         if isinstance(urls, list):
             selected = []
+            fetch_limit = profile.max_fetch_candidates
+            if (plan.get("engine_version") == "v2"
+                    and plan.get("research_controller") == "pear"
+                    and plan.get("run_role") == "root"):
+                fetch_limit = min(fetch_limit, 2)
             for value in urls:
                 uri = _canonical(value)
                 if uri and _source_allowed(uri, constraints, blocked_domains):
                     selected.append(uri)
-                if len(selected) >= profile.max_fetch_candidates:
+                if len(selected) >= fetch_limit:
                     break
             prepared["urls"] = selected
         return prepared
@@ -228,14 +252,28 @@ def intake_tool_result(
     selected: list[tuple[dict[str, Any], str, str, float, float]] = []
     domain_counts: dict[str, int] = {}
     pending = list(candidates)
+    deferred_current_siblings = 0
+    if constraints.current_official_documentation:
+        current_siblings = {
+            sibling for _item, uri, *_rest in candidates
+            for is_current, sibling in [current_documentation_channel(uri, policy)]
+            if is_current and sibling is not None
+        }
+        retained = []
+        for candidate in pending:
+            is_current, sibling = current_documentation_channel(candidate[1], policy)
+            if sibling is not None and not is_current and sibling in current_siblings:
+                deferred_current_siblings += 1
+            else:
+                retained.append(candidate)
+        pending = retained
     while pending and len(selected) < profile.max_fetch_candidates:
         best = max(
             pending,
-            key=lambda candidate: _fetch_priority(
-                candidate,
-                constraints,
-                domain_counts.get(candidate[2], 0),
-            ),
+            key=lambda candidate: (
+                2.0 if constraints.current_official_documentation
+                and current_documentation_channel(candidate[1], policy)[0] else 0.0
+            ) + _fetch_priority(candidate, constraints, domain_counts.get(candidate[2], 0)),
         )
         pending.remove(best)
         selected.append(best)
@@ -266,6 +304,8 @@ def intake_tool_result(
         selection_log=[
             "Candidates were ranked by relevance, novelty, domain diversity, freshness hint, and user priority.",
             "No authority tier or source-class quota was used.",
+            *([f"Deferred {deferred_current_siblings} version/locale siblings of a configured current official documentation URL."] if constraints.current_official_documentation else []),
+            *(["Configured current-channel candidates were fetched ahead of other pages for the explicit current-docs request."] if constraints.current_official_documentation else []),
         ],
     )
     metadata = dict(result.metadata or {})
@@ -280,6 +320,7 @@ def intake_tool_result(
         "duplicate_count": intake.duplicate_count,
         "blocked_count": intake.blocked_count,
         "deferred_count": intake.deferred_count,
+        "current_sibling_deferred_count": deferred_current_siblings,
         "selection_log": intake.selection_log,
     }
     metadata["result_count"] = len(selected_items)

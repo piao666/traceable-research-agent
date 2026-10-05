@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from app.config import settings
-from app.agent.plan_guardrails import normalize_plan_arguments
+from app.agent.plan_guardrails import normalize_plan_arguments, validate_plan_for_execution
 from app.agent.execution_policy import default_skill_tools
 from app.agent.routing import select_execution_mode, select_skill
-from app.llm.planner_client import call_llm_for_plan
+from app.llm.planner_client import call_llm_for_plan, call_llm_for_plan_repair
 from app.llm.providers import create_llm_client
+from app.agent.budget import BudgetExceeded, budget_client
 from app.llm.schema import extract_json_object, validate_and_normalize_plan
 from app.mcp.policy import requires_interactive_confirmation, tool_channel
 from app.tools.registry import get_tool, list_tools
@@ -238,8 +239,47 @@ def _schema_field_names(schema: dict[str, Any]) -> set[str]:
 
 
 def _first_url(text: str) -> str | None:
-    match = re.search(r"https?://[^\s)>\]}\"']+", text)
-    return match.group(0) if match else None
+    urls = _explicit_task_urls(text)
+    return urls[0] if urls else None
+
+
+def _explicit_task_urls(text: str) -> list[str]:
+    """Return URLs literally supplied in the original task text.
+
+    Planner output is untrusted input: a URL emitted by a model is not an
+    explicit user URL merely because it appears in a planned fetch step.
+    Keeping this distinction here prevents example/placeholder URLs from
+    bypassing the governed search-to-fetch data dependency.
+    """
+    seen: set[str] = set()
+    urls: list[str] = []
+    for match in re.finditer(r"https?://[^\s)>\]}\"']+", text):
+        url = _canonical_task_url(match.group(0))
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
+def _canonical_task_url(value: str) -> str:
+    """Canonicalize a task-literal HTTP(S) URL for authorization comparison.
+
+    Fragments never alter the fetched resource; scheme and host are
+    case-insensitive.  Query strings and paths remain intact, so a planner
+    cannot broaden a user-specified target while claiming it was explicit.
+    """
+    parsed = urlparse(value)
+    try:
+        scheme = parsed.scheme.casefold()
+        host = parsed.hostname.casefold() if parsed.hostname else ""
+        port = parsed.port
+    except ValueError:
+        # Malformed planner URLs cannot be elevated to explicit task input.
+        return ""
+    netloc = host
+    if port is not None:
+        netloc = f"{host}:{port}"
+    return urlunparse((scheme, netloc, parsed.path or "/", parsed.params, parsed.query, ""))
 
 
 def _domain_from_url(url: str | None) -> str | None:
@@ -748,6 +788,10 @@ def _apply_execution_mode(
     plan["execution_mode"] = decision["selected"]
     plan["requested_execution_mode"] = decision["requested"]
     plan["execution_routing"] = decision
+    # Planner output always carries a server-derived contract.  The trace
+    # store binds it to the run's creation timestamp before persistence.
+    from app.agent.research_goal import build_task_contract
+    plan["task_contract"] = build_task_contract(task or str(plan.get("task") or ""))
     if extra:
         plan.update(extra)
     return plan
@@ -939,7 +983,7 @@ def plan_task(
     if should_try_llm:
         fallback_reason = "LLM planner unavailable; used deterministic fallback."
         fallback_error_type = "provider_unavailable"
-        client = create_llm_client(settings)
+        client = budget_client(create_llm_client(settings))
         response = call_llm_for_plan(client, task, allowed_tools, source_mode, scenario_template)
         if response.success and response.content:
             raw_plan = extract_json_object(response.content)
@@ -971,6 +1015,8 @@ def plan_task(
                         )
                         if auxiliary_errors:
                             normalized["planner_auxiliary_errors"] = auxiliary_errors
+                    except BudgetExceeded:
+                        raise
                     except Exception:
                         normalized["planner_auxiliary_errors"] = [{
                             "role": "planner_decomposer",
@@ -989,10 +1035,54 @@ def plan_task(
                         allowed_tools,
                         scenario_template,
                     )
+                    _ensure_substantive_search_fetch_steps(normalized, task, allowed_tools, source_mode)
                     normalize_plan_arguments(normalized, task, source_mode)
                     _apply_requested_result_count(normalized, task)
                     result = _apply_execution_mode(normalized, execution_mode_override, _memory_extra, task)
-                    return _enforce_research_mode(result, resolved_research_mode, execution_mode_override)
+                    result = _enforce_research_mode(result, resolved_research_mode, execution_mode_override)
+                    issues = validate_plan_for_execution(
+                        result, result.get("task_contract"), result.get("allowed_tools")
+                    )
+                    if not issues:
+                        return result
+                    # One correction is permitted for a structurally valid LLM
+                    # plan whose final, post-routing arguments are invalid.
+                    # A second attempt would silently turn bad parameters into
+                    # spendable retries, so retain the invalid draft instead.
+                    repair = call_llm_for_plan_repair(
+                        client, task, allowed_tools, source_mode, normalized,
+                        [issue.as_dict() for issue in issues], scenario_template,
+                    )
+                    repaired_raw = extract_json_object(repair.content) if repair.success and repair.content else None
+                    if repaired_raw is not None:
+                        repaired_valid, repaired, _ = validate_and_normalize_plan(
+                            raw_plan=repaired_raw, task=task, allowed_tools=allowed_tools,
+                            source_mode=source_mode,
+                        )
+                        if repaired_valid and repaired is not None:
+                            _enforce_external_tool_modes(repaired, task, source_mode)
+                            _apply_human_confirmation_policy(repaired, task)
+                            normalize_plan_arguments(repaired, task, source_mode)
+                            _ensure_research_template_steps(repaired, task, allowed_tools, scenario_template)
+                            _ensure_substantive_search_fetch_steps(repaired, task, allowed_tools, source_mode)
+                            repaired = _apply_execution_mode(repaired, execution_mode_override, _memory_extra, task)
+                            repaired = _enforce_research_mode(repaired, resolved_research_mode, execution_mode_override)
+                            repaired["planner_source"] = "llm_repaired"
+                            repaired["llm_provider"] = repair.provider
+                            repaired["llm_model"] = repair.model
+                            repaired["planner_repair_attempt"] = {"attempt": 1, "status": "accepted"}
+                            remaining = validate_plan_for_execution(repaired, repaired.get("task_contract"), repaired.get("allowed_tools"))
+                            if not remaining:
+                                return repaired
+                            result = repaired
+                            issues = remaining
+                    result["planner_repair_attempt"] = {
+                        "attempt": 1,
+                        "status": "invalid",
+                        "issues": [issue.as_dict() for issue in issues],
+                    }
+                    result["plan_issues"] = [issue.as_dict() for issue in issues]
+                    return result
                 fallback_reason = "LLM output failed schema validation; used deterministic fallback."
                 fallback_error_type = "structured_output_invalid"
             else:
@@ -1066,8 +1156,19 @@ def _enforce_research_mode(
     plan["execution_routing"] = routing
     plan["quick_mode"] = True
     task_text = str(plan.get("task") or "").casefold()
+    contract = dict(plan.get("task_contract") or {})
+    # Discovery is deliberately narrow: a source-list request is not a
+    # discovery-only request when the persisted task contract requires
+    # substantive evidence, or when the user explicitly asks us to fetch and
+    # inspect source bodies.  The contract is server-derived and therefore
+    # takes precedence over this presentation-oriented keyword heuristic.
+    explicit_body_request = bool(re.search(
+        r"(?:正文|抓取|核验|验证|全文|fetch|full[- ]?text|body)", task_text
+    ))
     discovery_only = bool(
-        re.search(r"(?:来源|链接|搜索结果|source list|find sources|discover|lookup)", task_text)
+        re.search(r"(?:来源|链接|搜索结果|source list|find sources|discover|lookup|\b(?:sources?|links?)\b)", task_text)
+        and str(contract.get("evidence_requirement") or "").casefold() != "substantive"
+        and not explicit_body_request
         and not re.search(r"(?:证明|核实|比较|对比|精确|数字|数据|图表|论文结论|substantive|verify|compare)", task_text)
     )
     plan["quick_output_mode"] = "discovery" if discovery_only else "limited_research"
@@ -1077,10 +1178,19 @@ def _enforce_research_mode(
         "snippet_support": False,
     }
     if not discovery_only:
-        contract = dict(plan.get("task_contract") or {})
         contract["quick_snippet_only"] = True
         contract.setdefault("required_content_basis", ["full_text", "table", "structured"])
         plan["task_contract"] = contract
+        steps = [step for step in plan.get("steps") or [] if isinstance(step, dict)]
+        _ensure_search_fetch_dependency(
+            steps,
+            plan.setdefault("notes", []),
+            str(plan.get("task") or ""),
+            set(plan.get("allowed_tools") or []),
+        )
+        for index, step in enumerate(steps, start=1):
+            step["step_no"] = index
+        plan["steps"] = steps
     if discovery_only:
         # A discovery Quick run never silently invokes a body-fetch phase.
         plan["steps"] = [step for step in plan.get("steps") or []
@@ -1234,7 +1344,10 @@ def deterministic_plan_task(
             requires_human_confirmation,
         )
 
-    if not steps and not notes:
+    # A skipped local-only hint (for example "documentation" with
+    # file_reader excluded) must not turn an ordinary research question into
+    # an empty plan. Fall back to allowed web discovery rather than demo I/O.
+    if not steps:
         _append_step(steps, notes, "tavily_search", task_text, allowed_set)
         _append_step(
             steps,
@@ -1270,6 +1383,7 @@ def deterministic_plan_task(
         plan["scenario_template"] = scenario_template
     _ensure_full_planner_steps(plan, task_text, allowed_tools, scenario_template)
     _ensure_research_template_steps(plan, task_text, allowed_tools, scenario_template)
+    _ensure_substantive_search_fetch_steps(plan, task_text, allowed_tools, source_mode)
     _enforce_external_tool_modes(plan, task_text, source_mode)
     normalize_plan_arguments(plan, task_text, source_mode)
     _apply_requested_result_count(plan, task_text)
@@ -1455,6 +1569,8 @@ def _ensure_research_template_steps(
         if tool_name:
             _append_plan_allowed_tool(plan, tool_name, allowed_tools)
 
+    _ensure_search_fetch_dependency(steps, notes, task, allowed_set)
+
     if allowed_set is None or "report_writer" in allowed_set:
         report_step = report_steps[0] if report_steps else _step_template("report_writer", task)
         report_step["tool_name"] = "report_writer"
@@ -1467,6 +1583,111 @@ def _ensure_research_template_steps(
     plan["notes"] = notes
     if scenario_template:
         plan["scenario_template"] = scenario_template
+
+
+def _ensure_search_fetch_dependency(
+    steps: list[dict[str, Any]],
+    notes: list[str],
+    task: str,
+    allowed_set: set[str] | None,
+) -> None:
+    """Require a governed body-read step after discovery for substantive web work.
+
+    Discovery snippets remain useful for choosing URLs, but are never silently
+    promoted into full-text evidence.  This mutates only the plan and only adds
+    a tool when it is within the caller's original allowed scope.
+    """
+    search = next((step for step in steps if step.get("tool_name") == "tavily_search"), None)
+    if search is None:
+        return
+    report_steps = [step for step in steps if step.get("tool_name") == "report_writer"]
+    steps[:] = [step for step in steps if step.get("tool_name") != "report_writer"]
+    fetch_steps = [step for step in steps if step.get("tool_name") == "web_fetcher"]
+    if not fetch_steps:
+        if allowed_set is not None and "web_fetcher" not in allowed_set:
+            _append_note_once(notes, "Full-text evidence is required but web_fetcher is outside allowed_tools; execution will report an evidence gap.")
+            return
+        fetch = _step_template("web_fetcher", task)
+        fetch["tool_name"] = "web_fetcher"
+        fetch_steps = [fetch]
+    # A model may emit multiple fetch steps. Govern every one before approval;
+    # otherwise a later untrusted direct URL survives the first-step repair.
+    for fetch in fetch_steps:
+        if fetch in steps:
+            steps.remove(fetch)
+    search_index = steps.index(search)
+    steps[search_index + 1:search_index + 1] = fetch_steps
+    explicit_urls = set(_explicit_task_urls(task))
+    for fetch in fetch_steps:
+        arguments = fetch.setdefault("arguments", {})
+        if not isinstance(arguments, dict):
+            arguments = {}
+            fetch["arguments"] = arguments
+        planned_urls = arguments.get("urls")
+        trusted_direct_urls = (
+            isinstance(planned_urls, list)
+            and bool(planned_urls)
+            and all(
+                isinstance(url, str) and _canonical_task_url(url) in explicit_urls
+                for url in planned_urls
+            )
+        )
+        if not trusted_direct_urls:
+            arguments["urls"] = []
+            fetch["arguments_from"] = {
+                "step_no": search.get("step_no"),
+                "field": "results",
+            }
+        else:
+            fetch.pop("arguments_from", None)
+        fetch.setdefault("required", True)
+    steps.extend(report_steps)
+    _renumber_steps_and_dependencies(steps)
+    _append_note_once(notes, "Substantive web research fetches selected discovery URLs before evidence synthesis.")
+
+
+def _ensure_substantive_search_fetch_steps(
+    plan: dict[str, Any], task: str, allowed_tools: list[str] | None, source_mode: str,
+) -> None:
+    """Bind a generic real research plan's body read to its discovery step.
+
+    The template helper covers named scenarios, but an ordinary Deep request
+    can use a model-authored three-step plan without a template marker. Such
+    a plan must not retain a model-invented URL after approval and then bounce
+    forever between running and waiting_human_plan in the dispatcher.
+    """
+    if str(source_mode).casefold() != "real":
+        return
+    from app.agent.research_goal import build_task_contract
+
+    contract = plan.get("task_contract") if isinstance(plan.get("task_contract"), dict) else build_task_contract(task)
+    if contract.get("evidence_requirement") != "substantive":
+        return
+    steps = [step for step in plan.get("steps") or [] if isinstance(step, dict)]
+    if not any(step.get("tool_name") == "tavily_search" for step in steps):
+        return
+    notes = [str(note) for note in plan.get("notes") or []]
+    _ensure_search_fetch_dependency(steps, notes, task, set(allowed_tools) if allowed_tools is not None else None)
+    plan["steps"] = steps
+    plan["notes"] = notes
+
+
+def _renumber_steps_and_dependencies(steps: list[dict[str, Any]]) -> None:
+    """Renumber a reordered plan while preserving valid step dependencies."""
+    old_to_new = {
+        int(step["step_no"]): index
+        for index, step in enumerate(steps, 1)
+        if isinstance(step.get("step_no"), int)
+    }
+    for index, step in enumerate(steps, 1):
+        dependency = step.get("arguments_from")
+        if isinstance(dependency, dict) and isinstance(dependency.get("step_no"), int):
+            old = dependency["step_no"]
+            if old in old_to_new:
+                dependency = dict(dependency)
+                dependency["step_no"] = old_to_new[old]
+                step["arguments_from"] = dependency
+        step["step_no"] = index
 
 
 def _is_full_planner_scenario(
@@ -1878,8 +2099,10 @@ def _decompose_skill_plan(
         sub_queries = decompose_task_by_rules(task, n=n)
     else:
         try:
-            client = create_llm_client(settings)
+            client = budget_client(create_llm_client(settings))
             sub_queries = decompose_task(task, client, n=n, force=force)
+        except BudgetExceeded:
+            raise
         except Exception:
             sub_queries = decompose_task_by_rules(task, n=n)
 

@@ -25,6 +25,7 @@ def build_planner_messages(
     """Build strict JSON-only planner messages."""
 
     allowed = allowed_tools if allowed_tools is not None else sorted(known_tool_names())
+    real_mode = str(source_mode or "real").casefold() == "real"
     tool_defaults = {
         "file_reader": {"path": "demo_research_note.md", "max_chars": 4000},
         "sql_query": {"query": "SELECT id, title, category FROM documents", "limit": 5},
@@ -43,6 +44,17 @@ def build_planner_messages(
         },
         "report_writer": {},
     }
+    if real_mode:
+        # Demo defaults are useful only in an explicit demonstration/offline
+        # plan. They must not turn an ordinary web question into local I/O.
+        tool_defaults.pop("file_reader", None)
+        tool_defaults.pop("sql_query", None)
+        tool_defaults["mcp_github_search"] = {
+            "query": task,
+            "repo": None,
+            "limit": 5,
+            "mode": "public_api",
+        }
     for tool_name in allowed:
         tool_defaults.setdefault(tool_name, {})
     known_tool_text = "; ".join(_tool_description(name) for name in allowed)
@@ -61,21 +73,31 @@ def build_planner_messages(
             "code/documentation sources. Include GitHub, Context7, Exa, or Firecrawl tools "
             "when they are available in allowed_tools, then report_writer."
         )
+    local_guidance = (
+        "For file_reader, prefer a relative filename under workspace/docs; do not prefix "
+        "workspace/docs and do not invent filenames unless the user explicitly provides a path. "
+        "A path outside configured FILE_READER_ALLOWED_ROOTS will require per-file human "
+        "confirmation before execution. "
+    )
+    if not real_mode:
+        local_guidance += (
+            "Valid workspace/docs examples include demo_research_note.md, "
+            "streamlit_demo_notes.md, sql_safety_notes.md, github_mcp_readonly_notes.md, "
+            "react_execution_notes.md, traceable_agent_architecture.md, and evaluation_notes.md. "
+            "For sql_query, the demo SQLite schema is documents(id,title,source,category,created_at) "
+            "and metrics(id,name,value,unit); generate only one SELECT or WITH statement over those columns. "
+        )
+    else:
+        local_guidance += "For sql_query, use only a user-provided read-only query. "
     system = (
         "You are the Planner for Traceable Research Agent. Output only one JSON object. "
         "Do not output markdown. Do not explain. Do not execute tools. Do not invent tools. "
         "Use only allowed_tools. The plan must be executable by the later Executor. "
-        "Use the exact default_arguments unless the user gives a more specific valid value. "
-        "For file_reader, prefer a relative filename under workspace/docs; do not prefix "
-        "workspace/docs and do not invent filenames unless the user explicitly provides a path. "
-        "A path outside configured FILE_READER_ALLOWED_ROOTS will require per-file human "
-        "confirmation before execution. Valid workspace/docs examples include "
-        "demo_research_note.md, streamlit_demo_notes.md, sql_safety_notes.md, "
-        "github_mcp_readonly_notes.md, react_execution_notes.md, "
-        "traceable_agent_architecture.md, and evaluation_notes.md. "
-        "For sql_query, the demo SQLite schema is documents(id,title,source,category,created_at) "
-        "and metrics(id,name,value,unit); generate only one SELECT or WITH statement over those "
-        "columns. For GitHub search, keep query short plain text, repo must be owner/name or null, "
+        + ("Use default_arguments only when they are supplied for the selected tool. "
+         if not real_mode else
+         "Do not select local file or SQL tools unless the user explicitly scopes a path or read-only query. ")
+        + local_guidance + (
+        "For GitHub search, keep query short plain text, repo must be owner/name or null, "
         "search_type must be issues or repositories, and the tool is read-only. "
         "Each step must include step_no, goal, tool_name, arguments, expected_output, "
         "completion_criteria, risk_level, and requires_confirmation. Available known tools: "
@@ -85,6 +107,7 @@ def build_planner_messages(
         f"The source_mode is '{source_mode}'. If source_mode is 'real', the notes MUST say "
         "'工具将通过真实 API 访问外部数据' and NOT mention mock or simulation. "
         "If source_mode is 'mock', the notes should say '工具使用本地离线数据（mock模式）'."    )
+    )
     system += scenario_guidance
     # ── Phase 9: Few-shot injection ──
     try:
@@ -163,4 +186,32 @@ def call_llm_for_plan(
             metadata={"available": False, "error_type": "provider_unavailable"},
         )
     messages = build_planner_messages(task, allowed_tools, source_mode, scenario_template)
-    return client.structured_complete(messages, temperature=0.0, max_tokens=2000)
+    # Multi-entity Deep plans can exceed 2,000 output tokens; a truncated
+    # JSON object silently falls back to a generic three-step plan. This is
+    # still charged against the unchanged shared run budget.
+    return client.structured_complete(messages, temperature=0.0, max_tokens=3000)
+
+
+def call_llm_for_plan_repair(
+    client: LLMClient,
+    task: str,
+    allowed_tools: list[str] | None,
+    source_mode: str,
+    invalid_plan: dict,
+    issues: list[dict],
+    scenario_template: str | None = None,
+) -> LLMResponse:
+    """Make one bounded, sanitized correction attempt for an invalid plan.
+
+    The executor remains the final authority.  This helper deliberately sends
+    only the plan and non-secret field errors, never tool output or credentials.
+    """
+    messages = build_planner_messages(task, allowed_tools, source_mode, scenario_template)
+    repair = {
+        "instruction": "Repair the proposed JSON plan. Return one complete JSON object only.",
+        "proposed_plan": invalid_plan,
+        "validation_issues": issues,
+        "limits": {"repair_attempt": 1, "do_not_add_tools_or_permissions": True},
+    }
+    messages.append(LLMMessage(role="user", content=json.dumps(repair, ensure_ascii=False)))
+    return client.structured_complete(messages, temperature=0.0, max_tokens=3000)

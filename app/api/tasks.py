@@ -1,12 +1,14 @@
 """Task endpoints backed by SQLite run records."""
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
 from app.agent.dispatcher import run_task_by_mode
 from app.agent.evidence import build_evidence_bundle
@@ -21,11 +23,11 @@ from app.agent.file_access_policy import (
     CONFIRMATION_REASON_OUTSIDE_ALLOWED_ROOTS,
     confirmation_details_for_path,
 )
-from app.agent.planner import plan_task, plan_task_for_review
+from app.agent.planner import _ensure_search_fetch_dependency, plan_task, plan_task_for_review
 from app.agent.preflight import check_plan_readiness, readiness_error_code
 from app.agent.execution_policy import bind_run_policy
 from app.agent.outcome import fail_execution, result_integrity
-from app.agent.plan_guardrails import normalize_plan_arguments
+from app.agent.plan_guardrails import normalize_plan_arguments, validate_plan_for_execution
 from app.agent.state import WAITING_HUMAN_PLAN
 from app.config import settings
 from app.database import SessionLocal, get_db
@@ -84,6 +86,18 @@ router = APIRouter(
 def _assert_plan_ready(plan: dict[str, Any], run: AgentRun | None = None) -> None:
     if run is not None:
         bind_run_policy(run, plan)
+    issues = validate_plan_for_execution(
+        plan,
+        plan.get("task_contract") if isinstance(plan.get("task_contract"), dict) else None,
+        plan.get("allowed_tools"),
+    )
+    if issues:
+        details = [issue.as_dict() for issue in issues]
+        raise HTTPException(status_code=409, detail={
+            "code": "invalid_plan",
+            "message": "Plan contains invalid tool parameters.",
+            "issues": details,
+        })
     readiness = check_plan_readiness(plan, settings)
     if not readiness["ready"]:
         raise HTTPException(status_code=409, detail={
@@ -417,11 +431,39 @@ def _run_task_in_background(run_id: str) -> None:
         try:
             run_task_by_mode(db, run_id)
         except Exception as exc:
+            _log_background_failure(run_id, exc, stage="execution")
             try:
                 db.rollback()
                 fail_execution(db, run_id, exc)
-            except Exception:
+            except Exception as persistence_exc:
+                _log_background_failure(run_id, persistence_exc, stage="failure_persistence")
                 db.rollback()
+                # A failed SQLAlchemy session must not silently strand the
+                # run in "running". Recover in a fresh transaction, without
+                # changing a terminal status that another worker may have set.
+                try:
+                    with SessionLocal() as recovery_db:
+                        current = store.get_fresh_agent_run(recovery_db, run_id)
+                        if current is not None and current.status == "running":
+                            store.update_agent_run_status(
+                                recovery_db, run_id, "failed",
+                                "execution_failed: background recovery. Inspect Trace and retry the full run.",
+                            )
+                except Exception as recovery_exc:
+                    _log_background_failure(run_id, recovery_exc, stage="recovery_persistence")
+
+
+def _log_background_failure(run_id: str, exc: Exception, *, stage: str) -> None:
+    # Never log exception text: provider responses and SQL parameters can
+    # contain task data or credentials. SQLite's symbolic error code is safe.
+    sqlite_name = (
+        getattr(getattr(exc, "orig", None), "sqlite_errorname", None)
+        if isinstance(exc, OperationalError) else None
+    )
+    logging.getLogger(__name__).error(
+        "Background run %s failed at %s: %s sqlite_errorname=%s",
+        run_id, stage, type(exc).__name__, sqlite_name or "none",
+    )
 
 
 def _tool_trace_response(
@@ -526,6 +568,18 @@ def _persist_plan_config_snapshot(
     store.update_agent_run_config_snapshot(db, run_id, snapshot)
 
 
+def _plan_with_root_budget(db: Session, run_id: str, planner, **kwargs) -> dict:
+    """Initial planning and repairs spend the same ledger as later execution."""
+    from app.agent.budget import BudgetExceeded, planning_budget
+    try:
+        with planning_budget(db, run_id, settings):
+            return planner(**kwargs)
+    except BudgetExceeded as exc:
+        fail_execution(db, run_id, exc)
+        stopped = store.get_fresh_agent_run(db, run_id)
+        return json.loads(stopped.plan_json or "{}")
+
+
 @router.post("", response_model=TaskCreateResponse)
 def create_task(
     task_request: TaskCreateRequest,
@@ -556,7 +610,7 @@ def create_task(
 
     # ── Phase 7.4: Plan approval mode ────────────────────────────────
     if task_request.require_plan_approval:
-        plan = plan_task_for_review(
+        plan = _plan_with_root_budget(db, run.run_id, plan_task_for_review,
             task=task_request.task,
             allowed_tools=task_request.allowed_tools,
             source_mode=task_request.source_mode,
@@ -575,7 +629,10 @@ def create_task(
         _persist_plan_config_snapshot(db, run.run_id, safe_config, plan)
         _record_planner_fallback_trace(db, run.run_id, plan)
         _record_memory_recall_trace(db, run.run_id, memory_recall_trace)
-        run = store.update_agent_run_status(db, run.run_id, WAITING_HUMAN_PLAN, None)
+        if run.status != "failed":
+            run = store.update_agent_run_status(db, run.run_id, WAITING_HUMAN_PLAN, None)
+            from app.agent.budget import pause_budget_deadline
+            pause_budget_deadline(db, run.run_id)
         return TaskCreateResponse(
             run_id=run.run_id,
             status=run.status,
@@ -586,7 +643,7 @@ def create_task(
             run_url=f"/api/tasks/{run.run_id}/run",
         )
 
-    plan = plan_task(
+    plan = _plan_with_root_budget(db, run.run_id, plan_task,
         task=task_request.task,
         allowed_tools=task_request.allowed_tools,
         source_mode=task_request.source_mode,
@@ -830,6 +887,10 @@ def confirm_task(
         plan["confirmation"]["confirmation_scope"] = "single_file_path"
     store.replace_agent_run_plan(db, run_id, plan)
 
+    if request.approved:
+        from app.agent.budget import resume_budget_deadline
+        resume_budget_deadline(db, run_id)
+
     if not request.approved:
         run = store.update_agent_run_status(
             db,
@@ -998,6 +1059,10 @@ def approve_plan(
     if request.modified_steps is not None:
         candidate["steps"] = _merge_approved_steps(list(plan.get("steps") or []), request.modified_steps)
         candidate = normalize_plan_arguments(candidate, run.task, run.source_mode)
+        _ensure_search_fetch_dependency(
+            candidate["steps"], candidate.setdefault("notes", []), run.task,
+            set(candidate.get("allowed_tools") or []),
+        )
     _assert_plan_ready(candidate, run)
     bind_run_policy(run, plan)
     if not store.claim_pending_agent_run(db, run_id, expected_status="waiting_human_plan"):
@@ -1010,6 +1075,10 @@ def approve_plan(
             request.modified_steps,
         )
         plan = normalize_plan_arguments(plan, run.task, run.source_mode)
+        _ensure_search_fetch_dependency(
+            plan["steps"], plan.setdefault("notes", []), run.task,
+            set(plan.get("allowed_tools") or []),
+        )
         plan["notes"] = list(plan.get("notes") or []) + [
             f"Plan modified during approval: {request.comment}" if request.comment
             else "Plan approved with modifications.",
@@ -1018,6 +1087,9 @@ def approve_plan(
     else:
         plan["notes"] = list(plan.get("notes") or []) + ["Plan approved without modifications."]
         store.replace_agent_run_plan(db, run_id, plan)
+
+    from app.agent.budget import resume_budget_deadline
+    resume_budget_deadline(db, run_id)
 
     # Record trace event
     from app.trace.logger import record_trace_event
@@ -1535,38 +1607,7 @@ def retry_task(
         )
     except (json.JSONDecodeError, TypeError):
         allowed_tools = None
-    plan = None
-    if reuse_plan and original.plan_json:
-        try:
-            plan = json.loads(original.plan_json)
-        except json.JSONDecodeError:
-            plan = None
-    if not isinstance(plan, dict):
-        original_plan = _parse_run_plan(original)
-        plan = plan_task(
-            task=original.task,
-            allowed_tools=allowed_tools,
-            source_mode=original.source_mode,
-            execution_mode_override=(
-                original_plan.get("requested_execution_mode")
-                or original_plan.get("execution_mode")
-            ),
-            skill_name="auto",
-            research_mode=(request.research_mode if request else None),
-        )
-    # A retry is a fresh execution. Never inherit approval, runtime, Scope,
-    # Gate, lineage, or finalization state from the failed Run.
-    _clear_retry_derived_state(plan)
-    if request and request.research_mode:
-        plan["research_mode"] = request.research_mode
-        if request.research_mode == "quick":
-            plan["execution_mode"] = "planned"
-            plan["requested_execution_mode"] = "planned"
-    plan["execution_mode"] = plan.get("requested_execution_mode") or "planned"
-    plan["parent_run_id"] = run_id
-    plan["notes"] = list(plan.get("notes") or []) + [
-        f"Full retry of failed or cancelled run {run_id}."
-    ]
+    # Replanning belongs to the fresh root ledger, never the failed parent's.
     new_run = store.create_agent_run(
         db,
         task=original.task,
@@ -1579,12 +1620,53 @@ def retry_task(
         run_role="root",
         engine_version="legacy",
     )
+    plan = None
+    if reuse_plan and original.plan_json:
+        try:
+            plan = json.loads(original.plan_json)
+        except json.JSONDecodeError:
+            plan = None
+    if not isinstance(plan, dict):
+        original_plan = _parse_run_plan(original)
+        plan = _plan_with_root_budget(db, new_run.run_id, plan_task,
+            task=original.task,
+            allowed_tools=allowed_tools,
+            source_mode=original.source_mode,
+            execution_mode_override=(
+                original_plan.get("requested_execution_mode")
+                or original_plan.get("execution_mode")
+            ),
+            skill_name="auto",
+            research_mode=(request.research_mode if request else None),
+        )
+    # A retry is a fresh execution. Never inherit approval, runtime, Scope,
+    # Gate, lineage, or finalization state from the failed Run.
+    if new_run.status != "failed":
+        _clear_retry_derived_state(plan)
+    if isinstance(plan.get("steps"), list):
+        _ensure_search_fetch_dependency(
+            plan["steps"], plan.setdefault("notes", []), original.task,
+            set(plan.get("allowed_tools") or allowed_tools or []),
+        )
+    if request and request.research_mode:
+        plan["research_mode"] = request.research_mode
+        if request.research_mode == "quick":
+            plan["execution_mode"] = "planned"
+            plan["requested_execution_mode"] = "planned"
+    plan["execution_mode"] = plan.get("requested_execution_mode") or "planned"
+    plan["parent_run_id"] = run_id
+    plan["notes"] = list(plan.get("notes") or []) + [
+        f"Full retry of failed or cancelled run {run_id}."
+    ]
     store.update_agent_run_plan(db, new_run.run_id, plan)
     _persist_plan_config_snapshot(db, new_run.run_id, settings.get_safe_runtime_config_summary(), plan)
-    if plan.get("requires_plan_approval") or any(
+    if new_run.status != "failed" and (plan.get("requires_plan_approval") or any(
         trace.tool_name == "plan_approval" for trace in store.list_tool_traces(db, run_id)
-    ):
+    )):
         store.update_agent_run_status(db, new_run.run_id, WAITING_HUMAN_PLAN, None)
+        from app.agent.budget import ensure_budget, pause_budget_deadline
+        ensure_budget(db, new_run.run_id, settings)
+        pause_budget_deadline(db, new_run.run_id)
     return TaskCreateResponse(
         run_id=new_run.run_id,
         status=new_run.status,
@@ -1603,6 +1685,8 @@ def _clear_retry_derived_state(plan: dict[str, Any]) -> None:
         "confirmation",
         "react_state",
         "execution_budget",
+        "execution_budget_pause",
+        "quick_refetch",
         "research_outcome",
         "preflight",
         "evidence_revision",
@@ -1643,6 +1727,7 @@ def _clear_retry_derived_state(plan: dict[str, Any]) -> None:
         "discovery_report_sha256",
         "terminal_requirement_assessment",
         "report_revision",
+        "report_generation",
         "quality_gate",
         "research_quality_gate",
         "gate",

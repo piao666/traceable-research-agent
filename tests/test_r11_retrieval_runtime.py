@@ -48,14 +48,21 @@ def test_r11_environment_settings_are_bounded() -> None:
     assert settings.content_dedup_enabled is False
 
 
-def test_advanced_environment_documents_r11_without_expanding_minimal_profile() -> None:
+def test_advanced_environment_documents_r11_while_minimal_profile_keeps_safe_switches() -> None:
     full = (ROOT / ".env.example.full").read_text(encoding="utf-8")
     minimal = (ROOT / ".env.example").read_text(encoding="utf-8")
+    # The recommended profile exposes safe router/backend switches (with
+    # expensive backends default-disabled) so a deployer can see their runtime
+    # posture. Tuning knobs and provider selection remain advanced-only.
     for key in (
         "FETCH_ROUTER_ENABLED",
         "FETCH_HTTP_ENABLED",
         "FETCH_BROWSER_ENABLED",
         "FETCH_REMOTE_EXTRACT_ENABLED",
+    ):
+        assert f"{key}=" in full
+        assert f"{key}=" in minimal
+    for key in (
         "FETCH_BROWSER_TIMEOUT_SECONDS",
         "FETCH_BROWSER_MAX_CONCURRENCY",
         "FETCH_REMOTE_EXTRACT_PROVIDER_ORDER",

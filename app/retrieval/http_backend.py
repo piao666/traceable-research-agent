@@ -32,7 +32,7 @@ from app.tools.fetch_cache import (
     FetchCache,
     FetchCacheEntry,
 )
-from app.tools.ssrf import validate_url
+from app.tools.ssrf import is_trusted_proxy_url, validate_url
 from app.tools.web_content_cleaner import clean_web_snippet
 
 
@@ -66,6 +66,8 @@ class HttpBackend:
         max_redirects: int = 5,
         enabled: bool = True,
         quality_min_score: float = 0.55,
+        ssrf_trusted_local_proxy_enabled: bool = False,
+        ssrf_trusted_local_proxy_url: str | None = None,
     ) -> None:
         self.client = client
         self.cache = cache
@@ -76,6 +78,24 @@ class HttpBackend:
         self.max_redirects = max_redirects
         self.enabled = enabled
         self.quality_min_score = quality_min_score
+        configured_proxy = (
+            ssrf_trusted_local_proxy_url if ssrf_trusted_local_proxy_enabled else None
+        )
+        self.ssrf_trusted_local_proxy_url = (
+            configured_proxy if is_trusted_proxy_url(configured_proxy) else None
+        )
+        # When this backend owns the transport, bind the configured proxy
+        # directly to that client.  A synthetic environment is supplied only
+        # to SSRF validation so Fake-IP DNS is accepted for the exact transport
+        # we are about to create; model/search clients remain unaffected.
+        self._owned_proxy_environment = (
+            {
+                "http_proxy": self.ssrf_trusted_local_proxy_url,
+                "https_proxy": self.ssrf_trusted_local_proxy_url,
+            }
+            if self.client is None and self.ssrf_trusted_local_proxy_url
+            else None
+        )
 
     def fetch(self, request: FetchRequest) -> FetchResult:
         started = time.monotonic()
@@ -88,7 +108,11 @@ class HttpBackend:
                 tool_scoped=True,
             )
             return self._failed(requested, failure, started)
-        transport_url = _validated_url(requested)
+        transport_url = _validated_url(
+            requested,
+            trusted_local_proxy_url=self.ssrf_trusted_local_proxy_url,
+            proxy_environment=self._owned_proxy_environment,
+        )
         if transport_url is None:
             failure = make_failure(
                 FetchFailureCode.SSRF_BLOCKED,
@@ -120,11 +144,14 @@ class HttpBackend:
 
         owned_client = None
         if self.client is None:
-            owned_client = httpx.Client(
-                timeout=request.timeout_seconds,
-                headers={"User-Agent": USER_AGENT},
-                follow_redirects=False,
-            )
+            client_options: dict[str, Any] = {
+                "timeout": request.timeout_seconds,
+                "headers": {"User-Agent": USER_AGENT},
+                "follow_redirects": False,
+            }
+            if self.ssrf_trusted_local_proxy_url:
+                client_options["proxy"] = self.ssrf_trusted_local_proxy_url
+            owned_client = httpx.Client(**client_options)
         context = owned_client if owned_client is not None else nullcontext(self.client)
         try:
             with context as client:
@@ -303,7 +330,11 @@ class HttpBackend:
                     "Redirect response did not include a Location header.",
                 )
             target = urljoin(response_url or current, location)
-            safe_target = _validated_url(target)
+            safe_target = _validated_url(
+                target,
+                trusted_local_proxy_url=self.ssrf_trusted_local_proxy_url,
+                proxy_environment=self._owned_proxy_environment,
+            )
             if safe_target is None:
                 return None, chain, make_failure(
                     FetchFailureCode.SSRF_BLOCKED,
@@ -592,7 +623,12 @@ class HttpBackend:
         }
 
 
-def _validated_url(url: str) -> str | None:
+def _validated_url(
+    url: str,
+    *,
+    trusted_local_proxy_url: str | None = None,
+    proxy_environment: dict[str, str] | None = None,
+) -> str | None:
     try:
         parsed = urlsplit(url)
         # Accessing ``port`` also rejects malformed and out-of-range ports.
@@ -601,7 +637,11 @@ def _validated_url(url: str) -> str | None:
             return None
     except ValueError:
         return None
-    return validate_url(url)
+    return validate_url(
+        url,
+        trusted_local_proxy_url=trusted_local_proxy_url,
+        proxy_environment=proxy_environment,
+    )
 
 
 def _read_bounded(response: httpx.Response, max_bytes: int) -> tuple[bytes | None, int]:

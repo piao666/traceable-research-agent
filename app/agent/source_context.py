@@ -133,7 +133,8 @@ def build_source_context(traces, *, max_sources: int = 64) -> dict:
                 if content.strip() and not row.get("error") and not page_content_issue(content) and trace.status == "success":
                     source.update(fetch_status="fetched", content_basis=row.get("content_basis") or "full_text",
                                   snippet=redact_text(content)[:360], content_length=len(content),
-                                  content_hash=hashlib.sha256(content.encode()).hexdigest())
+                                  content_hash=hashlib.sha256(content.encode()).hexdigest(),
+                                  final_url=source_url(row.get("final_url")))
                 elif source["fetch_status"] != "fetched":
                     source["fetch_status"] = "failed"
             elif content:

@@ -23,7 +23,7 @@ from app.agent.executor import (
     _persist_reference_verification,
     run_plan,
 )
-from app.agent.report_generation import record_report_synthesis_trace, resolve_report_llm_client
+from app.agent.report_generation import ReportGenerationAudit, check_report_generation_not_cancelled, resolve_report_llm_client
 from app.agent.preflight import enforce_execution_readiness, check_plan_readiness
 from app.agent.execution_policy import policy_failure
 from app.agent.tool_recovery import (
@@ -33,6 +33,7 @@ from app.agent.tool_recovery import (
     unavailable_reason,
 )
 from app.agent.source_context import build_source_context, prompt_source_context
+from app.agent.evidence_requirements import assess_required_evidence
 from app.agent.budget import (
     FinalizationRequired,
     budget_client,
@@ -51,6 +52,7 @@ from app.agent.react_schema import (
     validate_react_decision,
 )
 from app.agent.reporter import generate_markdown_report, save_report
+from app.evidence.citation_validator import validator_version_for
 from app.agent.source_intake import execute_governed_operation
 from app.config import Settings
 from app.evidence.service import materialize_execution_provenance
@@ -65,7 +67,9 @@ from app.trace.logger import record_tool_result, record_trace_event
 from app.trace.models import AgentRun
 
 
-MAX_NON_EXECUTION_REPLACEMENTS = 2
+# A rejected/non-executed decision gets one chance to be replaced.  A later
+# terminal-evidence rejection must not turn into an unbounded extra decision.
+MAX_NON_EXECUTION_REPLACEMENTS = 1
 MAX_DYNAMIC_REACT_STEPS = 32
 ACADEMIC_DISCOVERY_TOOLS = {
     "arxiv_search",
@@ -158,7 +162,87 @@ def _early_finish_rejection_reason(
     plan: dict[str, Any],
     allowed_tools: list[str],
     state: dict[str, Any],
+    settings: Settings | None = None,
 ) -> str | None:
+    contract = plan.get("task_contract") or {}
+    substantive = str(contract.get("evidence_requirement") or "").casefold() == "substantive"
+    context = state.get("source_context") or {}
+    sources = context.get("sources") if isinstance(context, dict) else []
+    if substantive:
+        # Source context is rebuilt from persisted traces. Project its fetched
+        # records into the same admission contract used by Quick and Deep so a
+        # ReAct finish cannot accept a page shell or unrelated body merely
+        # because it has a fetched flag. Finalization repeats the check on the
+        # complete persisted provenance bundle.
+        from app.agent.evidence_requirements import assess_required_evidence
+
+        from app.agent.source_context import source_url
+        from app.evidence.policy import classify_source, current_documentation_channel, load_source_policy
+
+        constraints = contract.get("source_constraints") or {}
+        official_only = bool(constraints.get("official_only"))
+        current_docs = constraints.get("current_official_documentation") is True
+        source_policy = load_source_policy(settings.source_policy_path) if (official_only or current_docs) and settings is not None else None
+        documents: list[dict[str, object]] = []
+        snapshots: list[dict[str, object]] = []
+        passages: list[dict[str, object]] = []
+        for index, source in enumerate(sources or [], 1):
+            if not isinstance(source, dict) or source.get("fetch_status") != "fetched":
+                continue
+            source_id = str(source.get("source_id") or index)
+            snapshot_id = f"react-{source_id}"
+            url = source_url(source.get("url"))
+            # The source queue is reconstructed from persisted tool traces.
+            # Apply the same configured authority policy as materialization;
+            # a model-provided official flag or lookalike hostname is not proof.
+            source_class = (
+                classify_source("web", url, {}, source_policy)
+                if source_policy is not None and url is not None else "unknown"
+            )
+            final_url = source_url(source.get("final_url"))
+            current_verified = False
+            if source_policy is not None and source_class == "official" and final_url and url:
+                final_current, _ = current_documentation_channel(final_url, source_policy)
+                canonical_current, _ = current_documentation_channel(url, source_policy)
+                current_verified = final_current and canonical_current
+            documents.append({
+                "document_id": source_id,
+                "title": str(source.get("title") or ""),
+                "canonical_uri": url or "",
+                "metadata": {"evidence_role": "primary_content", "source_class": source_class},
+            })
+            snapshots.append({"snapshot_id": snapshot_id, "document_id": source_id,
+                              "content_hash": str(source.get("content_hash") or ""),
+                              "metadata": {"current_channel_verified": current_verified}})
+            passages.append({
+                "passage_id": f"react-passage-{source_id}", "snapshot_id": snapshot_id,
+                "text": str(source.get("snippet") or ""),
+                "content_basis": str(source.get("content_basis") or ""),
+                "metadata": {"evidence_role": "primary_content"},
+            })
+        assessment = assess_required_evidence(contract, {
+            "source_documents": documents, "source_snapshots": snapshots, "passages": passages,
+        })
+        if not assessment.passed:
+            return (
+                "Substantive research cannot finish until task-relevant, content-bearing evidence is available: "
+                + ", ".join(gap.code for gap in assessment.gaps)
+                + "."
+            )
+    has_body = any(
+        isinstance(source, dict)
+        and source.get("fetch_status") == "fetched"
+        and str(source.get("content_basis") or "") in {"full_text", "partial", "table", "structured"}
+        for source in (sources or [])
+    )
+    if substantive and not has_body and "web_fetcher" in allowed_tools:
+        pending = next((source for source in (sources or []) if isinstance(source, dict)
+                        and source.get("fetch_status") in {"pending", "failed"}), None)
+        if pending:
+            return (
+                "Substantive research cannot finish with discovery-only evidence. "
+                "Use web_fetcher with the recorded source_id to read a task-relevant page before finishing."
+            )
     scenario = _research_scenario(plan)
     if scenario is None:
         return None
@@ -231,13 +315,27 @@ def _react_step_allowance(plan: dict[str, Any], settings_obj: Settings) -> int:
             len(contract.get("entities") or []) + len(contract.get("dimensions") or []) + 2,
         )
         extension = max(extension, min(24, complexity))
-    return min(capacity, base + extension)
+    allowance = min(capacity, base + extension)
+    # PEAR has a shared Scope budget. The discovery node must not spend the
+    # entire allowance before required topic branches can run. Each child is
+    # likewise bounded; the atomic budget still decides every real call.
+    if plan.get("engine_version") == "v2" and plan.get("research_controller") == "pear":
+        return min(allowance, 4 if plan.get("run_role") == "root" else 7)
+    return allowance
 
 
 def _tool_call_limit(plan: dict[str, Any], settings_obj: Settings, name: str) -> int:
     """Return a task-aware per-tool allowance below the root safety ceiling."""
 
     base = max(1, int(settings_obj.react_same_tool_max_calls))
+    if (plan.get("engine_version") == "v2" and plan.get("research_controller") == "pear"
+            and plan.get("run_role") == "root"):
+        # The root discovers candidates. Mandatory topic children own deep
+        # retrieval; repeated root fetches starve their shared token reserve.
+        if name == "web_fetcher":
+            return 1
+        if name == "tavily_search":
+            return min(base, 2)
     contract = plan.get("task_contract") or {}
     broad_research = _research_scenario(plan) is not None or contract.get("goal_kind") == "comparison"
     if broad_research and name in {"tavily_search", "mcp_github_search", "web_fetcher", "pdf_reader"}:
@@ -247,6 +345,35 @@ def _tool_call_limit(plan: dict[str, Any], settings_obj: Settings, name: str) ->
         # it. The root atomic tool budget remains the authoritative hard cap.
         return max(base, adaptive)
     return base
+
+
+def _first_branch_web_discovery_only(
+    plan: dict[str, Any], state: dict[str, Any], active_tools: list[str]
+) -> bool:
+    """Give an external-web child a broad URL discovery before niche indexes.
+
+    Academic indexes can be useful later but their landing pages are often
+    metadata rather than task-relevant body evidence. Keep explicit URLs and
+    unavailable Tavily out of this route; all later decisions retain the
+    original allowed-tool set and governed operation checks.
+    """
+    if (
+        plan.get("engine_version") != "v2"
+        or plan.get("research_controller") != "pear"
+        or plan.get("run_role") == "root"
+        or state.get("observation_history")
+        or "tavily_search" not in active_tools
+    ):
+        return False
+    contract = plan.get("task_contract") or {}
+    requirements = contract.get("evidence_scope_requirements") or []
+    if not requirements or not all(
+        isinstance(item, dict) and item.get("source_scope") == "external_web"
+        for item in requirements
+    ):
+        return False
+    task = str(contract.get("original_task") or plan.get("task") or "")
+    return not bool(re.search(r"https?://\S+", task, re.I))
 
 
 def _tool_is_relevant(plan: dict[str, Any], name: str) -> bool:
@@ -263,7 +390,7 @@ def _grant_non_execution_replacement(
     state: dict[str, Any],
     settings_obj: Settings,
 ) -> bool:
-    """Replace a bounded number of rejected decisions without widening budgets."""
+    """Grant the single bounded replacement for a non-executed decision."""
 
     granted = int(state.get("replacement_steps_granted") or 0)
     offset = int(state.get("step_offset") or 0)
@@ -523,8 +650,28 @@ def _complete_report(
         traces,
         settings_obj,
     )
+    evidence_assessment = assess_required_evidence(plan.get("task_contract"), provenance_bundle)
+    plan["evidence_assessment"] = evidence_assessment.as_dict()
+    if not evidence_assessment.passed:
+        outcome = dict(plan.get("research_outcome") or {})
+        outcome.update({
+            "status": "failed",
+            "error_code": "required_evidence_coverage_incomplete",
+            "message": "Required task-relevant body evidence is incomplete.",
+            "evidence_assessment": evidence_assessment.as_dict(),
+        })
+        plan["research_outcome"] = outcome
+        _persist_plan(db, run_id, plan)
+        record_trace_event(
+            db, run_id, max((trace.step_no for trace in traces), default=0) + 1,
+            "required_evidence_gate", "failed", {}, outcome["message"],
+            evidence_assessment.as_dict(), error_message=outcome["message"],
+        )
+        finalize_terminal_decision(db, run, plan, traces=traces)
+        return _summary(store.get_fresh_agent_run(db, run_id), plan, outcome["message"])
     _llm = resolve_report_llm_client(settings_obj, llm_client)
-    report_llm_responses: list[Any] = []
+    report_audit = ReportGenerationAudit(db, run_id, traces)
+    report_llm_responses = report_audit.responses
     citation_validation_reports: list[Any] = []
     reference_verification_reports: list[Any] = []
     try:
@@ -536,36 +683,41 @@ def _complete_report(
             llm_client=_llm,
             provenance_bundle=provenance_bundle,
             report_type=run.report_type,
-            usage_callback=report_llm_responses.append,
+            usage_callback=report_audit.usage_callback,
             citation_validation_callback=citation_validation_reports.append,
             reference_verification_callback=reference_verification_reports.append,
+            revision_attempt_callback=report_audit.persist_attempt,
+            cancellation_check=lambda: check_report_generation_not_cancelled(db, run_id),
         )
     except Exception as exc:
-        if report_llm_responses:
-            response = report_llm_responses[-1]
-            record_report_synthesis_trace(
-                db,
-                run_id,
-                traces,
-                response,
-                success=bool(
-                    response.success
-                    and str(response.content or "").strip()
-                    and not response.metadata.get("error_type")
-                ),
-            )
         from app.agent.budget import BudgetExceeded
         if isinstance(exc, BudgetExceeded):
             raise
         failed = fail_execution(db, run_id, exc)
         return _summary(failed, plan, failed.error_message)
+    draft_result = plan.get("report_draft_result")
     if report_llm_responses:
-        response = report_llm_responses[-1]
-        record_report_synthesis_trace(db, run_id, traces, response, success=True)
-        if response.usage:
-            state["_llm_token_in"] = int(state.get("_llm_token_in") or 0) + response.usage.prompt_tokens
-            state["_llm_token_out"] = int(state.get("_llm_token_out") or 0) + response.usage.completion_tokens
+        # Every retained draft/revision response consumes budget; summing only
+        # the last response under-reported a bounded repair loop.
+        state["_llm_token_in"] = int(state.get("_llm_token_in") or 0) + sum(
+            int(response.usage.prompt_tokens or 0)
+            for response in report_llm_responses if response.usage
+        )
+        state["_llm_token_out"] = int(state.get("_llm_token_out") or 0) + sum(
+            int(response.usage.completion_tokens or 0)
+            for response in report_llm_responses if response.usage
+        )
         traces = store.list_tool_traces(db, run_id)
+    if report_audit.attempts:
+        plan["report_revision_attempts"] = report_audit.attempts
+    plan["report_generation"] = {
+        **report_audit.manifest(),
+        "adopted": bool((plan.get("report_draft_result") or {}).get("adopted")),
+        "validator_version": validator_version_for(citation_validation_reports[-1] if citation_validation_reports else None),
+    }
+    if isinstance(draft_result, dict):
+        plan["report_draft_result"] = draft_result
+    store.replace_agent_run_plan(db, run_id, plan)
     report_path = save_report(run_id, markdown)
     store.update_agent_run_report(db, run_id, report_path)
     _persist_citation_validation(
@@ -594,19 +746,9 @@ def _complete_report(
     plan = json.loads(run.plan_json or "{}")
     finalize_terminal_decision(db, run, plan, traces=traces)
     run = store.get_fresh_agent_run(db, run_id)
-    if run.status == "incomplete" and "未完成" not in markdown:
-        markdown = markdown.rstrip() + "\n\n## 12. 完成状态审计\n\n> 本报告未完成最终研究完整性核验，内容仅作为审计中间结果。\n"
-        report_path = save_report(run_id, markdown)
-        run = store.update_agent_run_report(db, run_id, report_path)
-        plan = json.loads(run.plan_json or "{}")
-        _persist_final_report_gate(
-            db, run, plan, markdown, provenance_bundle, report_path,
-            citation_validation_reports,
-        )
-        run = store.get_fresh_agent_run(db, run_id)
-        plan = json.loads(run.plan_json or "{}")
-        finalize_terminal_decision(db, run, plan, traces=traces)
-        run = store.get_fresh_agent_run(db, run_id)
+    # Terminal decisions bind the saved report bytes.  Incomplete state is
+    # surfaced by the persisted integrity fields/UI; never append a banner
+    # after the terminal hash has been recorded.
 
     # ── Phase 6: Summarize LLM token/cost ─────────────────────────────
     token_in = int(state.get("_llm_token_in") or 0)
@@ -835,7 +977,13 @@ def run_react_task(
         for name in allowed_tools:
             if unavailable_reason(state, name, tool_limits[name]):
                 continue
-            readiness = check_plan_readiness({**plan, "steps": [{"tool_name": name}], "required_tools": []},
+            # This is capability admission for a prospective ReAct action,
+            # not final-plan validation: its runtime arguments do not exist
+            # until the model chooses the action.  Keep the tool in
+            # required_tools so permissions/configuration are checked, while
+            # the governed-operation boundary validates the concrete args
+            # immediately before dispatch.
+            readiness = check_plan_readiness({**plan, "steps": [], "required_tools": [name]},
                                             settings, llm_available=client.is_available())
             if readiness["ready"]:
                 active_tools.append(name)
@@ -845,6 +993,8 @@ def run_react_task(
                     "Optional tool unavailable; continue with other permitted capabilities.",
                     {"tool_name": name, "reason": "capability_unavailable", "executed": False,
                      "blockers": readiness["blockers"]})
+        if _first_branch_web_discovery_only(plan, state, active_tools):
+            active_tools = ["tavily_search"]
         # Even when tool slots are exhausted the model may assess already-read
         # evidence and explicitly finish. No tool permission is restored here.
         if pending_decision is not None and step_no == pending_step_no:
@@ -869,11 +1019,12 @@ def run_react_task(
                 {
                     **prompt_source_context(state["source_context"]),
                     "coverage_matrix": state["coverage_matrix"],
+                    "research_goal": plan.get("research_goal"),
                 },
                 plan.get("task_contract"),
             )
             try:
-                response = client.structured_complete(messages, temperature=0.0, max_tokens=None)
+                response = client.structured_complete(messages, temperature=0.0, max_tokens=3000)
             except FinalizationRequired:
                 return _finalize_at_research_boundary(
                     db, run_id, plan, state, step_no, settings, client
@@ -974,6 +1125,28 @@ def run_react_task(
                     _persist_plan(db, run_id, plan)
                     continue
                 if exc.error_type in terminal_provider_errors:
+                    # Credentials and provider admission cannot be recovered
+                    # by executing a different planned path.  The decision
+                    # trace is retained, but a later evidence shortfall must
+                    # not downgrade this hard provider failure to retryable
+                    # ``incomplete``.
+                    if exc.error_type in {
+                        "auth_error", "permission_error", "invalid_request", "model_not_found",
+                    }:
+                        outcome = dict(plan.get("research_outcome") or {})
+                        outcome.update({
+                            "status": "failed",
+                            "error_code": "provider_failure",
+                            "message": (
+                                f"Provider decision failed with {exc.error_type}. "
+                                "Inspect the persisted Trace and correct provider configuration before retrying."
+                            ),
+                        })
+                        plan["research_outcome"] = outcome
+                        plan["react_state"] = state
+                        _persist_plan(db, run_id, plan)
+                        finalize_terminal_decision(db, run, plan, force_failure="provider_failure")
+                        return _summary(store.get_fresh_agent_run(db, run_id), plan, outcome["message"])
                     if settings.react_fallback_to_planned and not any(
                         item.get("success") for item in state.get("observation_history") or []
                     ):
@@ -1008,7 +1181,7 @@ def run_react_task(
                 continue
 
         if is_finish_action(decision.action):
-            rejection_reason = _early_finish_rejection_reason(plan, allowed_tools, state)
+            rejection_reason = _early_finish_rejection_reason(plan, allowed_tools, state, settings)
             if rejection_reason:
                 state["invalid_decisions"] = int(state.get("invalid_decisions") or 0) + 1
                 metadata = _react_metadata(
@@ -1292,6 +1465,21 @@ def run_react_task(
             latency_ms_delta=latency_ms,
         )
 
+    if _branch_evidence_goal_met_at_limit(db, run_id, plan, settings):
+        # A research-tree child is an evidence-acquisition unit, not the
+        # report writer. Its objective can be verified deterministically from
+        # persisted, task-eligible body passages even when the actor spent its
+        # last decision reading a source rather than emitting a prose finish.
+        # The root Scope and final citation/report gates remain unchanged.
+        state["goal_status"] = "achieved"
+        state["finish_summary"] = "Required trace-backed branch evidence was acquired."
+        record_trace_event(
+            db, run_id, int(state["step_limit"]), "finish", "success",
+            {"action": "finish"}, state["finish_summary"],
+            {"metadata": {"execution_mode": "react", "finish_reason": "branch_evidence_goal_met"}},
+        )
+        return _complete_report(db, run_id, plan, state, "branch_evidence_goal_met", settings, client)
+
     reason = f"react_max_steps reached: limit={state['max_steps']}."
     record_trace_event(
         db,
@@ -1311,3 +1499,23 @@ def run_react_task(
         },
     )
     return _complete_report(db, run_id, plan, state, "max_steps_reached", settings, client, limitation=True)
+
+
+def _branch_evidence_goal_met_at_limit(db: Session, run_id: str, plan: dict[str, Any], settings: Settings) -> bool:
+    if not plan.get("defer_to_research_scope") or plan.get("run_role") == "root":
+        return False
+    from app.agent.evidence_requirements import assess_required_evidence
+
+    contract = plan.get("task_contract") or {}
+    if contract.get("evidence_requirement") != "substantive":
+        return False
+    run = store.get_fresh_agent_run(db, run_id)
+    if run is None:
+        return False
+    traces = store.list_tool_traces(db, run_id)
+    if not any(trace.status == "success" and trace.tool_name in {"web_fetcher", "pdf_reader", "file_reader"} for trace in traces):
+        return False
+    provenance = materialize_execution_provenance(
+        db, run, plan, load_observations(traces), traces, settings,
+    )
+    return bool(provenance and assess_required_evidence(contract, provenance).passed)

@@ -49,7 +49,7 @@ export function ReportPage() {
     {graphError && <div className="warning-banner">引用图谱读取失败：{graphError}。以下引用暂不可解析，不代表已验证。</div>}
     {report && !report.exists && !loading && <Panel title={unavailable}><p>{report.availability === "missing" ? "数据库记录了报告路径，但文件不存在。请检查部署端 workspace 挂载或备份；不会用诊断文本冒充报告。" : "请返回工作台查看配置、审批、执行状态或失败原因。"}</p><p>{report.message}</p><Link className="source-link" to={`/runs/${runId}`}>返回工作台</Link></Panel>}
     {report?.exists && <>
-      <aside className="warning-banner">{partial ? "部分报告：研究未完成，以下内容可读和导出，但不能作为完整研究结果验收。" : report.requires_review ? "此为历史报告，尚未按当前规则复核。" : "报告生成不等于验收通过。"} 点击可解析的引用编号核对原始片段；无有效引用时不可评估。</aside>
+      <aside className="warning-banner">{partial ? "部分报告：研究未完成，以下内容可读和导出，但不能作为完整研究结果验收。" : report.is_legacy_result ? "此为历史报告，尚未按当前规则复核。" : "报告生成不等于验收通过。"} 点击可解析的引用编号核对原始片段；无有效引用时不可评估。</aside>
       {[...targets.values()].some((target) => target.origin === "source_excerpt") && <p className="summary-callout">本报告包含可追溯的来源摘录。摘录关联成功不代表计划目标或模型综合结论已被事实核实，请逐条核对证据。</p>}
       {report.quality_warnings?.map((warning) => <p className="warning-banner" key={warning}>{localizeQualityWarning(warning)}</p>)}
       <Panel><SafeMarkdown markdown={report.markdown} runId={runId} citations={targets} /></Panel>

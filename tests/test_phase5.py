@@ -58,57 +58,6 @@ class DeepeningContextCompressionTests(unittest.TestCase):
 
 # ── Deepening response parsing ─────────────────────────────────────
 
-class DeepeningResponseParsingTests(unittest.TestCase):
-    """_parse_deepening_response should handle various LLM output forms."""
-
-    def _parse(self, content: str):
-        from app.agent.deepening import _parse_deepening_response
-        return _parse_deepening_response(content)
-
-    def test_valid_json(self):
-        result = self._parse(json.dumps({
-            "learnings": ["L1", "L2"],
-            "follow_up_queries": ["Q1"],
-            "is_comprehensive": False,
-        }))
-        self.assertEqual(result["learnings"], ["L1", "L2"])
-        self.assertEqual(result["follow_up_queries"], ["Q1"])
-        self.assertFalse(result["is_comprehensive"])
-
-    def test_markdown_wrapped_json(self):
-        result = self._parse("```json\n{\"learnings\": [\"L1\"], \"follow_up_queries\": [], \"is_comprehensive\": true}\n```")
-        self.assertEqual(result["learnings"], ["L1"])
-        self.assertTrue(result["is_comprehensive"])
-
-    def test_empty_string(self):
-        result = self._parse("")
-        self.assertEqual(result["learnings"], [])
-        self.assertFalse(result["is_comprehensive"])
-        self.assertEqual(result["error"], "invalid_deepening_response")
-
-    def test_invalid_json(self):
-        result = self._parse("not valid json at all")
-        self.assertEqual(result["learnings"], [])
-        self.assertFalse(result["is_comprehensive"])
-        self.assertEqual(result["error"], "invalid_deepening_response")
-
-    def test_missing_keys(self):
-        result = self._parse("{}")
-        self.assertEqual(result["learnings"], [])
-        self.assertEqual(result["follow_up_queries"], [])
-        # is_comprehensive defaults to False when key is absent
-        self.assertFalse(result["is_comprehensive"])
-
-    def test_comprehensive_stops_followups(self):
-        result = self._parse(json.dumps({
-            "learnings": ["Done"],
-            "follow_up_queries": [],
-            "is_comprehensive": True,
-        }))
-        self.assertTrue(result["is_comprehensive"])
-        self.assertEqual(result["follow_up_queries"], [])
-
-
 # ── Citation index rendering ───────────────────────────────────────
 
 class CitationIndexTests(unittest.TestCase):
@@ -441,32 +390,45 @@ class Phase5ConfigDefaultsTests(unittest.TestCase):
 # ── Deepening message building ─────────────────────────────────────
 
 class DeepeningMessageTests(unittest.TestCase):
-    """_build_deepening_messages should format observations for LLM."""
+    """The PEAR planner includes source observations and prior queries."""
+
+    def _plan(self, observations, prior_queries):
+        from app.llm.base import LLMResponse
+        from app.research.branch_planner import plan_research_branches
+
+        class Client:
+            def structured_complete(inner, messages, **kwargs):
+                inner.messages = messages
+                return LLMResponse(success=True, provider="fixture", content='{"branches": [], "is_comprehensive": true}')
+
+        client = Client()
+        result = plan_research_branches(
+            client, task="Research task", observations=observations,
+            prior_queries=prior_queries, breadth=3, depth=1, contract={},
+        )
+        return client.messages[1].content, result
 
     def test_builds_messages_with_observations(self):
-        from app.agent.deepening import _build_deepening_messages
         observations = [
             {"tool_name": "tavily_search", "success": True, "output_summary": "Found 5 results."},
             {"tool_name": "web_fetcher", "success": True, "output_summary": "Fetched 3 pages."},
         ]
-        messages = _build_deepening_messages("Research task", observations, [], 3)
-        self.assertEqual(len(messages), 2)
-        self.assertIn("Research task", messages[1].content)
-        self.assertIn("tavily_search", messages[1].content)
-        self.assertIn("web_fetcher", messages[1].content)
+        prompt, result = self._plan(observations, [])
+        self.assertIn("Research task", prompt)
+        self.assertIn("tavily_search", prompt)
+        self.assertIn("web_fetcher", prompt)
+        self.assertTrue(result["is_comprehensive"])
 
     def test_includes_prior_learnings(self):
-        from app.agent.deepening import _build_deepening_messages
-        messages = _build_deepening_messages("Task", [], ["Prior learning 1", "Prior learning 2"], 3)
-        self.assertIn("Prior learning 1", messages[1].content)
+        prompt, _ = self._plan([], ["Prior query 1", "Prior query 2"])
+        self.assertIn("Prior query 1", prompt)
 
     def test_failed_observations_marked(self):
-        from app.agent.deepening import _build_deepening_messages
         observations = [
             {"tool_name": "tavily_search", "success": False, "output_summary": "API error"},
         ]
-        messages = _build_deepening_messages("Task", observations, [], 3)
-        self.assertIn("❌", messages[1].content)
+        prompt, _ = self._plan(observations, [])
+        self.assertIn('"success": false', prompt)
 
 
 # ── Phase 5 Bug Fix Regression Tests ──────────────────────────────

@@ -19,6 +19,7 @@ class ExecutionViewTests(unittest.TestCase):
     setUp = recovery.RecoveryTests.setUp
     skill_plan = recovery.RecoveryTests.skill_plan
     run_script = recovery.RecoveryTests.run_script
+    assert_unvalidated_fixture_is_incomplete = recovery.RecoveryTests.assert_unvalidated_fixture_is_incomplete
 
     def create(self, state=None, allowed=None):
         run = store.create_agent_run(self.db, "R8 view fixture", "summary", "real")
@@ -37,6 +38,17 @@ class ExecutionViewTests(unittest.TestCase):
         self.assertTrue(response.execution_insights.source_context.gaps.no_sources)
         self.assertEqual(run.plan_json, before)
         self.assertEqual(self.db.scalar(select(func.count()).select_from(RunBudget)), 0)
+
+    def test_plan_view_exposes_dynamic_step_binding_without_rewriting_plan(self):
+        run, _ = self.create()
+        before = run.plan_json
+
+        response = asyncio.run(get_task_plan(run.run_id, self.db))
+
+        fetch = next(step for step in response.steps if step.tool_name == "web_fetcher")
+        self.assertEqual(fetch.arguments_from, {"step_no": 1, "field": "results"})
+        self.assertEqual(fetch.arguments["urls"], [])
+        self.assertEqual(run.plan_json, before)
 
     def test_source_context_is_rebuilt_from_trace_not_fabricated_plan_context(self):
         run, plan = self.create({"source_context": {"sources": [{"url": "https://forged.invalid"}]}})
@@ -116,7 +128,7 @@ class ExecutionViewTests(unittest.TestCase):
         run, result, _, _ = self.run_script([recovery.decision("tavily_search", query="docs"),
             recovery.decision("mcp_github_search", query="repos"),
             recovery.decision("web_fetcher", urls=[recovery.URL]), recovery.decision("finish")])
-        self.assertEqual(result["status"], "completed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         response = asyncio.run(get_task_plan(run.run_id, self.db))
         TaskPlanResponse.model_validate_json(response.model_dump_json())
         self.assertEqual(response.execution_insights.source_context.gaps.fetched, 1)

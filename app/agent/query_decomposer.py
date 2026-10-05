@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 from app.llm.base import LLMClient, LLMMessage
 from app.llm.errors import classify_transport_error
+from app.agent.budget import BudgetExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +173,7 @@ def decompose_task(
     ]
 
     try:
-        response = llm_client.complete(messages)
+        response = llm_client.complete(messages, max_tokens=1000)
         if not response.success or not response.content:
             from app.security.redaction import redact_text
             logger.warning("Decomposition LLM call failed: %s", redact_text(response.error_message))
@@ -204,6 +205,8 @@ def decompose_task(
         logger.info("Decomposed '%s...' into %d sub-queries.", task[:40], len(sub_queries))
         return sub_queries
 
+    except BudgetExceeded:
+        raise
     except Exception as exc:
         from app.security.redaction import redact_text
         logger.warning("Sub-query decomposition error: %s", redact_text(exc))

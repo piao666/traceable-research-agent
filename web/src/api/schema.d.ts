@@ -1149,6 +1149,8 @@ export interface components {
             terminal_decision?: {
                 [key: string]: unknown;
             } | null;
+            /** Is Legacy Result */
+            is_legacy_result?: boolean | null;
             /**
              * Requires Review
              * @default false
@@ -2068,6 +2070,10 @@ export interface components {
             arguments: {
                 [key: string]: unknown;
             };
+            /** Arguments From */
+            arguments_from?: {
+                [key: string]: unknown;
+            } | null;
             /** Expected Output */
             expected_output: string;
             /** Completion Criteria */
@@ -2183,6 +2189,8 @@ export interface components {
             terminal_decision?: {
                 [key: string]: unknown;
             } | null;
+            /** Is Legacy Result */
+            is_legacy_result?: boolean | null;
             /**
              * Requires Review
              * @default false
@@ -2934,6 +2942,8 @@ export interface components {
             terminal_decision?: {
                 [key: string]: unknown;
             } | null;
+            /** Is Legacy Result */
+            is_legacy_result?: boolean | null;
             /**
              * Requires Review
              * @default false
@@ -3113,6 +3123,16 @@ export interface components {
             deepening_learnings?: string[];
             /** Deepening Sub Run Ids */
             deepening_sub_run_ids?: string[];
+            /** Report Revision Id */
+            report_revision_id?: string | null;
+            /** Report Sha256 */
+            report_sha256?: string | null;
+            /** Report Manifest Sha256 */
+            report_manifest_sha256?: string | null;
+            /** Report Generation */
+            report_generation?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** TaskPreflightResponse */
         TaskPreflightResponse: {
@@ -3149,6 +3169,8 @@ export interface components {
             terminal_decision?: {
                 [key: string]: unknown;
             } | null;
+            /** Is Legacy Result */
+            is_legacy_result?: boolean | null;
             /**
              * Requires Review
              * @default false
@@ -3226,6 +3248,8 @@ export interface components {
             terminal_decision?: {
                 [key: string]: unknown;
             } | null;
+            /** Is Legacy Result */
+            is_legacy_result?: boolean | null;
             /**
              * Requires Review
              * @default false

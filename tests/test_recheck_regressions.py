@@ -17,6 +17,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.events import _seed_cursor_after_event_id
 from app.api.reports import download_report, get_report
+from app.agent.report_exporter import ReportExportResult
 from app.api.tasks import (
     _run_task_in_background,
     _tool_trace_response,
@@ -241,27 +242,6 @@ class ApiRegressionTests(unittest.TestCase):
             )
         self.assertEqual(unsupported.exception.status_code, 400)
 
-        def standard_runner(session, retried_run_id, settings_obj, llm_client=None):
-            retried_run = store.get_fresh_agent_run(session, retried_run_id)
-            retried_plan = json.loads(retried_run.plan_json)
-            self.assertFalse(settings_obj.deep_research_enabled)
-            self.assertEqual(retried_run.engine_version, "legacy")
-            self.assertIsNone(retried_run.research_scope_id)
-            self.assertFalse(
-                any(
-                    key.startswith("research_scope")
-                    or key
-                    in {
-                        "research_node_id",
-                        "engine_version",
-                        "defer_to_research_scope",
-                        "report_integrity",
-                    }
-                    for key in retried_plan
-                )
-            )
-            return {"run_id": retried_run_id, "status": "completed"}
-
         from app.agent.dispatcher import run_task_by_mode
 
         with (
@@ -271,7 +251,6 @@ class ApiRegressionTests(unittest.TestCase):
             ),
             patch(
                 "app.agent.react_executor.run_react_task",
-                side_effect=standard_runner,
             ) as standard,
             patch(
                 "app.agent.dispatcher._finalize_result",
@@ -287,8 +266,8 @@ class ApiRegressionTests(unittest.TestCase):
                     deep_research_enabled=False,
                 ),
             )
-        self.assertEqual(result["status"], "completed")
-        standard.assert_called_once()
+        self.assertEqual(result["status"], "failed")
+        standard.assert_not_called()
 
 
     def test_incomplete_is_terminal_retryable_and_fresh(self) -> None:
@@ -323,10 +302,8 @@ class ApiRegressionTests(unittest.TestCase):
     def test_incomplete_report_api_and_sse_share_hash_boundary(self) -> None:
         report_path = Path("workspace/reports") / "incomplete-boundary.md"
         report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(
-            "# Partial research\n\nResearch requirements were not fully established.\n",
-            encoding="utf-8",
-        )
+        canonical_bytes = b"# Partial research\n\nResearch requirements were not fully established.\n"
+        report_path.write_bytes(canonical_bytes)
         try:
             report_hash = hashlib.sha256(report_path.read_bytes()).hexdigest()
             plan = _plan()
@@ -347,6 +324,28 @@ class ApiRegressionTests(unittest.TestCase):
             self.assertIn("partial", response.message.lower())
             download = asyncio.run(download_report(run.run_id, "markdown", self.db))
             self.assertEqual(download.media_type, "text/markdown")
+            self.assertEqual(Path(download.path).read_bytes(), canonical_bytes)
+            self.assertEqual(hashlib.sha256(report_path.read_bytes()).hexdigest(), report_hash)
+            repeated_download = asyncio.run(download_report(run.run_id, "md", self.db))
+            self.assertEqual(Path(repeated_download.path).read_bytes(), canonical_bytes)
+            self.assertEqual(hashlib.sha256(report_path.read_bytes()).hexdigest(), report_hash)
+            subsequent = asyncio.run(get_report(run.run_id, self.db))
+            self.assertTrue(subsequent.exists)
+            self.assertIn("requirements were not fully established", subsequent.markdown)
+
+            # Markdown bypasses export so it cannot rewrite canonical bytes;
+            # non-Markdown export formats still retain their existing branch.
+            for report_format in ("docx", "pdf"):
+                with patch("app.api.reports.export_report", return_value=ReportExportResult(
+                    run_id=run.run_id, format=report_format,
+                    report_path=f"workspace/reports/{run.run_id}.{report_format}",
+                )) as export:
+                    converted = asyncio.run(download_report(run.run_id, report_format, self.db))
+                export.assert_called_once()
+                self.assertEqual(converted.media_type, (
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    if report_format == "docx" else "application/pdf"
+                ))
 
             report_path.write_text("# Tampered\n", encoding="utf-8")
             blocked = asyncio.run(get_report(run.run_id, self.db))
@@ -375,6 +374,19 @@ class ApiRegressionTests(unittest.TestCase):
         self.assertIn("execution_failed", failed.error_message)
         self.assertTrue(any(trace.tool_name == "execution_failure" and trace.status == "failed"
                             for trace in store.list_tool_traces(self.db, run.run_id)))
+
+    def test_background_failure_persistence_uses_fresh_session_fallback(self) -> None:
+        run = self._create_run()
+        store.update_agent_run_status(self.db, run.run_id, "running")
+        with (
+            patch("app.api.tasks.SessionLocal", self.Session),
+            patch("app.api.tasks.run_task_by_mode", side_effect=RuntimeError("forced failure")),
+            patch("app.api.tasks.fail_execution", side_effect=RuntimeError("failed transaction")),
+        ):
+            _run_task_in_background(run.run_id)
+        failed = store.get_fresh_agent_run(self.db, run.run_id)
+        self.assertEqual(failed.status, "failed")
+        self.assertIn("background recovery", failed.error_message)
 
     def test_trace_api_exposes_token_and_cost_metrics(self) -> None:
         run = self._create_run()

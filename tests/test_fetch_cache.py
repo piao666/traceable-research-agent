@@ -16,8 +16,21 @@ from app.tools.fetch_cache import FetchCache, FetchCacheEntry
 from app.tools.web_fetcher import web_fetch
 
 
-HTML_ONE = "<html><title>One</title><body><main>" + ("Primary cached content. " * 12) + "</main></body></html>"
-HTML_TWO = "<html><title>Two</title><body><main>" + ("Fresh replacement content. " * 12) + "</main></body></html>"
+HTML_ONE = """<html><title>One</title><body><main>
+Primary cached content explains how a retrieval cache stores an extracted source view.
+Each entry records the canonical URL, source hash, fetch time, and extraction method.
+Readers can reuse a fresh entry without making another network request.
+When an entry expires, the retriever obtains a current response and evaluates it again.
+The page distinguishes a display-length excerpt from the complete cached source text.
+That distinction permits later callers to request a longer view without losing provenance.
+</main></body></html>"""
+HTML_TWO = """<html><title>Two</title><body><main>
+Fresh replacement content describes replacing an expired cache entry with new source text.
+The refresh retains the canonical URL while producing a different content hash and timestamp.
+Consumers receive the current extraction together with metadata about the cache decision.
+Validation checks make corrupted stored text ineligible and require a safe refetch.
+The resulting response remains traceable to the exact source material that was read.
+</main></body></html>"""
 URL = "https://example.com/research"
 
 

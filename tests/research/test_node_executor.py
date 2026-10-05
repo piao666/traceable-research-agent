@@ -76,6 +76,24 @@ def test_node_executor_child_plan_inherits_evidence_policy(db, r12_settings):
     assert plan["evidence_policy_version"] == "evidence-policy-v3"
 
 
+def test_invalid_assignment_does_not_allocate_child_run(db, r12_settings):
+    from unittest.mock import Mock
+    root = create_root(db)
+    scope = create_research_scope(db, root.run_id, {})
+    node = create_research_node(
+        db, scope.scope_id, parent_node_id=None, run_id=None,
+        node_type="verification", topic="child", query="child", research_goal="child",
+        depth=1, priority=1, metadata={"assigned_requirement_ids": ["unknown"]},
+    )
+    runner = Mock()
+    before = len(store.list_agent_runs(db, include_internal=True))
+    with pytest.raises(ValueError, match="Unknown assigned"):
+        ResearchNodeExecutor(runner=runner).execute(db, scope, node, r12_settings)
+    runner.assert_not_called()
+    assert node.run_id is None
+    assert len(store.list_agent_runs(db, include_internal=True)) == before
+
+
 def test_node_executor_reuses_completed_run_without_calling_runner(db, r12_settings):
     root = create_root(db)
     scope = create_research_scope(db, root.run_id, {})
@@ -155,7 +173,7 @@ def test_node_executor_resumes_running_run_without_creating_replacement(db, r12_
 
 
 @pytest.mark.parametrize(
-    "status", ["waiting_human", "waiting_human_plan", "failed", "cancelled"]
+    "status", ["waiting_human", "waiting_human_plan", "failed", "cancelled", "incomplete"]
 )
 def test_node_executor_does_not_replace_non_resumable_run(
     db, r12_settings, status
@@ -192,6 +210,35 @@ def test_node_executor_does_not_replace_non_resumable_run(
         run for run in store.list_agent_runs(db, include_internal=True)
         if run.parent_run_id
     ]) == 1
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_budget_exception_keeps_child_and_node_terminal_without_reexecution(db, r12_settings, cancelled):
+    from app.agent.budget import BudgetExceeded
+
+    root = create_root(db)
+    scope = create_research_scope(db, root.run_id, {})
+    node = create_research_node(
+        db, scope.scope_id, parent_node_id=None, run_id=None,
+        node_type="web_research", topic="child", query="child",
+        research_goal="child", depth=1, priority=1,
+    )
+    calls = []
+    def runner(session, run_id, _settings, _client):
+        calls.append(run_id)
+        store.update_agent_run_status(session, run_id, "cancelled" if cancelled else "running", None)
+        raise BudgetExceeded("tokens")
+
+    executor = ResearchNodeExecutor(runner=runner)
+    with pytest.raises(BudgetExceeded):
+        executor.execute(db, scope, node, r12_settings)
+    expected = "cancelled" if cancelled else "failed"
+    assert node.status == expected
+    child = store.get_fresh_agent_run(db, node.run_id)
+    assert child.status == expected
+    assert not child.report_path
+    assert executor.execute(db, scope, node, r12_settings)["status"] == expected
+    assert calls == [child.run_id]
 
 
 def test_create_research_node_reuses_normalized_sibling_query(db):

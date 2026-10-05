@@ -22,7 +22,7 @@ export type SessionDetail = components["schemas"]["SessionDetailResponse"];
 export type Memory = components["schemas"]["UserMemoryResponse"];
 export type Skill = components["schemas"]["SkillSummary"];
 export type Tool = components["schemas"]["ToolInfo"];
-type Integrity = Pick<TaskStatusResponse, "requires_review" | "quality_warnings" | "citation_evaluated" | "research_outcome" | "terminal_decision">;
+type Integrity = Pick<TaskStatusResponse, "requires_review" | "quality_warnings" | "citation_evaluated" | "research_outcome" | "terminal_decision"> & { is_legacy_result?: boolean | null };
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 
@@ -153,13 +153,13 @@ export function statusTone(status: string): "plan" | "running" | "success" | "wa
 }
 
 export function taskStatusLabel(task: Integrity & { status: string }): string {
-  if (task.requires_review) return "历史结果待复核";
+  if (task.is_legacy_result) return "历史结果待复核";
   if (task.status === "completed" && task.quality_warnings?.length) return "已完成 · 有限制";
   return statusLabel(task.status);
 }
 
 export function taskStatusTone(task: Integrity & { status: string }): ReturnType<typeof statusTone> {
-  return task.requires_review || (task.status === "completed" && task.quality_warnings?.length)
+  return task.is_legacy_result || (task.status === "completed" && task.quality_warnings?.length)
     ? "warning" : statusTone(task.status);
 }
 

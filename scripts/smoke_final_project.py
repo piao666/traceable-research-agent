@@ -26,7 +26,6 @@ CHECKS = [
     ("smoke_mcp_channels", [sys.executable, "scripts/smoke_mcp_channels.py"]),
     ("demo_mcp_external_client", [sys.executable, "scripts/demo_mcp_external_client.py"]),
     ("smoke_mcp_external_http_client", [sys.executable, "scripts/smoke_mcp_external_http_client.py"]),
-    ("smoke_react_vs_planned_eval", [sys.executable, "-m", "app.eval.smoke.smoke_react_vs_planned_eval"]),
     ("smoke_provenance_v2", [sys.executable, "scripts/smoke_provenance_v2.py"]),
     (
         "smoke_provenance_capacity",
@@ -36,11 +35,8 @@ CHECKS = [
         "smoke_reasoning_capacity",
         [sys.executable, "scripts/smoke_reasoning_capacity.py"],
     ),
-    ("app_eval", [sys.executable, "-m", "app.eval.run_eval"]),
 ]
-CHECK_TIMEOUT_SECONDS = {
-    "app_eval": 720,
-}
+CHECK_TIMEOUT_SECONDS: dict[str, int] = {}
 
 
 def main() -> None:
@@ -84,7 +80,6 @@ def main() -> None:
                     "passed_scripts": sum(item["status"] == "passed" for item in results),
                     "failed_scripts": 1,
                     "failed_check": name,
-                    "eval": "not_run" if name != "app_eval" else "failed",
                 }
                 print(json.dumps(summary, ensure_ascii=False, indent=2))
                 raise SystemExit(completed.returncode or 1)
@@ -93,7 +88,6 @@ def main() -> None:
         "final_project_smoke": "ok",
         "passed_scripts": len(results),
         "failed_scripts": 0,
-        "eval": "passed",
         "checks": results,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))

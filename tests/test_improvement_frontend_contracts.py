@@ -225,183 +225,70 @@ class ImprovementFrontendContractTests(unittest.TestCase):
 
     def test_planned_quality_gate_uses_one_final_terminal_boundary(self) -> None:
         run = self._create_run()
-        seen_completion_statuses: list[str] = []
-
-        def fake_planned(db, run_id, **kwargs):
-            completion_status = kwargs["completion_status"]
-            seen_completion_statuses.append(completion_status)
-            store.update_agent_run_report(db, run_id, "workspace/reports/planned.md")
-            current = store.update_agent_run_status(db, run_id, completion_status, None)
-            return {
-                "run_id": run_id,
-                "status": current.status,
-                "current_step": current.current_step,
-                "total_steps": current.total_steps,
-                "total_tool_calls": current.total_tool_calls,
-                "report_url": f"/api/reports/{run_id}",
-                "trace_url": f"/api/tasks/{run_id}/trace",
-                "error_message": None,
-            }
-
-        finalized_statuses: list[str] = []
-
-        def fake_finalize(db, run_id):
-            finalized_statuses.append(store.get_fresh_agent_run(db, run_id).status)
-
+        finalized = []
+        def execute(db, run_id, **kwargs):
+            current = store.update_agent_run_status(db, run_id, "incomplete", "citation gap")
+            return {"run_id": run_id, "status": current.status}
         with (
-            patch("app.agent.dispatcher.run_plan", side_effect=fake_planned),
-            patch("app.agent.dispatcher._adaptive_upgrade_reason", return_value=None),
-            patch("app.improvement.lifecycle.finalize_improvement_cycle", side_effect=fake_finalize),
+            patch("app.agent.dispatcher.run_plan", side_effect=execute) as runner,
+            patch("app.improvement.lifecycle.finalize_improvement_cycle",
+                  side_effect=lambda db, run_id: finalized.append(store.get_fresh_agent_run(db, run_id).status)),
         ):
-            result = run_task_by_mode(
-                self.db,
-                run.run_id,
-                Settings(react_enabled=True, parallel_execution_enabled=False, qwen_api_key="test-only"),
-            )
-
-        self.assertEqual(seen_completion_statuses, ["running"])
-        # Improvement bookkeeping runs while the adaptive parent remains
-        # visibly running; the terminal decision owns the later transition.
-        self.assertEqual(finalized_statuses, ["incomplete"])
+            result = run_task_by_mode(self.db, run.run_id, Settings(react_enabled=True, qwen_api_key="test-only"))
+        runner.assert_called_once()
+        self.assertEqual(finalized, ["incomplete"])
         self.assertEqual(result["status"], "incomplete")
-        stored_plan = json.loads(store.get_fresh_agent_run(self.db, run.run_id).plan_json)
-        self.assertFalse(stored_plan["adaptive_gate_pending"])
-        self.assertEqual(stored_plan["adaptive_phase"], "completed")
+        plan = json.loads(store.get_fresh_agent_run(self.db, run.run_id).plan_json)
+        self.assertNotIn("adaptive_gate_pending", plan)
+        self.assertNotIn("adaptive_phase", plan)
 
-    def test_adaptive_result_is_finalized_after_react(self) -> None:
+    def test_low_quality_result_does_not_start_a_second_engine(self) -> None:
         run = self._create_run()
-
-        def fake_planned(db, run_id, **kwargs):
+        def execute(db, run_id, **kwargs):
             store.update_agent_run_report(db, run_id, "workspace/reports/planned.md")
-            current = store.update_agent_run_status(db, run_id, kwargs["completion_status"], None)
-            return {
-                "run_id": run_id,
-                "status": current.status,
-                "current_step": 0,
-                "total_steps": 0,
-                "total_tool_calls": 0,
-                "report_url": f"/api/reports/{run_id}",
-                "trace_url": f"/api/tasks/{run_id}/trace",
-                "error_message": None,
-            }
-
-        def fake_react(db, run_id, _settings, llm_client=None):
-            del llm_client
-            self.assertEqual(store.get_fresh_agent_run(db, run_id).status, "running")
-            store.update_agent_run_report(db, run_id, "workspace/reports/final.md")
-            current = store.update_agent_run_status(db, run_id, "completed", None)
-            return {
-                "run_id": run_id,
-                "status": current.status,
-                "current_step": 1,
-                "total_steps": 1,
-                "total_tool_calls": 1,
-                "report_url": f"/api/reports/{run_id}",
-                "trace_url": f"/api/tasks/{run_id}/trace",
-                "error_message": None,
-            }
-
-        finalized_plans: list[dict] = []
-
-        def fake_finalize(db, run_id):
-            final_run = store.get_fresh_agent_run(db, run_id)
-            self.assertEqual(final_run.status, "completed")
-            finalized_plans.append(json.loads(final_run.plan_json))
-
+            current = store.update_agent_run_status(db, run_id, "incomplete", "no_supported_citations")
+            return {"run_id": run_id, "status": current.status}
         with (
-            patch("app.agent.dispatcher.run_plan", side_effect=fake_planned),
-            patch("app.agent.dispatcher._adaptive_upgrade_reason", return_value="quality gate"),
-            patch("app.agent.react_executor.run_react_task", side_effect=fake_react),
-            patch("app.improvement.lifecycle.finalize_improvement_cycle", side_effect=fake_finalize),
+            patch("app.agent.dispatcher.run_plan", side_effect=execute) as quick,
+            patch("app.agent.react_executor.run_react_task") as legacy,
+            patch("app.research.orchestrator.run_deep_research_v2") as deep,
+            patch("app.improvement.lifecycle.finalize_improvement_cycle") as finalize,
         ):
-            result = run_task_by_mode(
-                self.db,
-                run.run_id,
-                Settings(react_enabled=True, parallel_execution_enabled=False, qwen_api_key="test-only"),
-            )
+            result = run_task_by_mode(self.db, run.run_id, Settings(react_enabled=True, qwen_api_key="test-only"))
+        quick.assert_called_once()
+        legacy.assert_not_called()
+        deep.assert_not_called()
+        finalize.assert_called_once()
+        self.assertEqual(result["status"], "incomplete")
 
-        self.assertEqual(len(finalized_plans), 1)
-        self.assertTrue(finalized_plans[0]["adaptive_upgrade"])
-        self.assertFalse(finalized_plans[0]["adaptive_gate_pending"])
-        self.assertEqual(finalized_plans[0]["requested_execution_mode"], "planned")
-        self.assertEqual(result["execution_mode"], "react")
-        self.assertTrue(result["adaptive_upgrade"])
-
-    def test_resumed_adaptive_react_preserves_original_requested_mode(self) -> None:
+    def test_old_react_plan_cannot_bypass_disabled_deep_engine(self) -> None:
         run = self._create_run(
-            plan=_plan(
-                execution_mode="react",
-                adaptive_upgrade=True,
-                adaptive_gate_pending=False,
-                adaptive_phase="react_execution",
-            ),
+            plan=_plan(execution_mode="react", adaptive_upgrade=True, adaptive_gate_pending=False),
             status="running",
         )
-
-        def fake_react(db, run_id, _settings, llm_client=None):
-            del llm_client
-            active = store.get_fresh_agent_run(db, run_id)
-            react_plan = json.loads(active.plan_json or "{}")
-            react_plan["requested_execution_mode"] = "react"
-            store.replace_agent_run_plan(db, run_id, react_plan)
-            completed = store.update_agent_run_status(db, run_id, "completed", None)
-            return {
-                "run_id": run_id,
-                "status": completed.status,
-                "current_step": 1,
-                "total_steps": 1,
-                "total_tool_calls": 1,
-                "report_url": f"/api/reports/{run_id}",
-                "trace_url": f"/api/tasks/{run_id}/trace",
-                "error_message": None,
-            }
-
         with (
-            patch("app.agent.react_executor.run_react_task", side_effect=fake_react),
-            patch("app.improvement.lifecycle.finalize_improvement_cycle"),
+            patch("app.agent.react_executor.run_react_task") as legacy,
+            patch("app.agent.dispatcher.run_plan") as planned,
         ):
-            result = run_task_by_mode(
-                self.db,
-                run.run_id,
-                Settings(react_enabled=True, deep_research_enabled=False, qwen_api_key="test-only"),
-            )
+            result = run_task_by_mode(self.db, run.run_id,
+                Settings(react_enabled=True, deep_research_enabled=False, qwen_api_key="test-only"))
+        legacy.assert_not_called()
+        planned.assert_not_called()
+        self.assertEqual(result["status"], "failed")
 
-        final_plan = json.loads(store.get_fresh_agent_run(self.db, run.run_id).plan_json)
-        self.assertEqual(final_plan["requested_execution_mode"], "planned")
-        self.assertFalse(final_plan["adaptive_gate_pending"])
-        self.assertEqual(final_plan["adaptive_phase"], "completed")
-        self.assertEqual(result["requested_execution_mode"], "planned")
-
-    def test_failed_planned_run_clears_adaptive_pending_marker(self) -> None:
+    def test_failed_planned_run_does_not_leave_pending_upgrade(self) -> None:
         run = self._create_run()
-
-        def fake_planned(db, run_id, **kwargs):
-            self.assertEqual(kwargs["completion_status"], "running")
-            failed = store.update_agent_run_status(db, run_id, "failed", "planned failure")
-            return {
-                "run_id": run_id,
-                "status": failed.status,
-                "current_step": 0,
-                "total_steps": 0,
-                "total_tool_calls": 0,
-                "report_url": f"/api/reports/{run_id}",
-                "trace_url": f"/api/tasks/{run_id}/trace",
-                "error_message": failed.error_message,
-            }
-
+        def execute(db, run_id, **kwargs):
+            current = store.update_agent_run_status(db, run_id, "failed", "planned failure")
+            return {"run_id": run_id, "status": current.status}
         with (
-            patch("app.agent.dispatcher.run_plan", side_effect=fake_planned),
+            patch("app.agent.dispatcher.run_plan", side_effect=execute),
             patch("app.improvement.lifecycle.finalize_improvement_cycle"),
         ):
-            result = run_task_by_mode(
-                self.db,
-                run.run_id,
-                Settings(react_enabled=True, parallel_execution_enabled=False, qwen_api_key="test-only"),
-            )
-
-        final_plan = json.loads(store.get_fresh_agent_run(self.db, run.run_id).plan_json)
-        self.assertFalse(final_plan["adaptive_gate_pending"])
-        self.assertEqual(final_plan["adaptive_phase"], "failed")
+            result = run_task_by_mode(self.db, run.run_id, Settings(react_enabled=True, qwen_api_key="test-only"))
+        plan = json.loads(store.get_fresh_agent_run(self.db, run.run_id).plan_json)
+        self.assertNotIn("adaptive_phase", plan)
+        self.assertFalse(plan.get("adaptive_gate_pending", False))
         self.assertEqual(result["status"], "failed")
 
     def test_improvement_lifecycle_skips_nonterminal_and_records_final_result(self) -> None:

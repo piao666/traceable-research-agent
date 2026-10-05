@@ -1,6 +1,8 @@
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from app.research.branch_executor import SerialPearExecutor
 
 
@@ -38,13 +40,14 @@ def test_serial_pear_orders_nodes_and_never_overlaps():
     assert [item["status"] for item in results] == ["completed"] * 3
 
 
-def test_serial_pear_stops_on_required_waiting_node():
-    fake = _FakeNodeExecutor(["waiting_human", "completed"])
+@pytest.mark.parametrize("status", ["waiting_human", "waiting_human_plan", "failed", "cancelled", "incomplete"])
+def test_serial_pear_stops_on_required_non_completed_node(status):
+    fake = _FakeNodeExecutor([status, "completed"])
     executor = SerialPearExecutor(fake)
     nodes = [_node("a", 0, 0), _node("b", 1, 0)]
 
     results = executor.execute_serial(None, None, nodes, None)
 
     assert fake.calls == ["a"]
-    assert results[0]["status"] == "waiting_human"
+    assert results[0]["status"] == status
 

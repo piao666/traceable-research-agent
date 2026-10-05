@@ -88,26 +88,5 @@ class AcademicSearchTests(unittest.TestCase):
         self.assertEqual(paper["url"], "https://www.semanticscholar.org/paper/abc")
 
 
-class DeepeningTests(unittest.TestCase):
-    def test_sub_run_creation_uses_agent_run_id(self) -> None:
-        from app.agent.deepening import _run_single_round
-        from app.config import Settings
-        from app.trace.models import AgentRun
-        from app.trace.store import create_agent_run
-
-        engine = create_engine("sqlite://", poolclass=StaticPool)
-        Base.metadata.create_all(engine)
-        db = sessionmaker(bind=engine)()
-        parent = create_agent_run(db, "parent", "summary", "mock")
-        with patch("app.agent.deepening.run_react_task", return_value={"status": "completed"}):
-            _run_single_round(db, parent.run_id, "parent", ["follow up"], Settings())
-        child = db.scalar(select(AgentRun).where(AgentRun.task == "follow up"))
-        self.assertIsNotNone(child)
-        self.assertIsInstance(child.run_id, str)
-        self.assertIn(parent.run_id, child.plan_json)
-        self.assertEqual(json.loads(child.plan_json)["run_role"], "deepening_child")
-        db.close()
-
-
 if __name__ == "__main__":
     unittest.main()

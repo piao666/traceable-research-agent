@@ -102,6 +102,20 @@ def classify_relation(
     relevance = lexical_relevance(claim.text, assertion.text)
     if claim.time_scope and assertion.time_scope and claim.time_scope != assertion.time_scope:
         return RelationDecision("contextualizes", "time scopes differ", "time")
+    # The v2 extractor may use the same bounded source excerpt for both a
+    # claim and its assertion. A stray negation elsewhere in that excerpt
+    # must not turn the first incidental number into a self-contradiction.
+    # Conflicting *magnitude* metadata is still not evidence of support.
+    if claim.text and claim.text == assertion.text:
+        if (
+            claim.value is not None
+            and assertion.value is not None
+            and not math.isclose(abs(claim.value), abs(assertion.value), rel_tol=0.01)
+        ):
+            return RelationDecision("contextualizes", "identical text has inconsistent scalar metadata", "value")
+        if claim.unit and assertion.unit and claim.unit != assertion.unit:
+            return RelationDecision("contextualizes", "identical text has inconsistent units", "unit")
+        return RelationDecision("supports", "claim and assertion text are identical")
     if claim.value is not None and assertion.value is not None:
         if relevance < 0.12:
             return RelationDecision(

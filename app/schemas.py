@@ -140,6 +140,11 @@ class TaskCreateResponse(BaseModel):
 class ResearchIntegrityResponse(BaseModel):
     research_outcome: dict[str, Any] | None = None
     terminal_decision: dict[str, Any] | None = None
+    # ``requires_review`` also covers fresh incomplete/failed runs.  Keep a
+    # separate flag so clients do not label every non-successful run as old.
+    # Optional for backwards-compatible clients and historical snapshots;
+    # live responses still populate the concrete boolean.
+    is_legacy_result: bool | None = None
     requires_review: bool = False
     citation_evaluated: bool = False
     quality_warnings: list[str] = Field(default_factory=list)
@@ -232,6 +237,10 @@ class PlanStepResponse(BaseModel):
     goal: str
     tool_name: str
     arguments: dict[str, Any]
+    # Dynamic bindings are persisted plan contract, not executor-only state.
+    # Expose them read-only so clients can explain why a fetch has no static
+    # URLs while preserving the exact execution path.
+    arguments_from: dict[str, Any] | None = None
     expected_output: str
     completion_criteria: str
     risk_level: str
@@ -355,6 +364,13 @@ class TaskPlanResponse(BaseModel):
     deepening_total_rounds: int = 0
     deepening_learnings: list[str] = Field(default_factory=list)
     deepening_sub_run_ids: list[str] = Field(default_factory=list)
+    # Final report identity is exposed read-only so acceptance clients can
+    # verify that plan, terminal decision, and downloaded bytes refer to the
+    # same adopted revision.  These are optional for historical plans.
+    report_revision_id: str | None = None
+    report_sha256: str | None = None
+    report_manifest_sha256: str | None = None
+    report_generation: dict[str, Any] | None = None
 
 
 class TaskRunResponse(ResearchIntegrityResponse):

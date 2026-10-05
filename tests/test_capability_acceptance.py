@@ -12,18 +12,18 @@ from app.runtime.preflight import _PROBE_CACHE, _config_fingerprint, latest_runt
 from app.tools.defaults import register_default_tools
 
 
-@pytest.mark.parametrize("task,tool", [
-    ("查找官方链接", "tavily_search"),
-    ("查找学术论文", "openalex_search"),
-    ("读取CSV数据表", "file_reader"),
-    ("查询数据库中的结构化数据", "sql_query"),
+@pytest.mark.parametrize("task,tool,arguments", [
+    ("查找官方链接", "tavily_search", {"query": "official links"}),
+    ("查找学术论文", "openalex_search", {"query": "research papers"}),
+    ("读取CSV数据表", "file_reader", {"path": "demo_research_note.md"}),
+    ("查询数据库中的结构化数据", "sql_query", {"query": "SELECT id, title FROM documents"}),
 ])
-def test_valid_task_specific_admission(task, tool):
+def test_valid_task_specific_admission(task, tool, arguments):
     register_default_tools()
     settings = Settings(offline_mode=False, tavily_api_key="fixture-only",
         report_generation_mode="deterministic", llm_planner_enabled=False)
     plan = {"task_contract": {"original_task": task}, "allowed_tools": [tool],
-            "steps": [{"tool_name": tool, "required": True}]}
+            "steps": [{"step_no": 1, "tool_name": tool, "required": True, "arguments": arguments}]}
     assert check_plan_readiness(plan, settings)["ready"]
 
 

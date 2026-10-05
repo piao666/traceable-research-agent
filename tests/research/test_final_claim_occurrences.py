@@ -6,7 +6,7 @@ from app.evidence.citation_validator import (
 )
 from app.evidence.models import CitationOccurrence, ReportClaimOccurrence
 from app.evidence.scope_service import get_scope_provenance_bundle
-from app.reporting.claim_occurrence import segment_final_answer_claims
+from app.reporting.claim_occurrence import is_evidence_limitation_statement, segment_final_answer_claims
 
 from .conftest import create_root
 from .test_scope_evidence import _scope_with_parent_and_child
@@ -108,6 +108,24 @@ def test_segmentation_excludes_headings_links_and_code_blocks():
     assert all(
         final_answer[span.sentence_start : span.sentence_end] == span.raw_text
         for span in candidates
+    )
+
+
+def test_bold_section_label_is_not_an_uncited_claim():
+    spans = segment_final_answer_claims(
+        "**Muse impact**\nThe tool supports multi-step work. [CIT-001-01]\n"
+    )
+    assert [span.claim_text for span in spans if span.is_claim_candidate] == [
+        "The tool supports multi-step work."
+    ]
+
+
+def test_evidence_limitation_does_not_exempt_a_numbered_fact():
+    assert is_evidence_limitation_statement(
+        "现有证据未提供两者对 Agent 生态的直接影响数据。"
+    )
+    assert not is_evidence_limitation_statement(
+        "现有证据表明销量达到 902000，未提供其他数据。"
     )
 
 

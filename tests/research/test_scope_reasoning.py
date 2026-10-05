@@ -121,7 +121,9 @@ def _set_fact(
         passage.content_hash = passage_hash
     metadata = json.loads(document.metadata_json or "{}")
     if evidence_role is not None:
-        metadata["evidence_role"] = evidence_role
+        snapshot_metadata = json.loads(snapshot.metadata_json or "{}")
+        snapshot_metadata["evidence_role"] = evidence_role
+        snapshot.metadata_json = json.dumps(snapshot_metadata)
     source_identity = dict(metadata.get("source_identity") or {})
     source_identity.pop("canonical_story_hash", None)
     if independence_group is not None:

@@ -66,6 +66,25 @@ class Phase7DatabaseTestCase(unittest.TestCase):
 
 
 class BoundedProvenanceContextTests(unittest.TestCase):
+    def test_deep_budget_reserves_report_headroom_inside_existing_hard_limit(self) -> None:
+        from types import SimpleNamespace
+
+        from app.agent.budget import limits
+
+        settings = SimpleNamespace(
+            research_max_tool_calls=80,
+            research_max_llm_calls=64,
+            research_max_tokens=200000,
+            research_max_seconds=1800,
+            research_max_estimated_cost=0.0,
+            research_tool_cost_estimate=None,
+            research_llm_cost_per_million_tokens=None,
+        )
+        budget = limits(settings)
+        self.assertEqual(budget["max_tokens"], 200000)
+        self.assertEqual(budget["final_report_tokens"], 60000)
+        self.assertEqual(budget["final_report_llm_calls"], 16)
+
     def test_default_evidence_budget_is_seventy_percent_of_report_reserve(self) -> None:
         from app.agent.budget import final_report_evidence_token_budget
 
@@ -245,6 +264,77 @@ class PlanApprovalTests(Phase7DatabaseTestCase):
         self.assertIn("expected_output", saved["steps"][1])
         traces = store.list_tool_traces(self.db, run.run_id)
         self.assertTrue(any(trace.tool_name == "plan_approval" for trace in traces))
+
+    def test_approval_edit_cannot_authorize_model_invented_fetch_url(self) -> None:
+        """Approval edits retain only URLs that the original task supplied."""
+        from app.api import tasks
+        from app.schemas import PlanApproveRequest
+        from app.trace import store
+
+        run = store.create_agent_run(self.db, "research a topic", "summary", "mock")
+        store.update_agent_run_plan(self.db, run.run_id, self._plan())
+        store.update_agent_run_status(self.db, run.run_id, "waiting_human_plan")
+        modified = [dict(step) for step in self._plan()["steps"]]
+        modified[1] = {**modified[1], "arguments": {"urls": ["https://example.com/placeholder"]}}
+
+        def fake_run(db, run_id):
+            completed = store.update_agent_run_status(db, run_id, "completed")
+            return tasks._run_summary(completed, "completed in test")
+
+        from app.config import Settings
+        with (patch("app.api.tasks.run_task_by_mode", side_effect=fake_run),
+              patch("app.api.tasks.settings", Settings(tavily_api_key="test-only"))):
+            tasks.approve_plan(
+                run.run_id,
+                PlanApproveRequest(approved=True, modified_steps=modified),
+                BackgroundTasks(), db=self.db,
+            )
+
+        saved = json.loads(store.get_agent_run(self.db, run.run_id).plan_json)
+        fetch = next(step for step in saved["steps"] if step["tool_name"] == "web_fetcher")
+        self.assertEqual(fetch["arguments"]["urls"], [])
+        self.assertEqual(fetch["arguments_from"], {"step_no": 1, "field": "results"})
+
+    def test_retry_rebinds_legacy_model_fetch_url_to_task_authorized_search(self) -> None:
+        from app.api import tasks
+        from app.schemas import TaskRetryRequest
+        from app.trace import store
+
+        plan = self._plan()
+        plan["steps"][1]["arguments"] = {"urls": ["https://example.com/placeholder"]}
+        plan["steps"][1].pop("arguments_from", None)
+        run = store.create_agent_run(self.db, "research a topic", "summary", "mock",
+                                     allowed_tools=plan["allowed_tools"])
+        store.update_agent_run_plan(self.db, run.run_id, plan)
+        store.update_agent_run_status(self.db, run.run_id, "incomplete")
+
+        response = tasks.retry_task(run.run_id, TaskRetryRequest(reuse_plan=True), self.db)
+
+        saved = json.loads(store.get_agent_run(self.db, response.run_id).plan_json)
+        fetch = next(step for step in saved["steps"] if step["tool_name"] == "web_fetcher")
+        self.assertEqual(fetch["arguments"]["urls"], [])
+        self.assertEqual(fetch["arguments_from"], {"step_no": 1, "field": "results"})
+
+    def test_dispatch_blocks_legacy_untrusted_fetch_plan_for_review(self) -> None:
+        from app.agent.dispatcher import run_task_by_mode
+        from app.config import Settings
+        from app.trace import store
+
+        plan = self._plan()
+        plan["steps"][1]["arguments"] = {"urls": ["https://example.com/placeholder"]}
+        plan["steps"][1].pop("arguments_from", None)
+        run = store.create_agent_run(self.db, "research a topic", "summary", "mock",
+                                     allowed_tools=plan["allowed_tools"])
+        store.update_agent_run_plan(self.db, run.run_id, plan)
+
+        result = run_task_by_mode(self.db, run.run_id, Settings())
+
+        saved_run = store.get_agent_run(self.db, run.run_id)
+        saved = json.loads(saved_run.plan_json)
+        self.assertEqual(result["status"], "waiting_human_plan")
+        self.assertEqual(saved["steps"][1]["arguments"]["urls"], ["https://example.com/placeholder"])
+        self.assertTrue(saved["plan_review_required"])
+        self.assertTrue(any(trace.tool_name == "plan_revalidation" for trace in store.list_tool_traces(self.db, run.run_id)))
 
     def test_plan_creation_records_memory_trace_before_waiting(self) -> None:
         from app.api import tasks

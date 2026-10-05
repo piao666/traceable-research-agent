@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from contextlib import nullcontext
 from urllib.error import HTTPError
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -22,6 +23,9 @@ from app.tools.base import ToolResult
 from app.tools.defaults import register_default_tools
 from app.trace import store
 from app.agent.reporter import save_report as real_save_report
+# The direct in-memory Base fixture must register scope tables referenced by
+# the report/evidence models before create_all runs.
+from app.research import models as research_models  # noqa: F401
 
 
 URL = "https://example.org/framework-docs"
@@ -97,7 +101,8 @@ class RecoveryTests(unittest.TestCase):
         return {**_skill_to_plan(skill, "Compare evaluation frameworks", allowed, "real"),
                 "execution_mode": "react"}
 
-    def run_script(self, actions, handler=None, plan=None, settings=None, client=None):
+    def run_script(self, actions, handler=None, plan=None, settings=None, client=None,
+                   use_synthetic_terminal=True):
         from app.agent.react_executor import run_react_task
         plan = plan or self.skill_plan()
         run = store.create_agent_run(self.db, "Compare evaluation frameworks", "summary", "real")
@@ -116,17 +121,33 @@ class RecoveryTests(unittest.TestCase):
             return ToolResult(success=False, error_message="GitHub public API request failed with HTTP 401.",
                               metadata={"error_type": "api_error", "http_status": 401, "retry_count": 0})
 
+        terminal_finalizer = (
+            patch("app.agent.react_executor.finalize_terminal_decision",
+                  side_effect=accept_synthetic_terminal)
+            if use_synthetic_terminal else nullcontext()
+        )
         with (patch("app.agent.react_executor.execute_tool", side_effect=handler or fixture) as execute,
+              # Budget/recovery outcomes can hand off to the planned executor.
+              # Keep that path inside the same deterministic tool fixture so
+              # an offline test cannot fall through to a real web fetch.
+              patch("app.agent.executor.execute_tool", side_effect=handler or fixture),
               patch("app.agent.react_executor.generate_markdown_report", return_value="# Fixture report"),
               patch("app.agent.react_executor.save_report", side_effect=real_save_report),
               # These recovery tests exercise tool admission/recovery.  Their
               # synthetic report is intentionally not a citation fixture; keep
               # the production terminal gate covered by the real pipeline
               # tests instead of treating this mock as a valid report.
-              patch("app.agent.react_executor.finalize_terminal_decision",
-                    side_effect=accept_synthetic_terminal)):
+              terminal_finalizer):
             result = run_react_task(self.db, run.run_id, settings or self.settings, client)
         return run, result, client, execute
+
+    def assert_unvalidated_fixture_is_incomplete(self, result):
+        """Recovery mechanics do not make the synthetic report terminal-safe."""
+        self.assertEqual(result["status"], "incomplete")
+        self.assertFalse(result["citation_evaluated"])
+        terminal = result["terminal_decision"]
+        self.assertFalse(terminal["adopted"])
+        self.assertIsNone(terminal["validation_identity"])
 
     def test_skill_default_permissions_include_all_required_steps(self):
         plan = self.skill_plan()
@@ -170,21 +191,22 @@ class RecoveryTests(unittest.TestCase):
                    decision("tavily_search", query="official docs"),
                    decision("web_fetcher", urls=[URL]), decision("finish")]
         run, result, client, execute = self.run_script(actions)
-        self.assertEqual(result["status"], "completed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         self.assertEqual(sum(c.args[0] == "mcp_github_search" for c in execute.call_args_list), 1)
         self.assertNotIn("mcp_github_search", client.payloads[2]["allowed_tools"])
         self.assertEqual(json.loads(run.plan_json)["research_outcome"]["effective_evidence_count"], 3)
 
-    def test_terminal_llm_error_is_traced_and_falls_back_without_retry(self):
+    def test_terminal_llm_auth_error_is_traced_and_hard_fails_without_fallback(self):
         client = FailedLLM("auth_error")
-        run, result, _, _ = self.run_script([], client=client)
-        self.assertIn(result["status"], {"completed", "failed"})
+        run, result, _, _ = self.run_script([], client=client, use_synthetic_terminal=False)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["research_outcome"]["error_code"], "provider_failure")
+        self.assertEqual(result["terminal_decision"]["error_code"], "provider_failure")
         self.assertEqual(len(client.payloads), 1)
         traces = store.list_tool_traces(self.db, run.run_id)
         decision_trace = next(item for item in traces if item.tool_name == "react_decision")
         self.assertEqual(json.loads(decision_trace.output_json)["metadata"]["error_type"], "auth_error")
-        fallback_trace = next(item for item in traces if item.tool_name == "react_fallback")
-        self.assertEqual(json.loads(fallback_trace.output_json)["metadata"]["error_type"], "auth_error")
+        self.assertFalse(any(item.tool_name == "react_fallback" for item in traces))
 
     def test_planner_fallback_error_is_a_redacted_trace_event(self):
         from app.api.tasks import _record_planner_fallback_trace
@@ -245,7 +267,7 @@ class RecoveryTests(unittest.TestCase):
         _, result, client, execute = self.run_script([
             decision("tavily_search", query="one"), decision("tavily_search", query="two"),
             decision("web_fetcher", urls=[URL]), decision("finish")], settings=settings, plan=plan)
-        self.assertEqual(result["status"], "completed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         self.assertEqual(sum(c.args[0] == "tavily_search" for c in execute.call_args_list), 1)
         self.assertNotIn("tavily_search", client.payloads[1]["allowed_tools"])
 
@@ -257,7 +279,7 @@ class RecoveryTests(unittest.TestCase):
             decision("web_fetcher", urls=[URL]),
             decision("finish"),
         ], settings=settings)
-        self.assertEqual(result["status"], "completed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         self.assertEqual(sum(c.args[0] == "tavily_search" for c in execute.call_args_list), 2)
         self.assertEqual(json.loads(run.plan_json)["react_state"]["tool_call_limits"]["tavily_search"], 6)
 
@@ -400,7 +422,7 @@ class RecoveryTests(unittest.TestCase):
                                "tool_call_counts": {"mcp_github_search": 1}, "observation_history": []}
         _, result, _, execute = self.run_script([decision("mcp_github_search", query="x"),
             decision("tavily_search", query="docs"), decision("web_fetcher", urls=[URL]), decision("finish")], plan=plan)
-        self.assertEqual(result["status"], "completed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         self.assertTrue(all(call.args[0] != "mcp_github_search" for call in execute.call_args_list))
 
     def test_github_403_quota_cools_down_but_permission_error_blocks_only_input(self):
@@ -416,7 +438,7 @@ class RecoveryTests(unittest.TestCase):
         _, result, client, execute = self.run_script([decision("mcp_github_search", query="x"),
             decision("tavily_search", query="docs"), decision("web_fetcher", urls=[URL]), decision("finish")],
             settings=self.settings.model_copy(update={"github_public_api_enabled": False}))
-        self.assertEqual(result["status"], "completed")
+        self.assert_unvalidated_fixture_is_incomplete(result)
         self.assertNotIn("mcp_github_search", client.payloads[0]["allowed_tools"])
         self.assertTrue(all(call.args[0] != "mcp_github_search" for call in execute.call_args_list))
 
@@ -441,12 +463,11 @@ class RecoveryTests(unittest.TestCase):
         observe_result(state, "web_fetcher", {}, result, 3)
         self.assertEqual(state["tool_call_counts"]["web_fetcher"], 0)
 
-    def test_sequential_and_parallel_reject_fallback_before_evidence(self):
+    def test_canonical_executor_reject_fallback_before_evidence(self):
         from app.agent.executor import run_plan
-        from app.agent.parallel_executor import run_plan_parallel
         from app.agent.evidence import build_evidence_bundle
         from tests.test_research_integrity import web_plan
-        for module, runner in [("executor", run_plan), ("parallel_executor", run_plan_parallel)]:
+        for module, runner in [("executor", run_plan)]:
             with self.subTest(executor=module):
                 run = store.create_agent_run(self.db, "fixture", "summary", "real")
                 plan = web_plan()
@@ -461,13 +482,15 @@ class RecoveryTests(unittest.TestCase):
                 self.assertEqual(build_evidence_bundle(run, plan, [], traces).total_evidence_items, 0)
                 self.assertFalse(run.report_path)
 
-    def test_parallel_worker_cannot_execute_an_unpermitted_step(self):
-        from app.agent.parallel_executor import _execute_step
-        with patch("app.agent.parallel_executor.execute_tool") as execute:
-            result = _execute_step({"tool_name": "tavily_search", "arguments": {"query": "x"}}, 1,
-                                   plan={"allowed_tools": []}, settings_obj=self.settings)
+    def test_governed_operation_cannot_execute_an_unpermitted_step(self):
+        from app.agent.source_intake import execute_governed_operation
+        execute = Mock()
+        result = execute_governed_operation(
+            "tavily_search", {"query": "x"}, {"allowed_tools": []},
+            self.settings, execute,
+        )
         execute.assert_not_called()
-        self.assertFalse(result.result.success)
+        self.assertFalse(result.success)
 
     def test_retry_discards_recovery_state_but_preserves_permissions_and_source_mode(self):
         from app.api.tasks import retry_task
@@ -486,15 +509,20 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(new_plan["parent_run_id"], run.run_id)
         self.assertIn("react_state", json.loads(run.plan_json))
 
-    def test_deepening_inherits_even_empty_explicit_permissions(self):
-        from app.agent.deepening import _run_single_round
+    def test_pear_child_inherits_even_empty_explicit_permissions(self):
+        from app.research.node_executor import ResearchNodeExecutor
+        from app.research.scope import create_research_scope, create_research_node
         for allowed in ([], ["tavily_search", "web_fetcher"]):
             with self.subTest(allowed=allowed):
                 run = store.create_agent_run(self.db, "fixture", "summary", "real", allowed_tools=allowed)
                 store.update_agent_run_plan(self.db, run.run_id, self.skill_plan())
-                with patch("app.agent.deepening.run_react_task", return_value={"status": "failed"}) as execute:
-                    _run_single_round(self.db, run.run_id, "fixture", ["follow up"], self.settings)
-                child = store.get_agent_run(self.db, execute.call_args.args[1])
+                scope = create_research_scope(self.db, run.run_id, {})
+                node = create_research_node(self.db, scope.scope_id, parent_node_id=None,
+                    run_id=None, node_type="web_research", topic="follow up", query="follow up",
+                    research_goal="follow up", depth=1, priority=1)
+                execute = Mock(return_value={"status": "failed"})
+                ResearchNodeExecutor(runner=execute).execute(self.db, scope, node, self.settings)
+                child = store.get_agent_run(self.db, node.run_id)
                 self.assertEqual(child.source_mode, "real")
                 self.assertEqual(json.loads(child.allowed_tools_json), allowed)
                 self.assertEqual(json.loads(child.plan_json)["allowed_tools"], allowed)

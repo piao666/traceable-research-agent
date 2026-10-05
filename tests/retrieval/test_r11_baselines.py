@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from unittest.mock import patch
 
 import httpx
@@ -80,12 +79,31 @@ def test_web_fetch_output_still_materializes_as_evidence_v2_item() -> None:
     assert items[0].metadata["extraction_method"] == "beautifulsoup"
 
 
-def test_legacy_deepening_no_longer_excludes_child_evidence() -> None:
-    from app.agent.deepening import run_deepening
+def test_web_fetch_body_is_partitioned_without_losing_later_evidence() -> None:
+    import hashlib
 
-    source = inspect.getsource(run_deepening)
-    assert "parent_observations" not in source
-    assert 'not obs.get("metadata", {}).get("sub_run_id")' not in source
+    from app.agent.evidence import _web_page_items
+    from app.evidence.normalizers import passage_locator
+
+    body = "Introduction. " + ("background context. " * 155) + "Agent impact appears near the end."
+    record = {
+        "trace_id": "trace-body", "run_id": "run-body", "step_no": 2,
+        "tool_name": "web_fetcher", "success": True, "status": "success",
+        "metadata": {}, "output": {"pages": [{
+            "url": "https://example.com/research", "title": "Research",
+            "content": body, "content_basis": "partial",
+        }]},
+    }
+    items = _web_page_items("run-body", record, 0)
+    assert len(items) > 1
+    assert "".join(item.snippet for item in items) == body
+    assert len({item.evidence_id for item in items}) == len(items)
+    assert all(len(item.snippet) <= 2400 for item in items)
+    expected_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    for item in items:
+        locator = passage_locator(item, {})["fragment_locator"]
+        assert body[locator["char_start"]:locator["char_end"]] == item.snippet
+        assert locator["source_content_sha256"] == expected_hash
 
 
 @pytest.mark.xfail(

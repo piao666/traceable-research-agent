@@ -13,6 +13,13 @@ DATABASE_PATH = Path(
     or WORKSPACE_DIR / "traceable_research_agent.sqlite"
 )
 DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
+_SQLITE_JOURNAL_MODES = {"DELETE", "TRUNCATE", "PERSIST", "MEMORY", "WAL"}
+
+
+def sqlite_journal_mode() -> str:
+    """Return a safe configured journal mode (WAL for normal local runs)."""
+    configured = str(os.environ.get("SQLITE_JOURNAL_MODE") or "WAL").strip().upper()
+    return configured if configured in _SQLITE_JOURNAL_MODES else "WAL"
 
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -30,7 +37,14 @@ def _configure_sqlite_connection(dbapi_connection, connection_record) -> None:
 
     cursor = dbapi_connection.cursor()
     try:
-        cursor.execute("PRAGMA journal_mode=WAL")
+        target_mode = sqlite_journal_mode()
+        cursor.execute("PRAGMA journal_mode")
+        current_mode = str(cursor.fetchone()[0]).upper()
+        # Setting journal_mode (even to its current value) can require an
+        # exclusive file lock. A new pooled connection must not disrupt a
+        # concurrent live research transaction on the Docker bind mount.
+        if current_mode != target_mode:
+            cursor.execute(f"PRAGMA journal_mode={target_mode}")
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA busy_timeout=30000")
         cursor.execute("PRAGMA foreign_keys=ON")

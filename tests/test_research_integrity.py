@@ -21,6 +21,10 @@ from app.tools.web_fetcher import web_fetch
 from app.trace import store
 from app.trace.logger import record_trace_event
 from app.agent.reporter import save_report as real_save_report
+# Evidence models include scope foreign keys.  This direct unittest module
+# creates Base.metadata itself, so register the corresponding tables just as
+# the application startup and research pytest fixtures do.
+from app.research import models as research_models  # noqa: F401
 
 
 def web_plan() -> dict:
@@ -102,7 +106,7 @@ class ResearchIntegrityTests(unittest.TestCase):
         result = check_plan_readiness(self.plan, settings)
         self.assertFalse(result["ready"])
         self.assertIn("TAVILY_API_KEY", str(result["blockers"]))
-        local = {**self.plan, "steps": [{"tool_name": "file_reader"}], "allowed_tools": ["file_reader"]}
+        local = {**self.plan, "steps": [{"step_no": 1, "tool_name": "file_reader", "arguments": {"path": "fixture.txt"}}], "allowed_tools": ["file_reader"]}
         self.assertTrue(check_plan_readiness(local, settings)["ready"])
 
     def test_preflight_does_not_expose_keys(self):
@@ -150,21 +154,21 @@ class ResearchIntegrityTests(unittest.TestCase):
         self.assertEqual(payload["citations"], [])
         self.assertEqual(payload["integrity"]["citation_coverage"], 0)
 
-    def test_parallel_empty_search_does_not_call_fetch(self):
-        from app.agent.parallel_executor import run_plan_parallel
-        with (patch("app.agent.parallel_executor.is_executable_tool", return_value=True),
-              patch("app.agent.parallel_executor.execute_tool", return_value=ToolResult(success=True, output={"results": []})) as execute,
-              patch("app.agent.parallel_executor.generate_markdown_report") as report):
-            result = run_plan_parallel(self.db, self.run.run_id, Settings(
+    def test_canonical_empty_search_does_not_call_fetch(self):
+        from app.agent.executor import run_plan
+        with (patch("app.agent.executor.is_executable_tool", return_value=True),
+              patch("app.agent.executor.execute_tool", return_value=ToolResult(success=True, output={"results": []})) as execute,
+              patch("app.agent.executor.generate_markdown_report") as report):
+            result = run_plan(self.db, self.run.run_id, Settings(
                 tavily_api_key="test-only", offline_mode=False, max_refetch_rounds=0))
         self.assertEqual(result["status"], "failed")
         self.assertEqual(execute.call_count, 1)
         report.assert_not_called()
 
-    def test_parallel_missing_key_is_blocked(self):
-        from app.agent.parallel_executor import run_plan_parallel
-        with patch("app.agent.parallel_executor.execute_tool") as execute:
-            result = run_plan_parallel(self.db, self.run.run_id, Settings(offline_mode=False, tavily_api_key=None))
+    def test_canonical_missing_key_is_blocked(self):
+        from app.agent.executor import run_plan
+        with patch("app.agent.executor.execute_tool") as execute:
+            result = run_plan(self.db, self.run.run_id, Settings(offline_mode=False, tavily_api_key=None))
         self.assertEqual(result["status"], "failed")
         execute.assert_not_called()
 
@@ -255,9 +259,25 @@ class ResearchIntegrityTests(unittest.TestCase):
     def test_valid_web_run_completes_with_real_evidence_and_partial_warning(self):
         from app.agent.executor import run_plan
         results = [ToolResult(success=True, output={"results": [
-            {"url": "https://example.com/a", "content": "Actual search evidence"}]}),
+            {"url": "https://example.com/a", "content": "Framework comparison source"}]}),
             ToolResult(success=True, output={"pages": [
-                {"url": "https://example.com/a", "content": "Actual full article text", "content_basis": "full_text"},
+                {
+                    "url": "https://example.com/a",
+                    "title": "Framework comparison reference",
+                    "content": (
+                        "This reference compares framework behavior using a documented test scenario. "
+                        "The comparison explains that each framework processes the same request, "
+                        "records the resulting response, and identifies the configuration that "
+                        "caused the observed difference. The source includes sufficient contextual "
+                        "detail to support a limited summary of the comparison."
+                    ),
+                    "content_basis": "full_text",
+                    "evidence_role": "primary_content",
+                    "official": True,
+                    "provider": "http",
+                    "fetch_status": 200,
+                    "quality": {"usable": True},
+                },
                 {"url": "https://example.org/b", "error": "timeout", "content": ""}], "failed_count": 1})]
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -366,7 +386,11 @@ class ResearchIntegrityTests(unittest.TestCase):
 
     def test_local_material_can_complete_without_external_credentials(self):
         from app.agent.executor import run_plan
-        plan = {"execution_mode": "planned", "steps": [
+        plan = {"execution_mode": "planned", "task_contract": {
+            "version": "task-contract-v1", "goal_kind": "research",
+            "original_task": "Summarize the provided fixture material",
+            "evidence_requirement": "unspecified", "unresolved_fields": [],
+        }, "steps": [
             {"step_no": 1, "tool_name": "file_reader", "arguments": {"path": "fixture.txt"}}]}
         store.replace_agent_run_plan(self.db, self.run.run_id, plan)
         with (tempfile.TemporaryDirectory() as directory,
@@ -419,13 +443,15 @@ class ResearchIntegrityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "report_synthesis_failed"):
                 generate_markdown_report(self.run, plan, [], [], llm_client=Mock())
 
-    def test_deepening_invalid_or_empty_response_is_not_comprehensive(self):
-        from app.agent.deepening import _parse_deepening_response
+    def test_pear_invalid_or_empty_response_is_not_comprehensive(self):
+        from app.research.branch_planner import plan_research_branches
+        from tests.support.fake_react_llm import FakeReActLLMClient
         for value in ("", "garbage", "[]", '{"learnings": "invalid"}'):
             with self.subTest(value=value):
-                parsed = _parse_deepening_response(value)
+                parsed = plan_research_branches(FakeReActLLMClient([value]),
+                    task="fixture", observations=[], prior_queries=[], breadth=2, depth=0, contract={})
                 self.assertFalse(parsed["is_comprehensive"])
-                self.assertIn("error", parsed)
+                self.assertTrue(parsed["planner_failed"])
 
     def test_legacy_quality_rows_are_excluded_without_deletion(self):
         from app.improvement.api import improvement_stats
@@ -468,16 +494,16 @@ class ResearchIntegrityTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 409)
         self.assertEqual(self.run.report_path, "workspace/reports/intermediate.md")
 
-    def test_parallel_independent_empty_tools_cannot_complete(self):
-        from app.agent.parallel_executor import run_plan_parallel
+    def test_canonical_independent_empty_tools_cannot_complete(self):
+        from app.agent.executor import run_plan
         plan = {"execution_mode": "planned", "steps": [
             {"step_no": 1, "tool_name": "file_reader", "arguments": {"path": "a.md"}},
             {"step_no": 2, "tool_name": "file_reader", "arguments": {"path": "b.md"}}]}
         store.replace_agent_run_plan(self.db, self.run.run_id, plan)
-        with (patch("app.agent.parallel_executor.is_executable_tool", return_value=True),
-              patch("app.agent.parallel_executor.execute_tool", return_value=ToolResult(success=True, output={})) as tool,
-              patch("app.agent.parallel_executor.generate_markdown_report") as report):
-            result = run_plan_parallel(self.db, self.run.run_id, Settings(max_refetch_rounds=0))
+        with (patch("app.agent.executor.is_executable_tool", return_value=True),
+              patch("app.agent.executor.execute_tool", return_value=ToolResult(success=True, output={})) as tool,
+              patch("app.agent.executor.generate_markdown_report") as report):
+            result = run_plan(self.db, self.run.run_id, Settings(max_refetch_rounds=0))
         self.assertEqual(result["status"], "failed")
         self.assertEqual(tool.call_count, 2)
         report.assert_not_called()
@@ -501,51 +527,39 @@ class ResearchIntegrityTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         tool.assert_not_called()
 
-    def test_deepening_failed_synthesis_records_limitation_not_comprehensive(self):
-        from unittest.mock import Mock
-        from app.agent.deepening import _legacy_run_deepening_v1 as run_deepening
-        from app.llm.base import LLMResponse
-        client = Mock()
-        client.is_available.return_value = True
-        client.complete.return_value = LLMResponse(success=False, provider="fixture", error_message="unavailable")
-
+    def test_pear_failed_branch_planner_preserves_diagnostics(self):
+        from app.research.orchestrator import run_deep_research_v2
+        from tests.support.fake_react_llm import FakeReActLLMClient
         def initial(db, run_id, settings, llm):
             self.trace("web_fetcher", "success", {"pages": [
                 {"url": "https://example.com/a", "content": "Valid initial source"}]}, 2)
-            store.update_agent_run_status(db, run_id, "completed", None)
-            return {"run_id": run_id, "status": "completed"}
-
+            return {"run_id": run_id, "status": "running"}
         with (tempfile.TemporaryDirectory() as directory,
-              patch("app.agent.deepening.run_react_task", side_effect=initial),
-              patch("app.agent.deepening.save_report", side_effect=real_save_report)):
-            result = run_deepening(self.db, self.run.run_id, Settings(
+              patch("app.research.orchestrator.run_react_task", side_effect=initial),
+              patch("app.research.orchestrator.generate_markdown_report") as report):
+            result = run_deep_research_v2(self.db, self.run.run_id, Settings(
                 deep_research_enabled=True, evidence_reasoning_enabled=False,
-                evidence_artifact_root=directory), client)
-        self.assertEqual(result["status"], "incomplete")
-        outcome = json.loads(self.run.plan_json)["research_outcome"]
-        self.assertTrue(any("completeness was not established" in text for text in outcome["warnings"]))
-        rounds = [trace for trace in store.list_tool_traces(self.db, self.run.run_id) if trace.tool_name == "deepening_round"]
-        self.assertEqual(rounds[0].status, "failed")
-        failure = json.loads(rounds[0].output_json)
-        self.assertFalse(failure["is_comprehensive"])
-        self.assertEqual(failure["metadata"]["error_type"], "provider_unavailable")
+                evidence_artifact_root=directory), FakeReActLLMClient([]),
+                branch_planner=lambda *a, **k: {"branches": [], "is_comprehensive": False,
+                    "planner_failed": True, "error_type": "provider_unavailable",
+                    "error_message": "unavailable", "provider": "fixture"})
+        self.assertNotEqual(result["status"], "completed")
+        report.assert_not_called()
+        trace = next(t for t in store.list_tool_traces(self.db, self.run.run_id)
+                     if t.tool_name == "research_branch_planner")
+        self.assertEqual(trace.status, "failed")
+        self.assertEqual(json.loads(trace.output_json)["error_type"], "provider_unavailable")
 
-    def test_deepening_final_gate_rejects_no_evidence(self):
-        from unittest.mock import Mock
-        from app.agent.deepening import _legacy_run_deepening_v1 as run_deepening
-        from app.llm.base import LLMResponse
-        client = Mock()
-        client.is_available.return_value = True
-        client.complete.return_value = LLMResponse(success=False, provider="fixture")
-
-        def initial(db, run_id, settings, llm):
-            store.update_agent_run_status(db, run_id, "completed", None)
-            return {"run_id": run_id, "status": "completed"}
-
-        with (patch("app.agent.deepening.run_react_task", side_effect=initial),
-              patch("app.agent.deepening.generate_markdown_report") as report):
-            result = run_deepening(self.db, self.run.run_id, Settings(deep_research_enabled=True), client)
-        self.assertEqual(result["status"], "failed")
+    def test_pear_final_gate_rejects_no_evidence(self):
+        from app.research.orchestrator import run_deep_research_v2
+        from tests.support.fake_react_llm import FakeReActLLMClient
+        with (patch("app.research.orchestrator.run_react_task",
+                    return_value={"run_id": self.run.run_id, "status": "running"}),
+              patch("app.research.orchestrator.generate_markdown_report") as report):
+            result = run_deep_research_v2(self.db, self.run.run_id,
+                Settings(deep_research_enabled=True), FakeReActLLMClient([]),
+                branch_planner=lambda *a, **k: {"branches": [], "is_comprehensive": True})
+        self.assertNotEqual(result["status"], "completed")
         report.assert_not_called()
 
     def test_transient_success_cannot_override_persisted_failed_trace(self):

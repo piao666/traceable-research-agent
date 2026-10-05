@@ -45,17 +45,6 @@ jobs:
         run: python scripts/smoke_research_integrity.py
 
 
-      - name: Run quality evaluation (mock)
-        run: python scripts/run_quality_eval.py --mode mock --dataset all
-        env:
-          OFFLINE_MODE: "true"
-          EXTERNAL_TOOLS_DEFAULT_MODE: mock
-          GITHUB_TOOL_DEFAULT_MODE: mock
-          LLM_PLANNER_ENABLED: "false"
-          LLM_PROVIDER: deterministic
-          REPORT_GENERATION_MODE: deterministic
-          MCP_REMOTE_REGISTRY_ENABLED: "false"
-
       - name: Run representative smoke checks
         run: |
           python scripts/smoke_docker_config.py

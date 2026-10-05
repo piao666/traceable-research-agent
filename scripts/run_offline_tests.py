@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import gc
 import ipaddress
 import inspect
 import os
@@ -16,6 +17,7 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from typing import Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -54,8 +56,21 @@ def is_loopback(host: object) -> bool:
         return False
 
 
-def install_network_guard() -> list[str]:
+def install_network_guard(current_test: list[str | None] | None = None) -> list[str]:
     violations: list[str] = []
+
+    def origin() -> str:
+        if current_test and current_test[0]:
+            return current_test[0]
+        frame = inspect.currentframe()
+        while frame:
+            filename = Path(frame.f_code.co_filename).name
+            if filename.startswith("test_"):
+                return f"{filename}:{frame.f_code.co_name}"
+            frame = frame.f_back
+        # Collection/import-time attempts have no test frame. Keep this
+        # diagnostic useful without exposing paths, hosts, or request data.
+        return "<no-test-frame>"
 
     def guard(event: str, args: tuple) -> None:
         host = None
@@ -67,17 +82,41 @@ def install_network_guard() -> list[str]:
                 host = address[0]
         if host is not None and not is_loopback(host):
             # Do not include URLs, request payloads, credentials or DNS names.
-            violations.append(event)
-            frame = inspect.currentframe()
-            while frame:
-                if Path(frame.f_code.co_filename).name.startswith("test_"):
-                    print(f"OFFLINE BLOCK: {Path(frame.f_code.co_filename).name}:{frame.f_code.co_name}", file=sys.stderr)
-                    break
-                frame = frame.f_back
+            violation_origin = origin()
+            violations.append(f"{event}:{violation_origin}")
+            # pytest captures ``sys.stderr`` for tests that intentionally
+            # handle I/O errors; the original stream keeps the fail-closed
+            # audit origin visible to the wrapper operator.
+            print(f"OFFLINE BLOCK: {violation_origin}", file=sys.__stderr__)
             raise OSError("External network blocked by offline test guard")
 
     sys.addaudithook(guard)
     return violations
+
+
+class OfflinePytestOriginPlugin:
+    """Expose the active pytest item to the audit hook without test data."""
+
+    def __init__(self, current_test: list[str | None]) -> None:
+        self.current_test = current_test
+
+    def pytest_runtest_protocol(self, item: object, nextitem: object) -> Iterator[None]:
+        location = getattr(item, "location", ("<unknown>", 0, "<unknown>"))
+        self.current_test[0] = f"{Path(str(location[0])).name}:{location[2]}"
+        yield
+        self.current_test[0] = None
+
+    pytest_runtest_protocol.pytest_impl = {"hookwrapper": True}  # type: ignore[attr-defined]
+
+
+def dispose_isolated_application_database() -> None:
+    """Release the process-global SQLAlchemy pool before Windows temp cleanup."""
+
+    database_module = sys.modules.get("app.database")
+    engine = getattr(database_module, "engine", None)
+    if engine is not None:
+        engine.dispose()
+    gc.collect()
 
 
 @contextmanager
@@ -92,6 +131,11 @@ def isolated_test_database():
         try:
             yield managed["TRACE_DATABASE_PATH"]
         finally:
+            # ``app.database`` is imported during pytest collection after the
+            # isolated path is configured. Its module-global pool can retain a
+            # SQLite handle until interpreter shutdown, which prevents
+            # TemporaryDirectory cleanup on Windows.
+            dispose_isolated_application_database()
             for name, value in previous.items():
                 if value is None:
                     os.environ.pop(name, None)
@@ -105,16 +149,19 @@ def main() -> int:
     args = parser.parse_args()
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT))
-    violations = install_network_guard()
+    current_test: list[str | None] = [None]
+    violations = install_network_guard(current_test)
     with isolated_test_database():
         if args.runner == "pytest":
             import pytest
-            code = int(pytest.main(["tests"]))
+            code = int(pytest.main(["tests"], plugins=[OfflinePytestOriginPlugin(current_test)]))
         else:
             result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover("tests"))
             code = 0 if result.wasSuccessful() else 1
             print("unittest discovery does not execute pytest-only function tests.")
     print(f"Offline network guard: {len(violations)} blocked external attempts")
+    if violations:
+        print(f"Offline network guard origins: {', '.join(violations)}")
     return 1 if violations else code
 
 

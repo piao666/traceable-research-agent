@@ -1,91 +1,23 @@
-"""Select the stable planned executor or the optional ReAct executor.
+"""Dispatch new work to one Quick executor or one Deep Scope controller.
 
-When planned execution finishes with insufficient quality (low citations,
-poor auditability, unresolved claims), the dispatcher automatically upgrades
-to ReAct for deeper exploration — adaptive hybrid mode.
+Historical result projections remain readable; adaptive reruns and rollout-based
+legacy execution are deliberately not part of the runtime.
 """
-
 from __future__ import annotations
 
 import json
-import hashlib
-import logging
 
 from sqlalchemy.orm import Session
 
 from app.agent.executor import run_plan
 from app.agent.preflight import RoleAvailability, enforce_execution_readiness
-from app.agent.outcome import fail_execution, finalize_terminal_decision, result_integrity
+from app.agent.outcome import fail_execution, result_integrity
 from app.config import Settings, settings
 from app.llm.base import LLMClient
 
-logger = logging.getLogger(__name__)
-
-# ── Adaptive gate thresholds ──────────────────────────────────────────
-_MIN_CITATIONS_FOR_ADAPTIVE = 3
-_MIN_AUDITABILITY_FOR_ADAPTIVE = 5.0
-_MAX_UNRESOLVED_FOR_ADAPTIVE = 0
-
-
-def _adaptive_upgrade_reason(db: Session, run_id: str) -> str | None:
-    """Return a user-visible reason when planned output needs deeper research."""
-    from app.trace import store as _store
-    run = _store.get_agent_run(db, run_id)
-    if run is None or run.status not in {"running", "completed"} or not run.report_path:
-        return None
-
-    citations = getattr(run, "citation_total", 0) or 0
-    accuracy = getattr(run, "citation_accuracy", 0.0) or 0.0
-    unsupported = getattr(run, "citation_unsupported", 0) or 0
-    auditability = (
-        min(citations / 10, 1.0) * 5 + accuracy * 3
-        if citations > 0 else 3.0
-    )
-
-    reasons: list[str] = []
-    if citations < _MIN_CITATIONS_FOR_ADAPTIVE:
-        reasons.append(f"citations={citations}<{_MIN_CITATIONS_FOR_ADAPTIVE}")
-    if auditability < _MIN_AUDITABILITY_FOR_ADAPTIVE:
-        reasons.append(f"auditability={auditability:.1f}<{_MIN_AUDITABILITY_FOR_ADAPTIVE}")
-    if unsupported > _MAX_UNRESOLVED_FOR_ADAPTIVE:
-        reasons.append(f"unsupported={unsupported}>{_MAX_UNRESOLVED_FOR_ADAPTIVE}")
-
-    if reasons:
-        logger.info("Adaptive gate: upgrading planned→ReAct (%s)", ", ".join(reasons))
-        return "Planned 执行质量不足，自动升级为 ReAct 深入探索（" + ", ".join(reasons) + "）。"
-    return None
-
-
 def _is_quick_plan(plan: dict) -> bool:
-    """Quick is a product contract, not a quality-triggered auto-upgrade."""
-
-    return str(plan.get("research_mode") or "").casefold() == "quick" or bool(
-        plan.get("quick_mode")
-    )
-
-
-def _pear_rollout_decision(run_id: str, plan: dict, settings_obj: Settings) -> dict[str, object]:
-    """Choose PEAR deterministically for new auto-mode runs only.
-
-    Explicit Deep remains PEAR.  Legacy plans without a persisted
-    ``research_mode`` keep their historical route so a rollout cannot change
-    the controller used by an in-flight or previously-created Run.
-    """
-
-    mode = str(plan.get("research_mode") or "").casefold()
-    if mode == "deep" or str(plan.get("research_controller") or "").casefold() == "pear":
-        return {"selected": True, "bucket": 0, "percent": 100, "reason": "explicit_deep_or_pear"}
-    if mode != "auto":
-        return {"selected": False, "bucket": None, "percent": 0, "reason": "legacy_or_explicit_non_auto"}
-    percent = max(0, min(100, int(getattr(settings_obj, "pear_rollout_percent", 0))))
-    bucket = int(hashlib.sha256(str(run_id).encode("utf-8")).hexdigest()[:8], 16) % 100
-    return {
-        "selected": bucket < percent,
-        "bucket": bucket,
-        "percent": percent,
-        "reason": "percentage_rollout" if percent else "rollout_disabled",
-    }
-
+    """Recognize the persisted Quick product contract, not a runtime fallback."""
+    return str(plan.get("research_mode") or "").casefold() == "quick" or bool(plan.get("quick_mode"))
 
 def _refresh_result(db: Session, run_id: str, result: dict) -> dict:
     """Synchronize an executor summary with the final persisted run and plan."""
@@ -137,300 +69,104 @@ def _finalize_result(db: Session, run_id: str, result: dict) -> dict:
     return _refresh_result(db, run_id, result)
 
 
+
 def run_task_by_mode(
     db: Session,
     run_id: str,
     settings_obj: Settings = settings,
     llm_client: LLMClient | None = None,
 ) -> dict:
-    """Dispatch to ReAct or Planned executor.
-
-    The Planner writes an automatic execution route into the persisted plan.
-    ReAct falls back to the stable planned executor when it is disabled or
-    cannot start before any successful tool observation is recorded.
-    """
+    """Execute an approved plan once; never switch engines after a failure."""
     from app.trace import store as _store
-    run = _store.get_agent_run(db, run_id)
-    plan: dict = {}
-    plan_mode: str | None = None
-    if run is not None:
-        try:
-            plan = json.loads(run.plan_json or "{}")
-            plan_mode = plan.get("execution_mode") or None
-        except Exception:
-            plan_mode = None
+    from app.agent.executor import _summary
 
-    effective_mode = plan_mode or "planned"
-    if _is_quick_plan(plan):
-        effective_mode = "planned"
-        plan_mode = "planned"
-        plan["execution_mode"] = "planned"
-        plan["requested_execution_mode"] = "planned"
-        _store.replace_agent_run_plan(db, run_id, plan)
-    elif str(plan.get("research_mode") or "").casefold() == "deep":
-        if not settings_obj.deep_research_enabled:
-            from app.agent.executor import _summary
-
-            plan["research_mode_error"] = "deep_research_disabled"
-            _store.replace_agent_run_plan(db, run_id, plan)
-            failed = _store.update_agent_run_status(
-                db,
-                run_id,
-                "failed",
-                "Deep Research mode is unavailable in the current runtime configuration.",
-            )
-            return _refresh_result(db, run_id, _summary(failed, plan))
-        # Explicit Deep bypasses the legacy quality-triggered adaptive gate and
-        # enters the single Scope/PEAR owner immediately.
-        effective_mode = "react"
-        plan_mode = "react"
-        plan["execution_mode"] = "react"
-        plan["requested_execution_mode"] = "react"
-        _store.replace_agent_run_plan(db, run_id, plan)
-    pear_decision = _pear_rollout_decision(run_id, plan, settings_obj)
-    # Auto is the only mode allowed to change controller at rollout time.  A
-    # selected cohort must enter the PEAR owner even when the legacy planner
-    # initially emitted ``execution_mode=planned``; Quick and explicit modes
-    # have already been handled above and remain unchanged.
-    if (
-        run is not None
-        and str(plan.get("research_mode") or "").casefold() == "auto"
-        and bool(pear_decision.get("selected"))
-        and settings_obj.deep_research_enabled
-    ):
-        effective_mode = "react"
-        plan_mode = "react"
-        plan["execution_mode"] = "react"
-        plan["requested_execution_mode"] = "react"
-        _store.replace_agent_run_plan(db, run_id, plan)
-    # Persist the deterministic decision for every new auto-mode Run, even
-    # when the sampled cohort remains on the legacy planned route.  This is
-    # rollout observability only; it never changes historical controller
-    # selection or Quick semantics.
-    if run is not None and (
-        effective_mode == "react"
-        or str(plan.get("research_mode") or "").casefold() == "auto"
-    ):
-        plan["pear_rollout"] = pear_decision
-        _store.replace_agent_run_plan(db, run_id, plan)
-    if run is not None and run.status in {"failed", "cancelled", "completed", "waiting_human", "waiting_human_plan"}:
-        from app.agent.executor import _summary
+    run = _store.get_fresh_agent_run(db, run_id)
+    if run is None:
+        raise ValueError("Task run not found")
+    if run.status in {"failed", "cancelled", "completed", "incomplete", "waiting_human", "waiting_human_plan"}:
         return _refresh_result(db, run_id, _summary(run))
-    if run is not None and run.status not in {"failed", "cancelled", "completed", "waiting_human", "waiting_human_plan"}:
-        injected_actor_available = bool(
-            llm_client and llm_client.is_available()
-        )
-        actor_provider = settings_obj.react_llm_provider or settings_obj.llm_provider
-        actor_model = settings_obj.react_llm_model or settings_obj.get_llm_provider_config(
-            actor_provider
-        ).get("model")
-        synthesizer_model = settings_obj.llm_model or settings_obj.get_llm_provider_config(
-            settings_obj.llm_provider
-        ).get("model")
-        same_llm_role = (
-            actor_provider,
-            actor_model,
-        ) == (
-            settings_obj.llm_provider,
-            synthesizer_model,
-        )
-        if not enforce_execution_readiness(db, run_id, plan, settings_obj,
-                                          role_availability=RoleAvailability(
-                                              actor=injected_actor_available,
-                                              synthesizer=(
-                                                  injected_actor_available
-                                                  and same_llm_role
-                                              ),
-                                          )):
-            from app.agent.executor import _summary
-            return _refresh_result(db, run_id, _summary(_store.get_fresh_agent_run(db, run_id)))
-    if effective_mode == "react" and not settings_obj.react_enabled:
-        if run is not None:
-            plan["requested_execution_mode"] = "react"
-            plan["execution_mode"] = "planned"
-            routing = dict(plan.get("execution_routing") or {})
-            routing.update({"selected": "planned", "fallback": "ReAct 未启用，降级为固定计划。"})
-            plan["execution_routing"] = routing
-            _store.replace_agent_run_plan(db, run_id, plan)
-        effective_mode = "planned"
-    if effective_mode == "react" and settings_obj.react_enabled:
-        from app.agent.react_executor import run_react_task
-        adaptive_requested_mode = (
-            plan.get("requested_execution_mode") if plan.get("adaptive_upgrade") else None
-        )
-        try:
-            # Plans created before the explicit research_mode contract retain
-            # their historical Deep/ReAct route.  New auto plans use the
-            # deterministic P4 percentage decision above.
-            legacy_react_compat = not str(plan.get("research_mode") or "").strip()
-            pear_execution_selected = settings_obj.deep_research_enabled and (
-                bool(pear_decision.get("selected")) or legacy_react_compat
+    plan = json.loads(run.plan_json or "{}")
+    # A plan may predate the approval/retry normalization introduced for this
+    # boundary.  Detect that legacy condition but never silently change an
+    # already-approved plan at execution time: move it back to review so the
+    # user sees the re-bound fetch parameters before any HTTP request occurs.
+    if isinstance(plan.get("steps"), list):
+        from app.agent.planner import _canonical_task_url, _explicit_task_urls
+
+        task_text = str(getattr(run, "task", "") or plan.get("task") or "")
+        task_urls = set(_explicit_task_urls(task_text))
+        untrusted_direct_fetch = any(
+            step.get("tool_name") == "web_fetcher"
+            and isinstance(step.get("arguments"), dict)
+            and isinstance(step["arguments"].get("urls"), list)
+            and bool(step["arguments"]["urls"])
+            and not all(
+                isinstance(url, str) and _canonical_task_url(url) in task_urls
+                for url in step["arguments"]["urls"]
             )
-            if pear_execution_selected:
-                from app.research.orchestrator import run_deep_research_v2
-
-                result = run_deep_research_v2(
-                    db, run_id, settings_obj, actor_client=llm_client
-                )
-            else:
-                result = run_react_task(db, run_id, settings_obj, llm_client=llm_client)
-            if adaptive_requested_mode:
-                final_run = _store.get_fresh_agent_run(db, run_id)
-                if final_run is not None:
-                    final_plan = json.loads(final_run.plan_json or "{}")
-                    final_plan["requested_execution_mode"] = adaptive_requested_mode
-                    final_plan["adaptive_upgrade"] = True
-                    final_plan["adaptive_gate_pending"] = False
-                    final_plan["adaptive_phase"] = (
-                        final_run.status
-                        if final_run.status in {"completed", "failed", "cancelled"}
-                        else "react_execution"
-                    )
-                    _store.replace_agent_run_plan(db, run_id, final_plan)
-            return _finalize_result(db, run_id, result)
-        except Exception as exc:
-            if locals().get("pear_execution_selected", False):
-                # Deep Profile has one official Engine V2 path. Never hide a
-                # Scope failure by switching to the unrelated planned runtime.
-                db.rollback()
-                failed = fail_execution(db, run_id, exc)
-                from app.agent.executor import _summary
-
-                return _finalize_result(db, run_id, _summary(failed))
-            successful = any(trace.status == "success" for trace in _store.list_tool_traces(db, run_id))
-            if not settings_obj.react_fallback_to_planned or successful or run is None:
-                db.rollback()
-                failed = fail_execution(db, run_id, exc)
-                from app.agent.executor import _summary
-                return _finalize_result(db, run_id, _summary(failed))
-            plan["requested_execution_mode"] = adaptive_requested_mode or "react"
-            plan["execution_mode"] = "planned"
-            plan["react_state"] = {**(plan.get("react_state") or {}), "fallback_used": True}
-            routing = dict(plan.get("execution_routing") or {})
-            routing.update({"selected": "planned", "fallback": f"ReAct 启动失败，降级为固定计划：{type(exc).__name__}"})
-            plan["execution_routing"] = routing
-            _store.replace_agent_run_plan(db, run_id, plan)
-            result = run_plan(db, run_id, settings_obj=settings_obj)
-            if adaptive_requested_mode:
-                fallback_run = _store.get_fresh_agent_run(db, run_id)
-                if fallback_run is not None:
-                    fallback_plan = json.loads(fallback_run.plan_json or "{}")
-                    fallback_plan["requested_execution_mode"] = adaptive_requested_mode
-                    fallback_plan["adaptive_upgrade"] = True
-                    fallback_plan["adaptive_gate_pending"] = False
-                    fallback_plan["adaptive_phase"] = (
-                        fallback_run.status
-                        if fallback_run.status in {"completed", "failed", "cancelled"}
-                        else "planned_execution"
-                    )
-                    _store.replace_agent_run_plan(db, run_id, fallback_plan)
-            return _finalize_result(db, run_id, result)
-
-    adaptive_candidate = bool(effective_mode == "planned" and not _is_quick_plan(plan) and settings_obj.react_enabled
-                              and (llm_client is not None or settings_obj.get_llm_api_key(
-                                  settings_obj.react_llm_provider or settings_obj.llm_provider)))
-    if run is not None:
-        plan["parallel_execution"] = bool(
-            effective_mode == "planned" and settings_obj.parallel_execution_enabled
+            for step in plan["steps"]
+            if isinstance(step, dict)
         )
-        if adaptive_candidate:
-            plan["adaptive_gate_pending"] = True
-            plan["adaptive_phase"] = "planned_execution"
-            plan.pop("adaptive_upgrade_failed", None)
-        _store.replace_agent_run_plan(db, run_id, plan)
-
-    completion_status = "running" if adaptive_candidate else "completed"
-    if effective_mode == "planned" and settings_obj.parallel_execution_enabled:
-        from app.agent.parallel_executor import run_plan_parallel
-        result = run_plan_parallel(
-            db,
-            run_id,
-            settings_obj,
-            completion_status=completion_status,
-            report_llm_client=llm_client,
-        )
-    else:
-        result = run_plan(
-            db,
-            run_id,
-            settings_obj=settings_obj,
-            completion_status=completion_status,
-            report_llm_client=llm_client,
-        )
-
-    current = _store.get_fresh_agent_run(db, run_id)
-    if not adaptive_candidate or current is None or current.status != "running" or not current.report_path:
-        if adaptive_candidate and current is not None and current.status in {"failed", "cancelled"}:
-            terminal_plan = json.loads(current.plan_json or "{}")
-            terminal_plan["adaptive_gate_pending"] = False
-            terminal_plan["adaptive_phase"] = current.status
-            _store.replace_agent_run_plan(db, run_id, terminal_plan)
-        return _finalize_result(db, run_id, result)
-
-    # ── Adaptive gate: upgrade planned → ReAct if quality insufficient ──
-    upgrade_reason = _adaptive_upgrade_reason(db, run_id)
-    if upgrade_reason and not _is_quick_plan(plan):
-        original_requested_mode = plan.get("requested_execution_mode") or "planned"
-        try:
-            from app.agent.react_executor import run_react_task
-            run = _store.get_agent_run(db, run_id)
-            if run is not None:
-                plan = json.loads(run.plan_json or "{}")
-                plan["execution_mode"] = "react"
-                plan["adaptive_upgrade"] = True
-                plan["adaptive_gate_pending"] = False
-                plan["adaptive_phase"] = "react_execution"
-                plan["adaptive_upgrade_reason"] = upgrade_reason
-                _store.replace_agent_run_plan(db, run_id, plan)
-            result = run_react_task(db, run_id, settings_obj, llm_client=llm_client)
-            final_run = _store.get_fresh_agent_run(db, run_id)
-            if final_run is not None and final_run.plan_json:
-                final_plan = json.loads(final_run.plan_json)
-                final_plan["requested_execution_mode"] = original_requested_mode
-                final_plan["adaptive_upgrade"] = True
-                final_plan["adaptive_gate_pending"] = False
-                final_plan["adaptive_phase"] = (
-                    final_run.status
-                    if final_run.status in {"completed", "failed", "cancelled"}
-                    else "react_execution"
-                )
-                final_plan["adaptive_upgrade_reason"] = upgrade_reason
-                _store.replace_agent_run_plan(db, run_id, final_plan)
-            return _finalize_result(db, run_id, result)
-        except Exception as exc:
-            logger.warning("Adaptive ReAct upgrade failed, returning planned result.", exc_info=True)
-            failed_run = _store.get_fresh_agent_run(db, run_id)
-            failed_plan = json.loads(failed_run.plan_json or "{}") if failed_run else dict(plan)
-            failed_plan["execution_mode"] = "planned"
-            failed_plan["requested_execution_mode"] = original_requested_mode
-            failed_plan["adaptive_upgrade"] = True
-            failed_plan["adaptive_upgrade_failed"] = True
-            failed_plan["adaptive_gate_pending"] = False
-            failed_plan["adaptive_phase"] = "completed"
-            failed_plan["adaptive_upgrade_reason"] = upgrade_reason
-            failed_plan["adaptive_upgrade_error"] = type(exc).__name__
-            _store.replace_agent_run_plan(db, run_id, failed_plan)
+        if untrusted_direct_fetch:
             from app.trace.logger import record_trace_event
-            record_trace_event(db, run_id, 0, "adaptive_upgrade", "failed", {},
-                               "Optional ReAct upgrade failed; rechecking the planned result.",
-                               {"error_type": type(exc).__name__})
-            result = run_plan(db, run_id, settings_obj=settings_obj, report_llm_client=llm_client)
-            return _finalize_result(db, run_id, result)
 
-    final_run = _store.get_fresh_agent_run(db, run_id)
-    if final_run is not None and final_run.status in {"failed", "cancelled"}:
-        return _finalize_result(db, run_id, result)
-    final_plan = json.loads(final_run.plan_json or "{}") if final_run else dict(plan)
-    final_plan["adaptive_gate_pending"] = False
-    final_plan["adaptive_phase"] = "completed"
-    _store.replace_agent_run_plan(db, run_id, final_plan)
-    # The finalizer owns the terminal CAS and re-reads persisted diagnostics;
-    # never copy a stale terminal status onto a run that may have been
-    # cancelled or paused while adaptive work was finishing.
-    final_run = _store.get_fresh_agent_run(db, run_id)
-    if final_run is not None and final_run.status not in {"cancelled", "waiting_human", "waiting_human_plan"}:
-        finalize_terminal_decision(
-            db, final_run, json.loads(final_run.plan_json or "{}"),
-            traces=_store.list_tool_traces(db, run_id),
+            plan["plan_review_required"] = "Legacy direct fetch URLs require review against the original task."
+            plan["notes"] = list(plan.get("notes") or []) + [
+                "Execution blocked: legacy fetch URL plan requires review before rebinding to discovery results."
+            ]
+            _store.replace_agent_run_plan(db, run_id, plan)
+            waiting = _store.update_agent_run_status(
+                db, run_id, "waiting_human_plan", "Plan review required before executing legacy fetch URLs."
+            )
+            record_trace_event(
+                db, run_id, 0, "plan_revalidation", "waiting_human_plan",
+                {"reason": "legacy_untrusted_fetch_url"},
+                "Execution blocked until the legacy fetch URL plan is reviewed.",
+                {"approved_plan_changed": False, "review_required": True},
+            )
+            from app.agent.executor import _summary
+
+            return _refresh_result(db, run_id, _summary(waiting))
+
+
+    mode = str(plan.get("research_mode") or "auto").casefold()
+    deep = not _is_quick_plan(plan) and (mode == "deep" or (
+        mode == "auto" and (
+            plan.get("execution_mode") in {"react", "deep_research_v2"}
+            or plan.get("research_controller") == "pear"
         )
+    ))
+    if deep and not (settings_obj.deep_research_enabled and settings_obj.react_enabled):
+        failed = fail_execution(db, run_id, ValueError("deep_research_disabled"))
+        return _refresh_result(db, run_id, _summary(failed))
+    plan["execution_mode"] = "react" if deep else "planned"
+    plan["requested_execution_mode"] = plan["execution_mode"]
+    plan["runtime_dispatch_version"] = "single-controller-v1"
+    for retired in ("adaptive_gate_pending", "adaptive_phase", "adaptive_upgrade",
+                    "adaptive_upgrade_reason", "adaptive_upgrade_failed", "pear_rollout",
+                    "parallel_execution"):
+        plan.pop(retired, None)
+    _store.replace_agent_run_plan(db, run_id, plan)
+
+    actor_available = bool(llm_client and llm_client.is_available())
+    actor_provider = settings_obj.react_llm_provider or settings_obj.llm_provider
+    actor_model = settings_obj.react_llm_model or settings_obj.get_llm_provider_config(actor_provider).get("model")
+    writer_model = settings_obj.llm_model or settings_obj.get_llm_provider_config(settings_obj.llm_provider).get("model")
+    if not enforce_execution_readiness(
+        db, run_id, plan, settings_obj,
+        role_availability=RoleAvailability(
+            actor=actor_available,
+            synthesizer=actor_available and (actor_provider, actor_model) == (settings_obj.llm_provider, writer_model),
+        ),
+    ):
+        return _refresh_result(db, run_id, _summary(_store.get_fresh_agent_run(db, run_id)))
+    try:
+        if deep:
+            from app.research.orchestrator import run_deep_research_v2
+            result = run_deep_research_v2(db, run_id, settings_obj, actor_client=llm_client)
+        else:
+            result = run_plan(db, run_id, settings_obj=settings_obj, report_llm_client=llm_client)
+    except Exception as exc:
+        db.rollback()
+        result = _summary(fail_execution(db, run_id, exc))
     return _finalize_result(db, run_id, result)

@@ -25,6 +25,7 @@ class FixtureLLM(LLMClient):
     def __init__(self, response: LLMResponse):
         self.response = response
         self.calls = 0
+        self.messages: list[LLMMessage] = []
 
     def is_available(self) -> bool:
         return True
@@ -34,6 +35,7 @@ class FixtureLLM(LLMClient):
 
     def complete(self, messages: list[LLMMessage], temperature: float = 0.0, max_tokens: int = 2000) -> LLMResponse:
         self.calls += 1
+        self.messages = list(messages)
         return self.response
 
 
@@ -332,6 +334,21 @@ class SynthesizerContractTests(unittest.TestCase):
             }]},
         }]
 
+    def provenance(self) -> dict:
+        return {
+            "passages": [{
+                "passage_id": "p1", "snapshot_id": "s1",
+                "text": "Evidence-backed finding.", "content_basis": "full_text",
+                "metadata": {"evidence_role": "primary_content"},
+            }],
+            "source_snapshots": [{
+                "snapshot_id": "s1", "document_id": "d1",
+                "metadata": {"evidence_role": "primary_content"},
+            }],
+            "source_documents": [{"document_id": "d1", "canonical_uri": "https://docs.example/page"}],
+            "citations": [{"citation_label": "CIT-001-01", "passage_id": "p1"}],
+        }
+
     def test_failed_response_without_usage_is_reported_to_trace_callback(self):
         from app.agent.reporter import _llm_synthesize_answer
         client = FixtureLLM(LLMResponse(
@@ -368,6 +385,59 @@ class SynthesizerContractTests(unittest.TestCase):
             usage_callback=responses.append,
         ))
         self.assertEqual(responses[0].metadata["error_type"], "malformed_response")
+
+    def test_effective_synthesis_prompt_defaults_to_chinese_without_fixed_length(self):
+        from app.agent.reporter import _llm_synthesize_answer
+        client = FixtureLLM(LLMResponse(
+            success=True, content="Evidence-backed finding [CIT-001-01].",
+            provider="fixture", model="fixture",
+        ))
+        answer = _llm_synthesize_answer(
+            "Summarize the fixture", self.observation(), client,
+            provenance_bundle=self.provenance(),
+        )
+        self.assertEqual(answer, "Evidence-backed finding [CIT-001-01].")
+        prompt = client.messages[0].content
+        self.assertIn("Output language: Chinese (the product default).", prompt)
+        self.assertIn("Do not pad to a fixed length.", prompt)
+        self.assertNotIn("300", prompt)
+
+    def test_effective_synthesis_prompt_honors_explicit_contract_language(self):
+        from app.agent.reporter import _llm_synthesize_answer
+        client = FixtureLLM(LLMResponse(
+            success=True, content="Evidence-backed finding [CIT-001-01].",
+            provider="fixture", model="fixture",
+        ))
+        _llm_synthesize_answer(
+            "Summarize the fixture", self.observation(), client,
+            provenance_bundle=self.provenance(),
+            task_contract={"output_constraints": {"language": "en", "sentence_count": 2}},
+        )
+        self.assertIn(
+            "Output language: English, as explicitly required by the trusted task contract.",
+            client.messages[0].content,
+        )
+
+    def test_revision_draft_is_sent_once_and_output_reservation_is_bounded(self):
+        from app.agent.reporter import _llm_synthesize_answer
+
+        class CapturingLLM(FixtureLLM):
+            def complete(self, messages, temperature=0.0, max_tokens=2000):
+                self.requested_max_tokens = max_tokens
+                return super().complete(messages, temperature, max_tokens)
+
+        client = CapturingLLM(LLMResponse(
+            success=True, content="Evidence-backed finding [CIT-001-01].",
+            provider="fixture", model="fixture",
+        ))
+        previous = "PREVIOUS_DRAFT_UNIQUE_MARKER"
+        _llm_synthesize_answer(
+            "Summarize the fixture", self.observation(), client,
+            provenance_bundle=self.provenance(),
+            revision_feedback={"previous_draft": previous, "invalid_sentences": ["bad claim"]},
+        )
+        self.assertEqual(sum(message.content.count(previous) for message in client.messages), 1)
+        self.assertEqual(client.requested_max_tokens, 4096)
 
 
 class RuntimePreflightTests(unittest.TestCase):
@@ -486,6 +556,42 @@ class RuntimePreflightTests(unittest.TestCase):
             result = run_runtime_preflight(self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher)
         self.assertTrue(result["ready"])
         self.assertTrue(any("usage" in warning for warning in result["warnings"]))
+
+    def test_url_specific_fetch_rejection_is_warning_not_backend_blocker(self):
+        llm = FixtureLLM(LLMResponse(success=True, content='{"ok":true}', provider="fixture"))
+        probe_ok = {"success": True, "error_type": None, "detail": "ok", "usage_parsed": True, "structured_output": True}
+
+        def searcher(_arguments, **_kwargs):
+            return ToolResult(
+                success=True,
+                output={"results": [{"url": "https://docs.example/restricted"}]},
+                metadata={"data_source": "tavily_api", "fallback_used": False},
+            )
+
+        def fetcher(_arguments, **_kwargs):
+            return ToolResult(
+                success=False,
+                output={"fetched_count": 0, "pages": [{
+                    "url": "https://docs.example/restricted",
+                    "error_code": "http_403",
+                    "error_detail": {"code": "http_403", "tool_scoped": False},
+                }]},
+                metadata={"error_type": "http_403"},
+            )
+
+        with (
+            patch("app.runtime.preflight._check_planner_capability", return_value=probe_ok),
+            patch("app.runtime.preflight._check_react_capability", return_value=probe_ok),
+        ):
+            result = run_runtime_preflight(
+                self.real_settings(), llm_client=llm, searcher=searcher, fetcher=fetcher
+            )
+        fetch = next(item for item in result["capabilities"] if item["name"] == "web_fetcher")
+        self.assertTrue(result["ready"])
+        self.assertTrue(fetch["usable"])
+        self.assertIsNone(fetch["reachable"])
+        self.assertFalse(any(item["capability"] == "web_fetcher" for item in result["blockers"]))
+        self.assertTrue(any("sampled URL" in warning for warning in result["warnings"]))
 
     def test_preflight_reports_browser_fallback_as_the_actual_backend(self):
         llm = FixtureLLM(LLMResponse(success=True, content='{"ok":true}', provider="fixture"))

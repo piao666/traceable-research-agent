@@ -10,6 +10,8 @@ import json
 import re
 from urllib.parse import urlsplit
 
+from app.evidence.qualification import DEFAULT_CONTENT_BASES
+
 
 _DIMENSION_ALIASES = {
     "架构": ("架构", "architecture", "orchestration", "runtime"),
@@ -46,7 +48,7 @@ def comparison_requirements(entities: list[str], dimensions: list[str]) -> list[
             "predicate": "compare",
             "entity": entity,
             "dimension": dimension,
-            "acceptable_content_basis": ["full_text", "table", "structured"],
+            "acceptable_content_basis": list(DEFAULT_CONTENT_BASES),
             "min_independent_sources": 1,
             "mandatory": True,
         }

@@ -12,6 +12,8 @@ from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.evidence.qualification import CONTENT_BEARING_BASES, DEFAULT_CONTENT_BASES
+
 
 RequirementKind = Literal[
     "fact",
@@ -38,6 +40,7 @@ EvidenceGapType = Literal[
     "unknown_evidence_role",
     "conflict",
     "unmapped_claim",
+    "invalid_requirement",
 ]
 
 
@@ -67,7 +70,7 @@ class EvidenceRequirement(BaseModel):
     time_scope: str | None = None
     min_reliability: float = Field(default=0.0, ge=0.0, le=1.0)
     min_independent_sources: int = Field(default=1, ge=0, le=100)
-    acceptable_content_basis: tuple[str, ...] = ("full_text", "table", "structured")
+    acceptable_content_basis: tuple[str, ...] = DEFAULT_CONTENT_BASES
     required: bool = True
     # Legacy comparison contracts used ``mandatory``; retain it while the
     # canonical field is ``required``.
@@ -76,7 +79,9 @@ class EvidenceRequirement(BaseModel):
     @field_validator("acceptable_content_basis")
     @classmethod
     def validate_content_basis(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        allowed = {"full_text", "table", "structured", "snippet_only", "metadata"}
+        # Explicit restrictions are preserved; accepting a vocabulary item does
+        # not bypass role, trace, hash, relevance or factual-evidence checks.
+        allowed = CONTENT_BEARING_BASES | {"snippet_only", "metadata"}
         normalized = tuple(dict.fromkeys(str(item).strip().casefold() for item in values if str(item).strip()))
         invalid = sorted(set(normalized) - allowed)
         if invalid:
@@ -147,13 +152,22 @@ def normalize_requirements(contract: dict[str, Any] | None) -> list[EvidenceRequ
     """Validate and normalize legacy requirement dictionaries.
 
     Older plans omit ``question_id`` and ``kind``.  They are assigned stable
-    defaults here; invalid requirements are omitted from the assessor rather
-    than being treated as completed evidence.
+    defaults here; invalid requirements remain blocking obligations instead of
+    disappearing from the assessor or being treated as completed evidence.
     """
 
     result: list[EvidenceRequirement] = []
-    for index, raw in enumerate((contract or {}).get("requirements") or [], 1):
+    raw_requirements = (contract or {}).get("requirements")
+    if raw_requirements is None:
+        return result
+    if not isinstance(raw_requirements, list):
+        raw_requirements = [None]
+    for index, raw in enumerate(raw_requirements, 1):
         if not isinstance(raw, dict):
+            result.append(EvidenceRequirement(
+                requirement_id=f"requirement-{index}", question_id=f"q-{index}",
+                predicate="invalid_requirement",
+            ))
             continue
         payload = dict(raw)
         payload.setdefault("requirement_id", f"requirement-{index}")
@@ -169,10 +183,12 @@ def normalize_requirements(contract: dict[str, Any] | None) -> list[EvidenceRequ
         except Exception:
             # A malformed requirement is an unresolved obligation, not a free
             # pass.  Keep a safe placeholder so completion remains incomplete.
+            requirement_id = str(payload.get("requirement_id") or "").strip()
+            question_id = str(payload.get("question_id") or "").strip()
             result.append(
                 EvidenceRequirement(
-                    requirement_id=str(payload["requirement_id"]),
-                    question_id=str(payload.get("question_id") or f"q-{index}"),
+                    requirement_id=requirement_id if 0 < len(requirement_id) <= 160 else f"requirement-{index}",
+                    question_id=question_id if 0 < len(question_id) <= 160 else f"q-{index}",
                     kind="fact",
                     predicate="invalid_requirement",
                     min_independent_sources=1,
@@ -183,6 +199,31 @@ def normalize_requirements(contract: dict[str, Any] | None) -> list[EvidenceRequ
 
 def requirements_to_dict(requirements: list[EvidenceRequirement]) -> list[dict[str, Any]]:
     return [item.model_dump(mode="json") for item in requirements]
+
+
+def requirement_index(contract: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Resolve current and historical requirement IDs without hiding ambiguity.
+
+    This is a read-only identity boundary, not evidence qualification. Keep
+    source-scope fields unchanged and never synthesize IDs for branch binding.
+    """
+    result: dict[str, dict[str, Any]] = {}
+    for key in ("requirements", "evidence_scope_requirements"):
+        rows = (contract or {}).get(key)
+        if rows is None:
+            continue
+        if not isinstance(rows, list):
+            raise ValueError("Requirement collection must be a list")
+        for item in rows:
+            if not isinstance(item, dict):
+                raise ValueError("Requirement must be an object")
+            identity = item.get("requirement_id")
+            if not isinstance(identity, str) or not identity.strip() or len(identity) > 160:
+                raise ValueError("Invalid requirement ID")
+            if identity in result and result[identity] != item:
+                raise ValueError("Ambiguous requirement ID")
+            result[identity] = dict(item)
+    return result
 
 
 def normalize_questions(contract: dict[str, Any] | None) -> list[ResearchQuestion]:

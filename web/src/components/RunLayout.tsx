@@ -16,7 +16,7 @@ export function IntegrityNotice({ task }: { task: NonNullable<RunContext["task"]
   const warnings = [...new Set((task.quality_warnings ?? []).map(localizeQualityWarning))];
   if (!task.requires_review && !warnings.length && !["failed", "incomplete"].includes(task.status)) return null;
   return <aside className="warning-banner" aria-label="研究限制">
-    {task.requires_review && <strong>历史结果待复核：旧状态和旧质量分数不能证明研究有效。</strong>}
+    {task.is_legacy_result && <strong>历史结果待复核：旧状态和旧质量分数不能证明研究有效。</strong>}
     {task.status === "failed" && <strong>研究失败，不能作为成功结果验收。</strong>}
     {task.status === "incomplete" && <strong>研究未完成：当前报告仅包含部分结果，可阅读和导出；可创建新 Run 重试。</strong>}
     {warnings.length > 0 && <ul>{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}

@@ -26,8 +26,8 @@ Scope 聚合层进入整体完成判定和最终报告，因此完整保留
 的最终报告；节点完成时不会再先生成遗漏兄弟分支证据的中间报告。Standard 与 Offline
 继续沿用原执行路径。
 
-旧 `app.agent.deepening.run_deepening` 名称仅保留一个兼容周期，调用时发出弃用告警并
-转入 Engine V2；Dispatcher 已不再调用旧 Round 引擎。Coverage／Gap Intelligence 与
+旧 V1 深化引擎、弃用适配入口及独立的 planned 并行执行器已删除。新任务统一进入
+Dispatcher，由 Quick 顺序执行或 Deep PEAR 控制；历史 Run 读取和谱系迁移继续保留。Coverage／Gap Intelligence 与
 分章节长报告仍严格留在 R13／R14。
 
 ### Scope-first 研究结果治理（R12.1）

@@ -8,11 +8,23 @@ services:
     shm_size: "1gb"
     volumes:
       - ./workspace:/app/workspace
+      - traceable_db:/app/data
     env_file:
       - path: .env
         required: false
     environment:
       DOCKER_INIT_DEMO_DATA: ${DOCKER_INIT_DEMO_DATA:-true}
+      # SQLite's rollback journal can also fail on Windows bind mounts with
+      # SQLITE_IOERR_DELETE_NOENT. Keep the live Docker database on a native
+      # named volume while leaving workspace evidence/docs mounted as before.
+      TRACE_DATABASE_PATH: /app/data/traceable_research_agent.sqlite
+      SQLITE_JOURNAL_MODE: WAL
+      # 127.0.0.1 inside the container is not the Windows host. Keep provider
+      # and fetch traffic on the explicitly configured Docker Desktop gateway.
+      HTTP_PROXY: ${DOCKER_HTTP_PROXY:-http://host.docker.internal:7897}
+      HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-http://host.docker.internal:7897}
+      NO_PROXY: ${DOCKER_NO_PROXY:-127.0.0.1,localhost,api,web}
+      SSRF_TRUSTED_LOCAL_PROXY_URL: ${DOCKER_SSRF_TRUSTED_PROXY_URL:-http://host.docker.internal:7897}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 10s
@@ -46,3 +58,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+volumes:
+  traceable_db:

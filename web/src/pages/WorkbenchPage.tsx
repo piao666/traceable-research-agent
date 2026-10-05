@@ -35,7 +35,7 @@ export function WorkbenchPage() {
       </Panel>
       <Panel title="结果检查">
         <p>有效证据条目：{typeof effective === "number" ? effective : "尚未评估"}</p>
-        <p>引用校验：{task.citation_evaluated && !task.requires_review ? `${task.citation_supported} / ${task.citation_total} 条被评为支持` : "不可评估"}</p>
+        <p>引用校验：{task.citation_evaluated ? `${task.citation_supported} / ${task.citation_total} 条被评为支持` : "不可评估"}</p>
         <p>引用校验不等于事实准确率；请逐条核对来源正文和结论。</p>
         <p>不能仅凭 completed 状态或生成 Markdown 认定研究通过。</p>
         {task.status === "waiting_human" && <p className="warning-banner">运行已暂停，请核对待确认操作，再选择批准或拒绝。</p>}

@@ -305,10 +305,10 @@ class ToolRegistrationTests(unittest.TestCase):
         self.assertIn("openalex_search", EXECUTABLE_TOOLS)
         self.assertIn("crossref_search", EXECUTABLE_TOOLS)
 
-    def test_both_in_parallel_safe_tools(self):
-        from app.agent.parallel_executor import PARALLEL_SAFE_TOOLS
-        self.assertIn("openalex_search", PARALLEL_SAFE_TOOLS)
-        self.assertIn("crossref_search", PARALLEL_SAFE_TOOLS)
+    def test_both_in_canonical_executable_tools(self):
+        from app.agent.executor import is_executable_tool
+        self.assertTrue(is_executable_tool("openalex_search"))
+        self.assertTrue(is_executable_tool("crossref_search"))
 
     def test_handlers_are_callable(self):
         from app.tools.registry import _tool_handlers

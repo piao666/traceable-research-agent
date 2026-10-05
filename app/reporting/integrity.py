@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import re
 from typing import Any, Iterable, Literal, Mapping
 
+from app.reporting.claim_occurrence import is_evidence_limitation_statement
+
 
 REPORT_INTEGRITY_VERSION = "report-integrity-v2"
 
@@ -170,6 +172,7 @@ def assess_report_integrity(
         error_code = "citation_support_rate_below_threshold"
         warnings.append("Supported and weakly supported occurrences are below 90%.")
     elif strict_support_rate < 0.60:
+        error_code = "strict_citation_support_below_threshold"
         warnings.append("Strictly supported final citation occurrences are below 60%.")
 
     if uncited_ambiguous:
@@ -252,6 +255,8 @@ def _claim_citation_count(
 def _is_uncertain_or_limitation(claim_text: str) -> bool:
     normalized = re.sub(r"\s+", " ", str(claim_text or "")).casefold()
     return bool(
+        is_evidence_limitation_statement(claim_text)
+        or
         _ENGLISH_UNCERTAINTY_RE.search(normalized)
         or any(term in normalized for term in _CJK_UNCERTAINTY_TERMS)
     )

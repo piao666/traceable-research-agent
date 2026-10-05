@@ -5,3 +5,5 @@ openapi.json
 .env
 .env.*
 *.log
+
+.pytest_cache/

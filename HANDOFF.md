@@ -6,9 +6,9 @@
 ## 一、当前状态
 
 - **分支**：`feature/improvements`
-- **本轮基线**：`eeeea93`（真实 Runtime 与 reporter 参数修正）
-- **当前 HEAD**：`52bd74b`（P0 官方信源恢复与 E2E 回归）
-- **当前阶段**：Pre-R13 收尾，暂不启动 R13；完整 pytest 已通过，等待后续启动指令
+- **本轮基线**：`70f4eb0`（远端 feature/improvements 基线）
+- **当前 HEAD**：`318dba5`（统一研究终态裁决与 Quick/Deep 证据边界）
+- **当前阶段**：Pre-R13 收尾；代码已提交并推送到远端 `feature/improvements`，等待人工 Quick/Deep 验收
 - **项目边界**：单实例、本地优先、SQLite／workspace 持久化、只读外部工具；
   不引入多租户、RBAC、分布式基础设施、向量数据库或通用 RAG
 
@@ -118,8 +118,6 @@
 5. `Settings()` 无参构造取 Pydantic 字段默认值；全局 `settings` 单例受 `.env`
    污染，不可用于"默认值"断言。
 
-(End of file)
-
 ## 2026-09-15 Planned Executor 修复
 
 - 修复 `app/agent/executor.py` targeted refetch 后调用未定义 `_observation` 的 NameError，并移除会造成重复 observation、tool count 和 latency 的重复更新。
@@ -133,3 +131,31 @@
 - **验证**：`tests/test_r11_retrieval_runtime.py` → 5 passed；`docker compose config` 应作为人工复核前的静态检查。完整镜像重建已开始但因基础层下载极慢中止，未宣称构建成功。
 - 后续复核日志显示 HTTPS apt 已成功，失败点转为 Chromium 184 MB CDN 下载连接被关闭；已设置 `PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=300000` 允许慢速链路完成下载。
 - 该超时和备用 CDN 仍分别表现为 CDN 断连与 HTTP 400；最终改为安装 Debian Bookworm 的系统 `chromium` 包，并通过 `PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium` 供 Playwright 使用。API、Streamlit、Web 镜像均已构建并启动；`/health`=ok、`/api/tools`=12、Web/Streamlit HTTP 200。
+
+## 2026-09-20 统一终态裁决与人工验收准备
+
+- **远端提交**：`318dba5`，父提交为 `70f4eb0`；本地 Git HTTPS 凭据不可用，已通过授权的 GitHub 连接器完成远端文件树写入和 `feature/improvements` 引用更新。
+- **终态契约**：Run 的最终状态统一由 `finalize_terminal_decision()` 裁决；`completed`、`incomplete`、`failed`、取消和人工等待状态不再由独立诊断模块直接覆盖。
+- **Quick 边界**：discovery Quick 只允许确定性的来源标题/URL 报告；搜索摘要保持 `discovery_index`，不得独立支持实质性结论；substantive Quick 缺少正文证据时进入 `incomplete`。
+- **Deep 状态**：Branch planner、Research Scope、root Run 和最终报告统一回写终态；planner 异常会同步节点/Scope 状态，重试和恢复不会继承旧 Scope、Gate 或报告哈希。
+- **能力准入**：按任务需要区分 search、full_text、browser、PDF、academic 和 structured data；配置、探测失败和未知状态分别处理，单个 URL 的 403 不再误判为全局后端不可用。
+- **报告/API/UI**：`incomplete` 报告可读取并标记为 partial；报告被修改后，API 下载和 SSE `report_ready` 均会被最终哈希校验阻断；后置完成状态审计不会改变 `## 3. 最终回答` 的 occurrence 范围。
+- **离线验收**：官方离线 runner 退出码 0；**923 passed / 2 skipped / 1 xfailed / 24 warnings / 87 subtests / 0 blocked external attempts**。`compileall`、`git diff --check` 通过。前端 typecheck、lint、build 和 107 项测试通过。
+- **Docker 人工验收**：已解决 Docker Hub 代理解析问题，`node:22-alpine` 和 `nginx:1.27-alpine` 可拉取，React Web 镜像已构建。一次全量 Compose 构建在 `python:3.11-slim-bookworm` 的 Docker Hub 认证阶段超时，需优先执行 `docker compose up --build -d api web` 完成 React 人工验收；Streamlit 镜像属于可选旧界面，可单独重试。
+- **真实运行限制**：离线测试不等于真实 Provider 验收；Quick/Deep 人工测试必须在 `.env` 中填写真实 `LLM_BASE_URL`、`LLM_MODEL`、`LLM_API_KEY` 和 `TAVILY_API_KEY`。Docker 代理只负责镜像下载，不提供模型或搜索密钥。
+
+### 人工验收入口
+
+- React：`http://localhost:5173`
+- API 健康检查：`http://localhost:8000/health`
+- API 文档：`http://localhost:8000/docs`
+- Streamlit（可选）：`http://localhost:8501`
+
+### 人工验收建议
+
+1. 先执行 `docker compose up --build -d api web`，确认 `docker compose ps` 中 API healthy、Web running。
+2. Quick：选择 discovery/source lookup 类问题，确认来源列表和“未完成正文核验”提示；再用需要精确数字或正文结论的问题，确认 snippet-only 证据不会显示为完整完成。
+3. Deep：选择需要多来源正文核验的问题，确认 Trace、引用、Scope 状态和最终报告一致；若 Provider 不可用，确认 Run 明确进入 failed/incomplete，而不是 completed。
+4. 验收结束后用 `docker compose logs --tail 150 api` 检查是否存在 provider、配置或终态裁决错误。
+
+(End of file)

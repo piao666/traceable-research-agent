@@ -285,35 +285,27 @@ class ConcurrentWriteTests(unittest.TestCase):
 
         self.assertEqual(len(errors), 0, f"Concurrent writes raised: {errors}")
 
-    def test_visited_urls_dedup_thread_safe(self):
-        """URLs visited by one thread should not be re-fetched by another."""
-        from app.agent.parallel_executor import _execute_step
-        from app.tools.registry import execute_tool
+    def test_canonical_intake_deduplicates_search_candidates(self):
+        """The active executor intake removes duplicate canonical source URLs."""
+        from app.agent.source_intake import intake_tool_result
+        from app.config import Settings
 
-        visited: set[str] = set()
-        lock = threading.Lock()
+        result = intake_tool_result(
+            "tavily_search",
+            ToolResult(success=True, output={"results": [
+                {"url": "https://example.com/research", "title": "First"},
+                {"url": "https://example.com/research#section", "title": "Duplicate"},
+                {"url": "https://other.example/research", "title": "Other"},
+            ]}),
+            {"task_contract": {}, "source_constraints": {"mode": "open"}},
+            Settings(source_policy_path="config/evidence_policy.v3.json"),
+        )
 
-        # Pre-populate with a URL
-        visited.add("https://already-fetched.com")
-
-        step = {
-            "tool_name": "web_fetcher",
-            "step_no": 1,
-            "arguments": {
-                "urls": [
-                    "https://already-fetched.com",
-                    "https://new-url.com",
-                ],
-                "max_chars": 500,
-                "timeout_seconds": 5,
-            },
-        }
-
-        step_result = _execute_step(step, 1, visited_urls=visited, visited_urls_lock=lock)
-
-        # The already-fetched URL should have been filtered out
-        call_args = step_result.step.get("arguments", {}).get("urls", [])
-        self.assertNotIn("https://already-fetched.com", call_args)
+        self.assertEqual(
+            result.output["fetch_candidates"],
+            ["https://example.com/research", "https://other.example/research"],
+        )
+        self.assertEqual(result.metadata["source_intake"]["duplicate_count"], 1)
 
     def tearDown(self):
         import os

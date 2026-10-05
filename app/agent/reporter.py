@@ -27,9 +27,16 @@ from app.agent.evidence import (
 )
 from app.security.redaction import redact_text
 from app.agent.budget import (
+    BudgetExceeded,
     estimate_text_tokens,
     final_report_evidence_token_budget,
     report_budget,
+)
+from app.reporting.writing_evidence import WritingEvidenceSet, build_writing_evidence
+from app.reporting.revision_pipeline import ReportGenerationCancelled, generate_validate_revise
+from app.reporting.claim_occurrence import (
+    is_evidence_limitation_statement,
+    segment_final_answer_claims,
 )
 
 
@@ -712,17 +719,69 @@ def _learning_route_final_answer(records: list[dict[str, Any]]) -> list[str]:
 
 # ── Phase A: LLM-Synthesized Answer ──────────────────────────────────────────
 
-_SYNTHESIS_SYSTEM = """你是专业调研报告撰写人。请基于工具采集的证据，
-为给定的调研任务生成一份结构清晰、有来源标注的中文回答。
+_SYNTHESIS_SYSTEM = """You write a factual research answer from frozen evidence.
+Use Chinese by default. Do not pad to a fixed length. Never invent facts, source
+titles, URLs, or citation IDs. Every substantive statement must cite an
+allowed [CIT-xxx-xx] marker. If evidence is insufficient, omit the conclusion
+or state uncertainty. Source indexes and method notes are rendered separately
+by the program. Write short, atomic factual clauses: put the matching citation
+immediately after the clause it supports. Do not combine several independently
+sourced propositions into one sentence or attach a citation to a claim its
+source only partly supports. Do not add a date, number, organization, or model
+version unless the cited frozen text explicitly states it. A source title or
+question establishes only what the title or question says, not its answer or
+real-world impact. Prefer fewer fully supported claims over a long weakly
+supported list. Clearly label analytical implications as inference and cite
+their concrete premises; do not present inferred impact as measured fact."""
 
-要求：
-- 不少于 300 字，条理清晰
-- 每个关键结论后必须标注真实来源标题和 URL，格式为：来源：标题（URL）
-- 不要只写来源：[工具名]，工具名不能替代真实 URL
-- 如果某个工具返回空结果，明确说明"未找到相关证据"，不要编造
-- 不要重复输出证据原文，用自己的语言综合表达
-- 忽略网页导航、登录、分享、联系我们、重复菜单等页面壳文本
-- 语气专业，适合调研报告"""
+
+def _synthesis_revision_feedback(validation: Any) -> dict[str, Any]:
+    """Focus a bounded revision on actual blockers, not tolerated weak citations."""
+    total = int(getattr(validation, "total", 0) or 0)
+    supported = int(getattr(validation, "supported", 0) or 0)
+    strict_rate_met = total > 0 and supported / total >= 0.60
+    hard_failures = [
+        {"citation": detail.citation_label, "sentence": detail.sentence}
+        for detail in validation.details
+        if detail.verdict == "unsupported"
+    ][:12]
+    uncited = list(getattr(validation, "uncited_claims", []) or [])[:12]
+    weak = [] if strict_rate_met else [
+        {"citation": detail.citation_label, "sentence": detail.sentence}
+        for detail in validation.details
+        if detail.verdict == "weakly_supported"
+    ][:8]
+    return {
+        "must_remove_or_rewrite_unsupported": hard_failures,
+        "must_remove_or_cite_uncited": uncited,
+        "weak_citations_to_improve_only_if_needed": weak,
+        "strict_support_rate": round(supported / total, 4) if total else 0.0,
+        "instruction": (
+            "Every item in must_remove_or_rewrite_unsupported and "
+            "must_remove_or_cite_uncited is a hard failure. Do not copy those "
+            "sentences unchanged. Delete them entirely if no directly matching "
+            "frozen passage exists; otherwise write a shorter atomic cited fact. "
+            "When strict support is already at least 60%, do not spend this "
+            "revision polishing tolerated weak citations."
+        ),
+    }
+
+
+def _synthesis_language_instruction(task_contract: dict[str, Any] | None) -> str:
+    """Return the explicit output-language constraint, defaulting to Chinese.
+
+    Length is determined by eligible evidence, never a fixed prompt target.
+    """
+    constraints = task_contract.get("output_constraints") if isinstance(task_contract, dict) else None
+    language = (
+        str(constraints.get("language") or "").strip().casefold()
+        if isinstance(constraints, dict) else ""
+    )
+    if language in {"en", "english"}:
+        return "Output language: English, as explicitly required by the trusted task contract."
+    if language in {"zh", "zh-cn", "chinese", "中文"}:
+        return "Output language: Chinese, as required by the trusted task contract."
+    return "Output language: Chinese (the product default)."
 
 _SYNTHESIS_USER_TMPL = """调研任务：{task}
 
@@ -737,7 +796,11 @@ def _llm_synthesize_answer(
     observations: list[dict[str, Any]],
     llm_client: "LLMClient",
     provenance_bundle: dict[str, Any] | None = None,
+    task_contract: dict[str, Any] | None = None,
     usage_callback: Callable[[Any], None] | None = None,
+    revision_feedback: dict[str, Any] | None = None,
+    *,
+    writing_evidence: WritingEvidenceSet | None = None,
 ) -> str | None:
     """Call LLM to synthesize tool evidence into a coherent answer.
     Returns synthesized text, or None if LLM call fails / no useful evidence.
@@ -769,18 +832,25 @@ def _llm_synthesize_answer(
         return None
     if not has_useful_evidence(observations):
         return None
-    evidence = (
-        build_bounded_provenance_context(
-            provenance_bundle,
-            final_report_evidence_token_budget(),
+    writing_set = writing_evidence
+    if provenance_bundle:
+        writing_set = writing_set if writing_set is not None else build_writing_evidence(
+            provenance_bundle, task_contract, final_report_evidence_token_budget()
         )
-        if provenance_bundle
-        else compress_evidence(observations, max_total_chars=5000)
-    )
+        # A gap is a research outcome, never an invitation for the model to
+        # fill it with prior knowledge or invented CIT markers.
+        if not writing_set.factual_units:
+            return None
+        evidence = json.dumps(writing_set.prompt_payload(), ensure_ascii=False)
+    else:
+        evidence = compress_evidence(observations, max_total_chars=5000)
     if not evidence.strip():
         return None
     messages = [
-        LLMMessage(role="system", content=_SYNTHESIS_SYSTEM),
+        LLMMessage(
+            role="system",
+            content=_SYNTHESIS_SYSTEM + "\n\n" + _synthesis_language_instruction(task_contract),
+        ),
         LLMMessage(
             role="system",
             content=(
@@ -792,6 +862,27 @@ def _llm_synthesize_answer(
             ),
         ),
     ]
+    if revision_feedback:
+        # The draft is supplied once as a user message below. Serializing it
+        # again inside the system feedback doubled the revision prompt and
+        # could exhaust the protected report budget before the last attempt.
+        feedback_only = {
+            key: value for key, value in revision_feedback.items()
+            if key != "previous_draft"
+        }
+        messages.append(LLMMessage(
+            role="system",
+                     content=("Revise the previous draft using only the supplied evidence and allowed "
+                      "CIT identifiers. Remove unsupported assertions; do not add facts. "
+                      "Every must_remove_or_rewrite_unsupported and must_remove_or_cite_uncited "
+                      "item below is mandatory: delete that whole sentence or replace it with a "
+                      "shorter directly supported, cited statement. Never keep it unchanged. "
+                      "Do not spend the revision polishing already tolerated weak citations. "
+                     + json.dumps(feedback_only, ensure_ascii=False)),
+        ))
+        previous_draft = str(revision_feedback.get("previous_draft") or "")
+        if previous_draft:
+            messages.append(LLMMessage(role="user", content="Previous draft to revise:\n" + previous_draft))
     # ── Phase 9: Few-shot injection ──
     try:
         from app.improvement.few_shot import load_few_shot_examples, format_few_shot_for_prompt
@@ -817,11 +908,23 @@ def _llm_synthesize_answer(
         response = llm_client.complete(
             messages,
             temperature=0.0,
-            max_tokens=8192,
+            # Keep full first-draft capacity. Revisions already have a draft
+            # and bounded feedback; reserving 8k output on each repeat can
+            # reject the final attempt despite much smaller actual outputs.
+            max_tokens=4096 if revision_feedback and revision_feedback.get("previous_draft") else 8192,
         )
         if response.success and response.content:
             content = response.content.strip()
-            if provenance_bundle and not _valid_synthesis_citations(content, provenance_bundle):
+            # Program-owned answer delimiters are never valid model output.
+            # Reject every HTML comment, rather than trying to sanitize a
+            # closing marker that could move generated text out of validation.
+            if "<!--" in content or "-->" in content:
+                response.metadata = {**response.metadata, "error_type": "structured_output_invalid"}
+                if usage_callback is not None:
+                    usage_callback(response)
+                return None
+            allowed = set(writing_set.allowed_citation_ids) if writing_set else None
+            if provenance_bundle and not _valid_synthesis_citations(content, provenance_bundle, allowed):
                 response.metadata = {
                     **response.metadata,
                     "error_type": "structured_output_invalid",
@@ -1078,14 +1181,18 @@ def _float_value(value: Any) -> float:
         return 0.0
 
 
-def _valid_synthesis_citations(content: str, bundle: dict[str, Any]) -> bool:
+def _valid_synthesis_citations(
+    content: str, bundle: dict[str, Any], allowed: set[str] | None = None
+) -> bool:
     available = {
         str(item.get("citation_label"))
         for item in bundle.get("citations") or []
         if item.get("citation_label")
     }
     used = set(re.findall(r"CIT-\d{3}-\d{2}", content))
-    return bool(used) and used.issubset(available)
+    return bool(used) and used.issubset(available) and (
+        allowed is None or used.issubset(allowed)
+    )
 
 
 def _repair_synthesis_citations(content: str, bundle: dict[str, Any]) -> str:
@@ -1735,6 +1842,9 @@ def generate_markdown_report(
     usage_callback: Callable[[Any], None] | None = None,
     citation_validation_callback: Callable[[Any], None] | None = None,
     reference_verification_callback: Callable[[Any], None] | None = None,
+    revision_attempt_callback: Callable[[int, str | None, dict[str, Any]], str | None] | None = None,
+    cancellation_check: Callable[[], None] | None = None,
+    evidence_refresh_callback: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
 ) -> str:
     """Build a Markdown report from persisted run evidence.
 
@@ -1788,23 +1898,120 @@ def generate_markdown_report(
 
     # ── Phase A: LLM synthesis if available, else template ──────────────────
     _llm_answer: str | None = None
+    multilingual_adjudication_cache: dict[str, dict[str, Any]] = {}
+    writing_set = None
     discovery_only = str(plan.get("quick_output_mode") or "") == "discovery"
     if llm_client is not None and not discovery_only:
-        _llm_answer = _llm_synthesize_answer(
-            run.task + ("\nTask requirements (do not change dates or metric): " + json.dumps(plan["task_contract"], ensure_ascii=False)
-                        if plan.get("task_contract") else ""),
-            observations,
-            llm_client,
-            provenance_bundle,
-            usage_callback,
-        )
-        if not _llm_answer and plan.get("research_outcome"):
-            raise ValueError("report_synthesis_failed: LLM returned no usable, correctly cited report; retry after checking provider and evidence.")
-        if _llm_answer:
-            _llm_answer = _repair_tool_only_sources(
-                _llm_answer,
-                _evidence_records(observations, traces),
+        contract = plan.get("task_contract") if isinstance(plan.get("task_contract"), dict) else None
+        task = run.task + ("\nTask requirements (do not change dates or metric): " + json.dumps(contract, ensure_ascii=False) if contract else "")
+        writing_set = build_writing_evidence(provenance_bundle, contract, final_report_evidence_token_budget()) if provenance_bundle else None
+        if writing_set is not None and writing_set.factual_units:
+            from app.evidence.citation_validator import validate_citations
+            from app.config import settings as _reporter_settings
+            def validate_draft(draft: str, _context: dict[str, Any]) -> Any:
+                validation = validate_citations(draft, provenance_bundle or {}, min_supported_overlap=0.15,
+                    min_weak_overlap=0.05, writing_evidence=writing_set,
+                    task_contract=contract, multilingual_llm_client=llm_client,
+                    use_multilingual_adjudication=_reporter_settings.citation_validation_multilingual_enabled,
+                    cancellation_check=cancellation_check,
+                    multilingual_adjudication_cache=multilingual_adjudication_cache,
+                    multilingual_usage_callback=usage_callback)
+                validation.uncited_claims = [
+                    span.claim_text[:240]
+                    for span in segment_final_answer_claims(draft)
+                    if span.is_claim_candidate and not span.citation_labels
+                    and not is_evidence_limitation_statement(span.claim_text)
+                ][:12]
+                validation.all_claims_cited = not validation.uncited_claims
+                return validation
+            revision_focus: dict[str, str] = {}
+
+            def synthesize_draft(context: dict[str, Any]) -> str:
+                nonlocal writing_set, provenance_bundle
+                feedback = context.get("revision_feedback") or {}
+                if feedback and evidence_refresh_callback is not None:
+                    refreshed = evidence_refresh_callback(feedback)
+                    if refreshed is not None:
+                        provenance_bundle = refreshed
+                        # Subsequent report sections must describe the same
+                        # evidence acquisition as the final writer/validator.
+                        content_basis_map.clear()
+                        content_basis_map.update(_build_content_basis_map(refreshed))
+                        multilingual_adjudication_cache.clear()
+                        writing_set = build_writing_evidence(
+                            provenance_bundle, contract, final_report_evidence_token_budget(),
+                            focus_by_citation=revision_focus,
+                        )
+                focus: dict[str, str] = {}
+                for key in ("must_remove_or_rewrite_unsupported", "weak_citations_to_improve_only_if_needed"):
+                    for item in feedback.get(key) or []:
+                        label, sentence = item.get("citation"), item.get("sentence")
+                        if isinstance(label, str) and isinstance(sentence, str):
+                            focus[label] = (focus.get(label, "") + " " + sentence)[:2000]
+                if focus:
+                    revision_focus.update(focus)
+                    writing_set = build_writing_evidence(
+                        provenance_bundle, contract, final_report_evidence_token_budget(),
+                        focus_by_citation=revision_focus,
+                    )
+                return _llm_synthesize_answer(
+                    task, observations, llm_client, provenance_bundle, contract, usage_callback,
+                    {**feedback, "previous_draft": context.get("previous_draft") or ""},
+                    writing_evidence=writing_set,
+                ) or ""
+
+            def persist_draft(attempt: int, text: str | None, diagnostic: dict[str, Any]) -> str | None:
+                windows = [
+                    {"citation_id": unit.citation_id, "passage_id": unit.passage_id,
+                     "text_sha256": unit.text_sha256, "passage_sha256": unit.passage_sha256,
+                     "start": unit.locator.get("writing_window_start"),
+                     "end": unit.locator.get("writing_window_end")}
+                    for unit in writing_set.factual_units
+                ]
+                if revision_attempt_callback:
+                    import hashlib
+                    fingerprint = hashlib.sha256(json.dumps(
+                        provenance_bundle, ensure_ascii=False, sort_keys=True, default=str,
+                    ).encode("utf-8")).hexdigest()
+                    return revision_attempt_callback(attempt, text, {
+                        **diagnostic, "writing_windows": windows, "evidence_snapshot_sha256": fingerprint,
+                    })
+                return None
+
+            result = generate_validate_revise(
+                {"task": task},
+                synthesize_draft,
+                persist_draft,
+                cancellation_check or (lambda: None),
+                validate=validate_draft,
+                is_acceptable=lambda validation: (
+                    validation.total > 0
+                    and validation.unsupported == 0
+                    and validation.supported / validation.total >= 0.60
+                    and bool(getattr(validation, "all_claims_cited", False))
+                ),
+                revision_feedback=_synthesis_revision_feedback,
+                max_revisions=2,
             )
+            _llm_answer = result.answer_body
+            plan["report_draft_result"] = {
+                "integrity": result.integrity,
+                "adopted": result.adopted,
+                "revision_id": result.revision_id,
+                "diagnostics": list(result.diagnostics),
+            }
+            if result.integrity == "failed":
+                # Validation infrastructure failed after retaining the audit
+                # candidate.  Do not fall through to a deterministic report:
+                # that would disguise an execution failure as a successful
+                # synthesis and may trigger another model attempt upstream.
+                raise ValueError("report_synthesis_failed: citation validation unavailable")
+        elif plan.get("research_outcome"):
+            # An enabled factual synthesizer without a frozen eligible
+            # evidence window cannot be replaced by the deterministic writer.
+            # The upstream terminal gate normally prevents this path; keep it
+            # explicit for direct callers and recovery paths.
+            raise ValueError("report_synthesis_failed: no eligible evidence for LLM synthesis")
 
     # ── Phase 3: Grouped answer when sub-query groups exist ─────────────
     if discovery_only:
@@ -1816,8 +2023,6 @@ def generate_markdown_report(
     elif _llm_answer:
         _final_answer_lines = [
             _llm_answer, "",
-            *_source_reference_lines(_evidence_records(observations, traces)),
-            "> **生成方式：** 本回答由 LLM 综合工具证据生成，各来源已标注。", "",
         ]
     else:
         _final_answer_lines = _render_final_answer(run.task, observations, traces) or []
@@ -1825,7 +2030,10 @@ def generate_markdown_report(
     lines += [
         "## 3. 最终回答",
         "",
+        "<!-- report:answer:start -->",
         *_final_answer_lines,
+        "<!-- report:answer:end -->",
+        "",
         "## 4. 执行计划",
         "",
     ]
@@ -2017,6 +2225,11 @@ def generate_markdown_report(
                 # Validate the exact Final Answer body later materialized as
                 # ReportClaimOccurrence rows, never the citation appendix.
                 final_answer_text = "\n".join(_final_answer_lines)
+                validation_writing_evidence = writing_set if writing_set is not None else build_writing_evidence(
+                    provenance_bundle,
+                    plan.get("task_contract") if isinstance(plan.get("task_contract"), dict) else None,
+                    final_report_evidence_token_budget(),
+                )
                 citation_validation_report = validate_citations(
                     final_answer_text,
                     provenance_bundle,
@@ -2024,6 +2237,13 @@ def generate_markdown_report(
                     min_weak_overlap=0.05,
                     llm_client=validation_llm_client,
                     use_llm=_reporter_settings.citation_validation_llm_enabled,
+                    writing_evidence=validation_writing_evidence,
+                    task_contract=plan.get("task_contract") if isinstance(plan.get("task_contract"), dict) else None,
+                    multilingual_llm_client=llm_client,
+                    use_multilingual_adjudication=_reporter_settings.citation_validation_multilingual_enabled,
+                    cancellation_check=cancellation_check,
+                    multilingual_adjudication_cache=multilingual_adjudication_cache,
+                    multilingual_usage_callback=usage_callback,
                 )
                 if citation_validation_callback is not None:
                     citation_validation_callback(citation_validation_report)
@@ -2032,6 +2252,8 @@ def generate_markdown_report(
                 )
                 if validation_lines:
                     lines.extend(validation_lines)
+        except (BudgetExceeded, ReportGenerationCancelled):
+            raise
         except Exception:
             pass  # Citation validation failure must not block report generation
 
@@ -2211,5 +2433,9 @@ def save_report(run_id: str, markdown: str) -> str:
 
     REPORTS_ROOT.mkdir(parents=True, exist_ok=True)
     path = REPORTS_ROOT / f"{run_id}.md"
-    path.write_text(markdown, encoding="utf-8")
+    # The revision hash is calculated from the Markdown string before it is
+    # saved.  Make the on-disk bytes deterministic on Windows as well: the
+    # default text-mode newline conversion would otherwise turn ``\n`` into
+    # ``\r\n`` and sever the saved report from its materialized revision.
+    path.write_text(markdown, encoding="utf-8", newline="\n")
     return str(path.relative_to(ROOT))

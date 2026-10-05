@@ -2,12 +2,99 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
 from app.config import Settings
 from app.llm.base import LLMClient, LLMResponse
 from app.llm.cost import estimate_cost
 from app.llm.errors import LLM_ERROR_TYPES
 from app.llm.providers import create_llm_client
+from app.security.redaction import redact_text
 from app.trace.logger import record_trace_event
+from app.reporting.revision_pipeline import ReportGenerationCancelled
+
+
+@dataclass
+class ReportGenerationAudit:
+    """Shared, append-only audit hooks for all report-generation entries.
+
+    Candidate bytes are deliberately written before validation.  The caller
+    may later select a candidate, but it never rewrites or discards one.
+    """
+
+    db: Any
+    run_id: str
+    traces: list[Any]
+    check_cancelled: Callable[[], None] = lambda: None
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+    responses: list[LLMResponse] = field(default_factory=list)
+
+    def usage_callback(self, response: LLMResponse) -> None:
+        self.responses.append(response)
+        record_report_synthesis_trace(
+            self.db, self.run_id, self.traces, response,
+            success=bool(response.success and str(response.content or "").strip()
+                         and not response.metadata.get("error_type")),
+        )
+
+    def persist_attempt(
+        self, attempt: int, text: str | None, diagnostic: dict[str, Any]
+    ) -> str | None:
+        # Audit artifacts are durable; do not persist an LLM draft verbatim
+        # because it may echo credentials or private source material.  The
+        # caller continues to validate the original in-memory candidate.
+        audit_text = redact_text(text) if text is not None else None
+        content_hash = (
+            hashlib.sha256(audit_text.encode("utf-8")).hexdigest()
+            if audit_text is not None else None
+        )
+        artifact_path = None
+        if audit_text is not None:
+            root = Path(__file__).resolve().parents[2] / "workspace" / "reports" / "audit"
+            root.mkdir(parents=True, exist_ok=True)
+            # Hash makes the artifact immutable/reusable; no overwrite occurs.
+            path = root / f"{self.run_id}-attempt-{int(attempt)}-{content_hash}.md"
+            if not path.exists():
+                path.write_text(audit_text, encoding="utf-8", newline="\n")
+            artifact_path = str(path)
+        entry = {
+            "attempt": int(attempt),
+            "content_sha256": content_hash,
+            "artifact_path": artifact_path,
+            "diagnostic": dict(diagnostic),
+        }
+        self.attempts.append(entry)
+        record_trace_event(
+            db=self.db, run_id=self.run_id,
+            step_no=max((trace.step_no for trace in self.traces), default=0) + len(self.attempts),
+            tool_name="report_revision_attempt",
+            status="success" if diagnostic.get("code") == "accepted" else "failed",
+            input_data={"attempt": int(attempt)},
+            output_summary="Report draft retained for local audit.",
+            output_data={"attempt": int(attempt), "content_sha256": content_hash,
+                         "artifact_path": artifact_path, "diagnostic": dict(diagnostic)},
+        )
+        return f"attempt-{attempt}-{content_hash}" if content_hash else f"attempt-{attempt}"
+
+    def manifest(self) -> dict[str, Any]:
+        payload = {"version": "report-generation-audit-v1", "attempts": self.attempts}
+        digest = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        # sha256 is explicit because this crosses the A0/A5 persisted contract.
+        # Keep the older spelling as a read-compatible alias for in-flight runs.
+        return {**payload, "manifest_sha256": digest, "manifest_hash": digest}
+
+
+def check_report_generation_not_cancelled(db: Any, run_id: str) -> None:
+    """Stop the bounded revision loop at the existing run cancellation edge."""
+    from app.trace import store
+    if store.is_agent_run_cancelled(db, run_id):
+        raise ReportGenerationCancelled("Run cancelled before report revision.")
 
 
 def resolve_report_llm_client(
@@ -45,7 +132,9 @@ def record_report_synthesis_trace(
         error_type = "malformed_response" if response.success else "provider_unavailable"
     provider = str(response.provider or "unknown")[:80]
     model = str(response.model or "")[:160] or None
-    message = None if success else f"Report synthesis failed ({error_type})."
+    phase = str(response.metadata.get("report_phase") or "report_synthesis")
+    is_adjudication = phase == "citation_adjudication"
+    message = None if success else f"{'Citation adjudication' if is_adjudication else 'Report synthesis'} failed ({error_type})."
     metadata = {
         "provider": provider,
         "model": model,
@@ -56,12 +145,16 @@ def record_report_synthesis_trace(
         db=db,
         run_id=run_id,
         step_no=max((trace.step_no for trace in traces), default=0) + 1,
-        tool_name="report_synthesis",
+        tool_name="citation_adjudication" if is_adjudication else "report_synthesis",
         status="success" if success else "failed",
-        input_data={"provider": provider, "model": model},
+        input_data={"provider": provider, "model": model, "phase": phase},
         output_summary=(
-            "LLM report synthesis completed."
+            "LLM multilingual citation adjudication completed."
+            if is_adjudication and success
+            else "LLM report synthesis completed."
             if success
+            else "LLM multilingual citation adjudication did not produce an admissible result."
+            if is_adjudication
             else "LLM report synthesis did not produce an admissible report."
         ),
         output_data={"metadata": metadata},
