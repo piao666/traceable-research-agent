@@ -5,6 +5,41 @@ import pytest
 from app.agent.budget import BudgetExceeded
 from app.agent.report_generation import ReportGenerationAudit
 from app.reporting.revision_pipeline import generate_validate_revise
+
+
+def test_deterministic_prune_is_a_new_validated_revision_and_keeps_required_answer():
+    from app.agent.reporter import _prune_unsupported_standalone_lines
+    from app.evidence.citation_validator import CitationValidationDetail, CitationValidationReport
+
+    original = "## Answer\nRequired mechanism [CIT-001-01].\nExtra unsupported claim [CIT-002-01]."
+    attempts, judgments, model_calls = [], [], []
+    def validate(value, _):
+        return CitationValidationReport(
+            occurrence_total=2 if "Extra unsupported" in value else 1,
+            supported_occurrences=1,
+            unsupported_occurrences=int("Extra unsupported" in value),
+            details=[CitationValidationDetail(
+                citation_label="CIT-002-01", verdict="unsupported",
+                sentence="Extra unsupported claim [CIT-002-01].",
+                passage_text="No such claim in the source.", keyword_overlap=0.0,
+            )] if "Extra unsupported" in value else [],
+        )
+    result = generate_validate_revise(
+        {}, lambda _: model_calls.append(True) or original,
+        lambda attempt, text, diagnostic: attempts.append((attempt, text, diagnostic)) or f"revision-{attempt}",
+        lambda: None, validate=validate,
+        is_acceptable=lambda report: report.unsupported == 0 and "Required mechanism" in attempts[-1][1],
+        revision_feedback=lambda _: {}, max_revisions=4,
+        persist_validation=lambda *args: judgments.append(args),
+        repair_candidate=_prune_unsupported_standalone_lines,
+    )
+    assert result.adopted and result.revision_id == "revision-1"
+    assert len(model_calls) == 1
+    assert len(attempts) == len(judgments) == 2
+    assert attempts[0][1] == original
+    assert attempts[1][2]["code"] == "deterministic_unsupported_line_prune"
+    assert "Extra unsupported" not in result.answer_body
+    assert "Required mechanism" in result.answer_body
 from app.trace import store
 
 

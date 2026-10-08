@@ -38,6 +38,13 @@ function RunView({ runId }: { runId: string }) {
   const [actionError, setActionError] = useState("");
   const [comment, setComment] = useState("");
   const [message, setMessage] = useState("");
+  const [unlimitedTokens, setUnlimitedTokens] = useState(false);
+  const [tokenLimit, setTokenLimit] = useState(0);
+  const [callLimit, setCallLimit] = useState(0);
+  const budgetApproval = context.plan?.token_budget_approval;
+  const budgetPending = budgetApproval?.status === "pending";
+  const callApproval = context.plan?.llm_call_budget_approval;
+  const callsPending = callApproval?.status === "pending";
   const lock = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -52,7 +59,11 @@ function RunView({ runId }: { runId: string }) {
         navigate(`/runs/${created.run_id}${created.status === "waiting_human_plan" ? "/plan" : ""}`);
       } else {
         if (action === "cancel") await api.cancelTask(runId, comment || "Cancelled from local web UI");
-        if (action === "approve" || action === "reject") await api.confirmTask(runId, action === "approve", comment);
+        if (action === "approve" || action === "reject") {
+          if (budgetPending) await api.confirmTask(runId, action === "approve", comment, { max_tokens: tokenLimit, unlimited_tokens: unlimitedTokens });
+          else if (callsPending) await api.confirmTask(runId, action === "approve", comment, { max_llm_calls: callLimit });
+          else await api.confirmTask(runId, action === "approve", comment);
+        }
         if (action === "start") await api.startTask(runId);
         if (!mounted.current) return;
         setMessage("操作已提交，正在同步后端状态。"); refresh();
@@ -62,7 +73,7 @@ function RunView({ runId }: { runId: string }) {
       if (mounted.current) { setActionError(`${errorMessage(reason)}。未自动重试，请先核对最新状态。`); refresh(); }
     } finally { lock.current = false; if (mounted.current) setBusy(false); }
   }
-  function choose(next: Action) { setComment(""); setActionError(""); setAction(next); }
+  function choose(next: Action) { setUnlimitedTokens(false); setTokenLimit(Number(budgetApproval?.suggested_limit ?? 0)); setCallLimit(Number(callApproval?.suggested_limit ?? 0)); setComment(""); setActionError(""); setAction(next); }
 
   if (loading && !task) return <div className="page"><PageHeader title="研究详情" subtitle={`Run ${runId}`} /><Panel><LoadingState>正在读取研究状态、计划和 Trace…</LoadingState></Panel></div>;
   if (!task) return <div className="page stack"><PageHeader title="无法读取研究" subtitle={`Run ${runId}`} /><div role="alert" className="error-banner">{error || "任务不存在"}</div><Button variant="secondary" onClick={refresh}>重新加载</Button><Link to="/runs">返回研究任务</Link></div>;
@@ -97,7 +108,17 @@ function RunView({ runId }: { runId: string }) {
     </nav>
     <Outlet context={context} />
     {action && <Modal title={`确认${actionLabels[action]}`} busy={busy} close={() => setAction(null)} description={action === "retry" ? "创建新的 Run，从头执行原计划并读取当前配置；原任务和 Trace 保留，不继承旧审批，也不会立即调用工具。" : action === "cancel" ? "停止后续步骤。已发出的外部请求可能仍会结束，但任务不得再次变为已完成；历史记录会保留。" : action === "reject" ? "拒绝本次操作后任务将失败，Trace 会保留。" : "此操作将启动真实执行，可能产生 API 费用。请先核对计划、工具参数和确认范围。"}>
-      {action === "approve" && context.plan && <pre className="json-block" tabIndex={0}>{JSON.stringify(context.plan.react_state?.pending_confirmation ?? context.plan.steps.find((step) => step.step_no > task.current_step && step.requires_confirmation) ?? context.plan.confirmation, null, 2)}</pre>}
+      {action === "approve" && context.plan && <pre className="json-block" tabIndex={0}>{JSON.stringify(budgetPending ? budgetApproval : callsPending ? callApproval : context.plan.react_state?.pending_confirmation ?? context.plan.steps.find((step) => step.step_no > task.current_step && step.requires_confirmation) ?? context.plan.confirmation, null, 2)}</pre>}
+      {action === "approve" && budgetPending && <fieldset>
+        <legend>Token 预算已用尽，已取得的证据和草稿保留</legend>
+        <label className="field">本次任务的新 Token 总上限<input type="number" min={Number(budgetApproval?.spent_tokens ?? 0) + 1} value={tokenLimit} disabled={unlimitedTokens} onChange={(event) => setTokenLimit(Number(event.target.value))} /></label>
+        <label><input type="checkbox" checked={unlimitedTokens} onChange={(event) => setUnlimitedTokens(event.target.checked)} />批准本次任务不限制 Token（模型调用可能继续产生费用）</label>
+      </fieldset>}
+      {action === "approve" && callsPending && <fieldset>
+        <legend>模型调用次数已用尽，原任务、证据和草稿保留</legend>
+        <p>扩充后可能继续产生 API 费用。Token、工具调用次数及时间额度按各自已批准范围执行。</p>
+        <label className="field">本次任务新的模型调用总上限<input type="number" min={Math.max(Number(callApproval?.spent_llm_calls ?? 0), Number(callApproval?.current_limit ?? 0)) + 1} value={callLimit} onChange={(event) => setCallLimit(Number(event.target.value))} /></label>
+      </fieldset>}
       {(action === "cancel" || action === "approve" || action === "reject") && <label className="field">操作备注（可选）<textarea className="textarea" value={comment} onChange={(event) => setComment(event.target.value)} maxLength={1000} /></label>}
       {actionError && <p className="error-banner" role="alert">{actionError}</p>}
       <div className="run-actions"><Button variant="secondary" disabled={busy} onClick={() => setAction(null)}>返回</Button><Button variant={action === "cancel" || action === "reject" ? "danger" : "primary"} loading={busy} onClick={perform}>确认{actionLabels[action]}</Button></div>

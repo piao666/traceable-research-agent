@@ -6,6 +6,7 @@ configuration, reports or uploaded files. No external service calls are needed.
 from __future__ import annotations
 
 import json
+from contextlib import closing
 import os
 from pathlib import Path
 import socket
@@ -71,7 +72,9 @@ def main() -> None:
             bootstrap = "from scripts.run_offline_tests import install_network_guard; install_network_guard(); import uvicorn; uvicorn.run('app.main:app', host='127.0.0.1', port=" + str(port) + ", log_level='error')"
             process = subprocess.Popen([sys.executable, "-c", bootstrap], cwd=isolated, env=environment,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            deadline = time.monotonic() + 15
+            # Windows cold imports can exceed 15s while the full suite/build
+            # is running. Keep a bounded readiness window for this fixture.
+            deadline = time.monotonic() + 60
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     raise RuntimeError("Isolated API failed to start")
@@ -117,7 +120,10 @@ def main() -> None:
             _, state = request(f"/api/tasks/{run_id}")
             assert state["status"] == "waiting_human_plan" and state["total_tool_calls"] == 0
             _, draft_plan = request(f"/api/tasks/{run_id}/plan")
-            assert draft_plan["execution_budget"] is None
+            # Planning now owns the same persisted budget before approval.
+            # A blocked execution must consume no real tool operation.
+            assert draft_plan["execution_budget"]["tool_calls"] == 0
+            assert draft_plan["execution_budget"]["stop_reason"] is None
             assert draft_plan["execution_insights"]["source_context"]["gaps"]["no_sources"]
             assert draft_plan["execution_insights"]["source_mode"] == "real"
             _, evidence = request(f"/api/tasks/{run_id}/evidence")
@@ -153,12 +159,12 @@ def main() -> None:
             legacy_json = json.dumps({"version": "deepening-v1", "parent_run_id": run_id,
                 "task": "Legacy child fixture", "source_mode": "real", "execution_mode": "react",
                 "allowed_tools": [], "notes": []})
-            with sqlite3.connect(environment["TRACE_DATABASE_PATH"]) as fixture:
+            with closing(sqlite3.connect(environment["TRACE_DATABASE_PATH"])) as fixture, fixture:
                 fixture.execute("UPDATE agent_runs SET plan_json=? WHERE run_id=?", (legacy_json, legacy_id))
             status, legacy_plan = request(f"/api/tasks/{legacy_id}/plan")
             assert status == 200 and legacy_plan["steps"] == [], legacy_plan
             assert request(f"/api/tasks/{legacy_id}/trace")[0] == 200
-            with sqlite3.connect(environment["TRACE_DATABASE_PATH"]) as fixture:
+            with closing(sqlite3.connect(environment["TRACE_DATABASE_PATH"])) as fixture, fixture:
                 assert fixture.execute("SELECT plan_json FROM agent_runs WHERE run_id=?", (legacy_id,)).fetchone()[0] == legacy_json
             _, detail = request(f"/api/sessions/{session_id}")
             assert len(detail["turns"]) == 1 and detail["turns"][0]["run_id"] == run_id
@@ -166,26 +172,30 @@ def main() -> None:
             assert renamed["turn_count"] == 1
             assert request("/api/improvement/stats")[1]["total_runs"] == 0
             # Seed only the disposable fixture database; never deployment records.
-            with sqlite3.connect(environment["TRACE_DATABASE_PATH"]) as fixture:
+            with closing(sqlite3.connect(environment["TRACE_DATABASE_PATH"])) as fixture, fixture:
                 fixture.execute("""INSERT INTO user_memories
                     (memory_id, kind, extraction_method, content, confidence, status, created_at, updated_at)
                     VALUES ('r5-fixture', 'preference', 'rule', 'Fixture memory', 0.5, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""")
             status, memory = request("/api/memory/r5-fixture/confirm", {"approved": True})
             assert status == 200 and memory["status"] == "active", memory
-            status, local = request("/api/tasks", {"task": "Read local docs and query database document metadata",
+            # This credential-free deterministic fixture tests local tool and
+            # persistence plumbing; real substantive research has LLM gates.
+            status, local = request("/api/tasks", {"task": "Read local docs demo_research_note.md and query database: SELECT id, title, category FROM documents",
                 "allowed_tools": ["file_reader", "sql_query", "report_writer"], "skill_name": "none",
-                "source_mode": "real", "execution_mode_override": "planned", "require_plan_approval": True})
+                "source_mode": "mock", "execution_mode_override": "planned", "require_plan_approval": True})
             assert status == 200, local
             local_id = local["run_id"]
-            assert request(f"/api/tasks/{local_id}/preflight")[1]["ready"]
+            local_readiness = request(f"/api/tasks/{local_id}/preflight")[1]
+            assert local_readiness["ready"], local_readiness
             status, completed = request(f"/api/tasks/{local_id}/approve-plan", {"approved": True})
-            assert status == 200 and completed["status"] == "completed", completed
+            assert status == 200 and completed["status"] == "incomplete", completed
+            assert completed["terminal_decision"]["error_code"] == "uncited_deterministic_claim", completed
             _, traces = request(f"/api/tasks/{local_id}/trace")
             assert {item["tool_name"] for item in traces if item["status"] == "success"} >= {"file_reader", "sql_query"}, traces
             _, local_evidence = request(f"/api/tasks/{local_id}/evidence")
             assert local_evidence["total_evidence_items"] >= 2, local_evidence
             _, local_report = request(f"/api/reports/{local_id}")
-            assert local_report["exists"] and local_report["availability"] == "available"
+            assert local_report["exists"] and local_report["availability"] == "partial"
             assert local_report["markdown"].strip()
             report_text = local_report["markdown"]
             _, local_plan = request(f"/api/tasks/{local_id}/plan")
@@ -220,7 +230,7 @@ def main() -> None:
             assert request("/api/memory/r5-fixture", method="DELETE")[0] == 200
             assert request("/api/memory")[1]["total"] == 0
             assert len(request("/api/memory/audit")[1]) == 2
-            assert request(f"/api/tasks/{local_id}")[1]["status"] == "completed"
+            assert request(f"/api/tasks/{local_id}")[1]["status"] == "incomplete"
             assert request(f"/api/reports/{local_id}")[1]["markdown"] == report_text
             assert len(request(f"/api/tasks/{local_id}/trace")[1]) == trace_count
             _, after_restart = request(f"/api/tasks/{local_id}/plan")
@@ -234,7 +244,8 @@ def main() -> None:
     print(json.dumps({"live_api": "passed", "missing_key_approval": "blocked", "r8_permission_conflict": "blocked",
         "draft_restart_persistence": "passed", "effective_evidence_count": 0,
         "r5_session_memory_audit_restart": "passed", "r5_modules": "passed",
-        "local_file_sql_report_restart": "passed",
+        "local_file_sql_partial_report_restart": "passed_in_explicit_demonstration_mode",
+        "uncited_deterministic_report_completion": "blocked",
         "r8_budget_restart": "passed",
         "r8_execution_insights_restart": "passed",
         "r9_goal_preflight": "blocked_without_calls", "r9_legacy_child_plan_restart": "passed_without_rewrite",

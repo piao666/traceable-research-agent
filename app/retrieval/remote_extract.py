@@ -45,7 +45,12 @@ class SourcePackProviderAdapter:
         return bool(api_key or self_hosted)
 
     def extract(self, request: FetchRequest) -> Any:
-        return self.provider.call_tool(self.tool_name, {"url": request.url, "urls": [request.url]})
+        from copy import copy
+        # Per-request deadlines must reach the actual HTTP adapter. Do not
+        # mutate a shared provider across concurrent fetches.
+        provider = copy(self.provider)
+        provider.timeout_seconds = min(float(getattr(provider, "timeout_seconds", request.timeout_seconds)), request.timeout_seconds)
+        return provider.call_tool(self.tool_name, {"url": request.url, "urls": [request.url]})
 
 
 def configured_remote_providers(
@@ -111,12 +116,16 @@ class RemoteExtractBackend:
 
         attempts: list[dict[str, Any]] = []
         for provider in self.providers:
+            remaining = request.timeout_seconds - (time.monotonic() - started)
+            if remaining < 1:
+                attempts.append({"provider": provider.name, "status": "deadline_deferred"})
+                break
             if not provider.available():
                 attempts.append({"provider": provider.name, "status": "unavailable"})
                 continue
             provider_started = time.monotonic()
             try:
-                raw = provider.extract(request)
+                raw = provider.extract(request.model_copy(update={"timeout_seconds": max(1, int(remaining))}))
                 page, error = normalize_remote_payload(raw, request.url)
                 attempts.append(
                     {

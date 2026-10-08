@@ -168,6 +168,11 @@ def _early_finish_rejection_reason(
     substantive = str(contract.get("evidence_requirement") or "").casefold() == "substantive"
     context = state.get("source_context") or {}
     sources = context.get("sources") if isinstance(context, dict) else []
+    if contract.get("obligation_version") and plan.get("defer_to_research_scope"):
+        # Nodes terminate acquisition; the controller validates findings and
+        # all required answers from full persisted bodies after each node.
+        if any(s.get("fetch_status") == "fetched" for s in sources or []):
+            return None
     if substantive:
         # Source context is rebuilt from persisted traces. Project its fetched
         # records into the same admission contract used by Quick and Deep so a
@@ -333,6 +338,8 @@ def _tool_call_limit(plan: dict[str, Any], settings_obj: Settings, name: str) ->
         # The root discovers candidates. Mandatory topic children own deep
         # retrieval; repeated root fetches starve their shared token reserve.
         if name == "web_fetcher":
+            if (plan.get("task_contract") or {}).get("obligation_version"):
+                return min(4, max(2, (len((plan.get("task_contract") or {}).get("requirements") or []) + 1) // 2))
             return 1
         if name == "tavily_search":
             return min(base, 2)
@@ -590,6 +597,7 @@ def _complete_report(
     )
     if (
         not plan.get("defer_to_research_scope")
+        and not (plan.get("task_contract") or {}).get("obligation_version")
         and state["coverage_matrix"].get("applicable")
         and not state["coverage_matrix"].get("complete")
     ):
@@ -620,7 +628,7 @@ def _complete_report(
         # and reporting are decided exactly once at Scope level.  Persist the
         # node's provenance here, but do not run the single-Run quality gate or
         # create an intermediate report that excludes sibling evidence.
-        materialize_execution_provenance(
+        node_provenance = materialize_execution_provenance(
             db,
             run,
             plan,
@@ -638,10 +646,26 @@ def _complete_report(
                 plan,
                 "Root discovery completed; Scope finalization is deferred.",
             )
+        contract = plan.get("task_contract") or {}
+        if plan.get("acquisition_stage") == "comparison_selection":
+            # Collect selection material only. Root performs the audited
+            # cohort decision before technical branches can be dispatched.
+            state["goal_status"] = "not_met"
+            state["finish_summary"] = "Selection material retained; audited cohort decision belongs to Scope."
+            _persist_plan(db, run_id, plan)
+            run = store.update_agent_run_status(db, run_id, "incomplete", "comparison_selection_pending")
+            return _summary(run, plan, state["finish_summary"])
+        if contract.get("obligation_version"):
+            complete = _assess_branch_answer(db, run_id, plan, node_provenance or {}, llm_client)
+            if not complete:
+                state["goal_status"] = "not_met"
+                state["finish_summary"] = "Assigned branch answers remain incomplete; retained evidence is available to Scope."
+                plan["react_state"] = state
+                _persist_plan(db, run_id, plan)
+                run = store.update_agent_run_status(db, run_id, "incomplete", "assigned_answer_coverage_incomplete")
+                return _summary(run, plan, state["finish_summary"])
         run = store.update_agent_run_status(db, run_id, "completed", None)
         return _summary(run, plan, "Research node completed; Scope finalization is deferred.")
-    if not enforce_research_outcome(db, run, plan, observations, traces, settings_obj):
-        return _summary(store.get_fresh_agent_run(db, run_id), plan)
     provenance_bundle = materialize_execution_provenance(
         db,
         run,
@@ -650,6 +674,24 @@ def _complete_report(
         traces,
         settings_obj,
     )
+    _llm = resolve_report_llm_client(settings_obj, llm_client)
+    from app.research.controller import run_work_loop
+    def reload_work_bundle():
+        traces[:] = store.list_tool_traces(db, run_id)
+        return materialize_execution_provenance(db, store.get_fresh_agent_run(db, run_id),
+            plan, load_observations(traces), traces, settings_obj)
+    if (plan.get("task_contract") or {}).get("obligation_version"):
+        provenance_bundle = run_work_loop(db, run_id, plan, settings_obj, provenance_bundle or {}, _llm,
+            loader=reload_work_bundle, traces=traces)
+        observations = load_observations(traces)
+    if not enforce_research_outcome(db, run, plan, observations, traces, settings_obj):
+        return _summary(store.get_fresh_agent_run(db, run_id), plan)
+    if (plan.get("research_mode") == "quick" and plan.get("quick_output_mode") != "discovery"
+            and not (plan.get("task_contract") or {}).get("obligation_version")):
+        from app.research.recovery import acquire_comparison_evidence
+        provenance_bundle = acquire_comparison_evidence(db, run_id, plan, settings_obj,
+            provenance_bundle or {}, traces=traces)
+        observations = load_observations(traces)
     evidence_assessment = assess_required_evidence(plan.get("task_contract"), provenance_bundle)
     plan["evidence_assessment"] = evidence_assessment.as_dict()
     if not evidence_assessment.passed:
@@ -669,11 +711,29 @@ def _complete_report(
         )
         finalize_terminal_decision(db, run, plan, traces=traces)
         return _summary(store.get_fresh_agent_run(db, run_id), plan, outcome["message"])
-    _llm = resolve_report_llm_client(settings_obj, llm_client)
+    from app.research.recovery import refresh_comparison_contract
+    if refresh_comparison_contract(db, run_id, plan, provenance_bundle or {}, _llm):
+        from app.research.recovery import acquire_comparison_evidence
+        provenance_bundle = acquire_comparison_evidence(db, run_id, plan, settings_obj,
+            provenance_bundle or {}, traces=traces)
+        observations = load_observations(traces)
     report_audit = ReportGenerationAudit(db, run_id, traces)
     report_llm_responses = report_audit.responses
     citation_validation_reports: list[Any] = []
     reference_verification_reports: list[Any] = []
+    def refresh_report_evidence(feedback: dict[str, Any]) -> dict[str, Any] | None:
+        nonlocal provenance_bundle, traces
+        if (plan.get("task_contract") or {}).get("obligation_version"):
+            provenance_bundle = run_work_loop(db, run_id, plan, settings_obj, provenance_bundle or {}, _llm,
+                loader=reload_work_bundle, traces=traces, feedback=feedback)
+            return provenance_bundle
+        refreshed = refresh_react_answer_evidence(db, run_id, plan, settings_obj, feedback)
+        if refreshed is not None:
+            provenance_bundle = refreshed
+            traces = store.list_tool_traces(db, run_id)
+            refresh_comparison_contract(db, run_id, plan, refreshed, _llm)
+        return refreshed
+
     try:
         markdown = generate_markdown_report(
             report_subject(run),
@@ -687,7 +747,9 @@ def _complete_report(
             citation_validation_callback=citation_validation_reports.append,
             reference_verification_callback=reference_verification_reports.append,
             revision_attempt_callback=report_audit.persist_attempt,
+            revision_decision_callback=report_audit.persist_validation,
             cancellation_check=lambda: check_report_generation_not_cancelled(db, run_id),
+            evidence_refresh_callback=refresh_report_evidence,
         )
     except Exception as exc:
         from app.agent.budget import BudgetExceeded
@@ -1465,12 +1527,10 @@ def run_react_task(
             latency_ms_delta=latency_ms,
         )
 
-    if _branch_evidence_goal_met_at_limit(db, run_id, plan, settings):
-        # A research-tree child is an evidence-acquisition unit, not the
-        # report writer. Its objective can be verified deterministically from
-        # persisted, task-eligible body passages even when the actor spent its
-        # last decision reading a source rather than emitting a prose finish.
-        # The root Scope and final citation/report gates remain unchanged.
+    if _branch_evidence_goal_met_at_limit(db, run_id, plan, settings, client):
+        # A bounded child can finish after its last source read only when its
+        # retained body evidence and assigned answers have both been verified.
+        # The Scope still owns the one final report and root completion.
         state["goal_status"] = "achieved"
         state["finish_summary"] = "Required trace-backed branch evidence was acquired."
         record_trace_event(
@@ -1501,7 +1561,7 @@ def run_react_task(
     return _complete_report(db, run_id, plan, state, "max_steps_reached", settings, client, limitation=True)
 
 
-def _branch_evidence_goal_met_at_limit(db: Session, run_id: str, plan: dict[str, Any], settings: Settings) -> bool:
+def _branch_evidence_goal_met_at_limit(db: Session, run_id: str, plan: dict[str, Any], settings: Settings, client: Any = None) -> bool:
     if not plan.get("defer_to_research_scope") or plan.get("run_role") == "root":
         return False
     from app.agent.evidence_requirements import assess_required_evidence
@@ -1518,4 +1578,44 @@ def _branch_evidence_goal_met_at_limit(db: Session, run_id: str, plan: dict[str,
     provenance = materialize_execution_provenance(
         db, run, plan, load_observations(traces), traces, settings,
     )
-    return bool(provenance and assess_required_evidence(contract, provenance).passed)
+    acquired = bool(provenance and assess_required_evidence(contract, provenance).passed)
+    if acquired and contract.get("obligation_version"):
+        if plan.get("acquisition_stage") == "comparison_selection":
+            return False
+        return _assess_branch_answer(db, run_id, plan, provenance, client)
+    return acquired
+
+
+def _assess_branch_answer(db: Session, run_id: str, plan: dict[str, Any], bundle: dict[str, Any], client: Any) -> bool:
+    if plan.get("acquisition_stage") == "comparison_selection":
+        return False
+    from app.research.findings import assess_research_findings
+    from app.research.answer_coverage import _verified_audit
+    import hashlib
+    fingerprint = hashlib.sha256(json.dumps({"evidence": {key: bundle.get(key) for key in
+        ("passages", "source_snapshots", "source_documents", "citations")}, "contract": plan.get("task_contract")},
+        ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
+    retained = plan.get("branch_findings") or {}
+    if retained.get("evidence_fingerprint") != fingerprint:
+        if client is None or not client.is_available():
+            return False
+        try:
+            retained = {**assess_research_findings(bundle, plan["task_contract"], client),
+                        "evidence_fingerprint": fingerprint}
+        except FinalizationRequired:
+            plan["branch_findings_stop_reason"] = "protected_finalization_reserve"
+            _persist_plan(db, run_id, plan)
+            return False
+        plan["branch_findings"] = retained
+        _persist_plan(db, run_id, plan)
+    coverage = retained.get("coverage") or {}
+    return bool(coverage.get("complete") and _verified_audit(coverage, plan["task_contract"]))
+
+
+def refresh_react_answer_evidence(db, run_id, plan, settings_obj, feedback):
+    from app.research.recovery import recover_answer_evidence
+    if not recover_answer_evidence(db, run_id, plan, settings_obj, feedback):
+        return None
+    traces = store.list_tool_traces(db, run_id)
+    return materialize_execution_provenance(db, store.get_fresh_agent_run(db, run_id), plan,
+        load_observations(traces), traces, settings_obj)

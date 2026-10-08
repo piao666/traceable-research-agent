@@ -31,6 +31,18 @@ class BudgetExceeded(RuntimeError):
         super().__init__("Research budget stopped: " + reason)
 
 
+class BudgetApprovalRequired(BudgetExceeded):
+    """An exhausted spending allowance needs a new, scoped human approval."""
+
+
+class TokenBudgetApprovalRequired(BudgetApprovalRequired):
+    """Pause new research for explicit approval of additional token spending."""
+
+
+class LLMCallBudgetApprovalRequired(BudgetApprovalRequired):
+    """Pause instead of discarding research when logical model calls run out."""
+
+
 class FinalizationRequired(BudgetExceeded):
     """Signal a research-scope node to stop discovery and preserve report reserve.
 
@@ -79,9 +91,11 @@ def limits(settings):
     config["final_report_tokens"] = min(60000, config["max_tokens"] * 3 // 10)
     # Report drafting and quote-guarded multilingual citation review both
     # consume logical model calls. Reserve several within the same hard cap.
-    # Three writer attempts plus up to four citation batches per attempt.
-    # Keep one extra final-check call while leaving most calls for research.
-    config["final_report_llm_calls"] = min(16, config["max_llm_calls"] // 3)
+    # A Deep scope can use several child branches, five writer attempts and
+    # separate semantic/coverage batches. Keep legacy-sized configurations on
+    # their old reserve while protecting more finalization calls in Deep.
+    report_call_cap = 64 if config["max_llm_calls"] >= 128 else 16
+    config["final_report_llm_calls"] = min(report_call_cap, config["max_llm_calls"] // 3)
     # Preserve a bounded slice of the existing wall-clock and estimated-cost
     # caps for final report generation and its citation/reference checks.
     # These are reservations inside the configured caps, never extra capacity.
@@ -301,6 +315,140 @@ def resume_budget_deadline(db, run_id: str, *, now: float | None = None) -> bool
     return True
 
 
+def pause_for_budget_approval(db, run_id: str, reason: str = "tokens") -> dict:
+    """Persist one root approval boundary, preserving shared counters and work."""
+    member = db.get(RunBudget, run_id, populate_existing=True)
+    root_id = member.root_run_id
+    root, plan = _run_plan_and_budget(db, root_id)
+    if root is None or root.status in {"cancelled", "completed", "failed", "incomplete"}:
+        return {}
+    row = db.get(RunBudget, root_id, populate_existing=True)
+    limits_now = json.loads(row.limits_json)
+    key = "token_budget_approval" if reason == "tokens" else "llm_call_budget_approval"
+    limit_key = "max_tokens" if reason == "tokens" else "max_llm_calls"
+    consumed = row.reserved_tokens if reason == "tokens" else row.llm_calls
+    increment = max(100000, limits_now.get("final_report_tokens", 0)) if reason == "tokens" else 64
+    pending = plan.get(key) or {}
+    if pending.get("status") != "pending":
+        pending = {"version": "budget-approval-v2", "resource": reason, "status": "pending",
+                   "current_limit": limits_now[limit_key],
+                   "spent_tokens" if reason == "tokens" else "spent_llm_calls": consumed,
+                   "suggested_limit": max(limits_now[limit_key] * 2, consumed + increment),
+                   "requested_at": time.time(), "interrupted_run_ids": []}
+        from app.trace.logger import record_trace_event
+        record_trace_event(db, root_id, root.current_step, key, "waiting",
+                           {}, f"{reason} budget reached; research retained for approval.", pending)
+    pending["interrupted_run_ids"] = list(dict.fromkeys([*pending["interrupted_run_ids"], run_id]))
+    plan[key] = pending
+    for trace in reversed(store.list_tool_traces(db, root_id)):
+        if trace.tool_name == "report_revision_attempt" and trace.status == "success":
+            candidate = json.loads(trace.output_json or "{}")
+            if candidate.get("artifact_path") and candidate.get("content_sha256"):
+                plan["report_resume_candidate"] = {"trace_id": trace.trace_id, **candidate}
+                break
+    store.replace_agent_run_plan(db, root_id, plan)
+    db.execute(update(RunBudget).where(RunBudget.run_id == root_id, RunBudget.stop_reason == reason).values(stop_reason=None))
+    db.commit()
+    message = ("Token budget reached. Approve a larger token limit or unlimited tokens for this run to continue."
+               if reason == "tokens" else "Model call budget reached. Approve a larger model call limit for this run to continue.")
+    store.update_agent_run_status(db, root_id, "waiting_human", message)
+    if run_id != root_id:
+        store.update_agent_run_status(db, run_id, "waiting_human", message)
+    pause_budget_deadline(db, root_id)
+    return pending
+
+
+def pause_for_token_approval(db, run_id: str) -> dict:
+    return pause_for_budget_approval(db, run_id, "tokens")
+
+
+def resume_approved_budget_deadline(db, run_id: str) -> None:
+    """Consume approved waits only when execution is actually resumed."""
+    _, plan = _run_plan_and_budget(db, run_id)
+    if any((plan.get(key) or {}).get("status") == "pending"
+           for key in ("token_budget_approval", "llm_call_budget_approval")):
+        return
+    waiters = [run_id]
+    for key in ("token_budget_approval", "llm_call_budget_approval"):
+        approval = plan.get(key) or {}
+        if approval.get("status") == "approved":
+            waiters.extend(approval.get("interrupted_run_ids") or [])
+    for waiter in dict.fromkeys(waiters):
+        resume_budget_deadline(db, waiter)
+
+
+def _resume_budget_members(db, run_id: str, plan: dict, pending: dict):
+    if (plan.get("react_state") or {}).get("finish_reason") == "finalization_reserve_handoff":
+        plan["react_state"]["finish_reason"] = "budget_extension_resume"
+    from app.research.models import ResearchNode, ResearchScope
+    for child_id in pending.get("interrupted_run_ids", []):
+        if child_id != run_id:
+            child = store.get_fresh_agent_run(db, child_id)
+            if child and child.status == "waiting_human":
+                store.update_agent_run_status(db, child_id, "pending", None)
+                db.execute(update(ResearchNode).where(ResearchNode.run_id == child_id, ResearchNode.status == "waiting_human").values(status="pending"))
+    root = store.get_fresh_agent_run(db, run_id)
+    if root and root.research_scope_id:
+        db.execute(update(ResearchScope).where(ResearchScope.scope_id == root.research_scope_id).values(status="running"))
+    db.commit()
+    return root
+
+
+def approve_llm_call_budget(db, run_id: str, plan: dict, *, max_llm_calls: int | None, comment: str | None) -> dict:
+    member = db.get(RunBudget, run_id, populate_existing=True)
+    pending = plan.get("llm_call_budget_approval") or {}
+    if member is None or member.root_run_id != run_id or pending.get("status") != "pending":
+        raise ValueError("No root model call budget approval is pending.")
+    config = json.loads(member.limits_json)
+    proposed = int(max_llm_calls or pending["suggested_limit"])
+    if proposed <= max(config["max_llm_calls"], member.llm_calls):
+        raise ValueError("New model call limit must exceed the current limit and consumed calls.")
+    previous = dict(config)
+    config["max_llm_calls"] = proposed
+    config["final_report_spent_llm_calls"] = 0
+    db.execute(update(RunBudget).where(RunBudget.root_run_id == run_id).values(limits_json=json.dumps(config, sort_keys=True), stop_reason=None))
+    approved = {**pending, "status": "approved", "approved_at": time.time(), "new_limit": proposed, "comment": comment}
+    plan["llm_call_budget_approval"] = approved
+    plan.setdefault("llm_call_budget_approval_history", []).append(approved)
+    root = _resume_budget_members(db, run_id, plan, pending)
+    from app.trace.logger import record_trace_event
+    record_trace_event(db, run_id, root.current_step if root else 0, "llm_call_budget_approval", "approved",
+                       {"max_llm_calls": proposed}, "Model call budget approval recorded.",
+                       {"previous_limits": previous, "limits": config, "comment": comment})
+    return plan
+
+
+def approve_token_budget(db, run_id: str, plan: dict, *, max_tokens: int | None,
+                         unlimited: bool, comment: str | None) -> dict:
+    member = db.get(RunBudget, run_id, populate_existing=True)
+    if member is None or member.root_run_id != run_id:
+        raise ValueError("Token budget approval belongs to the root run.")
+    pending = plan.get("token_budget_approval") or {}
+    if pending.get("status") != "pending":
+        raise ValueError("No token budget approval is pending.")
+    config = json.loads(member.limits_json)
+    proposed = int(max_tokens or pending["suggested_limit"])
+    if not unlimited and proposed <= max(config["max_tokens"], member.reserved_tokens):
+        raise ValueError("New token limit must exceed the current limit and consumed tokens.")
+    previous = dict(config)
+    config["max_tokens"] = proposed
+    config["tokens_unlimited"] = unlimited
+    # Reserve enough space for the complete quote/coverage workflow inside the
+    # newly approved finite limit. This does not add capacity to other caps.
+    config["final_report_tokens"] = max(config.get("final_report_tokens", 0), min(120000, proposed // 3))
+    db.execute(update(RunBudget).where(RunBudget.root_run_id == run_id).values(limits_json=json.dumps(config, sort_keys=True), stop_reason=None))
+    approved = {**pending, "status": "approved", "approved_at": time.time(), "new_limit": proposed,
+                "tokens_unlimited": unlimited, "comment": comment}
+    plan["token_budget_approval"] = approved
+    plan.setdefault("token_budget_approval_history", []).append(approved)
+    root = _resume_budget_members(db, run_id, plan, pending)
+    from app.trace.logger import record_trace_event
+    record_trace_event(db, run_id, root.current_step if root else 0, "token_budget_approval", "approved",
+                       {"max_tokens": proposed, "unlimited_tokens": unlimited}, "Token budget approval recorded.",
+                       {"previous_limits": previous, "limits": config, "comment": comment})
+    return plan
+
+
 class BudgetRuntime:
     def __init__(self, db, run_id, settings):
         self.db, self.run_id = db, run_id
@@ -308,7 +456,21 @@ class BudgetRuntime:
         self.root_id = root.root_run_id
         self.limits = json.loads(root.limits_json)
 
+    def remaining_report_reserve(self, kind: str):
+        original = self.limits.get("final_report_" + kind, 0)
+        spent = self.limits.get("final_report_spent_" + kind, 0)
+        # Preserve a final gate even after earlier revisions spent their
+        # original allocation; release only the already-used excess reserve.
+        floor = {"llm_calls": 8, "tokens": 8000, "cost": 0}.get(kind, 0)
+        return min(original, max(floor, original - spent))
+
     def stop(self, reason):
+        root, plan = _run_plan_and_budget(self.db, self.root_id)
+        if (plan.get("task_contract") or {}).get("obligation_version"):
+            if reason == "tokens":
+                raise TokenBudgetApprovalRequired(reason)
+            if reason == "llm_calls":
+                raise LLMCallBudgetApprovalRequired(reason)
         self.db.execute(update(RunBudget).where(RunBudget.run_id == self.root_id,
             RunBudget.stop_reason.is_(None)).values(stop_reason=reason))
         self.db.commit()
@@ -321,26 +483,38 @@ class BudgetRuntime:
             raise BudgetExceeded("parent_cancelled")
         if root_run and self.run_id != self.root_id and root_run.status in {"failed", "completed"}:
             raise BudgetExceeded("parent_terminal")
-        config = self.limits
+        if root_run:
+            _, root_plan = _run_plan_and_budget(self.db, self.root_id)
+            if (root_plan.get("token_budget_approval") or {}).get("status") == "pending":
+                raise TokenBudgetApprovalRequired("tokens")
+            if (root_plan.get("llm_call_budget_approval") or {}).get("status") == "pending":
+                raise LLMCallBudgetApprovalRequired("llm_calls")
+        row = self.db.get(RunBudget, self.root_id, populate_existing=True)
+        self.limits = config = json.loads(row.limits_json)
         final = _final_report.get() and self.run_id == self.root_id
-        llm_limit = config["max_llm_calls"] - (0 if final or not llm else config.get("final_report_llm_calls", 0))
-        token_limit = config["max_tokens"] - (0 if final else config.get("final_report_tokens", 0))
+        llm_limit = config["max_llm_calls"] - (0 if final or not llm else self.remaining_report_reserve("llm_calls"))
+        token_limit = config["max_tokens"] - (0 if final else self.remaining_report_reserve("tokens"))
         cost_limit = config["max_estimated_cost"]
         if cost_limit and not final:
-            cost_limit = max(0.0, cost_limit - config.get("final_report_cost", 0.0))
+            cost_limit = max(0.0, cost_limit - self.remaining_report_reserve("cost"))
         now = time.time()
         deadline_limit = now + (0 if final else config.get("final_report_seconds", 0.0))
         conditions = [RunBudget.run_id == self.root_id, RunBudget.stop_reason.is_(None),
             RunBudget.deadline > deadline_limit, RunBudget.tool_calls + tool <= config["max_tool_calls"],
             RunBudget.llm_calls + llm <= llm_limit,
-            RunBudget.reserved_tokens + tokens <= token_limit,
+            RunBudget.reserved_tokens + tokens <= token_limit if not config.get("tokens_unlimited") else True,
         ]
         if config["max_estimated_cost"]:
             conditions.append(RunBudget.estimated_cost + cost <= cost_limit)
-        admitted = self.db.execute(update(RunBudget).where(*conditions).values(
+        values = dict(
             tool_calls=RunBudget.tool_calls + tool, llm_calls=RunBudget.llm_calls + llm,
             reserved_tokens=RunBudget.reserved_tokens + tokens,
-            estimated_cost=RunBudget.estimated_cost + cost))
+            estimated_cost=RunBudget.estimated_cost + cost)
+        if final and llm:
+            config = {**config, **{f"final_report_spent_{kind}": config.get(f"final_report_spent_{kind}", 0) + amount
+                                  for kind, amount in (("llm_calls", llm), ("tokens", tokens), ("cost", cost))}}
+            values["limits_json"] = json.dumps(config)
+        admitted = self.db.execute(update(RunBudget).where(*conditions).values(**values))
         self.db.commit()
         if admitted.rowcount != 1:
             row = self.db.get(RunBudget, self.root_id, populate_existing=True)
@@ -356,7 +530,7 @@ class BudgetRuntime:
                 if not final and row.llm_calls + llm <= config["max_llm_calls"]:
                     raise FinalizationRequired("llm_calls")
                 self.stop("llm_calls")
-            if row.reserved_tokens + tokens > token_limit:
+            if not config.get("tokens_unlimited") and row.reserved_tokens + tokens > token_limit:
                 if not final and row.reserved_tokens + tokens <= config["max_tokens"]:
                     raise FinalizationRequired("tokens")
                 self.stop("tokens")
@@ -397,10 +571,10 @@ class BudgetRuntime:
             return False
         row = self.snapshot()
         return (
-            row["llm_calls"] + self.limits.get("final_report_llm_calls", 0)
+            row["llm_calls"] + self.remaining_report_reserve("llm_calls")
             + max(0, required_llm_calls) <= self.limits["max_llm_calls"]
-            and row["accounted_tokens"] + self.limits.get("final_report_tokens", 0)
-            + max(0, required_tokens) <= self.limits["max_tokens"]
+            and (self.limits.get("tokens_unlimited") or row["accounted_tokens"] + self.remaining_report_reserve("tokens")
+            + max(0, required_tokens) <= self.limits["max_tokens"])
         )
 
 
@@ -478,24 +652,32 @@ class BudgetClient(LLMClient):
         actual = max(0, response.usage.total_tokens,
                      max(0, response.usage.prompt_tokens) + max(0, response.usage.completion_tokens)) if response.usage else 0
         if actual > 0:
+            final = _final_report.get() and runtime.run_id == runtime.root_id
+            row = runtime.db.get(RunBudget, runtime.root_id, populate_existing=True)
+            settled_limits = json.loads(row.limits_json)
+            if final:
+                settled_limits["final_report_spent_tokens"] = max(0, settled_limits.get("final_report_spent_tokens", 0) + actual - estimated_tokens)
+                settled_limits["final_report_spent_cost"] = max(0, settled_limits.get("final_report_spent_cost", 0) + (actual - estimated_tokens) * (rate or 0) / 1_000_000)
             runtime.db.execute(update(RunBudget).where(RunBudget.run_id == runtime.root_id).values(
                 reserved_tokens=RunBudget.reserved_tokens + actual - estimated_tokens,
-                estimated_cost=RunBudget.estimated_cost + (actual - estimated_tokens) * (rate or 0) / 1_000_000))
+                estimated_cost=RunBudget.estimated_cost + (actual - estimated_tokens) * (rate or 0) / 1_000_000,
+                limits_json=json.dumps(settled_limits)))
             runtime.db.commit()
+            runtime.limits = settled_limits
             snapshot = runtime.snapshot()
-            if snapshot["accounted_tokens"] > runtime.limits["max_tokens"]:
+            if not runtime.limits.get("tokens_unlimited") and snapshot["accounted_tokens"] > runtime.limits["max_tokens"]:
                 runtime.stop("tokens")
             if runtime.limits["max_estimated_cost"] and snapshot["estimated_cost"] > runtime.limits["max_estimated_cost"]:
                 runtime.stop("estimated_cost")
             final = _final_report.get() and runtime.run_id == runtime.root_id
-            if not final and snapshot["accounted_tokens"] > (
-                runtime.limits["max_tokens"] - runtime.limits.get("final_report_tokens", 0)
+            if not final and not runtime.limits.get("tokens_unlimited") and snapshot["accounted_tokens"] > (
+                runtime.limits["max_tokens"] - runtime.remaining_report_reserve("tokens")
             ):
                 raise FinalizationRequired("tokens")
             if (not final and runtime.limits["max_estimated_cost"]
                     and snapshot["estimated_cost"] > (
                         runtime.limits["max_estimated_cost"]
-                        - runtime.limits.get("final_report_cost", 0.0)
+                        - runtime.remaining_report_reserve("cost")
                     )):
                 raise FinalizationRequired("estimated_cost")
         return response
@@ -540,6 +722,21 @@ def report_budget(function):
 
 
 @contextmanager
+def finalization_budget():
+    """Allow root control decisions on collected evidence within final headroom.
+
+    This does not lift hard limits or authorize further acquisition. Children
+    continue to use research admission even inside this context.
+    """
+    runtime = current_budget()
+    token = _final_report.set(runtime is not None and runtime.run_id == runtime.root_id)
+    try:
+        yield
+    finally:
+        _final_report.reset(token)
+
+
+@contextmanager
 def acquisition_budget():
     """A report's recovery fetch must not consume protected finalization funds."""
     token = _final_report.set(False)
@@ -564,13 +761,16 @@ def budgeted_execution(function):
             return function(*args, **kwargs)
         settings = bound.arguments.get("settings_obj") or bound.arguments.get("settings")
         runtime = BudgetRuntime(db, run_id, settings)
+        resume_approved_budget_deadline(db, run_id)
         token = _active.set(runtime)
         try:
             try:
                 result = function(*args, **kwargs)
             except BudgetExceeded as exc:
                 result = {"run_id": run_id, "status": "failed", "message": str(exc)}
-                if exc.reason == "parent_cancelled":
+                if isinstance(exc, BudgetApprovalRequired):
+                    pause_for_budget_approval(db, run_id, exc.reason)
+                elif exc.reason == "parent_cancelled":
                     store.update_agent_run_status(db, run_id, "cancelled", "Parent research was cancelled.")
                 else:
                     runtime.db.execute(update(RunBudget).where(RunBudget.run_id == runtime.root_id).values(stop_reason=exc.reason))

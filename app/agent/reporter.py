@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -741,7 +742,10 @@ def _synthesis_revision_feedback(validation: Any) -> dict[str, Any]:
     supported = int(getattr(validation, "supported", 0) or 0)
     strict_rate_met = total > 0 and supported / total >= 0.60
     hard_failures = [
-        {"citation": detail.citation_label, "sentence": detail.sentence}
+        {"citation": detail.citation_label, "sentence": detail.sentence,
+         **{key: getattr(detail, key) for key in
+            ("marker_start", "application_reason", "provider_verdict", "evidence_quote", "evidence_quotes", "evidence_window")
+            if getattr(detail, key, None) is not None}}
         for detail in validation.details
         if detail.verdict == "unsupported"
     ][:12]
@@ -752,6 +756,7 @@ def _synthesis_revision_feedback(validation: Any) -> dict[str, Any]:
         if detail.verdict == "weakly_supported"
     ][:8]
     return {
+        "answer_gaps": (getattr(validation, "answer_coverage", {}) or {}).get("gaps", []),
         "must_remove_or_rewrite_unsupported": hard_failures,
         "must_remove_or_cite_uncited": uncited,
         "weak_citations_to_improve_only_if_needed": weak,
@@ -759,7 +764,11 @@ def _synthesis_revision_feedback(validation: Any) -> dict[str, Any]:
         "instruction": (
             "Every item in must_remove_or_rewrite_unsupported and "
             "must_remove_or_cite_uncited is a hard failure. Do not copy those "
-            "sentences unchanged. Delete them entirely if no directly matching "
+            "sentences unchanged. Required questions remain mandatory; deletion reopens an answer gap. "
+            "Recover missing evidence and preserve qualifications before answering. Remove optional claims if no matching "
+            "For non_substantive_quote, retain the subject, polarity and full clause in the exact quote; "
+            "for missing_source_condition restore its conditions. A local application veto is distinct from "
+            "a provider unsupported verdict. Split compound claims and bind each fact to its own source. "
             "frozen passage exists; otherwise write a shorter atomic cited fact. "
             "When strict support is already at least 60%, do not spend this "
             "revision polishing tolerated weak citations."
@@ -862,6 +871,24 @@ def _llm_synthesize_answer(
             ),
         ),
     ]
+    if (task_contract or {}).get("obligation_version"):
+        messages.append(LLMMessage(role="system", content=(
+            "Answer every mandatory question and every requested facet (mechanism, conditions, limitations) "
+            "with short individually cited clauses. Explain how/why with actual causal processes, not just "
+            "an effect statement. Keep parameter qualifications in each dependent clause. Avoid unrequested "
+            "supplementary facts. Focus on essential mechanisms, applicable conditions and limitations. "
+            "Omit unrelated API behavior, version histories and numerical examples unless requested. "
+            "Never copy a partial source sentence or extrapolate its missing continuation. "
+            "In revisions, add missing answers when the supplied evidence supports them; "
+            "deleting a mandatory answer reopens a blocking gap. "
+            "Use the SAME frozen comparison_scope cohort in every requested dimension and respect "
+            "requirement_focus. Prefer primary implementation sources or independent corroboration. "
+            "Describe missing evidence as '本次证据未提供...' without borrowing an unrelated citation; "
+            "these are research limitations, not product facts or complete answers. "
+            "When asked to list items and give THEIR applications, include an explicit bounded list "
+            "and answer the requested application for EVERY listed item. Choose a small set with "
+            "available evidence rather than padding a discretionary list with unsupported entries. "
+            "User-named mandatory items must remain and be researched, never silently dropped.")))
     if revision_feedback:
         # The draft is supplied once as a user message below. Serializing it
         # again inside the system feedback doubled the revision prompt and
@@ -873,7 +900,7 @@ def _llm_synthesize_answer(
         messages.append(LLMMessage(
             role="system",
                      content=("Revise the previous draft using only the supplied evidence and allowed "
-                      "CIT identifiers. Remove unsupported assertions; do not add facts. "
+                      "CIT identifiers. Remove unsupported assertions; add missing required answers only when supplied evidence supports them. "
                       "Every must_remove_or_rewrite_unsupported and must_remove_or_cite_uncited "
                       "item below is mandatory: delete that whole sentence or replace it with a "
                       "shorter directly supported, cited statement. Never keep it unchanged. "
@@ -913,13 +940,20 @@ def _llm_synthesize_answer(
             # reject the final attempt despite much smaller actual outputs.
             max_tokens=4096 if revision_feedback and revision_feedback.get("previous_draft") else 8192,
         )
+        from app.evidence.decision_audit import retain_decision
+        response.metadata = {**response.metadata, "decision_audit": retain_decision(
+            "report_synthesis_decision",
+            {"task_contract": task_contract, "messages": [m.model_dump() for m in messages]},
+            response.model_dump(), record_usage=usage_callback is None,
+        )}
         if response.success and response.content:
             content = response.content.strip()
             # Program-owned answer delimiters are never valid model output.
             # Reject every HTML comment, rather than trying to sanitize a
             # closing marker that could move generated text out of validation.
             if "<!--" in content or "-->" in content:
-                response.metadata = {**response.metadata, "error_type": "structured_output_invalid"}
+                response.metadata = {**response.metadata, "error_type": "structured_output_invalid",
+                                     "admission_reason": "program_owned_delimiter_in_model_output"}
                 if usage_callback is not None:
                     usage_callback(response)
                 return None
@@ -928,6 +962,8 @@ def _llm_synthesize_answer(
                 response.metadata = {
                     **response.metadata,
                     "error_type": "structured_output_invalid",
+                    "admission_reason": "missing_or_unknown_frozen_citation",
+                    "invalid_citation_ids": sorted(set(re.findall(r"CIT-\d{3}-\d{2}", content)) - (allowed or set())),
                 }
                 if usage_callback is not None:
                     usage_callback(response)
@@ -944,7 +980,9 @@ def _llm_synthesize_answer(
     except Exception as exc:
         from app.agent.budget import BudgetExceeded
         if isinstance(exc, BudgetExceeded):
-            notify_failure("budget_exhausted")
+            from app.agent.budget import BudgetApprovalRequired
+            if not isinstance(exc, BudgetApprovalRequired):
+                notify_failure("budget_exhausted")
             raise
         import logging
         logging.getLogger(__name__).warning("LLM synthesis failed: %s", redact_text(exc))
@@ -1193,6 +1231,80 @@ def _valid_synthesis_citations(
     return bool(used) and used.issubset(available) and (
         allowed is None or used.issubset(allowed)
     )
+
+
+def _revision_citation_labels(
+    old_bundle: dict[str, Any], new_bundle: dict[str, Any],
+    old_writing: WritingEvidenceSet,
+) -> dict[str, str]:
+    """Rebind a draft label only through the same persisted citation and bytes."""
+    old_by_label = {str(c.get("citation_label")): c for c in old_bundle.get("citations") or []}
+    new_by_id = {str(c.get("citation_id")): c for c in new_bundle.get("citations") or []}
+    new_passages = {str(p.get("passage_id")): p for p in new_bundle.get("passages") or []}
+    labels: dict[str, str] = {}
+    for unit in old_writing.factual_units:
+        old_citation = old_by_label.get(unit.citation_id) or {}
+        citation_id = str(old_citation.get("citation_id") or "")
+        new_citation = new_by_id.get(citation_id) if citation_id else None
+        if not new_citation or str(new_citation.get("passage_id")) != unit.passage_id:
+            continue
+        passage = new_passages.get(unit.passage_id) or {}
+        content = str(passage.get("text") or "")
+        if hashlib.sha256(content.encode("utf-8")).hexdigest() != unit.passage_sha256:
+            continue
+        label = str(new_citation.get("citation_label") or "")
+        if re.fullmatch(r"CIT-\d{3}-\d{2}", label):
+            labels[unit.citation_id] = label
+    return labels
+
+
+def _revision_prompt_context(
+    previous_draft: str, feedback: dict[str, Any],
+    old_writing: WritingEvidenceSet, current_writing: WritingEvidenceSet,
+    candidate_labels: dict[str, str],
+) -> tuple[str, dict[str, Any]]:
+    """Carry prior prose only when each cited window is still frozen verbatim."""
+    old_units = {unit.citation_id: unit for unit in old_writing.factual_units}
+    new_units = {unit.citation_id: unit for unit in current_writing.factual_units}
+    verified: dict[str, str] = {}
+    for old_label, new_label in candidate_labels.items():
+        before, after = old_units.get(old_label), new_units.get(new_label)
+        if (before is not None and after is not None
+                and before.passage_id == after.passage_id
+                and before.passage_sha256 == after.passage_sha256
+                and before.text_sha256 == after.text_sha256):
+            verified[old_label] = new_label
+    prior_labels = set(re.findall(r"CIT-\d{3}-\d{2}", previous_draft))
+    if not prior_labels.issubset(verified):
+        previous_draft = ""
+    else:
+        previous_draft = re.sub(r"CIT-\d{3}-\d{2}", lambda m: verified[m.group()], previous_draft)
+
+    def sanitize(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: sanitize(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [sanitize(item) for item in value]
+        if isinstance(value, str):
+            return re.sub(r"CIT-\d{3}-\d{2}", lambda m: verified.get(m.group(), "prior source unavailable"), value)
+        return value
+    return previous_draft, sanitize(feedback)
+
+
+def _prune_unsupported_standalone_lines(answer: str, validation: Any) -> str | None:
+    """Produce a new candidate by removing only exact unsupported answer lines."""
+    unsupported = {
+        str(detail.sentence).strip()
+        for detail in getattr(validation, "details", [])
+        if getattr(detail, "verdict", None) == "unsupported"
+        and "CIT-" in str(getattr(detail, "sentence", ""))
+    }
+    if not unsupported:
+        return None
+    lines = answer.splitlines(keepends=True)
+    retained = [line for line in lines if line.strip() not in unsupported or line.lstrip().startswith("#")]
+    candidate = "".join(retained).strip()
+    return candidate if len(retained) < len(lines) and candidate else None
 
 
 def _repair_synthesis_citations(content: str, bundle: dict[str, Any]) -> str:
@@ -1830,6 +1942,37 @@ def _render_grouped_final_answer(
     return lines
 
 
+def _audited_findings_candidate(plan: dict[str, Any], contract: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """Reuse a complete stage answer as a candidate, never as a final verdict."""
+    import hashlib
+    from app.research.answer_coverage import _verified_audit
+    from app.evidence.artifact_store import ArtifactStore
+    from app.config import Settings
+
+    if not contract.get("obligation_version"):
+        return None
+    for finding in reversed(plan.get("research_findings") or []):
+        if not isinstance(finding, dict):
+            continue
+        text = finding.get("markdown")
+        coverage = finding.get("coverage") or {}
+        reference = finding.get("decision_audit") or {}
+        if (isinstance(text, str) and text.strip() and coverage.get("complete") is True
+            and reference.get("decision_sha256") and not reference.get("redaction_changed")
+            and coverage.get("answer_sha256") == hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+            and _verified_audit(coverage, contract)):
+            try:
+                envelope = json.loads(ArtifactStore(Path(Settings.from_env().evidence_artifact_root)).read_text(
+                    reference["artifact_path"], reference["decision_sha256"]))
+                if (envelope.get("kind") == "research_findings_decision"
+                    and envelope["outputs"].get("success") is True
+                    and envelope["outputs"].get("content") == text):
+                    return text, reference
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+    return None
+
+
 @report_budget
 def generate_markdown_report(
     run: AgentRun,
@@ -1842,6 +1985,7 @@ def generate_markdown_report(
     usage_callback: Callable[[Any], None] | None = None,
     citation_validation_callback: Callable[[Any], None] | None = None,
     reference_verification_callback: Callable[[Any], None] | None = None,
+    revision_decision_callback: Callable[..., Any] | None = None,
     revision_attempt_callback: Callable[[int, str | None, dict[str, Any]], str | None] | None = None,
     cancellation_check: Callable[[], None] | None = None,
     evidence_refresh_callback: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
@@ -1923,40 +2067,69 @@ def generate_markdown_report(
                     and not is_evidence_limitation_statement(span.claim_text)
                 ][:12]
                 validation.all_claims_cited = not validation.uncited_claims
+                if (contract or {}).get("obligation_version"):
+                    from app.research.answer_coverage import assess_answer_coverage
+                    validation.answer_coverage = assess_answer_coverage(draft, contract, validation, llm_client, provenance=provenance_bundle or {},
+                        cache=multilingual_adjudication_cache, writing_evidence=writing_set)
+                    plan["answer_coverage"] = validation.answer_coverage
+                    limitations = [span.claim_text for span in segment_final_answer_claims(draft)
+                        if span.is_claim_candidate and is_evidence_limitation_statement(span.claim_text)]
+                    if limitations:
+                        from app.evidence.decision_audit import retain_decision
+                        retain_decision("answer_limitation_application", {
+                            "answer_sha256": validation.answer_coverage["answer_sha256"],
+                            "coverage_decision": validation.answer_coverage.get("decision_audit"),
+                            "gaps": validation.answer_coverage.get("gaps", [])},
+                            {"statements": limitations, "grants_answer_coverage": False})
                 return validation
-            revision_focus: dict[str, str] = {}
-
             def synthesize_draft(context: dict[str, Any]) -> str:
-                nonlocal writing_set, provenance_bundle
+                nonlocal writing_set, provenance_bundle, contract, task
                 feedback = context.get("revision_feedback") or {}
+                previous_draft = str(context.get("previous_draft") or "")
+                previous_writing = writing_set
+                previous_bundle = provenance_bundle
                 if feedback and evidence_refresh_callback is not None:
                     refreshed = evidence_refresh_callback(feedback)
                     if refreshed is not None:
                         provenance_bundle = refreshed
+                        contract = plan.get("task_contract") if isinstance(plan.get("task_contract"), dict) else None
+                        task = run.task + ("\nTask requirements (do not change dates or metric): " + json.dumps(contract, ensure_ascii=False) if contract else "")
                         # Subsequent report sections must describe the same
                         # evidence acquisition as the final writer/validator.
                         content_basis_map.clear()
                         content_basis_map.update(_build_content_basis_map(refreshed))
-                        multilingual_adjudication_cache.clear()
-                        writing_set = build_writing_evidence(
-                            provenance_bundle, contract, final_report_evidence_token_budget(),
-                            focus_by_citation=revision_focus,
-                        )
                 focus: dict[str, str] = {}
+                rebound = _revision_citation_labels(
+                    previous_bundle or {}, provenance_bundle or {}, previous_writing,
+                ) if feedback and previous_writing is not None else {}
+                old_units = {unit.citation_id: unit for unit in previous_writing.factual_units} if previous_writing else {}
+                rejected_labels = {
+                    str(item.get("citation"))
+                    for item in feedback.get("must_remove_or_rewrite_unsupported") or []
+                    if isinstance(item, dict) and item.get("citation")
+                }
+                for label in set(re.findall(r"CIT-\d{3}-\d{2}", previous_draft)):
+                    if label in rebound and label in old_units and label not in rejected_labels:
+                        focus[rebound[label]] = old_units[label].text[:2000]
                 for key in ("must_remove_or_rewrite_unsupported", "weak_citations_to_improve_only_if_needed"):
                     for item in feedback.get(key) or []:
                         label, sentence = item.get("citation"), item.get("sentence")
                         if isinstance(label, str) and isinstance(sentence, str):
-                            focus[label] = (focus.get(label, "") + " " + sentence)[:2000]
-                if focus:
-                    revision_focus.update(focus)
+                            current_label = rebound.get(label)
+                            if current_label:
+                                focus[current_label] = (focus.get(current_label, "") + " " + sentence)[:2000]
+                if feedback:
                     writing_set = build_writing_evidence(
                         provenance_bundle, contract, final_report_evidence_token_budget(),
-                        focus_by_citation=revision_focus,
+                        focus_by_citation=focus,
                     )
+                    if previous_writing is not None and writing_set is not None:
+                        previous_draft, feedback = _revision_prompt_context(
+                            previous_draft, feedback, previous_writing, writing_set, rebound,
+                        )
                 return _llm_synthesize_answer(
                     task, observations, llm_client, provenance_bundle, contract, usage_callback,
-                    {**feedback, "previous_draft": context.get("previous_draft") or ""},
+                    {**feedback, "previous_draft": previous_draft},
                     writing_evidence=writing_set,
                 ) or ""
 
@@ -1975,23 +2148,57 @@ def generate_markdown_report(
                     ).encode("utf-8")).hexdigest()
                     return revision_attempt_callback(attempt, text, {
                         **diagnostic, "writing_windows": windows, "evidence_snapshot_sha256": fingerprint,
+                        "projection_diagnostics": list(writing_set.projection_diagnostics),
+                        "candidate_source": candidate_source,
                     })
                 return None
 
+            from app.agent.report_generation import load_resume_candidate
+            resumed_candidate = load_resume_candidate(plan)
+            findings_candidate = _audited_findings_candidate(plan, contract or {})
+            candidate_source: dict[str, Any] = {}
+            ordinary_synthesize = synthesize_draft
+            def synthesize_draft(context):
+                nonlocal resumed_candidate, findings_candidate, candidate_source
+                if resumed_candidate is not None:
+                    text, resumed_candidate = resumed_candidate, None
+                    findings_candidate = None
+                    candidate_source = {"kind": "resumed_report_candidate"}
+                elif findings_candidate is not None:
+                    text, reference = findings_candidate
+                    findings_candidate = None
+                    candidate_source = {"kind": "audited_research_findings", "decision_audit": reference}
+                else:
+                    candidate_source = {"kind": "report_synthesis"}
+                    text = ordinary_synthesize(context)
+                from app.reporting.claim_occurrence import normalize_limitation_citations
+                normalized = normalize_limitation_citations(text)
+                if normalized != text:
+                    from app.evidence.decision_audit import retain_decision
+                    reference = retain_decision("answer_limitation_normalization", {"original_draft": text},
+                        {"normalized_draft": normalized, "grants_answer_coverage": False})
+                    candidate_source = {**candidate_source, "normalization_audit": reference}
+                return normalized
             result = generate_validate_revise(
                 {"task": task},
                 synthesize_draft,
                 persist_draft,
                 cancellation_check or (lambda: None),
                 validate=validate_draft,
+                progress_fingerprint=lambda: (
+                    tuple((u.source_url, u.text_sha256) for u in writing_set.factual_units),
+                    tuple((plan.get("task_contract", {}).get("comparison_scope") or {}).get("entities") or [])),
                 is_acceptable=lambda validation: (
                     validation.total > 0
                     and validation.unsupported == 0
                     and validation.supported / validation.total >= 0.60
                     and bool(getattr(validation, "all_claims_cited", False))
+                    and (not (contract or {}).get("obligation_version") or validation.answer_coverage.get("complete") is True)
                 ),
                 revision_feedback=_synthesis_revision_feedback,
-                max_revisions=2,
+                max_revisions=4 if (contract or {}).get("obligation_version") else 2,
+                persist_validation=revision_decision_callback,
+                repair_candidate=_prune_unsupported_standalone_lines if (contract or {}).get("obligation_version") else None,
             )
             _llm_answer = result.answer_body
             plan["report_draft_result"] = {
@@ -2245,6 +2452,13 @@ def generate_markdown_report(
                     multilingual_adjudication_cache=multilingual_adjudication_cache,
                     multilingual_usage_callback=usage_callback,
                 )
+                if (plan.get("task_contract") or {}).get("obligation_version"):
+                    from app.research.answer_coverage import assess_answer_coverage
+                    citation_validation_report.answer_coverage = assess_answer_coverage(
+                        final_answer_text.strip(), plan["task_contract"], citation_validation_report,
+                        llm_client, cache=multilingual_adjudication_cache, provenance=provenance_bundle,
+                        writing_evidence=validation_writing_evidence)
+                    plan["answer_coverage"] = citation_validation_report.answer_coverage
                 if citation_validation_callback is not None:
                     citation_validation_callback(citation_validation_report)
                 validation_lines = render_citation_validation_section(

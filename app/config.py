@@ -23,8 +23,8 @@ RESEARCH_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
         "report_generation_mode": "llm",
         "deep_research_enabled": True,
         "research_max_tool_calls": 80,
-        "research_max_llm_calls": 64,
-        "research_max_tokens": 200000,
+        "research_max_llm_calls": 192,
+        "research_max_tokens": 400000,
         "research_max_seconds": 1800,
     },
     "standard": {

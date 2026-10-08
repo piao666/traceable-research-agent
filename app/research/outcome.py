@@ -20,6 +20,7 @@ RECOVERABLE_SCOPE_GAPS = frozenset({
     "required_evidence_missing", "required_research_branch_has_no_evidence",
     "required_research_branch_incomplete", "required_research_branch_goal_not_met",
     "required_evidence_coverage_incomplete", "required_source_class_missing",
+    "required_answer_coverage_incomplete",
 })
 
 
@@ -51,6 +52,10 @@ def assess_scope_outcome(
 
     errors: list[str] = []
     warnings: list[str] = []
+    selection_rejections = ((contract.get("comparison_scope") or {}).get("selection_attempt") or {}).get("rejections") or []
+    if (any(r.get("cause") == "selection_provider_failure" for r in selection_rejections)
+            or (contract.get("answer_scope_attempt") or {}).get("provider_failure") or contract.get("research_provider_failure")):
+        errors.append("research_provider_failure")
     if not scope_evidence.get("passages"):
         errors.append("no_usable_evidence")
     if not evidence_assessment.passed:
@@ -65,15 +70,24 @@ def assess_scope_outcome(
     if not integrity.get("all_traceability_resolves", True):
         errors.append("evidence_trace_incomplete")
     required_nodes = [node for node in nodes if _node_required(node.metadata_json)]
+    answer_gate_owned = bool(contract.get("obligation_version"))
+    from app.research.answer_coverage import _verified_audit
+    final_coverage = scope_evidence.get("final_answer_coverage") or {}
+    final_answers_verified = bool(final_coverage.get("complete") and _verified_audit(final_coverage, contract))
+    if answer_gate_owned and any(node.status == "incomplete" for node in required_nodes):
+        if final_answers_verified:
+            warnings.append("Bounded branches retained incomplete findings; the final Scope answer verified all assigned obligations.")
+        else:
+            errors.append("required_answer_coverage_incomplete")
     run_by_id = {run.run_id: run for run in list_scope_runs(db, scope.scope_id)}
     if any(node.status == "failed" for node in required_nodes):
         errors.append("required_research_branch_failed")
-    if any(
+    if not answer_gate_owned and any(
         node.status == "completed" and node.run_id and passages_by_run.get(node.run_id, 0) == 0
         for node in required_nodes
     ):
         errors.append("required_research_branch_has_no_evidence")
-    if any(node.status in {"pending", "running"} for node in required_nodes):
+    if not answer_gate_owned and any(node.status in {"pending", "running"} for node in required_nodes):
         errors.append("required_research_branch_incomplete")
     for node in required_nodes:
         run = run_by_id.get(node.run_id or "")
@@ -84,6 +98,9 @@ def assess_scope_outcome(
             state.get("finish_summary", ""),
             state.get("goal_status"),
         ):
+            if answer_gate_owned and (node.status == "completed" or (node.status == "incomplete" and final_answers_verified)):
+                warnings.append("A bounded acquisition node did not establish answer completeness; final required-answer coverage remains mandatory.")
+                continue
             errors.append("required_research_branch_goal_not_met")
             break
     if contract.get("unresolved_fields"):
@@ -94,7 +111,7 @@ def assess_scope_outcome(
     # flag.  If the orchestrator supplied it, enforce it here as the single
     # completion gate; absent/unknown projections remain conservative.
     coverage = scope_evidence.get("coverage_matrix") or {}
-    if coverage.get("applicable") and not coverage.get("complete"):
+    if not answer_gate_owned and coverage.get("applicable") and not coverage.get("complete"):
         errors.append("required_evidence_coverage_incomplete")
         warnings.extend(
             "Evidence gap: " + str(gap)
@@ -161,6 +178,7 @@ def assess_scope_outcome(
         "node_count": len(nodes),
         "coverage_matrix": coverage if coverage else None,
         "evidence_assessment": evidence_assessment.as_dict(),
+        "answer_coverage_required": answer_gate_owned,
         "message": (
             "Research Scope passed the evidence and lineage gate."
             if not errors

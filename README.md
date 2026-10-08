@@ -1,21 +1,91 @@
 # Traceable Research Agent
 
-## Runtime consolidation checkpoint
+## Research control checkpoint — 2026-10-08
 
-New task execution now selects one controller: Quick uses the sequential
-planned executor; Deep uses the PEAR Scope controller. An `auto` plan whose
-execution route is ReAct uses PEAR; other `auto` plans stay planned. A failed or
-incomplete result does not trigger a second engine. Deep requires both
-`DEEP_RESEARCH_ENABLED` and `REACT_ENABLED`; disabling either fails explicitly.
-The old parallel/percentage-rollout/adaptive-fallback dispatcher paths are
-retired. Their configuration fields are retained temporarily for configuration
-compatibility and no longer select a task executor.
+The current research contract follows this completion chain:
 
-Root and child runs still share the configured hard budget. Report generation
-reserves up to 16 model calls (at most one third of the configured call limit)
-for drafting and batched citation validation; this does not increase the total
-limit. This consolidation is an engineering checkpoint, not acceptance of all
-real research tasks. Historical data and report verification remain intact.
+**Research obligations → objects and dimensions → specific gaps → targeted actions → completion proof.**
+
+| Stage | Persisted result and completion rule |
+| --- | --- |
+| Obligations | A question may have multiple required answers, each retaining its identity and search topic. Deleting an answer during revision reopens its gap. |
+| Objects and dimensions | Source-attested identities and a fixed object-by-dimension scope determine required work. A supported representative list need not include every name in its sources; explicit named, numeric and exhaustive requirements still apply. |
+| Gaps | Missing content, object identity, citation mapping, source quality and concrete application tasks have separate diagnostics. Coverage approval does not replace citation support. |
+| Actions | Reproject saved body passages, continue reading, search or dispatch Deep branches according to the gap. Each action records its work identity, input version, expected effect and actual Trace. |
+| Confirmation | Reassess the current answer and validate object identity, conditions, citations and required coverage against the final report bytes and immutable decisions. Fetch success alone cannot complete work. |
+
+Quick uses the sequential planned executor; Deep uses the persisted Scope
+controller. For new obligation contracts, Deep enters the shared work loop
+after root acquisition and dispatches concrete object/dimension nodes. Legacy
+recursive branching and keyword-only admission vetoes no longer control these
+contracts. Existing historical records remain readable and are not regraded.
+
+### Evidence projection and report repair
+
+Writing windows are allocated separately by obligation, object and dimension.
+Targeted acquisition Traces guide projection of the newly acquired body; generic
+multi-object directories no longer receive a global name-count bonus. Technical
+implementation claims require primary evidence or independent corroboration;
+ranking and distinct hosts do not themselves prove authority.
+
+Valid candidate cells retain exact passage/window hashes and coordinates.
+Further synthesis receives prior findings with stale citation labels removed;
+all final citations are validated against the current evidence view. Unchanged
+writing windows preserve their gaps and skip repeated model judgement. Aggregate
+requirements reuse their concrete cell recovery allowances, including when the
+wording of an application rejection changes.
+
+Compressed immutable body artifacts support continuation beyond short tool
+views. Quote checks preserve applicable conditions, negation, numbers and exact
+source spans, including multiple verbatim spans within one frozen window.
+Provider failures retain their own error and decision audit and stop the loop;
+they are not treated as missing evidence requiring repeated searches.
+
+Object lists undergo extraction and independent membership/category review.
+Same-name benchmarks, dependencies or other products cannot replace the fixed
+objects. A paragraph's explicit object label can bind its continuation sentences;
+blank lines or object switches prevent identity borrowing. Concrete application
+tasks undergo independent review of the complete current answer, its limitations
+and supported task quotes. Deployment, ease of use or general positioning alone
+does not satisfy an application-task obligation.
+
+Recovery and report revision retain precise rejection reasons and immutable
+decision inputs/outputs. Candidate evidence remains distinct from confirmed
+answers. The React work panel and `GET /api/tasks/{run_id}/plan` expose
+`research_work`, `work_controller`, actions and stop reasons.
+
+### Budget approval and continuation
+
+Deep defaults are `RESEARCH_MAX_TOKENS=400000` and
+`RESEARCH_MAX_LLM_CALLS=192`; explicit deployment overrides remain effective.
+Root and branches share the same counters and limits. Finalization reserves
+model calls inside the existing total: at most one third, capped at 64 calls
+when the total is at least 128, otherwise capped at 16. Previously spent report
+calls reduce the remaining reserve while retaining a minimum validation margin.
+
+Obligation runs reaching hard Token or model-call limits enter `waiting_human`,
+retaining candidates, evidence and cumulative usage. Confirm the specific Run
+with `POST /api/tasks/{run_id}/confirm`: `max_tokens` or
+`unlimited_tokens: true` approves Token capacity; `max_llm_calls` independently
+approves a larger finite call limit. Unlimited Token approval does not increase
+call, tool, time or cost allowances. Approval with `resume: false` keeps the
+budget clock paused until execution resumes. Approvals never transfer to a
+different Run or reset prior usage.
+
+### Deployment and acceptance boundary
+
+Migration `0019_research_work_state` persists research entities/work items and
+extends operation payloads. Back up persistent data before upgrading, then run
+`docker compose up --build -d`; a container restart alone does not rebuild code.
+Dynamic-page fallback requires `FETCH_BROWSER_ENABLED=true` and runnable
+Chromium; the example configuration disables it.
+
+The latest backend checkpoint passed 1,374 tests, with one expected failure
+and 86 passing subtests; the focused closed-loop suite passed 152 tests.
+Isolated API smoke used zero external API calls. Docker health and source-hash
+checks passed without rewriting historical reports. **Complete real-provider
+Quick/Deep content acceptance and human review remain pending.** Neither a
+healthy service nor offline tests establish research-answer completeness.
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](#quick-start)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](#quick-start)
@@ -49,7 +119,8 @@ continue to use their existing executors.
 The legacy deepening round engine, its deprecated adapter, and the alternate
 parallel planned executor have been removed. New tasks enter the canonical
 dispatcher; historical Run readers and lineage migrations remain. Research intelligence,
-coverage/gap policy and hierarchical long-report composition remain R13/R14.
+coverage/gap control now follows the dated research control checkpoint above.
+Hierarchical long-report composition remains future work.
 
 ### Scope-first research result governance (R12.1)
 
@@ -225,10 +296,11 @@ vendor documentation and verified repositories are classified as primary sources
 Search-only and partial passages use medium rather than high evidence confidence.
 
 Budget exceptions keep their structured stop reason through synthesis and children.
-New ledgers reserve up to 8,000 tokens (10% of the total) and two LLM calls (20%)
-for the final root report; a full retry has its own ledger. Reaching that reserve
-in root research is now a non-terminal handoff to the quality gate and report path;
-actual total-cap, deadline, permission and cost breaches remain terminal. Optional
+New ledgers reserve a bounded share of tokens and LLM calls for the final root
+report; a full retry has its own ledger. Reaching that reserve in root research
+hands off to the quality gate and report path. For new obligation contracts,
+reaching the token ceiling pauses for explicit spending approval; other total-cap,
+deadline, permission and cost breaches remain terminal. Optional
 deepening is skipped when headroom is low. Real/mock separation is unchanged.
 Planned-to-ReAct upgrades use their dynamic step allowance with monotonic Trace
 numbers. Legacy child `/plan` responses normalize missing steps read-only; child
@@ -326,8 +398,7 @@ Migration `0011_run_budgets` adds an atomic ledger shared by a root Run and its
 deepening children. Defaults: 40 tool invocations, 40 LLM calls, 100,000 accounted
 tokens and 900 wall-clock seconds. Resume preserves counters; full retry gets a
 new ledger. Limits are checked before new operations, including parallel tool
-admission and report LLM calls. Budget exhaustion fails explicitly while keeping
-existing evidence/Trace; it cannot expose an intermediate report as final.
+admission and report LLM calls. New obligation contracts pause at the token ceiling for explicit spending approval. Other budget exhaustion fails explicitly while keeping existing evidence/Trace; it cannot expose an intermediate report as final.
 `GET /api/tasks/{run_id}/plan` exposes the current shared `execution_budget`.
 The ledger counts one logical `llm_calls` admission while separately exposing
 bounded adapter retries as `provider_attempts`; migration
@@ -435,7 +506,11 @@ Code and mocked tests do not replace browser, container or real-provider accepta
 - `/runs/{id}` shows persisted status, plan, Trace payloads/failures, timing and
   recorded cost estimates. Explicit confirmation controls start, cancellation,
   human approval/rejection and full retry; retry creates a new Run without
-  automatically starting it. Plan approval opens the corresponding workspace.
+  automatically starting it. Reusing a plan preserves validated mandatory
+  obligations; legacy contracts are rebuilt from the original request under
+  the new Run's budget. Prior findings, coverage, candidate selection and spending
+  approvals are cleared. Deep retries retain the predecessor Run as provenance
+  while using a separate Scope and ledger. Plan approval opens the corresponding workspace.
 - `/runs/{id}/evidence` shows source snippets/content basis and the exact
   citation → claim → passage → source/Trace association. Missing/ambiguous IDs
   remain unresolved. Export downloads grouped sources/passages as JSON.
@@ -739,14 +814,13 @@ workspace/     local databases, reports, artifacts, and skills
 
 ## Quality Checks
 
-The current full pytest run passed 834 tests, with 2 conditionally skipped,
-1 expected failure, 102 subtests passed, and no test failure. The isolated
-offline runner collected 829 tests (826 passed, 2 skipped, 1 expected failure)
-and recorded zero blocked external-network attempts.
-The latest frontend baseline is 106 tests; typecheck, lint and build passed;
-isolated route/fixture QA: 59 checks passed. Browser layout and live-provider
-acceptance remain separate manual checks. See
-[release validation](RELEASE_VALIDATION.md) for limits.
+The 2026-10-08 backend checkpoint passed 1,374 tests, one expected failure
+and 86 subtests; its focused suite passed 152 tests. Isolated API smoke made
+zero external API calls. Frontend tests passed 100 cases; typecheck, lint
+(excluding an inaccessible local pytest cache) and production build passed.
+Complete real-provider content acceptance remains
+pending. See the dated checkpoint above and
+[release validation](RELEASE_VALIDATION.md) for acceptance boundaries.
 
 Run the same core checks locally:
 
@@ -770,7 +844,9 @@ opens the deployment workspace database.
 - [x] R11 adaptive HTTP/Browser/PDF/remote retrieval foundation and source identity
 - [x] R12 Deep Research Engine V2, Research Scope/Tree and cross-run Evidence
 - [x] R12.1 Scope-first result, evidence, reasoning, citation and report governance
-- [ ] R10 real Docker build/restart and live provider preflight/acceptance
+- [x] Docker rebuild/restart, health and deployed-source consistency checks
+- [x] Persistent obligation/object/dimension work and final report proof
+- [ ] Complete real-provider Quick/Deep content acceptance and human review
 - [ ] R11 confirmation-gated real static/Browser/PDF/remote fetch acceptance
 - [ ] Add a repository license before public redistribution
 - [ ] Expand operational observability for long-running self-hosted instances

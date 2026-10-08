@@ -4,6 +4,7 @@ import { useRunContext } from "../hooks/useRunContext";
 import { MetricCard, Panel, StatusChip } from "../components/primitives";
 import { useFocusTarget } from "../hooks/useFocusTarget";
 import { ExecutionInsights } from "../components/ExecutionInsights";
+import { ResearchWorkPanel } from "../components/ResearchWorkPanel";
 
 export function WorkbenchPage() {
   const { task, plan, traces, detailErrors } = useRunContext();
@@ -20,6 +21,7 @@ export function WorkbenchPage() {
       <MetricCard label="原调用估值记录" value={task.estimated_cost > 0 ? task.estimated_cost.toFixed(4) : "未记录 / 0"} note="旧调用估值口径；非共享预算或账单金额" />
     </section>
     <ExecutionInsights plan={plan} />
+    <ResearchWorkPanel plan={plan} />
     <div className="workbench-columns">
       <Panel title="执行计划">
         {!plan ? <p>计划暂不可读，请刷新重试。</p> : <>

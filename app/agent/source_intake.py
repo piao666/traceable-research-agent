@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -38,10 +39,13 @@ class SourceConstraints:
     preferred_source_classes: tuple[str, ...] = ()
     excluded_domains: tuple[str, ...] = ()
     current_official_documentation: bool = False
+    official_only: bool = False
 
     @classmethod
     def from_plan(cls, plan: dict[str, Any]) -> "SourceConstraints":
         raw = plan.get("source_constraints") or {}
+        if (plan.get("task_contract") or {}).get("obligation_version"):
+            raw = (plan.get("task_contract") or {}).get("source_constraints") or raw
         contract_constraints = (plan.get("task_contract") or {}).get("source_constraints") or {}
         mode = str(raw.get("mode") or "open").casefold()
         if mode not in {"open", "prioritize", "restrict"}:
@@ -57,6 +61,7 @@ class SourceConstraints:
                 _normalize_domain(value) for value in raw.get("excluded_domains") or [] if value
             ),
             current_official_documentation=contract_constraints.get("current_official_documentation") is True,
+            official_only=contract_constraints.get("official_only") is True and bool((plan.get("task_contract") or {}).get("obligation_version")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -67,6 +72,7 @@ class SourceConstraints:
             "preferred_source_classes": list(self.preferred_source_classes),
             "excluded_domains": list(self.excluded_domains),
             "current_official_documentation": self.current_official_documentation,
+            "official_only": self.official_only,
         }
 
 
@@ -195,6 +201,10 @@ def prepare_tool_arguments(
 
     limit_field = DISCOVERY_LIMIT_FIELDS.get(tool_name)
     if limit_field is not None:
+        contract = plan.get("task_contract") or {}
+        if contract.get("obligation_version") and (contract.get("comparison_scope") or {}).get("recent") and isinstance(prepared.get("query"), str):
+            from app.research.branch_planner import _remove_unrequested_years
+            prepared["query"] = _remove_unrequested_years(prepared["query"], contract)
         requested = _positive_int(prepared.get(limit_field), 5)
         prepared[limit_field] = min(
             requested * profile.oversample_factor,
@@ -217,6 +227,18 @@ def intake_tool_result(
     if field is None or not result.success or not isinstance(result.output, dict):
         return result
     raw_items = [item for item in result.output.get(field, []) if isinstance(item, dict)]
+    selection_scope = (plan.get("task_contract") or {}).get("comparison_scope") or {}
+    selection_filtered = 0
+    selection_excluded = []
+    if selection_scope.get("selection_required") and not selection_scope.get("entities"):
+        from app.research.comparison_scope import relevant_selection_urls
+        relevant = set(relevant_selection_urls({"results": raw_items}, [_item_uri(tool_name, r) for r in raw_items],
+                                               plan["task_contract"]))
+        selection_filtered = sum(_item_uri(tool_name, r) not in relevant for r in raw_items)
+        selection_excluded = [{"url": _item_uri(tool_name, r), "title": str(r.get("title") or "")[:160],
+                              "reason": "selection_category_mismatch"} for r in raw_items if _item_uri(tool_name, r) not in relevant]
+        raw_items = [r for r in raw_items if _item_uri(tool_name, r) in relevant]
+        result.metadata["selection_irrelevant_candidates"] = selection_filtered
     profile = research_profile(plan, settings)
     policy = load_source_policy(settings.source_policy_path)
     constraints = SourceConstraints.from_plan(plan)
@@ -268,12 +290,20 @@ def intake_tool_result(
                 retained.append(candidate)
         pending = retained
     while pending and len(selected) < profile.max_fetch_candidates:
+        spec = (plan.get("task_contract") or {}).get("comparison_scope") or {}
+        implementation_goal = bool(spec.get("entities") and set(spec.get("dimensions") or {}) & {"mechanism", "framework", "memory"})
+        def implementation_priority(candidate):
+            if not implementation_goal:
+                return 0.0
+            from app.evidence.policy import classify_source
+            source_class = classify_source("web", candidate[1], candidate[0].get("metadata") or {}, policy)
+            return 1.0 if source_class in {"official", "official_code", "regulatory"} else 0.0
         best = max(
             pending,
             key=lambda candidate: (
                 2.0 if constraints.current_official_documentation
                 and current_documentation_channel(candidate[1], policy)[0] else 0.0
-            ) + _fetch_priority(candidate, constraints, domain_counts.get(candidate[2], 0)),
+            ) + implementation_priority(candidate) + _fetch_priority(candidate, constraints, domain_counts.get(candidate[2], 0)),
         )
         pending.remove(best)
         selected.append(best)
@@ -282,6 +312,8 @@ def intake_tool_result(
     selected_items = [item for item, *_rest in selected]
     selected_urls = [uri for _item, uri, *_rest in selected]
     output = dict(result.output)
+    if selection_excluded:
+        output["selection_excluded_candidates"] = selection_excluded
     output[field] = selected_items
     output["discovery_candidates"] = [
         {
@@ -366,6 +398,10 @@ def _source_allowed(
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return False
     hostname = (parsed.hostname or "").casefold()
+    if constraints.official_only and re.search(
+        r"/(?:forum|forums|community|discuss|discussion|search|blog|news|issues)(?:/|$)", parsed.path, re.I
+    ):
+        return False
     if any(_domain_matches(hostname, domain) for domain in (*blocked_domains, *constraints.excluded_domains)):
         return False
     if constraints.mode != "restrict":

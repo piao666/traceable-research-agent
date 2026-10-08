@@ -1292,6 +1292,16 @@ def render_report_preview_panel() -> None:
     )
 
 
+    coverage = report.get("answer_coverage")
+    if coverage:
+        st.subheader("研究问题覆盖")
+        st.caption("全部必要问题已回答并关联校验结论。" if coverage.get("complete") else "仍有必要问题缺少完整回答。")
+        for item in coverage.get("requirements") or []:
+            st.write(f"{item.get('predicate') or item.get('requirement_id')}：{'已回答' if item.get('answer_status') == 'answered' else '未回答'}")
+            if item.get("reason"):
+                st.caption(item["reason"])
+
+
 def risk_badge(level: str) -> str:
     c = RISK_COLOR.get(level, "#6B7280")
     cn = {"low": "低", "medium": "中", "high": "高"}.get(level, level)
@@ -1925,13 +1935,21 @@ def _render_hitl() -> None:
                 "confirmation_scope": details.get("confirmation_scope"),
             }
         )
+    budget = (st.session_state.get("last_plan") or {}).get("token_budget_approval") or {}
+    budget_options = {}
+    if budget.get("status") == "pending":
+        st.info(f"Token 预算已用尽，累计使用 {budget.get('spent_tokens')}。证据和草稿已保留。")
+        unlimited = st.checkbox("批准本次任务不限制 Token（模型调用可能继续产生费用）", value=False)
+        new_limit = st.number_input("本次任务的新 Token 总上限", min_value=int(budget.get("spent_tokens", 0)) + 1,
+                                    value=int(budget["suggested_limit"]), disabled=unlimited)
+        budget_options = {"max_tokens": int(new_limit), "unlimited_tokens": unlimited}
     approved = st.checkbox("批准执行", value=True)
     comment  = st.text_input("备注", value="Streamlit 界面已确认")
     if st.button("提交确认"):
         run_id = st.session_state.get("run_id")
         try:
             resp = api_post(f"/api/tasks/{run_id}/confirm",
-                            {"approved": approved, "resume": True, "comment": comment})
+                            {"approved": approved, "resume": True, "comment": comment, **budget_options})
             st.success("✅ 确认已提交")
             st.session_state.last_run_response = resp.get("run_result") or resp
             refresh_all(show_errors=False)

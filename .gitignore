@@ -70,3 +70,7 @@ docs/
 Thumbs.db
 .idea/
 .vscode/
+
+# Isolated verification artifacts
+workspace/test-tmp/
+.tmp*/

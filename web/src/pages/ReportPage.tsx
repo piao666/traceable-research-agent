@@ -52,6 +52,14 @@ export function ReportPage() {
       <aside className="warning-banner">{partial ? "部分报告：研究未完成，以下内容可读和导出，但不能作为完整研究结果验收。" : report.is_legacy_result ? "此为历史报告，尚未按当前规则复核。" : "报告生成不等于验收通过。"} 点击可解析的引用编号核对原始片段；无有效引用时不可评估。</aside>
       {[...targets.values()].some((target) => target.origin === "source_excerpt") && <p className="summary-callout">本报告包含可追溯的来源摘录。摘录关联成功不代表计划目标或模型综合结论已被事实核实，请逐条核对证据。</p>}
       {report.quality_warnings?.map((warning) => <p className="warning-banner" key={warning}>{localizeQualityWarning(warning)}</p>)}
+      {report.answer_coverage && <Panel title="研究问题覆盖">
+        <p>{report.answer_coverage.complete ? "全部必要问题已回答并关联经校验的正文结论。" : "仍有必要问题缺少完整回答。"}</p>
+        <ul>{report.answer_coverage.requirements?.map((item) => <li key={item.requirement_id}>
+          <strong>{item.predicate || item.requirement_id}</strong>：{item.answer_status === "answered" ? "已回答" : "未回答"}；{item.evidence_ready ? "已有可用证据" : "证据待补充"}
+          {item.reason && <p>{item.reason}</p>}
+          {(item.claim_occurrence_ids?.length ?? 0) > 0 && <small>已关联 {(item.claim_occurrence_ids?.length ?? 0)} 条正文结论。</small>}
+        </li>)}</ul>
+      </Panel>}
       <Panel><SafeMarkdown markdown={report.markdown} runId={runId} citations={targets} /></Panel>
       <p className="muted">安全阅读模式：不执行原始 HTML、不加载外部图片。复杂 Markdown 可下载原文件查看。</p>
     </>}

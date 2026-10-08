@@ -10,6 +10,8 @@ from app.evidence.citation_validator import (
     CitationValidationReport,
 )
 from app.evidence.service import materialize_execution_provenance
+from app.evidence.scope_service import get_scope_provenance_bundle
+from app.evidence.citation_validator import get_report_occurrence_bundle
 from app.evidence.reference_verifier import ReferenceVerificationReport
 from tests.support.fake_react_llm import FakeReActLLMClient
 from app.reporting.integrity import (
@@ -358,6 +360,65 @@ def test_validator_exception_fails_deep_v2_and_keeps_audit_report(
     assert report_block_reason(run)
 
 
+def test_deep_report_refreshes_scope_after_report_time_evidence_repair(
+    db, r12_settings,
+):
+    root = create_root(db, "Explain the second verified fact")
+
+    def fake_root_runner(session, run_id, settings, _client):
+        run = store.mark_agent_run_running_unless_cancelled(session, run_id)
+        add_web_trace(session, run_id, "The first verified fact is documented.", "first")
+        traces = store.list_tool_traces(session, run_id)
+        materialize_execution_provenance(
+            session, run, json.loads(run.plan_json or "{}"),
+            load_observations(traces), traces, settings,
+        )
+        return {"run_id": run_id, "status": "completed"}
+
+    def report_generator(_run, _plan, _observations, _traces, **kwargs):
+        # Simulate a bounded report repair that acquires a source after the
+        # orchestrator captured its pre-report Scope bundle.
+        add_web_trace(db, root.run_id, "The second verified fact is documented.", "second")
+        current = store.get_fresh_agent_run(db, root.run_id)
+        traces = store.list_tool_traces(db, root.run_id)
+        materialize_execution_provenance(
+            db, current, json.loads(current.plan_json or "{}"),
+            load_observations(traces), traces, r12_settings,
+        )
+        scope = resolve_research_scope(db, root.run_id)
+        refreshed = get_scope_provenance_bundle(db, scope)
+        citation = next(item for item in refreshed["citations"]
+                        if item.get("citation_label") not in {
+                            old["citation_label"] for old in kwargs["provenance_bundle"]["citations"]
+                        })
+        passage = next(item for item in refreshed["passages"]
+                       if item["passage_id"] == citation["passage_id"])
+        return ("# Scope report\n\n## 3. 最终回答\n\n"
+                f"{passage['text']} [{citation['citation_label']}]\n")
+
+    with patch("app.research.orchestrator.run_react_task", side_effect=fake_root_runner):
+        result = run_deep_research_v2(
+            db, root.run_id, r12_settings, FakeReActLLMClient([]),
+            branch_planner=lambda *_args, **_kwargs: {
+                "branches": [], "is_comprehensive": True,
+            },
+            report_generator=report_generator,
+        )
+
+    assert result["status"] == "completed", (
+        result, store.get_fresh_agent_run(db, root.run_id).error_message,
+        [(trace.tool_name, trace.error_message) for trace in store.list_tool_traces(db, root.run_id)],
+    )
+    completed = store.get_fresh_agent_run(db, root.run_id)
+    plan = json.loads(completed.plan_json)
+    occurrences = get_report_occurrence_bundle(
+        db, plan["report_generation"]["report_revision_id"]
+    )["citation_occurrences"]
+    assert len(occurrences) == 1
+    assert occurrences[0]["passage_id"]
+    assert occurrences[0]["verdict"] == "supported"
+
+
 def test_deep_report_quality_failure_is_incomplete_not_execution_failure(
     db,
     r12_settings,
@@ -420,6 +481,49 @@ def test_deep_report_quality_failure_is_incomplete_not_execution_failure(
     assert decision["validation_identity"] == generation["validation_identity"]
     assert resolve_research_scope(db, root.run_id).status == "incomplete"
     assert report_block_reason(run) is None
+
+
+def test_react_report_persists_evidence_returned_by_report_repair(db, r12_settings):
+    from app.agent.react_executor import _complete_report
+
+    root = create_root(db, "Explain the second verified fact")
+    plan = json.loads(root.plan_json)
+    store.update_agent_run_status(db, root.run_id, "running", None)
+    add_web_trace(db, root.run_id, "The first verified fact is documented.", "first")
+
+    def refresh(*_args):
+        add_web_trace(db, root.run_id, "The second verified fact is documented.", "second")
+        current = store.get_fresh_agent_run(db, root.run_id)
+        traces = store.list_tool_traces(db, root.run_id)
+        return materialize_execution_provenance(
+            db, current, plan, load_observations(traces), traces, r12_settings,
+        )
+
+    def report_generator(*_args, **kwargs):
+        previous_ids = {item["passage_id"] for item in kwargs["provenance_bundle"]["passages"]}
+        refreshed = kwargs["evidence_refresh_callback"]({"answer_gaps": [{"requirement_id": "second"}]})
+        citation = next(item for item in refreshed["citations"] if item["passage_id"] not in previous_ids)
+        passage = next(item for item in refreshed["passages"] if item["passage_id"] == citation["passage_id"])
+        return ("# Report\n\n## 3. 最终回答\n\n"
+                f"{passage['text']} [{citation['citation_label']}]\n")
+
+    with (
+        patch("app.agent.react_executor.refresh_react_answer_evidence", side_effect=refresh),
+        patch("app.agent.react_executor.generate_markdown_report", side_effect=report_generator),
+    ):
+        result = _complete_report(
+            db, root.run_id, plan, {"observation_history": []}, "finish", r12_settings,
+        )
+
+    assert result["status"] == "completed", result
+    completed = store.get_fresh_agent_run(db, root.run_id)
+    final_plan = json.loads(completed.plan_json)
+    occurrences = get_report_occurrence_bundle(
+        db, final_plan["report_generation"]["report_revision_id"]
+    )["citation_occurrences"]
+    assert len(occurrences) == 1
+    assert occurrences[0]["passage_id"]
+    assert occurrences[0]["verdict"] == "supported"
 
 
 def test_legacy_planned_validator_exception_remains_warning_only(db):

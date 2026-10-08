@@ -1,4 +1,5 @@
 """Immutable trace-backed read payload; no database session crosses tool threads."""
+import hashlib
 from dataclasses import dataclass
 
 from app.tools.base import ToolResult
@@ -30,6 +31,7 @@ def read_snapshot(arguments: dict) -> ToolResult:
     return ToolResult(success=True, output={"source_content": {
         "source_id": snapshot.source_id, "origin_trace_id": snapshot.trace_id,
         "url": snapshot.url, "text": text, "offset": offset, "total_chars": len(snapshot.text),
+        "source_content_sha256": hashlib.sha256(snapshot.text.encode("utf-8")).hexdigest(),
         "next_offset": offset + len(text) if offset + len(text) < len(snapshot.text) else None}},
         output_summary=f"Read {len(text)} stored characters at offset {offset}; no network request or new source.",
         metadata={"read_only": True, "data_source": "persisted_trace", "network_request": False})

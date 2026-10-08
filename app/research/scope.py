@@ -45,7 +45,10 @@ def create_research_scope(
     )
     db.add(scope)
     db.flush()
-    run.parent_run_id = None
+    # A retry is a fresh Scope root but retains its predecessor as provenance.
+    # Legacy non-root promotion may still reset child lineage.
+    if run.run_role != "root":
+        run.parent_run_id = None
     run.root_run_id = root_run_id
     run.run_role = "root"
     run.research_scope_id = scope.scope_id

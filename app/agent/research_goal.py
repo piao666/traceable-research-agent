@@ -37,7 +37,7 @@ def build_task_contract(task: str, created_at: datetime | None = None) -> dict:
     # These are deliberately small, deterministic constraints.  Unknown is
     # represented as unspecified rather than guessed into a new requirement.
     discovery = bool(re.search(r"\b(?:find|discover|list|links?|sources?)\b|(?:链接|来源|检索结果)", text, re.I))
-    substantive = bool(re.search(r"\b(?:what\s+is|what\s+are|explain|answer|compare|verify|analyze|research)\b|(?:是什么|解释|回答|比较|核实|分析|调研|说明)", text, re.I))
+    substantive = bool(re.search(r"\b(?:what\s+is|what\s+are|explain|answer|compare|verify|analyze|research)\b|(?:是什么|解释|回答|比较|对比|核实|分析|调研|说明)", text, re.I))
     official_only = bool(re.search(
         r"\b(?:only|just)\s+(?:official|primary)\b|"
         r"\b(?:official|primary)\s+(?:sources?|links?|sites?)\s+only\b|"
@@ -47,7 +47,9 @@ def build_task_contract(task: str, created_at: datetime | None = None) -> dict:
         r"\b(?:search|find|use|using|read)\s+(?:the\s+)?(?:current\s+)?(?:official|primary)\b|"
         r"(?:仅|只)(?:使用|采用|参考|依据|查阅)?\s*官方|"
         r"(?:使用|查阅|依据)\s*(?:最新|当前)?\s*官方(?:文档|资料|来源)|"
-        r"以\s*官方(?:文档|资料|来源)\s*为准",
+        r"(?:根据|依据|参考)\s*.{0,60}官方(?:文档|资料|来源)|"
+        r"以\s*官方(?:文档|资料|来源)\s*为准|"
+        r"来源(?:限定|限制|仅限|限于).{0,80}官方",
         text,
         re.I,
     ))

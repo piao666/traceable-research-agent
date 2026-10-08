@@ -122,6 +122,12 @@ def is_evidence_limitation_statement(claim_text: str) -> bool:
     limit; it never grants a citation or changes Scope/citation support gates.
     """
     text = normalize_claim_text(claim_text)
+    # A missing-evidence preamble cannot exempt a following world assertion.
+    if re.search(r"但|然而|实际|事实上|因此|因而|证明|\b(?:but|however|therefore|actually|proves?)\b", text, re.I):
+        return False
+    if (re.fullmatch(r"(?:现有|当前|本次)?证据(?:尚)?未提供[^。！？]+[。.]?", text)
+            and not re.search(r"但|实际|事实上|证明|因而|therefore|however", text, re.I)):
+        return True
     if re.search(r"\d", text):
         return False
     if re.fullmatch(
@@ -137,6 +143,22 @@ def is_evidence_limitation_statement(claim_text: str) -> bool:
         ("现有证据" in text or "当前证据" in text or "本次证据" in text)
         and any(term in text for term in ("未提供", "缺少", "不足以", "内容片段有限"))
     )
+
+
+def normalize_limitation_citations(answer: str) -> str:
+    """Remove borrowed markers from narrow evidence limits, preserving text.
+
+    This never promotes a citation to supported or removes an answer. The
+    caller retains the original candidate and normalization as audit data.
+    """
+    removals = []
+    for span in segment_final_answer_claims(answer):
+        if span.citation_labels and is_evidence_limitation_statement(span.claim_text):
+            for marker in re.finditer(r"\[CIT-\d{3}-\d{2}\]", answer[span.sentence_start:span.sentence_end]):
+                removals.append((span.sentence_start + marker.start(), span.sentence_start + marker.end()))
+    for start, end in sorted(set(removals), reverse=True):
+        answer = answer[:start] + answer[end:]
+    return answer
 
 
 def claim_span_for_offset(
@@ -243,6 +265,11 @@ def _is_sentence_terminal(text: str, index: int, end: int) -> bool:
     if char in "。！？":
         return True
     if char not in ".!?":
+        return False
+    if char == "." and re.search(
+        r"(?:\bet\s+al|\be\.g|\bi\.e|\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|Fig|Eq|No))\.$",
+        text[:index + 1], re.I,
+    ):
         return False
     return index + 1 >= end or text[index + 1].isspace()
 

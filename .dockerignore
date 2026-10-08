@@ -26,6 +26,7 @@ workspace/artifacts
 workspace/cache
 workspace/exports
 workspace/tmp
+workspace/test-tmp
 workspace/eval_outputs
 output
 tmp

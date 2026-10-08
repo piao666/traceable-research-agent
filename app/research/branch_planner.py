@@ -43,6 +43,8 @@ def plan_research_branches(
                 "academic_research, github_research, and verification. "
                 "Return at most max_branches entries. Keep topic, query, and research_goal concise. "
                 "Bind each branch to the exact requirement IDs it addresses from the contract. "
+                "Use requirement_focus and comparison_scope: search the exact missing product/dimension "
+                "with primary documentation or repository evidence, rather than generic memory benchmarks. "
                 "Never invent IDs. A branch without a user requirement is optional exploration. "
                 "Do not repeat prior queries. If evidence is sufficient, return an empty branches list."
             ),
@@ -70,6 +72,10 @@ def plan_research_branches(
         )
     except FinalizationRequired:
         return {"branches": [], "is_comprehensive": False, "finalization_limited": True}
+    from app.evidence.decision_audit import retain_decision
+    response.metadata["decision_audit"] = retain_decision("research_branch_decision",
+        {"messages": [item.model_dump() for item in messages], "contract": contract},
+        response.model_dump(), record_usage=True)
     if not response.success or not response.content:
         return _planner_failure(response)
     if response.metadata.get("finish_reason") == "length":
@@ -140,6 +146,30 @@ def plan_research_branches(
         if len(branches) >= breadth:
             break
     _mark_redundant_cross_branches(branches, contract)
+    controller = (contract or {}).get("controller_findings") or {}
+    coverage = controller.get("coverage") or {}
+    if (contract or {}).get("obligation_version"):
+        if coverage.get("complete") is True:
+            branches = []
+            payload["is_comprehensive"] = True
+        else:
+            payload["is_comprehensive"] = False
+            branches = [branch for branch in branches if branch.get("assigned_requirement_ids")]
+            bound_ids = {rid for branch in branches for rid in branch.get("assigned_requirement_ids", [])}
+            for gap in sorted(coverage.get("gaps") or [], key=lambda gap: gap.get("requirement_id") == "req-original"):
+                rid = gap.get("requirement_id")
+                if not rid or rid in bound_ids or len(branches) >= breadth:
+                    continue
+                requirement = requirement_index(contract).get(rid) or {}
+                query = str(requirement.get("predicate") or gap.get("predicate") or task)
+                query = _remove_unrequested_years(query, contract)[:1600]
+                query = (query + " " + str(gap.get("detail") or "Verify missing mechanism and applicable conditions"))[:2000]
+                if query.casefold() in seen:
+                    continue
+                seen.add(query.casefold())
+                branches.append({"topic": query[:500], "query": query, "research_goal": query,
+                    "node_type": "verification", "priority": len(branches) + 1,
+                    "required": True, "assigned_requirement_ids": [rid]})
     is_comprehensive = bool(payload.get("is_comprehensive") and not branches)
     if not branches and not is_comprehensive:
         return _planner_failure(
@@ -147,11 +177,15 @@ def plan_research_branches(
             error_type="research_completeness_not_established",
             error_message="Branch planner returned no usable branches without establishing completeness.",
         )
-    return {
+    result = {
         "branches": branches,
         "is_comprehensive": is_comprehensive,
         "planner_failed": False,
     }
+    result["decision_audit"] = retain_decision("research_branch_application",
+        {"controller_findings": controller, "prior_queries": prior_queries, "breadth": breadth}, result,
+        parent=response.metadata["decision_audit"]["decision_sha256"])
+    return result
 
 
 def _planner_failure(
@@ -174,6 +208,7 @@ def _planner_failure(
         "prompt_tokens": int(usage.prompt_tokens if usage else 0),
         "completion_tokens": int(usage.completion_tokens if usage else 0),
         "content_length": int(metadata.get("content_length") or len(str(response.content or ""))),
+        "usage_recorded": bool((metadata.get("decision_audit") or {}).get("usage_recorded")),
     }
 
 
@@ -241,8 +276,16 @@ def _remove_unrequested_years(query: str, contract: dict[str, Any] | None) -> st
     period = contract.get("period") if isinstance(contract.get("period"), dict) else {}
     allowed = set(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", original))
     allowed.update(re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", " ".join(str(value) for value in period.values())))
-    return " ".join(re.sub(
+    recent = (contract.get("comparison_scope") or {}).get("recent")
+    if recent and not allowed:
+        year = str(contract.get("as_of") or "")[:4]
+        if re.fullmatch(r"(?:19|20)\d{2}", year):
+            allowed.add(year)
+    normalized = " ".join(re.sub(
         r"(?<!\d)(?:19|20)\d{2}(?!\d)",
         lambda match: match.group(0) if match.group(0) in allowed else " ",
         query,
     ).split())
+    if recent and allowed and not re.search(r"(?<!\d)(?:19|20)\d{2}(?!\d)", normalized):
+        normalized += " " + " ".join(sorted(allowed))
+    return normalized

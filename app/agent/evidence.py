@@ -163,6 +163,10 @@ def build_evidence_bundle(
         for item in extracted:
             _calibrate_content_confidence(item)
             if is_eligible_evidence(item):
+                if item.metadata.get("continuation_trace_id") and _already_covered(item, items):
+                    # The read remains traced, but already acquired text is not
+                    # a second evidence item or an independent source.
+                    continue
                 items.append(item)
 
     groups = _group_items(items)
@@ -180,6 +184,24 @@ def build_evidence_bundle(
         unsupported_claims=unsupported,
         warnings=warnings,
     )
+
+
+def _already_covered(item: EvidenceItem, items: list[EvidenceItem]) -> bool:
+    locator = item.metadata.get("fragment_locator") or {}
+    cursor = locator.get("char_start")
+    end = locator.get("char_end")
+    if cursor is None or end is None or not locator.get("source_content_sha256"):
+        return False
+    ranges = sorted((p.metadata["fragment_locator"]["char_start"], p.metadata["fragment_locator"]["char_end"])
+        for p in items if p.trace_id == item.trace_id and p.source_ref == item.source_ref
+        and p.metadata.get("fragment_locator", {}).get("source_content_sha256") == locator["source_content_sha256"])
+    for start, stop in ranges:
+        if start > cursor:
+            break
+        cursor = max(cursor, stop)
+        if cursor >= end:
+            return True
+    return False
 
 
 def render_evidence_markdown(bundle: EvidenceBundle) -> list[str]:
@@ -334,6 +356,14 @@ def _items_from_record(
     if tool_name == "tavily_search":
         return _tavily_items(run_id, record, existing_count)
     if tool_name == "web_fetcher":
+        continuation = output.get("source_content")
+        if isinstance(continuation, dict):
+            origin = {**record, "trace_id": continuation.get("origin_trace_id") or record.get("trace_id"),
+                "output": {"pages": [{"url": continuation.get("url"), "content": continuation.get("text"),
+                    "content_basis": "partial", "continuation_offset": continuation.get("offset", 0),
+                    "source_content_sha256": continuation.get("source_content_sha256"),
+                    "continuation_trace_id": record.get("trace_id")} ]}}
+            return _web_page_items(run_id, origin, existing_count)
         return _web_page_items(run_id, record, existing_count)
     if tool_name == "pdf_reader":
         return _pdf_page_items(run_id, record, existing_count)
@@ -373,12 +403,17 @@ def _web_page_items(run_id: str, record: dict[str, Any], existing_count: int) ->
         # Preserve bounded, exact slices of the fetched body. The generic
         # EvidenceItem constructor's 900-character cap used to discard most
         # of every real page before provenance and report writing saw it.
-        body = content[:12000]
-        body_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        for start, end in _web_body_windows(body):
+        if isinstance(page.get("source_artifact"), dict):
+            from app.retrieval.source_view import read_retained_source
+            content = read_retained_source(page["source_artifact"])
+        body = content[:500_000]
+        body_hash = str(page.get("source_content_sha256") or hashlib.sha256(content.encode("utf-8")).hexdigest())
+        base_offset = int(page.get("continuation_offset") or 0)
+        windows = _contextual_web_windows(body) if page.get("source_artifact") else _web_body_windows(body)
+        for start, end in windows:
             item = _make_item(run_id, record, existing_count + len(items) + 1,
                               title=str(page.get("title") or url), snippet=body[start:end],
-                              source_ref=url, source_type="web", max_snippet_chars=2400)
+                              source_ref=url, source_type="web", max_snippet_chars=4000)
             item.metadata.update({key: page[key] for key in (
                 "content_basis", "extraction_method", "extraction_confidence", "content_hash",
                 "source_cluster_id", "hostname", "truncated", "requested_url",
@@ -386,18 +421,42 @@ def _web_page_items(run_id: str, record: dict[str, Any], existing_count: int) ->
                 "fetch_status", "fetch_backend", "provider", "quality", "source_identity",
                 "official", "source_tier", "source_class", "evidence_role",
                 "classification_rule", "classification_confidence",
-                "redirect_chain", "retrieval_attempts",
+                "redirect_chain", "retrieval_attempts", "source_artifact", "continuation_trace_id",
             ) if key in page})
             item.metadata["fragment_locator"] = {
-                "char_start": start, "char_end": end,
+                "char_start": base_offset + start, "char_end": base_offset + end,
                 "source_content_sha256": body_hash,
             }
+            if page.get("source_artifact") or "continuation_offset" in page:
+                item.evidence_id = "E" + hashlib.sha256(f"{run_id}|{item.trace_id}|{url}|{body_hash}|{base_offset + start}|{base_offset + end}".encode()).hexdigest()[:24]
             if len(content) > len(body):
                 item.metadata["content_basis"] = "partial"
                 item.metadata["evidence_body_truncated"] = True
+            if page.get("source_artifact") and not (
+                page.get("source_truncated_at_backend_limit") or page["source_artifact"].get("storage_truncated")
+                or len(content) > len(body)
+            ):
+                # The retained acquired source is complete even if the transport
+                # view was caller-truncated. Body qualification describes the
+                # persisted source version, not that earlier prompt projection.
+                item.metadata["content_basis"] = "full_text"
             item.metadata.setdefault("content_basis", "partial")
             items.append(item)
     return items
+
+
+def _contextual_web_windows(content: str) -> list[tuple[int, int]]:
+    # Adjacent conditional premises belong to the same exact source version.
+    # Overlap changes neither source identity nor independence.
+    result = []
+    # Sentence boundaries keep complete conditions and API/numeric literals.
+    # Never extend an arbitrary character bound into half a proposition.
+    boundaries = [0, *[m.end() for m in re.finditer(r"[.!?](?=\s|$)|[。！？]|\n", content)], len(content)]
+    for start, end in _web_body_windows(content):
+        context_end = max((b for b in boundaries if end <= b <= min(len(content), end + 600)), default=end)
+        context_start = min((b for b in boundaries if max(0, start - 2500, context_end - 4000) <= b <= start), default=start)
+        result.append((context_start, context_end))
+    return result
 
 
 def _web_body_windows(content: str) -> list[tuple[int, int]]:

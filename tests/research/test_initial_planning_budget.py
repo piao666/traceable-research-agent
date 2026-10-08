@@ -57,7 +57,10 @@ def test_retry_replanning_uses_new_root_budget(db, exhaust):
         BudgetClient(FakeReActLLMClient(["ok"])).complete(
             [LLMMessage(role="user", content=kwargs["task"])], max_tokens=32)
         return {"steps": [], "notes": [], "execution_mode": "planned"}
-    with patch.object(tasks, "plan_task", side_effect=planner):
+    config = Settings(offline_mode=False)
+    understanding = BudgetClient(FakeReActLLMClient(["{}"] ))
+    with patch.object(tasks, "settings", config), patch.object(tasks, "plan_task", side_effect=planner), \
+            patch("app.agent.report_generation.resolve_report_llm_client", return_value=understanding):
         response = tasks.retry_task(original.run_id, TaskRetryRequest(reuse_plan=False), db)
     snapshot = budget_snapshot(db, response.run_id)
     assert snapshot["root_run_id"] == response.run_id
@@ -66,5 +69,6 @@ def test_retry_replanning_uses_new_root_budget(db, exhaust):
         assert snapshot["stop_reason"] == "tokens"
         assert "budget_exhausted" in store.get_fresh_agent_run(db, response.run_id).plan_json
     else:
-        assert snapshot["llm_calls"] == 1
+        assert snapshot["llm_calls"] == 2  # planning and mandatory task understanding
+        assert json.loads(store.get_fresh_agent_run(db, response.run_id).plan_json)["task_contract"]["obligation_version"]
     assert store.get_fresh_agent_run(db, original.run_id).error_message == "previous failure"

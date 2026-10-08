@@ -1139,8 +1139,38 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AnswerCoverageResponse */
+        AnswerCoverageResponse: {
+            /**
+             * Version
+             * @default answer-coverage-v1
+             */
+            version: string;
+            /**
+             * Complete
+             * @default false
+             */
+            complete: boolean;
+            /** Answer Sha256 */
+            answer_sha256?: string | null;
+            /** Snapshot Id */
+            snapshot_id?: string | null;
+            /** Report Revision Id */
+            report_revision_id?: string | null;
+            /** Requirements */
+            requirements?: components["schemas"]["RequirementAnswerResponse"][];
+            /** Gaps */
+            gaps?: {
+                [key: string]: unknown;
+            }[];
+            /** Decision Audit */
+            decision_audit?: {
+                [key: string]: unknown;
+            } | null;
+        };
         /** AsyncRunResponse */
         AsyncRunResponse: {
+            answer_coverage?: components["schemas"]["AnswerCoverageResponse"] | null;
             /** Research Outcome */
             research_outcome?: {
                 [key: string]: unknown;
@@ -1434,6 +1464,11 @@ export interface components {
         };
         /** ExecutionBudgetLimits */
         ExecutionBudgetLimits: {
+            /**
+             * Tokens Unlimited
+             * @default false
+             */
+            tokens_unlimited: boolean;
             /** Max Tool Calls */
             max_tool_calls: number;
             /** Max Llm Calls */
@@ -2181,6 +2216,7 @@ export interface components {
         };
         /** ReportResponse */
         ReportResponse: {
+            answer_coverage?: components["schemas"]["AnswerCoverageResponse"] | null;
             /** Research Outcome */
             research_outcome?: {
                 [key: string]: unknown;
@@ -2222,6 +2258,38 @@ export interface components {
             availability: "available" | "partial" | "not_generated" | "missing" | "blocked";
             /** Message */
             message?: string | null;
+        };
+        /** RequirementAnswerResponse */
+        RequirementAnswerResponse: {
+            /** Facets */
+            facets?: {
+                [key: string]: unknown;
+            }[];
+            /** Requirement Id */
+            requirement_id: string;
+            /** Predicate */
+            predicate?: string | null;
+            /**
+             * Answer Status
+             * @default unanswered
+             */
+            answer_status: string;
+            /**
+             * Evidence Ready
+             * @default false
+             */
+            evidence_ready: boolean;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Claim Occurrence Ids */
+            claim_occurrence_ids?: string[];
+            /** Decision Audit */
+            decision_audit?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** ResearchResultContextResponse */
         ResearchResultContextResponse: {
@@ -2274,6 +2342,44 @@ export interface components {
             roots: {
                 [key: string]: unknown;
             }[];
+        };
+        /** ResearchWorkItemResponse */
+        ResearchWorkItemResponse: {
+            /** Work Item Id */
+            work_item_id: string;
+            /** Requirement Id */
+            requirement_id: string;
+            /** Entity Id */
+            entity_id?: string | null;
+            /** Entity */
+            entity: string;
+            /** Facet */
+            facet: string;
+            /** Acquisition Status */
+            acquisition_status: string;
+            /** Answer Status */
+            answer_status: string;
+            /** Reason Code */
+            reason_code: string;
+            /** Detail */
+            detail: string;
+            /** State Version */
+            state_version: number;
+            /** Evidence Refs */
+            evidence_refs?: {
+                [key: string]: unknown;
+            };
+            /** Actions */
+            actions?: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** ResearchWorkStateResponse */
+        ResearchWorkStateResponse: {
+            /** Version */
+            version: string;
+            /** Items */
+            items: components["schemas"]["ResearchWorkItemResponse"][];
         };
         /** ResultEvidenceResponse */
         ResultEvidenceResponse: {
@@ -2811,6 +2917,15 @@ export interface components {
         };
         /** TaskConfirmRequest */
         TaskConfirmRequest: {
+            /** Max Llm Calls */
+            max_llm_calls?: number | null;
+            /** Max Tokens */
+            max_tokens?: number | null;
+            /**
+             * Unlimited Tokens
+             * @default false
+             */
+            unlimited_tokens: boolean;
             /** Approved */
             approved: boolean;
             /** Comment */
@@ -2934,6 +3049,7 @@ export interface components {
          * @description Lightweight item for task list endpoint.
          */
         TaskListItem: {
+            answer_coverage?: components["schemas"]["AnswerCoverageResponse"] | null;
             /** Research Outcome */
             research_outcome?: {
                 [key: string]: unknown;
@@ -3024,6 +3140,37 @@ export interface components {
         };
         /** TaskPlanResponse */
         TaskPlanResponse: {
+            research_work?: components["schemas"]["ResearchWorkStateResponse"] | null;
+            /** Work Controller */
+            work_controller?: {
+                [key: string]: unknown;
+            } | null;
+            answer_coverage?: components["schemas"]["AnswerCoverageResponse"] | null;
+            final_answer_coverage?: components["schemas"]["AnswerCoverageResponse"] | null;
+            /** Token Budget Approval */
+            token_budget_approval?: {
+                [key: string]: unknown;
+            } | null;
+            /** Token Budget Approval History */
+            token_budget_approval_history?: {
+                [key: string]: unknown;
+            }[];
+            /** Llm Call Budget Approval */
+            llm_call_budget_approval?: {
+                [key: string]: unknown;
+            } | null;
+            /** Llm Call Budget Approval History */
+            llm_call_budget_approval_history?: {
+                [key: string]: unknown;
+            }[];
+            /** Answer Recovery */
+            answer_recovery?: {
+                [key: string]: unknown;
+            } | null;
+            /** Research Findings */
+            research_findings?: {
+                [key: string]: unknown;
+            }[] | null;
             /** Run Id */
             run_id: string;
             /** Task Contract */
@@ -3161,6 +3308,7 @@ export interface components {
         };
         /** TaskRunResponse */
         TaskRunResponse: {
+            answer_coverage?: components["schemas"]["AnswerCoverageResponse"] | null;
             /** Research Outcome */
             research_outcome?: {
                 [key: string]: unknown;
@@ -3240,6 +3388,7 @@ export interface components {
         };
         /** TaskStatusResponse */
         TaskStatusResponse: {
+            answer_coverage?: components["schemas"]["AnswerCoverageResponse"] | null;
             /** Research Outcome */
             research_outcome?: {
                 [key: string]: unknown;

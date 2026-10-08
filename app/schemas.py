@@ -137,7 +137,30 @@ class TaskCreateResponse(BaseModel):
     run_url: str | None = None
 
 
+class RequirementAnswerResponse(BaseModel):
+    facets: list[dict[str, Any]] = Field(default_factory=list)
+    requirement_id: str
+    predicate: str | None = None
+    answer_status: str = "unanswered"
+    evidence_ready: bool = False
+    reason: str = ""
+    claim_occurrence_ids: list[str] = Field(default_factory=list)
+    decision_audit: dict[str, Any] | None = None
+
+
+class AnswerCoverageResponse(BaseModel):
+    version: str = "answer-coverage-v1"
+    complete: bool = False
+    answer_sha256: str | None = None
+    snapshot_id: str | None = None
+    report_revision_id: str | None = None
+    requirements: list[RequirementAnswerResponse] = Field(default_factory=list)
+    gaps: list[dict[str, Any]] = Field(default_factory=list)
+    decision_audit: dict[str, Any] | None = None
+
+
 class ResearchIntegrityResponse(BaseModel):
+    answer_coverage: AnswerCoverageResponse | None = None
     research_outcome: dict[str, Any] | None = None
     terminal_decision: dict[str, Any] | None = None
     # ``requires_review`` also covers fresh incomplete/failed runs.  Keep a
@@ -250,6 +273,7 @@ class PlanStepResponse(BaseModel):
 
 
 class ExecutionBudgetLimits(BaseModel):
+    tokens_unlimited: bool = False
     max_tool_calls: int
     max_llm_calls: int
     max_tokens: int
@@ -328,7 +352,37 @@ class ExecutionInsightsResponse(BaseModel):
     source_context: SourceContextResponse
 
 
+class ResearchWorkItemResponse(BaseModel):
+    work_item_id: str
+    requirement_id: str
+    entity_id: str | None = None
+    entity: str
+    facet: str
+    acquisition_status: str
+    answer_status: str
+    reason_code: str
+    detail: str
+    state_version: int
+    evidence_refs: dict[str, Any] = Field(default_factory=dict)
+    actions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ResearchWorkStateResponse(BaseModel):
+    version: str
+    items: list[ResearchWorkItemResponse]
+
+
 class TaskPlanResponse(BaseModel):
+    research_work: ResearchWorkStateResponse | None = None
+    work_controller: dict[str, Any] | None = None
+    answer_coverage: AnswerCoverageResponse | None = None
+    final_answer_coverage: AnswerCoverageResponse | None = None
+    token_budget_approval: dict[str, Any] | None = None
+    token_budget_approval_history: list[dict[str, Any]] = Field(default_factory=list)
+    llm_call_budget_approval: dict[str, Any] | None = None
+    llm_call_budget_approval_history: list[dict[str, Any]] = Field(default_factory=list)
+    answer_recovery: dict[str, Any] | None = None
+    research_findings: list[dict[str, Any]] | None = None
     run_id: str
     task_contract: dict[str, Any] | None = None
     execution_budget: ExecutionBudgetResponse | None = None
@@ -412,6 +466,9 @@ class AsyncRunResponse(ResearchIntegrityResponse):
 
 
 class TaskConfirmRequest(BaseModel):
+    max_llm_calls: int | None = Field(default=None, ge=1, le=1_000_000)
+    max_tokens: int | None = Field(default=None, ge=1, le=1_000_000_000)
+    unlimited_tokens: bool = False
     approved: bool
     comment: str | None = None
     resume: bool = True

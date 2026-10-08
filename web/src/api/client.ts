@@ -129,7 +129,7 @@ export const api = {
   startTask: (runId: string) => requestJson<components["schemas"]["AsyncRunResponse"]>(`${taskPath(runId)}/run_async`, post({})),
   cancelTask: (runId: string, reason: string) => requestJson<TaskStatusResponse>(`${taskPath(runId)}/cancel`, post({ reason })),
   retryTask: (runId: string) => requestJson<TaskCreateResponse>(`${taskPath(runId)}/retry`, post({ reuse_plan: true, from_failed_step: false })),
-  confirmTask: (runId: string, approved: boolean, comment: string) => requestJson<components["schemas"]["TaskConfirmResponse"]>(`${taskPath(runId)}/confirm?start_async=true`, post({ approved, comment, resume: true })),
+  confirmTask: (runId: string, approved: boolean, comment: string, budget?: { max_tokens?: number; unlimited_tokens?: boolean; max_llm_calls?: number }) => requestJson<components["schemas"]["TaskConfirmResponse"]>(`${taskPath(runId)}/confirm?start_async=true`, post({ approved, comment, resume: true, ...budget })),
   downloadReport: (runId: string) => downloadArtifact(`/api/reports/${encodeURIComponent(runId)}/download?format=markdown`, `report-${runId}.md`),
   downloadEvidence: (runId: string) => downloadArtifact(`${taskPath(runId)}/evidence/export/download?format=json`, `evidence-${runId}.json`),
   createTask: (body: TaskCreateRequest) => requestJson<TaskCreateResponse>("/api/tasks", { method: "POST", body: JSON.stringify(body) }),

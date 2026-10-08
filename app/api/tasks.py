@@ -322,7 +322,7 @@ def _task_status_response(run: AgentRun) -> TaskStatusResponse:
 
 def _task_run_response(summary: dict) -> TaskRunResponse:
     return TaskRunResponse(
-        **{key: summary[key] for key in ("research_outcome", "terminal_decision", "requires_review", "citation_evaluated", "quality_warnings") if key in summary},
+        **{key: summary[key] for key in ("answer_coverage", "research_outcome", "terminal_decision", "requires_review", "citation_evaluated", "quality_warnings") if key in summary},
         run_id=summary["run_id"],
         status=summary["status"],
         current_step=summary["current_step"],
@@ -573,7 +573,25 @@ def _plan_with_root_budget(db: Session, run_id: str, planner, **kwargs) -> dict:
     from app.agent.budget import BudgetExceeded, planning_budget
     try:
         with planning_budget(db, run_id, settings):
-            return planner(**kwargs)
+            result = planner(**kwargs)
+            if not settings.offline_mode and kwargs.get("source_mode", "real") == "real":
+                from app.agent.report_generation import resolve_report_llm_client
+                from app.research.task_understanding import understand_new_task
+                from app.agent.research_goal import build_task_contract
+                client = resolve_report_llm_client(settings)
+                contract = result.get("task_contract") or build_task_contract(kwargs.get("task", ""))
+                constraints = result.get("source_constraints") or {}
+                if constraints.get("mode") == "restrict":
+                    inherited = contract.get("source_constraints", {})
+                    contract["source_constraints"] = {**inherited, **constraints,
+                        "official_only": bool(inherited.get("official_only") or constraints.get("official_only"))}
+                result["task_contract"] = understand_new_task(contract, client)
+                from app.research.comparison_scope import bind_comparison_acquisition
+                bind_comparison_acquisition(result)
+                # Trusted service persists the validated obligation contract before
+                # the generic plan writer, which preserves existing contracts.
+                store.replace_agent_run_plan(db, run_id, result)
+            return result
     except BudgetExceeded as exc:
         fail_execution(db, run_id, exc)
         stopped = store.get_fresh_agent_run(db, run_id)
@@ -712,6 +730,9 @@ async def get_task_plan(
         plan["steps"] = []
     plan["execution_budget"] = budget_snapshot(db, run_id)
     plan["execution_insights"] = execution_insights(run, plan, store.list_tool_traces(db, run_id))
+    if plan.get("research_work"):
+        from app.research.control_store import project_work
+        plan["research_work"] = {"version": "research-work-v1", "items": project_work(db, run.root_run_id or run_id)}
     return TaskPlanResponse(run_id=run.run_id, **plan)
 
 
@@ -831,6 +852,26 @@ def confirm_task(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail="Task run plan is invalid") from exc
 
+    token_pending = (plan.get("token_budget_approval") or {}).get("status") == "pending"
+    calls_pending = (plan.get("llm_call_budget_approval") or {}).get("status") == "pending"
+    budget_pending = token_pending or calls_pending
+    if (request.unlimited_tokens or request.max_tokens is not None) and not token_pending:
+        raise HTTPException(status_code=400, detail="Unlimited token approval requires a pending root budget request")
+    if request.max_llm_calls is not None and not calls_pending:
+        raise HTTPException(status_code=400, detail="Model call approval requires a pending root budget request")
+    if budget_pending and request.approved:
+        from app.trace.models import RunBudget
+        budget_row = db.get(RunBudget, run_id)
+        if budget_row is None or budget_row.root_run_id != run_id:
+            raise HTTPException(status_code=400, detail="Approve token spending on the root run")
+        if token_pending and request.max_tokens is not None and not request.unlimited_tokens and request.max_tokens <= max(
+            json.loads(budget_row.limits_json)["max_tokens"], budget_row.reserved_tokens
+        ):
+            raise HTTPException(status_code=400, detail="Token limit must exceed existing limit and consumption")
+        if calls_pending and request.max_llm_calls is not None and request.max_llm_calls <= max(
+            json.loads(budget_row.limits_json)["max_llm_calls"], budget_row.llm_calls
+        ):
+            raise HTTPException(status_code=400, detail="Model call limit must exceed existing limit and consumption")
     required_step_no = None
     required_tool_name = None
     required_confirmation_details = None
@@ -860,21 +901,30 @@ def confirm_task(
         _assert_plan_ready(plan, run)
     if not store.claim_pending_agent_run(db, run_id, expected_status="waiting_human"):
         raise HTTPException(status_code=409, detail="Confirmation was already consumed or task was cancelled")
-    plan["confirmation"] = {
-        "required_step_no": required_step_no,
-        "required_tool_name": required_tool_name,
-        "confirmation_reason": (
-            required_confirmation_details.get("reason")
-            if isinstance(required_confirmation_details, dict)
-            else None
-        ),
-        "confirmation_details": required_confirmation_details,
-        "approved": request.approved,
-        "comment": request.comment,
-        "approved_at": datetime.now(timezone.utc).isoformat(),
-    }
+    if token_pending and request.approved:
+        from app.agent.budget import approve_token_budget
+        plan = approve_token_budget(db, run_id, plan, max_tokens=request.max_tokens,
+                                    unlimited=request.unlimited_tokens, comment=request.comment)
+    if calls_pending and request.approved:
+        from app.agent.budget import approve_llm_call_budget
+        plan = approve_llm_call_budget(db, run_id, plan, max_llm_calls=request.max_llm_calls, comment=request.comment)
+    if not budget_pending:
+        plan["confirmation"] = {
+            "required_step_no": required_step_no,
+            "required_tool_name": required_tool_name,
+            "confirmation_reason": (
+                required_confirmation_details.get("reason")
+                if isinstance(required_confirmation_details, dict)
+                else None
+            ),
+            "confirmation_details": required_confirmation_details,
+            "approved": request.approved,
+            "comment": request.comment,
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+        }
     if (
-        request.approved
+        not budget_pending
+        and request.approved
         and required_tool_name == "file_reader"
         and isinstance(required_confirmation_details, dict)
         and required_confirmation_details.get("reason")
@@ -887,16 +937,16 @@ def confirm_task(
         plan["confirmation"]["confirmation_scope"] = "single_file_path"
     store.replace_agent_run_plan(db, run_id, plan)
 
-    if request.approved:
-        from app.agent.budget import resume_budget_deadline
-        resume_budget_deadline(db, run_id)
+    if request.approved and request.resume:
+        from app.agent.budget import resume_approved_budget_deadline
+        resume_approved_budget_deadline(db, run_id)
 
     if not request.approved:
         run = store.update_agent_run_status(
             db,
             run_id,
             "failed",
-            "Human rejected execution.",
+            "Human rejected research budget extension." if budget_pending else "Human rejected execution.",
         )
         return TaskConfirmResponse(
             run_id=run.run_id,
@@ -1626,6 +1676,34 @@ def retry_task(
             plan = json.loads(original.plan_json)
         except json.JSONDecodeError:
             plan = None
+    if isinstance(plan, dict):
+        # Reused execution steps come from the persisted Run, but its research
+        # contract must enter the new Run through the trusted creation path.
+        # The generic writer deliberately ignores a plan-supplied contract.
+        # Otherwise it rebuilds a basic contract and drops all obligations.
+        from copy import deepcopy
+        from app.agent.research_goal import build_task_contract
+        previous_contract = plan.get("task_contract")
+        previous_contract = previous_contract if isinstance(previous_contract, dict) else {}
+        fresh_contract = build_task_contract(original.task, new_run.created_at)
+        if (previous_contract.get("obligation_version") == "research-obligations-v2"
+                and previous_contract.get("requirements")):
+            fresh_contract = {**deepcopy(previous_contract), "as_of": fresh_contract["as_of"]}
+            fresh_contract.pop("controller_findings", None)
+        else:
+            # Older decompositions may already have lost same-question items;
+            # derive them again from the literal task, retaining user policy.
+            for field in ("source_constraints", "output_constraints"):
+                if isinstance(previous_contract.get(field), dict):
+                    fresh_contract[field] = {**fresh_contract.get(field, {}), **previous_contract[field]}
+        plan["task_contract"] = fresh_contract
+        _clear_retry_derived_state(plan)
+        # Persist only the server-built or validated persisted contract, so a
+        # budget pause during understanding retains the fresh execution plan.
+        store.replace_agent_run_plan(db, new_run.run_id, plan)
+        reused_plan = plan
+        plan = _plan_with_root_budget(db, new_run.run_id, lambda **_kwargs: reused_plan,
+            task=original.task, source_mode=original.source_mode)
     if not isinstance(plan, dict):
         original_plan = _parse_run_plan(original)
         plan = _plan_with_root_budget(db, new_run.run_id, plan_task,
@@ -1641,7 +1719,7 @@ def retry_task(
         )
     # A retry is a fresh execution. Never inherit approval, runtime, Scope,
     # Gate, lineage, or finalization state from the failed Run.
-    if new_run.status != "failed":
+    if new_run.status == "pending":
         _clear_retry_derived_state(plan)
     if isinstance(plan.get("steps"), list):
         _ensure_search_fetch_dependency(
@@ -1660,7 +1738,7 @@ def retry_task(
     ]
     store.update_agent_run_plan(db, new_run.run_id, plan)
     _persist_plan_config_snapshot(db, new_run.run_id, settings.get_safe_runtime_config_summary(), plan)
-    if new_run.status != "failed" and (plan.get("requires_plan_approval") or any(
+    if new_run.status == "pending" and (plan.get("requires_plan_approval") or any(
         trace.tool_name == "plan_approval" for trace in store.list_tool_traces(db, run_id)
     )):
         store.update_agent_run_status(db, new_run.run_id, WAITING_HUMAN_PLAN, None)
@@ -1680,6 +1758,16 @@ def retry_task(
 
 def _clear_retry_derived_state(plan: dict[str, Any]) -> None:
     """Remove state that can only be assigned by a concrete execution."""
+
+    contract = plan.get("task_contract") or {}
+    for key in ("answer_scope", "answer_scope_attempt", "evidence_focus", "retained_cell_windows", "research_state", "research_provider_failure"):
+        contract.pop(key, None)
+    scope = contract.get("comparison_scope") or {}
+    for key in ("selection_attempt", "selection_search_rounds", "selection"):
+        scope.pop(key, None)
+    if scope.get("selection_required"):
+        scope["entities"] = []
+        scope.pop("entity_bindings", None)
 
     exact = {
         "confirmation",
@@ -1726,6 +1814,10 @@ def _clear_retry_derived_state(plan: dict[str, Any]) -> None:
         # A retry starts with a new scope and fresh terminal/report gates.
         "discovery_report_sha256",
         "terminal_requirement_assessment",
+        "answer_coverage", "final_answer_coverage", "answer_recovery", "research_findings", "research_work", "work_controller",
+        "branch_findings", "branch_findings_stop_reason",
+        "token_budget_approval", "token_budget_approval_history",
+        "llm_call_budget_approval", "llm_call_budget_approval_history",
         "report_revision",
         "report_generation",
         "quality_gate",

@@ -96,16 +96,22 @@ def assess_research_outcome(run, plan, observations, traces, settings: Settings)
                         and not any(item.step_no == step.get("step_no") and item.tool_name == step.get("tool_name")
                                     for item in usable)]
     code = None
-    if not usable:
+    selection_rejections = (((plan.get("task_contract") or {}).get("comparison_scope") or {}).get("selection_attempt") or {}).get("rejections") or []
+    if (any(r.get("cause") == "selection_provider_failure" for r in selection_rejections)
+            or ((plan.get("task_contract") or {}).get("answer_scope_attempt") or {}).get("provider_failure")
+            or (plan.get("task_contract") or {}).get("research_provider_failure")):
+        code = "research_provider_failure"
+    elif not usable:
         code = "no_usable_evidence"
-    elif required_fetch and not any(item.tool_name == "web_fetcher" for item in usable):
+    elif not (plan.get("task_contract") or {}).get("obligation_version") and required_fetch and not any(item.tool_name == "web_fetcher" for item in usable):
         code = "required_fetch_failed"
-    elif missing_required:
+    elif not (plan.get("task_contract") or {}).get("obligation_version") and missing_required:
         code = "required_step_failed"
     from app.agent.research_goal import finish_failure, structured_goal_failure
     state = plan.get("react_state") or {}
-    goal_failure = finish_failure(state.get("finish_reason"), state.get("finish_summary", ""),
+    goal_failure = (finish_failure(state.get("finish_reason"), state.get("finish_summary", ""),
                                   state.get("goal_status"))
+                    if not (plan.get("task_contract") or {}).get("obligation_version") else None)
     goal_failure = goal_failure or structured_goal_failure(plan.get("task_contract") or {}, load_observations(traces))
     if goal_failure:
         code = code or goal_failure
@@ -315,7 +321,15 @@ def finalize_terminal_decision(
             blockers.append("final_claim_validation_missing")
     requirements = contract.get("requirements") or []
     assessment = None
-    if requirements:
+    if contract.get("obligation_version"):
+        from app.research.answer_coverage import persist_final_answer_coverage
+        assessment = persist_final_answer_coverage(db, run, contract, plan.get("answer_coverage") or {}, occurrences)
+        plan["final_answer_coverage"] = assessment
+        from app.research.control_store import project_work
+        project_work(db, run.run_id, plan)
+        if not assessment["complete"]:
+            blockers.append("required_answer_coverage_incomplete")
+    elif requirements:
         from app.research.assessor import assess_requirements
         from app.agent.source_context import build_source_context
         assessment = assess_requirements(contract, build_source_context(actual_traces),
@@ -327,7 +341,7 @@ def finalize_terminal_decision(
         if any(not rid or assessed.get(rid, {}).get("status") != "satisfied" for rid in required_ids):
             blockers.append("required_evidence_coverage_incomplete")
     coverage = scope.get("coverage_matrix") or plan.get("coverage_matrix") or {}
-    if coverage.get("applicable") and coverage.get("complete") is not True:
+    if not contract.get("obligation_version") and coverage.get("applicable") and coverage.get("complete") is not True:
         blockers.append("required_evidence_coverage_incomplete")
 
     # Freeze the materialized Source/View/Claim facts, not volatile run status
@@ -468,7 +482,8 @@ def result_integrity(run) -> dict[str, Any]:
         and generation.get("writing_manifest_hash") == terminal_decision.get("writing_manifest_hash")
         and generation.get("validator_version") == terminal_decision.get("validator_version")
     )
-    return {"research_outcome": outcome or None,
+    return {"answer_coverage": (plan.get("final_answer_coverage") or plan.get("answer_coverage")) if (plan.get("task_contract") or {}).get("obligation_version") else None,
+            "research_outcome": outcome or None,
             "terminal_decision": terminal_decision or None,
             "is_legacy_result": is_legacy_result,
             "requires_review": legacy or terminal_decision.get("status") in {"incomplete", "failed"},
@@ -529,6 +544,10 @@ def report_block_reason(run) -> str | None:
 
 def fail_execution(db: Session, run_id: str, exc: Exception):
     """Persist unexpected failures without leaking provider exception payloads."""
+    from app.agent.budget import BudgetApprovalRequired, pause_for_budget_approval
+    if isinstance(exc, BudgetApprovalRequired):
+        pause_for_budget_approval(db, run_id, exc.reason)
+        return store.get_fresh_agent_run(db, run_id)
     run = store.get_fresh_agent_run(db, run_id)
     if run is None or run.status == "cancelled":
         return run
@@ -553,8 +572,18 @@ def fail_execution(db: Session, run_id: str, exc: Exception):
     if plan.get("deepening_phase"):
         plan["deepening_phase"] = "failed"
     store.replace_agent_run_plan(db, run_id, plan)
+    import traceback
+    original = getattr(exc, "orig", None)
+    details = {"error_type": code, "exception_class": type(exc).__name__,
+               "frames": [{"file": frame.filename.replace("\\", "/").split("/app/")[-1],
+                           "line": frame.lineno, "function": frame.name}
+                          for frame in traceback.extract_tb(exc.__traceback__)
+                          if "/app/" in frame.filename.replace("\\", "/")]}
+    if original is not None and getattr(original, "sqlite_errorname", None):
+        details["sqlite_errorname"] = original.sqlite_errorname
+    # No SQL text, bindings, provider exception payload or source text is saved.
     record_trace_event(db, run_id, run.current_step, "execution_failure", "failed", {},
-                       message, {"error_type": code}, error_message=message)
+                       message, details, error_message=message)
     finalize_terminal_decision(db, run, plan, force_failure=code)
     return store.get_fresh_agent_run(db, run_id)
 

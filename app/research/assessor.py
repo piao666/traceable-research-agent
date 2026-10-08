@@ -44,7 +44,8 @@ def persist_plan_contract(
 ) -> ResearchPlanRevision:
     """Persist an immutable plan/question/requirement projection idempotently."""
 
-    payload = dict(contract or {})
+    from app.research.state import semantic_contract
+    payload = semantic_contract(contract)
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     contract_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     existing = db.scalar(
@@ -78,6 +79,7 @@ def persist_plan_contract(
         status=status,
     )
     db.add(revision)
+    db.flush()  # Scalar foreign keys do not establish ORM insertion ordering.
     questions = normalize_questions(payload)
     if not questions:
         # Legacy contracts have no question array. Preserve their task as one
@@ -109,6 +111,7 @@ def persist_plan_contract(
             )
         )
 
+    db.flush()
     question_ids = {
         str(item.question_id if hasattr(item, "question_id") else item["question_id"])
         for item in questions

@@ -31,10 +31,13 @@ def source_url(value) -> str | None:
         return None
 
 
-def resolve_source_snapshot(traces, source_id: str):
+def resolve_source_snapshot(traces, source_id: str, *, source_content_sha256: str | None = None,
+                            origin_trace_id: str | None = None):
     from app.tools.source_snapshot import SourceSnapshot
     for trace in reversed(traces):
         if trace.status != "success" or trace.tool_name != "web_fetcher":
+            continue
+        if origin_trace_id is not None and trace.trace_id != origin_trace_id:
             continue
         try:
             output = json.loads(trace.output_json or "{}")
@@ -45,8 +48,13 @@ def resolve_source_snapshot(traces, source_id: str):
         for page in output.get("pages") or []:
             url = source_url(page.get("canonical_url") or page.get("final_url") or page.get("url"))
             content = str(page.get("content") or "")
+            if isinstance(page.get("source_artifact"), dict):
+                from app.retrieval.source_view import read_retained_source
+                content = read_retained_source(page["source_artifact"])
             if (url and "S" + hashlib.sha256(url.encode()).hexdigest()[:12] == source_id
                     and content and not page.get("error") and not page_content_issue(content)):
+                if source_content_sha256 is not None and hashlib.sha256(redact_text(content).encode("utf-8")).hexdigest() != source_content_sha256:
+                    continue
                 return SourceSnapshot(source_id, trace.trace_id, url, redact_text(content))
     return None
 
@@ -91,6 +99,23 @@ def build_source_context(traces, *, max_sources: int = 64) -> dict:
             rows = [{**doc, "url": doc.get("path"), "content": "\n".join(
                 str(page.get("text") or "") for page in doc.get("pages", []) if isinstance(page, dict))}
                 for doc in output.get("documents", []) if isinstance(doc, dict)]
+        continuation = output.get("source_content")
+        if page_read and isinstance(continuation, dict) and trace.status == "success":
+            url = source_url(continuation.get("url"))
+            source = sources.get(url)
+            if source and continuation.get("origin_trace_id") == source.get("origin_trace_id") and continuation.get("source_content_sha256") == source.get("content_hash"):
+                offset = int(continuation.get("offset") or 0)
+                end = offset + len(str(continuation.get("text") or ""))
+                intervals = source.setdefault("read_intervals", [[0, int(source.get("view_chars") or 0)]])
+                intervals.append([offset, end])
+                merged = []
+                for start, finish in sorted(intervals):
+                    if merged and start <= merged[-1][1]:
+                        merged[-1][1] = max(finish, merged[-1][1])
+                    else:
+                        merged.append([start, finish])
+                source["read_intervals"] = merged
+                source.setdefault("continuation_trace_ids", []).append(trace.trace_id)
         if not isinstance(rows, list):
             continue
         for row in rows:
@@ -135,8 +160,18 @@ def build_source_context(traces, *, max_sources: int = 64) -> dict:
                                   snippet=redact_text(content)[:360], content_length=len(content),
                                   content_hash=hashlib.sha256(content.encode()).hexdigest(),
                                   final_url=source_url(row.get("final_url")))
+                    artifact = row.get("source_artifact") or {}
+                    source.update(view_chars=len(content), content_length=artifact.get("total_chars", len(content)),
+                                  content_hash=artifact.get("content_sha256") or source["content_hash"],
+                                  origin_trace_id=trace.trace_id)
+                    source["read_intervals"] = [[0, len(content)]]
                 elif source["fetch_status"] != "fetched":
-                    source["fetch_status"] = "failed"
+                    deferred = (row.get("error_code") or row.get("error")) == "batch_deadline_exceeded"
+                    source["fetch_status"] = "pending" if deferred else "failed"
+                    source["fetch_failure_code"] = row.get("error_code") or row.get("error")
+                    source["fetch_deferred"] = deferred
+                    if deferred:
+                        source["fetch_attempts"] -= 1
             elif content:
                 source["search_snippet"] = redact_text(content)[:360]
                 if source["fetch_status"] != "fetched":
@@ -191,6 +226,9 @@ def prompt_source_context(context: dict, limit: int = 12) -> dict:
             "content_basis": row.get("content_basis"),
             "excerpt": excerpt,
             "content_length": row.get("content_length", 0),
+            "view_chars": row.get("view_chars", 0),
+            "source_content_sha256": row.get("content_hash"),
+            "origin_trace_id": row.get("origin_trace_id"),
             "trace_ids": list(row.get("trace_ids") or [])[-2:],
             "run_ids": list(row.get("run_ids") or [])[-2:],
             "tools": list(row.get("tools") or [])[-3:],

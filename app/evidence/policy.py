@@ -390,6 +390,24 @@ def classify_claim(claim_text: str, policy: SourcePolicy) -> str:
 
 # ── Source class classification (revised per Phase 8.1) ──────────────────
 
+def user_declared_documentation(uri: str, contract: dict[str, Any]) -> bool:
+    """Recognize documentation on an authority domain explicitly supplied by the user.
+
+    This declaration is scoped to the persisted task, never learned from page
+    instructions. Community areas on that same domain remain community sources.
+    """
+    constraints = contract.get("source_constraints") or {}
+    if not contract.get("obligation_version") or not constraints.get("official_only") or constraints.get("mode") != "restrict":
+        return False
+    parsed = urlsplit(uri)
+    hostname = (parsed.hostname or "").casefold()
+    domains = [str(domain).casefold() for domain in constraints.get("domains") or []]
+    declared = any(hostname == domain or hostname.endswith("." + domain) for domain in domains)
+    if not declared or re.search(r"/(?:forum|forums|community|discuss|discussion|search|blog|news|issues)(?:/|$)", parsed.path, re.I):
+        return False
+    return bool(re.search(r"\.(?:html?|pdf)$|/(?:docs?|documentation|manual|reference|library)(?:/|$)", parsed.path, re.I))
+
+
 def classify_source(
     source_type: str,
     canonical_uri: str,

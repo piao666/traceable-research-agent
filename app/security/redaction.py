@@ -47,6 +47,10 @@ def is_sensitive_key(key: str) -> bool:
     normalized = key.lower().replace("-", "_")
     if any(part in normalized for part in SENSITIVE_KEY_PARTS):
         return True
+    if normalized in {"token_budget_approval", "token_budget_approval_history"}:
+        # Spending approvals contain metrics and decisions, not credentials.
+        # Nested fields and values still pass through recursive redaction.
+        return False
     # Handle the bare "token" family: redact real secret tokens ("token",
     # "github_token", "api_token", ...) while preserving token metrics
     # ("token_in", "token_out", "token_usage", "total_tokens", ...).

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Protocol
+import time
 from urllib.parse import urlsplit
 
 from app.retrieval.classifier import failure_status, make_failure
@@ -32,6 +33,7 @@ class RetrievalRouter:
 
     def fetch(self, request: FetchRequest) -> FetchResult:
         attempts: list[dict[str, Any]] = []
+        started = time.monotonic()
         if _looks_like_pdf(request.url) and self.pdf_backend is not None:
             result = self._attempt("pdf", self.pdf_backend, request, attempts)
             return self._finalize(result, attempts)
@@ -40,7 +42,7 @@ class RetrievalRouter:
         order = preferred or [FetchBackend.HTTP, FetchBackend.BROWSER, FetchBackend.REMOTE_EXTRACT]
         last: FetchResult | None = None
         attempted: set[FetchBackend] = set()
-        for backend_name in order:
+        for index, backend_name in enumerate(order):
             if backend_name in attempted:
                 continue
             attempted.add(backend_name)
@@ -51,7 +53,17 @@ class RetrievalRouter:
                 continue
             if backend_name == FetchBackend.REMOTE_EXTRACT and not request.allow_remote_extract:
                 continue
-            result = self._attempt(backend_name.value, backend, request, attempts)
+            remaining = request.timeout_seconds - (time.monotonic() - started)
+            if remaining < 1:
+                attempts.append({"backend": backend_name.value, "status": "deadline_deferred", "usable": False,
+                    "executed": False, "failure_reason": "Shared request deadline exhausted before this backend."})
+                break
+            future = [name for name in order[index + 1:] if self._permitted_backend(name, request)]
+            # A slow HTTP call must not consume the entire Browser/remote
+            # fallback window. The overall deadline is still shared.
+            allocated = remaining * (0.5 if backend_name == FetchBackend.HTTP else 0.8) if future else remaining
+            result = self._attempt(backend_name.value, backend,
+                request.model_copy(update={"timeout_seconds": max(1, int(allocated))}), attempts)
             last = result
             if result.usable:
                 return self._finalize(result, attempts)
@@ -60,7 +72,11 @@ class RetrievalRouter:
                 and result.failure.code == FetchFailureCode.PDF_ROUTED
                 and self.pdf_backend is not None
             ):
-                pdf_result = self._attempt("pdf", self.pdf_backend, request, attempts)
+                remaining = request.timeout_seconds - (time.monotonic() - started)
+                if remaining < 1:
+                    break
+                pdf_result = self._attempt("pdf", self.pdf_backend,
+                    request.model_copy(update={"timeout_seconds": max(1, int(remaining))}), attempts)
                 return self._finalize(pdf_result, attempts)
             if not self._should_continue(result, backend_name):
                 break
@@ -98,6 +114,17 @@ class RetrievalRouter:
             FetchBackend.CACHE: self.http_backend,
         }.get(name)
 
+    def _permitted_backend(self, name: FetchBackend, request: FetchRequest) -> bool:
+        backend = self._backend(name)
+        if backend is None or not getattr(backend, "enabled", True):
+            return False
+        if name == FetchBackend.BROWSER and not request.allow_browser:
+            return False
+        if name == FetchBackend.REMOTE_EXTRACT and (not request.allow_remote_extract
+                or getattr(backend, "providers", None) == []):
+            return False
+        return True
+
     @staticmethod
     def _attempt(label: str, backend: Backend, request: FetchRequest, attempts: list[dict[str, Any]]) -> FetchResult:
         try:
@@ -131,6 +158,7 @@ class RetrievalRouter:
                 "status": result.fetch_status.value,
                 "usable": result.usable,
                 "failure_code": result.failure.code.value if result.failure else None,
+                "failure_reason": result.failure.message if result.failure else None,
                 "duration_ms": int(result.metadata.get("fetched_at_ms") or 0),
             }
         )
@@ -146,6 +174,8 @@ class RetrievalRouter:
         if result.failure.code in {
             FetchFailureCode.BACKEND_UNAVAILABLE,
             FetchFailureCode.REMOTE_EXTRACT_UNAVAILABLE,
+            FetchFailureCode.TIMEOUT,
+            FetchFailureCode.CONNECTION_ERROR,
         }:
             return True
         return backend_name == FetchBackend.BROWSER and result.failure.tool_scoped

@@ -245,6 +245,16 @@ def _source_context(bundle: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _requirements(contract: dict[str, Any], substantive: bool) -> list[dict[str, object]]:
+    if contract.get("obligation_version"):
+        # Admission proves provenance and permitted source scope. Obligations,
+        # entities and dimensions belong to the semantic work controller and
+        # the final actual-answer audit, never a second keyword coverage gate.
+        required = [{"requirement_id": "substantive_web_evidence", "terms": ()}] if substantive else []
+        required.extend({"requirement_id": str(item.get("requirement_id") or f"source-{index}"),
+                         "terms": (), "source_scope": item["source_scope"]}
+                        for index, item in enumerate(contract.get("evidence_scope_requirements") or [], 1)
+                        if isinstance(item, dict) and item.get("mandatory", True) and item.get("source_scope"))
+        return required
     explicit = [item for item in (contract.get("evidence_scope_requirements") or contract.get("requirements") or [])
                 if isinstance(item, dict) and item.get("mandatory", True)]
     if explicit:

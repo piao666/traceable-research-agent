@@ -196,6 +196,12 @@ def bootstrap_revision_for_tables(
                                                     else "0016_evidence_quality_v3"
                                                 )
                                             )
+                                            work_tables = {"research_entities", "research_work_items"}
+                                            if table_names & work_tables:
+                                                operation_columns = {c["name"] for c in inspector.get_columns("research_operations")}
+                                                if not work_tables.issubset(table_names) or "payload_json" not in operation_columns:
+                                                    raise RuntimeError("Legacy database has a partial research work schema")
+                                                schema_revision = "0019_research_work_state"
                                             if not EVIDENCE_QUALITY_V3_COLUMNS.issubset(improvement_columns):
                                                 schema_revision = "0015_report_claim_scope_lineage"
                                             return _required_stamp(current_revision, schema_revision)
@@ -243,6 +249,7 @@ def _required_stamp(current_revision: str | None, schema_revision: str) -> str |
         "0016_evidence_quality_v3": 16,
         "0017_trace_context": 17,
         "0018_pear_contract_entities": 18,
+        "0019_research_work_state": 19,
     }
     if current_revision is None:
         return schema_revision

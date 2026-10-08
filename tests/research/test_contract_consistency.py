@@ -110,6 +110,10 @@ def test_report_reserve_covers_batched_validation_without_raising_total():
     assert configured["max_tokens"] == 200000
     assert configured["final_report_llm_calls"] == 16
     assert configured["final_report_tokens"] == 60000
+    deep = limits(Settings(research_max_llm_calls=192, research_max_tokens=400000))
+    assert deep["max_llm_calls"] == 192
+    assert deep["final_report_llm_calls"] == 64
+    assert deep["max_llm_calls"] - deep["final_report_llm_calls"] == 128
 
 
 @pytest.mark.parametrize("basis", ["full_text", "partial", "table", "structured"])

@@ -47,18 +47,20 @@ def select_pending_candidates(
                 discovery_urls.append(_canonical(value))
         if str(getattr(trace, "tool_name", "")) == "web_fetcher":
             request = _json_object(getattr(trace, "input_json", None))
-            request_urls = request.get("urls")
+            request_urls = request.get("urls") or (request.get("args") or {}).get("urls")
+            deferred = {_canonical(p.get("url")) for p in output.get("pages") or [] if isinstance(p, dict)
+                        and (p.get("error_code") or p.get("error")) == "batch_deadline_exceeded"}
             if isinstance(request_urls, list):
                 for value in request_urls:
                     canonical = _canonical(value)
-                    if canonical:
+                    if canonical and canonical not in deferred:
                         requested_urls.add(canonical)
                         attempted_urls.add(canonical)
             # Record redirects as attempted identities too. This avoids
             # fetching a candidate that is the successful final URL of a
             # previously requested source.
             for page in output.get("pages") or []:
-                if isinstance(page, dict):
+                if isinstance(page, dict) and _canonical(page.get("url")) not in deferred:
                     attempted_urls.add(_canonical(page.get("url") or page.get("requested_url")))
                     attempted_urls.add(_canonical(page.get("final_url")))
 

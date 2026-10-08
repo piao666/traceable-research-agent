@@ -177,3 +177,42 @@ it("navigates a child citation to its child Run and child Trace", async () => {
   expect(traceLinks).not.toHaveLength(0);
   expect(traceLinks.every((link) => link.getAttribute("href") === "/runs/child-run?trace=child-trace")).toBe(true);
 });
+
+it("shows missing required answers even when citations are evaluated", async () => {
+  vi.mocked(api.getReport).mockResolvedValue({run_id:"fixture", exists:true, availability:"partial", markdown:"# 部分正文",
+    citation_evaluated:true, requires_review:true, answer_coverage:{version:"answer-coverage-v1", complete:false, requirements:[
+      {requirement_id:"r1", predicate:"说明网络限制", answer_status:"unanswered", evidence_ready:false, reason:"缺少共享内存条件"}
+    ]}});
+  show("/runs/fixture/report");
+  expect(await screen.findByText("研究问题覆盖")).toBeInTheDocument();
+  expect(screen.getByText("说明网络限制")).toBeInTheDocument();
+  expect(screen.getByText("缺少共享内存条件")).toBeInTheDocument();
+  expect(screen.queryByText("全部必要问题已回答并关联经校验的正文结论。")).toBeNull();
+});
+
+it("requires an explicit checkbox to approve unlimited tokens", async () => {
+  vi.mocked(api.getTask).mockResolvedValue({ ...taskFixture, status: "waiting_human" });
+  vi.mocked(api.getPlan).mockResolvedValue({ ...planFixture, token_budget_approval: { status: "pending", spent_tokens: 200000, current_limit: 200000, suggested_limit: 400000 } });
+  const confirm = vi.spyOn(api, "confirmTask").mockResolvedValue({ run_id: "fixture", status: "running", approved: true, resumed: true, message: "queued" });
+  show(); fireEvent.click(await screen.findByRole("button", { name: "批准并继续" }));
+  const unlimited = screen.getByRole("checkbox", { name: /批准本次任务不限制 Token/ });
+  expect(unlimited).not.toBeChecked();
+  fireEvent.click(unlimited);
+  fireEvent.click(screen.getByRole("button", { name: "确认批准并继续" }));
+  await waitFor(() => expect(confirm).toHaveBeenCalledWith("fixture", true, "", { max_tokens: 400000, unlimited_tokens: true }));
+});
+
+
+it("approves a finite model call extension without granting unlimited tokens", async () => {
+  vi.mocked(api.getTask).mockResolvedValue({ ...taskFixture, status: "waiting_human" });
+  vi.mocked(api.getPlan).mockResolvedValue({ ...planFixture, llm_call_budget_approval: { status: "pending", spent_llm_calls: 192, current_limit: 192, suggested_limit: 384 } });
+  const confirm = vi.spyOn(api, "confirmTask").mockResolvedValue({ run_id: "fixture", status: "running", approved: true, resumed: true, message: "queued" });
+  show(); fireEvent.click(await screen.findByRole("button", { name: "批准并继续" }));
+  expect(screen.getByText("模型调用次数已用尽，原任务、证据和草稿保留")).toBeInTheDocument();
+  expect(screen.queryByRole("checkbox", { name: /不限制 Token/ })).toBeNull();
+  const input = screen.getByRole("spinbutton", { name: "本次任务新的模型调用总上限" });
+  expect(input).toHaveValue(384);
+  fireEvent.change(input, { target: { value: "320" } });
+  fireEvent.click(screen.getByRole("button", { name: "确认批准并继续" }));
+  await waitFor(() => expect(confirm).toHaveBeenCalledWith("fixture", true, "", { max_llm_calls: 320 }));
+});

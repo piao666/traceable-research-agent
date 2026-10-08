@@ -38,7 +38,7 @@ def test_migration_0012_backfills_nested_legacy_lineage(tmp_path):
             "FROM agent_runs ORDER BY run_id"
         )).fetchall()
         revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
-        assert revision == "0018_pear_contract_entities"
+        assert revision == "0019_research_work_state"
     assert {row[0]: row[2] for row in rows} == {
         "root": "root", "child": "root", "grandchild": "root"
     }
@@ -166,5 +166,5 @@ def test_migration_0015_upgrades_existing_report_data_and_is_idempotent(tmp_path
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT COUNT(*) FROM report_revisions")) == 1
         assert connection.scalar(text("SELECT COUNT(*) FROM report_claim_occurrences")) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0018_pear_contract_entities"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0019_research_work_state"
     engine.dispose()

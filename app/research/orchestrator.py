@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from collections import deque
 from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
-from app.agent.budget import BudgetExceeded, FinalizationRequired, budget_client, budgeted_execution, current_budget
+from app.agent.budget import BudgetExceeded, BudgetApprovalRequired, FinalizationRequired, budget_client, budgeted_execution, current_budget, finalization_budget
 from app.agent.executor import (
     _after_run_completed,
     _persist_citation_validation,
@@ -40,6 +41,7 @@ from app.research.assessor import (
     persist_plan_contract,
     persist_shadow_assessment,
 )
+from app.research.contracts import requirement_index
 from app.research.models import ResearchNode
 from app.research.node_executor import ResearchNodeExecutor
 from app.research.branch_executor import SerialPearExecutor
@@ -73,17 +75,109 @@ BranchPlanner = Callable[..., dict[str, Any]]
 ReportGenerator = Callable[..., str]
 
 
-def _branch_has_budget(runtime: Any, settings_obj: Settings) -> bool:
+def _selection_pending(plan: dict[str, Any]) -> bool:
+    spec = (plan.get("task_contract") or {}).get("comparison_scope") or {}
+    return bool(spec.get("selection_required") and not spec.get("entities"))
+
+
+def _refresh_comparison_scope(db: Session, scope: Any, plan: dict[str, Any], client: Any) -> bool:
+    """Refresh control state on new evidence, independently of branch admission."""
+    from app.research.comparison_scope import select_comparison_candidates
+    contract = plan.get("task_contract") or {}
+    if not contract.get("obligation_version") or not _selection_pending(plan):
+        return False
+    selected = select_comparison_candidates(contract, get_scope_provenance_bundle(db, scope), budget_client(client))
+    if selected == contract:
+        return False
+    plan["task_contract"] = selected
+    persist_plan_contract(db, root_run_id=scope.root_run_id, contract=selected)
+    store.replace_agent_run_plan(db, scope.root_run_id, plan)
+    record_phase_event(db, scope.root_run_id, "comparison_selection", "success" if not _selection_pending(plan) else "warning",
+        details={"entities": selected["comparison_scope"].get("entities"),
+                 "selection_attempt": selected["comparison_scope"].get("selection_attempt")})
+    return True
+
+
+def _selection_branch_plan(plan: dict[str, Any], nodes: list[Any], settings_obj: Settings) -> dict[str, Any]:
+    from app.research.comparison_scope import selection_query, selection_requirement_ids
+    attempts = sum(_json_object(n.metadata_json).get("acquisition_stage") == "comparison_selection" for n in nodes)
+    if attempts >= min(4, max(1, settings_obj.max_refetch_rounds)):
+        return {"branches": [], "selection_exhausted": True, "is_comprehensive": False}
+    contract = plan["task_contract"]
+    contract.setdefault("comparison_scope", {})["selection_search_rounds"] = attempts + 1
+    query = selection_query(contract, attempts)
+    return {"branches": [{"topic": "Select comparable products", "query": query, "research_goal": query,
+        "node_type": "discovery", "priority": 0, "required": True,
+        "assigned_requirement_ids": selection_requirement_ids(contract), "acquisition_stage": "comparison_selection"}],
+        "is_comprehensive": False}
+
+
+def _comparison_gap_branches(contract: dict[str, Any], findings: dict[str, Any], nodes: list[Any],
+                             breadth: int, max_rounds: int) -> dict[str, Any] | None:
+    """Stable product/dimension identities under the frozen root cohort."""
+    from app.research.answer_coverage import _coverage_constraints
+    if not (contract.get("comparison_scope") or {}).get("entities") or not contract.get("obligation_version"):
+        return None
+    coverage = findings.get("coverage") or {}
+    if coverage.get("complete"):
+        return {"branches": [], "is_comprehensive": True}
+    reqs = [r for r in contract.get("requirements", []) if r.get("required", True)]
+    if len(reqs) > 1:
+        reqs = [r for r in reqs if r["requirement_id"] != "req-original"]
+    constraints = _coverage_constraints(contract, reqs)
+    rows = {r["requirement_id"]: r for r in coverage.get("requirements", [])}
+    branches = []
+    targeted = False
+    for r in reqs:
+        rid = r["requirement_id"]
+        if rows.get(rid, {}).get("answer_status") == "answered":
+            continue
+        cell_gaps = [g for g in coverage.get("gaps", []) if g.get("requirement_id") == rid and g.get("entity") and g.get("facet")]
+        for cell in constraints["cells"][rid]:
+            if cell["facet"] == "selection":
+                continue
+            if cell_gaps and not any(g["entity"] == cell["entity"] and g["facet"] == cell["facet"] for g in cell_gaps):
+                continue
+            targeted = True
+            identity = [rid, cell["entity"], cell["facet"]]
+            prior = [n for n in nodes if _json_object(n.metadata_json).get("work_identity") == identity]
+            if len(prior) >= max(1, min(4, max_rounds)):
+                continue
+            query = f"{cell['entity']} {cell['facet']} official documentation implementation source code"
+            if prior:
+                query += " independent verification limitations conditions"
+            branches.append({"topic": f"{cell['entity']} / {cell['facet']}", "query": query,
+                "research_goal": query, "node_type": "technical_research", "priority": len(branches) + 1,
+                "required": True, "assigned_requirement_ids": [rid], "work_identity": identity,
+                "comparison_entities": [cell["entity"]]})
+            if len(branches) >= breadth:
+                return {"branches": branches, "is_comprehensive": False}
+    if targeted:
+        return {"branches": branches, "is_comprehensive": False, "work_exhausted": not branches}
+    return None
+
+
+def _current_findings(plan: dict[str, Any], bundle: dict[str, Any], contract: dict[str, Any], client: Any) -> dict[str, Any]:
+    from app.research.findings import assess_research_findings
+    fingerprint = hashlib.sha256(json.dumps({"contract": contract, "evidence": {key: bundle.get(key) for key in
+        ("passages", "source_snapshots", "source_documents", "citations")}}, ensure_ascii=False,
+        sort_keys=True, default=str).encode()).hexdigest()
+    for retained in reversed(plan.get("research_findings") or []):
+        if retained.get("evidence_fingerprint") == fingerprint:
+            return retained
+    return {**assess_research_findings(bundle, contract, client), "evidence_fingerprint": fingerprint}
+
+
+def _branch_has_budget(runtime: Any, settings_obj: Settings, node: Any = None) -> bool:
     """Reserve an entire bounded PEAR child before admitting it.
 
     Existing usage provides a conservative, run-local prompt-size estimate.
     The atomic budget remains authoritative for every actual provider call.
     """
 
-    # react_executor caps PEAR children at seven decisions. One extra call
-    # covers a final handoff without reserving the unbounded generic ReAct
-    # allowance, which previously prevented every planned child from starting.
-    calls = 8
+    # Seven actor decisions plus handoff and two bounded findings/semantic/
+    # coverage passes. Each actual call still reserves its measured estimate.
+    calls = 8 if node is not None and _json_object(node.metadata_json).get("acquisition_stage") == "comparison_selection" else 14
     snapshot = runtime.snapshot()
     average_tokens = max(
         1024,
@@ -103,6 +197,9 @@ def _explicit_scope_covered(db: Session, scope: Any, plan: dict[str, Any]) -> bo
     citation, or report-integrity gates.
     """
     contract = plan.get("task_contract") or {}
+    if contract.get("obligation_version"):
+        latest = (plan.get("research_findings") or [])[-1:] or [{}]
+        return (latest[0].get("coverage") or {}).get("complete") is True
     if not (contract.get("evidence_scope_requirements") or contract.get("requirements")
             or contract.get("evidence_requirement") == "substantive"):
         return False
@@ -198,7 +295,10 @@ def run_deep_research_v2(
             depth=0,
             priority=0,
             status="running",
-            metadata={"required": True},
+            metadata={"required": True, **(
+                {"assigned_requirement_ids": sorted(requirement_index(plan.get("task_contract")))}
+                if (plan.get("task_contract") or {}).get("obligation_version") else {}
+            )},
         )
 
     plan.update(
@@ -239,6 +339,13 @@ def run_deep_research_v2(
                 db, run_id, settings_obj, actor_client
             )
             record_phase_event(db, run_id, "root_discovery", "success")
+        except BudgetApprovalRequired as exc:
+            root_node.status = "waiting_human"
+            db.commit()
+            update_scope_status(db, scope.scope_id, "waiting_human")
+            record_phase_event(db, run_id, "root_discovery", "waiting",
+                               details={"reason": exc.reason + "_budget_approval"})
+            raise
         except BudgetExceeded:
             root_node.status = "failed"
             db.commit()
@@ -279,9 +386,21 @@ def run_deep_research_v2(
     # executor is idempotent for an existing run_id; keeping recovery here
     # closes the orchestration loop instead of merely making the executor
     # recoverable in isolation.
+    try:
+        _refresh_comparison_scope(db, scope, plan, actor_client)
+    except FinalizationRequired:
+        finalization_limited = True
     if not finalization_limited:
         for node in serial_executor.order(nodes):
             if node.parent_node_id is None or node.status not in {"pending", "running"}:
+                continue
+            if ((plan.get("task_contract") or {}).get("obligation_version")
+                    and not _json_object(node.metadata_json).get("recovery_work_item_id")
+                    and node.status == "pending"):
+                update_node_metadata(db, node, deferred_reason="legacy_frontier_replaced_by_work_controller")
+                continue
+            if _selection_pending(plan) and _json_object(node.metadata_json).get("acquisition_stage") != "comparison_selection":
+                update_node_metadata(db, node, deferred_reason="comparison_selection_dependency")
                 continue
             if (
                 node.status == "pending"
@@ -297,7 +416,7 @@ def run_deep_research_v2(
             runtime = current_budget()
             if runtime is not None:
                 try:
-                    if not _branch_has_budget(runtime, settings_obj):
+                    if not _branch_has_budget(runtime, settings_obj, node):
                         finalization_limited = True
                         break
                 except BudgetExceeded:
@@ -307,13 +426,20 @@ def run_deep_research_v2(
                 result = serial_executor.execute_one(
                     db, scope, node, settings_obj, actor_client
                 )
+            except BudgetApprovalRequired as exc:
+                update_scope_status(db, scope.scope_id, "waiting_human")
+                raise
             except BudgetExceeded:
                 update_scope_status(db, scope.scope_id, "failed")
                 raise
             child_run_id = str(result["run_id"])
             created_run_ids.append(child_run_id)
             _link_deepening_run(db, run_id, child_run_id)
-            if result.get("status") != "completed" and _json_object(
+            try:
+                _refresh_comparison_scope(db, scope, plan, actor_client)
+            except FinalizationRequired:
+                finalization_limited = True
+            if result.get("status") not in {"completed", "incomplete"} and _json_object(
                 node.metadata_json
             ).get("required", True):
                 orchestration_incomplete = True
@@ -331,12 +457,14 @@ def run_deep_research_v2(
     frontier: deque[ResearchNode] = deque(
         node
         for node in nodes
-        if node.status == "completed"
+        if node.status in {"completed", "incomplete"}
         and _json_object(node.metadata_json).get("branch_planning_status", "pending")
         == "pending"
     )
 
-    while frontier:
+    # New obligations have one scheduler. Legacy recursive keyword branching
+    # must not spend the shared budget before the cell controller can run.
+    while frontier and not (plan.get("task_contract") or {}).get("obligation_version"):
         if finalization_limited:
             break
         # An explicit multi-topic contract can be satisfied by the first
@@ -368,9 +496,16 @@ def run_deep_research_v2(
         runtime = current_budget()
         if runtime is not None:
             try:
+                _refresh_comparison_scope(db, scope, plan, actor_client)
                 if not runtime.can_deepen():
                     finalization_limited = True
                     break
+            except FinalizationRequired:
+                finalization_limited = True
+                break
+            except BudgetApprovalRequired as exc:
+                update_scope_status(db, scope.scope_id, "waiting_human")
+                raise
             except BudgetExceeded:
                 update_scope_status(db, scope.scope_id, "failed")
                 raise
@@ -380,15 +515,38 @@ def run_deep_research_v2(
                 db, run_id, "branch_planning", "started",
                 details={"parent_node_id": parent_node.node_id, "depth": parent_node.depth + 1},
             )
-            branch_plan = branch_planner(
-                actor_client,
-                task=parent_node.query,
-                observations=load_observations(parent_traces),
-                prior_queries=prior_queries,
-                breadth=settings_obj.deep_research_breadth,
-                depth=parent_node.depth + 1,
-                contract=plan.get("task_contract"),
-            )
+            branch_contract = plan.get("task_contract")
+            if _selection_pending(plan):
+                branch_plan = _selection_branch_plan(plan, list_scope_nodes(db, scope.scope_id), settings_obj)
+                # Selection is a prerequisite at the root, not recursive
+                # exploration of a generic technical branch.
+                parent_node = root_node
+            elif (branch_contract or {}).get("obligation_version"):
+                from app.research.findings import assess_research_findings
+                findings = _current_findings(plan, get_scope_provenance_bundle(db, scope), branch_contract, actor_client)
+                plan.setdefault("research_findings", []).append({"node_id": parent_node.node_id, **findings})
+                store.replace_agent_run_plan(db, run_id, plan)
+                branch_contract = {**branch_contract, "controller_findings": {
+                    "markdown": findings["markdown"],
+                    "coverage": {"complete": findings["coverage"]["complete"],
+                                 "gaps": findings["coverage"]["gaps"]},
+                    "decision_audit": findings["decision_audit"],
+                }}
+            if not _selection_pending(plan):
+                deterministic = _comparison_gap_branches(branch_contract or {}, findings,
+                    list_scope_nodes(db, scope.scope_id), settings_obj.deep_research_breadth, settings_obj.max_refetch_rounds
+                ) if (branch_contract or {}).get("obligation_version") else None
+                if deterministic is not None:
+                    parent_node = root_node
+                branch_plan = deterministic if deterministic is not None else branch_planner(
+                    actor_client,
+                    task=str((branch_contract or {}).get("original_task") or parent_node.query) if (branch_contract or {}).get("obligation_version") else parent_node.query,
+                    observations=load_observations(parent_traces),
+                    prior_queries=prior_queries,
+                    breadth=settings_obj.deep_research_breadth,
+                    depth=parent_node.depth + 1,
+                    contract=branch_contract,
+                )
         except FinalizationRequired:
             finalization_limited = True
             record_phase_event(
@@ -397,6 +555,9 @@ def run_deep_research_v2(
                 error_message="Research reached the protected final-report budget.",
             )
             break
+        except BudgetApprovalRequired as exc:
+            update_scope_status(db, scope.scope_id, "waiting_human")
+            raise
         except BudgetExceeded:
             update_scope_status(db, scope.scope_id, "failed")
             record_phase_event(
@@ -475,13 +636,16 @@ def run_deep_research_v2(
                 planner_error,
                 planner_diagnostics,
                 error_message=planner_error,
-                token_in=int(branch_plan.get("prompt_tokens") or 0),
-                token_out=int(branch_plan.get("completion_tokens") or 0),
+                token_in=0 if branch_plan.get("usage_recorded") else int(branch_plan.get("prompt_tokens") or 0),
+                token_out=0 if branch_plan.get("usage_recorded") else int(branch_plan.get("completion_tokens") or 0),
                 phase="branch_planning",
                 parent_trace_id=planning_trace.trace_id,
             )
             break
         branches = list(branch_plan.get("branches") or [])
+        if branch_plan.get("selection_exhausted") or branch_plan.get("work_exhausted"):
+            update_node_metadata(db, parent_node, branch_planning_status="completed", deferred_reason="selection_evidence_unresolved")
+            break
         if not branches and not branch_plan.get("is_comprehensive"):
             parent_node.status = "failed"
             db.commit()
@@ -534,6 +698,8 @@ def run_deep_research_v2(
                 priority=branch["priority"],
                 metadata={
                     "required": branch.get("required", True),
+                    **{key: branch[key] for key in ("work_identity", "comparison_entities") if key in branch},
+                    **({"acquisition_stage": branch["acquisition_stage"]} if branch.get("acquisition_stage") else {}),
                     **({"assigned_requirement_ids": branch["assigned_requirement_ids"]}
                        if "assigned_requirement_ids" in branch else {}),
                 },
@@ -560,7 +726,7 @@ def run_deep_research_v2(
             runtime = current_budget()
             if runtime is not None:
                 try:
-                    if not _branch_has_budget(runtime, settings_obj):
+                    if not _branch_has_budget(runtime, settings_obj, node):
                         finalization_limited = True
                         break
                 except BudgetExceeded:
@@ -570,12 +736,19 @@ def run_deep_research_v2(
                 result = serial_executor.execute_one(
                     db, scope, node, settings_obj, actor_client
                 )
+            except BudgetApprovalRequired as exc:
+                update_scope_status(db, scope.scope_id, "waiting_human")
+                raise
             except BudgetExceeded:
                 update_scope_status(db, scope.scope_id, "failed")
                 raise
             created_run_ids.append(result["run_id"])
             _link_deepening_run(db, run_id, result["run_id"])
-            if result.get("status") == "completed":
+            try:
+                _refresh_comparison_scope(db, scope, plan, actor_client)
+            except FinalizationRequired:
+                finalization_limited = True
+            if result.get("status") in {"completed", "incomplete"}:
                 frontier.append(node)
             elif branch.get("required", True):
                 orchestration_incomplete = True
@@ -612,6 +785,13 @@ def run_deep_research_v2(
             "Research is waiting for confirmation before continuing.",
         )
 
+    try:
+        # Selection of already-collected evidence is a final control decision,
+        # even when no further research branch can be admitted.
+        with finalization_budget():
+            _refresh_comparison_scope(db, scope, plan, actor_client)
+    except FinalizationRequired:
+        finalization_limited = True
     scope_evidence = get_scope_provenance_bundle(db, scope)
     from app.evidence.scope_reasoning import materialize_scope_reasoning
     from app.agent.source_context import build_source_context
@@ -619,7 +799,11 @@ def run_deep_research_v2(
 
     materialize_scope_reasoning(db, scope.scope_id, settings_obj.source_policy_path)
     scope_evidence = get_scope_provenance_bundle(db, scope)
+    if (plan.get("task_contract") or {}).get("obligation_version"):
+        scope_evidence = _run_scope_work_loop(db, scope, plan, settings_obj, scope_evidence, actor_client,
+                                              node_executor=executor, allow_acquisition=not finalization_limited)
     scope_traces = list_scope_traces(db, scope.scope_id)
+    plan_revision = persist_plan_contract(db, root_run_id=run_id, contract=plan.get("task_contract"))
     shadow_assessment = assess_requirements(
         plan.get("task_contract"),
         build_source_context(scope_traces),
@@ -733,8 +917,15 @@ def run_deep_research_v2(
             citation_validation_callback=citation_reports.append,
             reference_verification_callback=reference_reports.append,
             revision_attempt_callback=report_audit.persist_attempt,
+            revision_decision_callback=report_audit.persist_validation,
             cancellation_check=lambda: check_report_generation_not_cancelled(db, run_id),
+            evidence_refresh_callback=lambda feedback: recover_scope_evidence(db, run_id, plan, settings_obj, feedback, report_client),
         )
+    except BudgetApprovalRequired as exc:
+        update_scope_status(db, scope.scope_id, "waiting_human")
+        record_phase_event(db, run_id, "report_generation", "waiting", details={"resource": exc.reason},
+                           error_message="Research budget approval is required to continue the retained report.")
+        raise
     except BudgetExceeded:
         update_scope_status(db, scope.scope_id, "failed")
         record_phase_event(db, run_id, "report_generation", "failed", error_message="Report generation exceeded its budget.")
@@ -744,6 +935,11 @@ def run_deep_research_v2(
         record_phase_event(db, run_id, "report_generation", "failed", parent_trace_id=locals().get("report_phase_trace").trace_id if locals().get("report_phase_trace") else None, details={"error_type": type(exc).__name__}, error_message="Report generation failed.")
         return _summary(fail_execution(db, run_id, exc), plan)
     record_phase_event(db, run_id, "report_generation", "success", parent_trace_id=report_phase_trace.trace_id)
+    # Report revisions may acquire new sources while repairing answer gaps.
+    # Use the same post-repair Scope snapshot for validation, final citation
+    # materialization, and the terminal identity; the pre-report snapshot can
+    # omit passages that the adopted answer now cites.
+    scope_evidence = get_scope_provenance_bundle(db, scope)
     expected_report_path = f"workspace/reports/{run_id}.md"
     try:
         citation_validation = (
@@ -987,6 +1183,14 @@ def run_deep_research_v2(
             ),
         })
     plan["report_generation"] = report_generation
+    if citation_validation is not None:
+        final_coverage = getattr(citation_validation, "answer_coverage", {}) or {}
+        if final_coverage.get("complete"):
+            # Outcome proof is a projection; do not change the evidence bundle
+            # after its report manifest identity has been frozen.
+            outcome = assess_scope_outcome(db, scope, {**scope_evidence, "final_answer_coverage": final_coverage}, plan.get("task_contract"),
+                finalization_limited=finalization_limited, orchestration_incomplete=orchestration_incomplete)
+            plan["research_outcome"] = outcome
     store.replace_agent_run_plan(db, run_id, plan)
     if report_integrity.status == "failed":
         message = (
@@ -1231,3 +1435,80 @@ def _verify_reference_report(
         cache_dir=settings_obj.reference_verifier_cache_dir,
         cache_ttl=settings_obj.reference_verifier_cache_ttl_seconds,
     ).verify(references)
+
+
+def recover_scope_evidence(db: Session, run_id: str, plan: dict[str, Any], settings_obj: Settings,
+                           feedback: dict[str, Any], client: Any = None) -> dict[str, Any] | None:
+    from app.research.recovery import recover_answer_evidence
+    scope = resolve_research_scope(db, run_id)
+    if scope is None:
+        return None
+    if (plan.get("task_contract") or {}).get("obligation_version"):
+        return _run_scope_work_loop(db, scope, plan, settings_obj, get_scope_provenance_bundle(db, scope), client, feedback)
+    changed = recover_answer_evidence(db, run_id, plan, settings_obj, feedback,
+        traces=list_scope_traces(db, scope.scope_id))
+    if changed:
+        from app.evidence.scope_reasoning import materialize_scope_reasoning
+
+        materialize_scope_reasoning(db, scope.scope_id, settings_obj.source_policy_path)
+        _refresh_comparison_scope(db, scope, plan, client)
+        return get_scope_provenance_bundle(db, scope)
+    return None
+
+
+def _run_scope_work_loop(db, scope, plan, settings_obj, bundle, client, feedback=None, *, node_executor=None, allow_acquisition=True):
+    """Report feedback may reopen the same Scope's governed node scheduler."""
+    from app.research.controller import run_work_loop
+    from app.evidence.scope_reasoning import materialize_scope_reasoning
+    traces = list_scope_traces(db, scope.scope_id)
+    def loader():
+        materialize_scope_reasoning(db, scope.scope_id, settings_obj.source_policy_path)
+        traces[:] = list_scope_traces(db, scope.scope_id)
+        return get_scope_provenance_bundle(db, scope)
+    def dispatch(current):
+        from app.research.control_store import ensure_work, project_work, begin_action, finish_action
+        from app.research.state import identity, semantic_contract
+        nodes = list_scope_nodes(db, scope.scope_id)
+        root_node = next((n for n in nodes if n.parent_node_id is None), None)
+        if root_node is None:
+            return False
+        gaps = [g for g in current.get("answer_gaps", []) if g.get("entity") and g.get("facet")
+                and g.get("facet") != "selection" and not str(g.get("facet")).startswith("selection_") and
+                g.get("cause") != "coverage_mapping_missing"]
+        for gap in gaps:
+            rid, entity, facet = gap["requirement_id"], gap["entity"], gap["facet"]
+            work = ensure_work(db, scope.root_run_id, rid, entity, facet)
+            # One re-entry node per cell supplements the normal frontier.
+            # The persistent work identity, rather than a changed query, binds
+            # it to the obligation across report attempts and restarts.
+            prior = [n for n in nodes if _json_object(n.metadata_json).get("recovery_work_item_id") == work.work_item_id]
+            if prior:
+                continue
+            if current_budget() is not None and not _branch_has_budget(current_budget(), settings_obj):
+                return False
+            query = f"{entity} {facet} official documentation implementation applications conditions"
+            item = next(w for w in project_work(db, scope.root_run_id) if w["work_item_id"] == work.work_item_id)
+            operation = begin_action(db, scope.root_run_id, item, "dispatch_node", {"query": query},
+                identity("", semantic_contract(plan["task_contract"])))
+            if operation is None:
+                continue
+            node = create_research_node(db, scope.scope_id, parent_node_id=root_node.node_id, run_id=None,
+                node_type="technical_research", topic=f"{entity} / {facet}", query=query, research_goal=query,
+                depth=root_node.depth + 1, priority=len(nodes) + 1, metadata={"required": True,
+                    "assigned_requirement_ids": [rid], "work_identity": [rid, entity, facet],
+                    "comparison_entities": [entity], "recovery_work_item_id": work.work_item_id,
+                    "operation_id": operation.operation_id})
+            operation.node_id = node.node_id
+            db.commit()
+            try:
+                result = (node_executor or ResearchNodeExecutor()).execute(db, scope, node, settings_obj, client)
+            except BudgetApprovalRequired as exc:
+                operation.status = "waiting_human"
+                db.commit()
+                raise
+            finish_action(db, operation, "succeeded" if result["status"] in {"completed", "incomplete"} else result["status"],
+                None, {"child_run_id": result.get("run_id"), "node_id": node.node_id, "requires_rejudgment": True})
+            return result["status"] in {"completed", "incomplete"}
+        return False
+    return run_work_loop(db, scope.root_run_id, plan, settings_obj, bundle, client,
+        loader=loader, traces=traces, feedback=feedback, dispatch=dispatch, allow_acquisition=allow_acquisition)

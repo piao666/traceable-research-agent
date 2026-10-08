@@ -261,3 +261,58 @@ def test_create_research_node_reuses_normalized_sibling_query(db):
     )
 
     assert duplicate.node_id == first.node_id
+
+
+def test_recursive_assignment_uses_root_ids_and_keeps_parent_permissions(db, r12_settings):
+    root = create_root(db)
+    contract = {"obligation_version": "research-obligations-v1", "requirements": [
+        {"requirement_id": "r1", "question_id": "q1", "predicate": "First question"},
+        {"requirement_id": "r2", "question_id": "q2", "predicate": "Second question"},
+    ]}
+    store.replace_agent_run_plan(db, root.run_id, {"task_contract": contract, "allowed_tools": ["web_fetcher", "tavily_search"]})
+    scope = create_research_scope(db, root.run_id, contract)
+    parent = store.create_agent_run(db, "first", "summary", "real", allowed_tools=["web_fetcher"],
+                                   parent_run_id=root.run_id, root_run_id=root.run_id)
+    store.replace_agent_run_plan(db, parent.run_id, {"task_contract": {**contract, "requirements": contract["requirements"][:1]},
+        "allowed_tools": ["web_fetcher"], "source_constraints": {"mode": "restricted", "domains": ["example.org"]}})
+    parent_node = create_research_node(db, scope.scope_id, parent_node_id=None, run_id=parent.run_id,
+        node_type="web_research", topic="first", query="first", research_goal="first", depth=1, priority=1)
+    node = create_research_node(db, scope.scope_id, parent_node_id=parent_node.node_id, run_id=None,
+        node_type="verification", topic="second", query="second", research_goal="second", depth=2, priority=1,
+        metadata={"assigned_requirement_ids": ["r2"]})
+    def runner(session, run_id, settings, _client):
+        store.update_agent_run_status(session, run_id, "completed", None)
+        return {"run_id": run_id, "status": "completed"}
+    result = ResearchNodeExecutor(runner=runner).execute(db, scope, node, r12_settings)
+    child = store.get_fresh_agent_run(db, result["run_id"])
+    plan = json.loads(child.plan_json)
+    assert plan["task_contract"]["assigned_requirement_ids"] == ["r2"]
+    assert plan["allowed_tools"] == ["web_fetcher"]
+    assert plan["source_constraints"] == {"mode": "restricted", "domains": ["example.org"]}
+    assert child.parent_run_id == parent.run_id
+    assert json.loads(store.get_agent_run(db, root.run_id).plan_json)["task_contract"] == contract
+
+
+def test_token_approval_keeps_child_and_scope_resumable(db, r12_settings):
+    from app.agent.budget import TokenBudgetApprovalRequired, approve_token_budget
+    root = create_root(db)
+    contract = json.loads(root.plan_json)["task_contract"]
+    contract["obligation_version"] = "research-obligations-v1"
+    store.replace_agent_run_plan(db, root.run_id, {"task_contract": contract, "allowed_tools": ["web_fetcher"]})
+    scope = create_research_scope(db, root.run_id, contract)
+    node = create_research_node(db, scope.scope_id, parent_node_id=None, run_id=None,
+        node_type="web_research", topic="child", query="child", research_goal="child", depth=1, priority=1)
+    def runner(*_args):
+        raise TokenBudgetApprovalRequired("tokens")
+    with pytest.raises(TokenBudgetApprovalRequired):
+        ResearchNodeExecutor(runner=runner).execute(db, scope, node, r12_settings)
+    assert node.status == "waiting_human"
+    child = store.get_fresh_agent_run(db, node.run_id)
+    assert child.status == "waiting_human"
+    plan = json.loads(store.get_fresh_agent_run(db, root.run_id).plan_json)
+    approved = approve_token_budget(db, root.run_id, plan, max_tokens=500000,
+                                    unlimited=False, comment="Continue the same branch")
+    store.replace_agent_run_plan(db, root.run_id, approved)
+    assert store.get_fresh_agent_run(db, child.run_id).status == "pending"
+    db.refresh(node)
+    assert node.status == "pending"

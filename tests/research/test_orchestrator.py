@@ -61,7 +61,7 @@ def test_pear_discovery_and_child_have_bounded_shared_budget_allowances():
 
     runtime = Runtime()
     assert _branch_has_budget(runtime, settings)
-    assert runtime.request == {"required_llm_calls": 8, "required_tokens": 48000}
+    assert runtime.request == {"required_llm_calls": 14, "required_tokens": 84000}
 
 
 def test_external_web_child_first_discovers_urls_when_tavily_is_available():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,7 +36,7 @@ class ArtifactStore:
         target = self._target(content_hash)
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
-            temporary = target.with_suffix(".tmp")
+            temporary = target.with_suffix(f".{uuid.uuid4().hex}.tmp")
             with gzip.open(temporary, "wb", compresslevel=9) as handle:
                 handle.write(content)
             temporary.replace(target)

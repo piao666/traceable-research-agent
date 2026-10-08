@@ -245,3 +245,38 @@ def test_scope_projection_registers_child_not_root_and_excludes_only_scope_wait(
     assert resume_budget_deadline(db, child.run_id, now=deadline + 10)
     assert runtime.snapshot()["deadline"] == pytest.approx(deadline + 40)
     assert "execution_budget_pause" not in json.loads(store.get_fresh_agent_run(db, root.run_id).plan_json)
+
+
+def test_iterative_control_assessment_preserves_report_reserve_even_inside_writer(db, r12_settings, monkeypatch):
+    # Load the module before patching a dependency it imports by value.
+    import app.research.findings
+    from types import SimpleNamespace
+    from app.agent.budget import finalization_budget
+    from app.research.controller import run_work_loop
+    from .test_research_work_loop import contract
+    root = create_root(db)
+    plan = {"task_contract": contract()}
+    store.replace_agent_run_plan(db, root.run_id, plan)
+    runtime = BudgetRuntime(db, root.run_id, r12_settings.model_copy(update={"research_max_llm_calls": 192}))
+    def select_candidates(c, *_):
+        current_budget().reserve(llm=1, tokens=100)
+        return c
+    monkeypatch.setattr("app.research.comparison_scope.select_comparison_candidates", select_candidates)
+    monkeypatch.setattr("app.agent.evidence_requirements.assess_required_evidence", lambda *_: SimpleNamespace(eligible_passage_ids=["p"], passed=True))
+    def findings(*_, **_kwargs):
+        current_budget().reserve(llm=1, tokens=100)
+        return {"coverage": {"complete": True, "requirements": [], "gaps": []}, "validation": {"details": []}}
+    monkeypatch.setattr("app.research.findings.assess_research_findings", findings)
+    token = _active.set(runtime)
+    try:
+        with finalization_budget():
+            run_work_loop(db, root.run_id, plan, r12_settings, {}, None, loader=lambda: {}, traces=[])
+            class Available:
+                def is_available(self): return True
+            run_work_loop(db, root.run_id, plan, r12_settings, {}, Available(), loader=lambda: {}, traces=[])
+    finally:
+        _active.reset(token)
+    budget = runtime.snapshot()
+    assert budget["llm_calls"] == 2
+    assert budget["limits"].get("final_report_spent_llm_calls", 0) == 0
+    assert runtime.remaining_report_reserve("llm_calls") == 64

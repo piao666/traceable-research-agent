@@ -15,6 +15,12 @@ from app.evidence.qualification import DEFAULT_CONTENT_BASES
 
 _DIMENSION_ALIASES = {
     "架构": ("架构", "architecture", "orchestration", "runtime"),
+    "框架": ("框架", "framework", "architecture", "orchestration", "runtime"),
+    "底层原理": ("原理", "机制", "architecture", "orchestration", "agent loop"),
+    "核心原理": ("原理", "机制", "architecture", "orchestration", "agent loop"),
+    "原理": ("原理", "机制", "principle", "mechanism", "architecture", "agent loop"),
+    "机制": ("原理", "机制", "mechanism", "architecture", "agent loop"),
+    "评测": ("评测", "评估", "evaluation", "benchmark"),
     "沙箱": ("沙箱", "sandbox", "isolation", "container"),
     "记忆": ("记忆", "memory", "context", "persistence"),
     "工具调用": ("工具调用", "tool calling", "tool use", "function calling", "tools"),
@@ -89,6 +95,8 @@ def _fetched_text_by_url(traces) -> dict[str, str]:
             ]
         else:
             rows = output.get("pages") or []
+            if isinstance(output.get("source_content"), dict):
+                rows = [*rows, output["source_content"]]
         for row in rows:
             if not isinstance(row, dict) or row.get("error"):
                 continue
@@ -110,7 +118,13 @@ def assess_comparison_coverage(
     from app.research.contracts import normalize_requirements
 
     requirements = [item.model_dump(mode="json") for item in normalize_requirements(contract)]
-    if contract.get("goal_kind") != "comparison" or not requirements:
+    spec = contract.get("comparison_scope") or {}
+    if spec.get("selection_required") and not spec.get("entities"):
+        return {"applicable": True, "complete": False, "requirements": [],
+                "gaps": ["Comparable product selection with time/selection evidence is unresolved."]}
+    if spec.get("entities") and spec.get("dimensions"):
+        requirements = comparison_requirements(spec["entities"], list(spec["dimensions"].values()))
+    if (contract.get("goal_kind") != "comparison" and not spec.get("entities")) or not requirements:
         return {"applicable": False, "complete": True, "requirements": [], "gaps": []}
 
     sources = list((source_context or {}).get("sources") or [])

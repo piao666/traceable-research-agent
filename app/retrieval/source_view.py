@@ -28,10 +28,32 @@ class SourceView:
 
     def metadata(self) -> dict[str, object]:
         return {
+            "source_artifact": retain_source(self.source_content),
             "source_content_length": self.source_content_length,
             "source_truncated_at_backend_limit": self.source_truncated,
             "view_truncated": self.view_truncated,
         }
+
+
+def retain_source(content: str) -> dict[str, object]:
+    """Retain a bounded acquired version independently of cache TTL and view size."""
+    from pathlib import Path
+    from app.config import Settings
+    from app.evidence.artifact_store import ArtifactStore
+    from app.security.redaction import redact_text
+    text = redact_text(content[:DEFAULT_SOURCE_MAX_CHARS])
+    artifact = ArtifactStore(Path(Settings.from_env().evidence_artifact_root)).put_text(text)
+    return {"version": "source-text-v1", "artifact_path": artifact.artifact_path,
+            "content_sha256": artifact.content_hash, "total_chars": len(text),
+            "redaction_changed": text != content, "storage_truncated": len(content) > DEFAULT_SOURCE_MAX_CHARS}
+
+
+def read_retained_source(reference: dict[str, object]) -> str:
+    from pathlib import Path
+    from app.config import Settings
+    from app.evidence.artifact_store import ArtifactStore
+    return ArtifactStore(Path(Settings.from_env().evidence_artifact_root)).read_text(
+        str(reference["artifact_path"]), str(reference["content_sha256"]))
 
 
 def build_source_view(

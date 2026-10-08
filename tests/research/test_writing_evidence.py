@@ -1,5 +1,7 @@
 from app.agent.evidence_requirements import assess_required_evidence
-from app.agent.reporter import _synthesis_revision_feedback
+from app.agent.reporter import (
+    _revision_citation_labels, _revision_prompt_context, _synthesis_revision_feedback,
+)
 from app.reporting.claim_occurrence import is_evidence_limitation_statement
 from app.reporting.integrity import _is_uncertain_or_limitation
 from app.reporting.writing_evidence import build_writing_evidence
@@ -173,7 +175,7 @@ def _bundle():
         ],
         "source_snapshots": [{"snapshot_id": "s1", "document_id": "d1"}, {"snapshot_id": "s2", "document_id": "d2"}],
         "source_documents": [{"document_id": "d1", "canonical_uri": "https://x/search"}, {"document_id": "d2", "canonical_uri": "https://x/body"}],
-        "citations": [{"citation_label": "CIT-001-01", "passage_id": "search"}, {"citation_label": "CIT-001-02", "passage_id": "body"}],
+        "citations": [{"citation_id": "persisted-search", "citation_label": "CIT-001-01", "passage_id": "search"}, {"citation_id": "persisted-body", "citation_label": "CIT-001-02", "passage_id": "body"}],
     }
 
 
@@ -208,6 +210,79 @@ def test_revision_focus_reselects_exact_body_window_without_promoting_snippets()
     assert bundle == before
     bundle["passages"][1]["text"] += "tampered"
     assert not build_writing_evidence(bundle, contract, 1000, focus_by_citation={"CIT-001-02": target}).factual_units
+
+
+def test_revision_rebinds_only_the_same_persisted_citation_and_exact_window():
+    from copy import deepcopy
+    original = _bundle()
+    original["citations"][1]["citation_id"] = "persisted-citation-body"
+    first = build_writing_evidence(original, budget=1000)
+    refreshed = deepcopy(original)
+    refreshed["citations"][1]["citation_label"] = "CIT-019-03"
+    second = build_writing_evidence(refreshed, budget=1000)
+    labels = _revision_citation_labels(original, refreshed, first)
+    assert labels == {"CIT-001-02": "CIT-019-03"}
+    draft, feedback = _revision_prompt_context(
+        "The feature is stable [CIT-001-02].",
+        {"must_remove_or_rewrite_unsupported": [
+            {"citation": "CIT-001-02", "sentence": "The feature is stable [CIT-001-02]."},
+        ]}, first, second, labels,
+    )
+    assert draft == "The feature is stable [CIT-019-03]."
+    assert feedback["must_remove_or_rewrite_unsupported"][0]["citation"] == "CIT-019-03"
+
+    # Reusing the visible label for a different persisted citation must not
+    # carry the old answer into the new model prompt.
+    replaced = deepcopy(refreshed)
+    replaced["citations"][1]["citation_id"] = "another-citation"
+    assert _revision_citation_labels(original, replaced, first) == {}
+    draft, feedback = _revision_prompt_context(
+        "The feature is stable [CIT-001-02].",
+        {"citation": "CIT-001-02"}, first, build_writing_evidence(replaced, budget=1000), {},
+    )
+    assert draft == ""
+    assert feedback["citation"] == "prior source unavailable"
+
+    # A source body revision can keep the persisted citation ID while losing
+    # the original exact window; the old statement still must be regenerated.
+    changed = deepcopy(refreshed)
+    changed["passages"][1]["text"] = "The official body now says this feature is deprecated."
+    labels = _revision_citation_labels(original, changed, first)
+    assert labels == {}
+
+
+def test_when_question_projects_complete_source_enumeration():
+    from app.reporting.writing_evidence import _substantive_windows
+    body = (
+        "The file format is described here. "
+        "Cases where a query can return E_LOCK include the following: "
+        "If another connection owns an exclusive lock, the query returns E_LOCK. "
+        "When the final connection cleans up, a concurrent query may return E_LOCK. "
+        "If recovery holds the exclusive lock, a third query returns E_LOCK. "
+        "10. Other topics describe the file header."
+    )
+    windows = _substantive_windows(body)
+    assert any(
+        "Cases where a query" in value
+        and "another connection" in value
+        and "final connection" in value
+        and "recovery holds" in value
+        and "Other topics" not in value
+        and body[start:end] == value
+        for start, end, value in windows
+    )
+
+
+def test_report_describes_the_semantic_validator_it_used():
+    from app.evidence.citation_validator import CitationValidationReport, render_citation_validation_section
+    report = CitationValidationReport(
+        occurrence_total=1, unique_citation_count=1, supported_occurrences=1,
+        multilingual_adjudication={"version": "multilingual-window-entailment-v2"},
+    )
+    rendered = "\n".join(render_citation_validation_section(report))
+    assert "逐条语义裁决" in rendered
+    assert "关键词重叠仅用于筛选" in rendered
+    assert "引用准确性由关键词重叠率" not in rendered
 
 
 def test_report_writer_revision_and_final_validator_share_frozen_windows(db, monkeypatch):
@@ -286,6 +361,46 @@ def test_report_refresh_uses_new_bundle_and_audits_snapshot_per_attempt(db, monk
     assert seen[0] is bundle and seen[1] is seen[2] is refreshed
     assert plan["report_draft_result"]["adopted"]
     assert saved[0]["evidence_snapshot_sha256"] != saved[1]["evidence_snapshot_sha256"]
+
+
+def test_findings_seed_is_revalidated_before_report_adoption(db, monkeypatch):
+    from app.agent import reporter
+    from app.config import settings
+    from app.evidence import citation_validator
+    from app.evidence.citation_validator import CitationValidationReport
+    from app.trace import store
+
+    run = store.create_agent_run(db, "Explain the feature", "summary", "real")
+    plan = {"steps": [], "task_contract": {"original_task": run.task}}
+    seed = "The feature is unsafe [CIT-001-02]."
+    revised = "The official body says the feature is stable [CIT-001-02]."
+    seen, written, saved = [], [], []
+
+    def validator(answer, *_args, **_kwargs):
+        seen.append(answer)
+        good = answer == revised
+        return CitationValidationReport(occurrence_total=1, supported_occurrences=int(good),
+            unsupported_occurrences=int(not good), details=[CitationValidationDetail(
+                citation_label="CIT-001-02", sentence=answer, passage_text="source", keyword_overlap=0,
+                marker_start=answer.index("CIT-"), verdict="supported" if good else "unsupported")])
+
+    def writer(*_args, **_kwargs):
+        written.append(True)
+        return revised
+
+    monkeypatch.setattr(reporter, "_audited_findings_candidate", lambda *_: (seed, {"decision_sha256": "stage"}))
+    monkeypatch.setattr(reporter, "_llm_synthesize_answer", writer)
+    monkeypatch.setattr(citation_validator, "validate_citations", validator)
+    monkeypatch.setattr(settings, "citation_validation_enabled", True)
+    monkeypatch.setattr(settings, "citation_validation_llm_enabled", False)
+    markdown = reporter.generate_markdown_report(run, plan, [], [], llm_client=object(), provenance_bundle=_bundle(),
+        revision_attempt_callback=lambda attempt, text, diagnostic: saved.append(diagnostic) or str(attempt))
+    assert seen[0] == seed and revised in seen
+    assert len(written) == 1
+    assert saved[0]["candidate_source"]["kind"] == "audited_research_findings"
+    assert saved[1]["candidate_source"]["kind"] == "report_synthesis"
+    assert plan["report_draft_result"]["adopted"]
+    assert revised in markdown and seed not in markdown
 
 
 def test_writer_prompt_omits_repeated_audit_fields_but_keeps_frozen_units():
@@ -457,7 +572,7 @@ def test_explicit_chinese_output_can_adjudicate_an_english_frozen_window_fail_cl
     assert result.supported == 1
     assert result.details[0].judgment_source == "multilingual_llm"
     assert judge.calls == 1
-    assert result.multilingual_adjudication["version"] == "multilingual-window-entailment-v1"
+    assert result.multilingual_adjudication["version"] == "multilingual-window-entailment-v8"
     assert result.multilingual_adjudication["method"] == "bounded_frozen_window_semantic_adjudication"
     assert result.to_dict()["min_supported_overlap"] == 0.15
 
@@ -564,7 +679,7 @@ def test_multilingual_adjudication_caches_a_token_accounted_call_by_frozen_case(
     assert first.supported == second.supported == 1
     assert judge.calls == 1
     assert len(recorded) == 1
-    assert judge.max_tokens == 4096
+    assert judge.max_tokens == 6000
     assert first.multilingual_adjudication["usage_traced"] is True
     assert second.multilingual_adjudication["cached"] is True
     assert second.multilingual_adjudication["usage_traced"] is False

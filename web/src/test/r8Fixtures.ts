@@ -6,7 +6,7 @@ export const r8PlanFixture: TaskPlanResponse = {
   ...planFixture, execution_mode: "react", evidence_mapping_version: "trace-source-v2",
   allowed_tools: ["mcp_github_search", "tavily_search", "web_fetcher"],
   execution_budget: {
-    version: "shared-budget-v1", root_run_id: "fixture", limits: { max_tool_calls: 40, max_llm_calls: 40,
+    version: "shared-budget-v1", root_run_id: "fixture", limits: { tokens_unlimited: false, max_tool_calls: 40, max_llm_calls: 40,
       max_tokens: 100000, max_seconds: 900, max_estimated_cost: 0, tool_cost_estimate: null, llm_cost_per_million_tokens: null,
       final_report_tokens: 8000, final_report_llm_calls: 2 },
     tool_calls: 3, llm_calls: 4, provider_attempts: 5, accounted_tokens: 12000, estimated_cost: 0, cost_currency: "CNY", cost_evaluable: false,

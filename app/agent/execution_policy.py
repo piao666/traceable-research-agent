@@ -87,27 +87,43 @@ def execute_with_policy(name: str, arguments: dict, plan: dict, settings: Settin
     violation = argument_violation(name, arguments, plan, settings)
     if violation is not None:
         return violation
-    from app.agent.budget import BudgetExceeded, current_budget, reserve_tool
+    from app.agent.budget import BudgetExceeded, BudgetApprovalRequired, current_budget, reserve_tool
     if not budget_reserved:
         try:
             reserve_tool(name)
+        except BudgetApprovalRequired:
+            raise
         except BudgetExceeded as exc:
             return policy_failure("budget_exhausted", str(exc), metadata={"budget_reason": exc.reason})
     prepared = dict(arguments)
     prepared.pop("_source_snapshot", None)  # Never accept a model-supplied snapshot.
     source_resolution: dict[str, Any] = {}
+    if name == "web_fetcher" and prepared.get("source_id") and prepared.get("urls") and not (
+        prepared.get("source_content_sha256") or prepared.get("origin_trace_id")
+    ):
+        # Explicit governed URLs own this fetch. A static planner placeholder
+        # cannot shadow them as an invented runtime Source ID.
+        source_resolution["ignored_source_id_with_explicit_urls"] = prepared.pop("source_id")
+        prepared.pop("offset", None)
     if name == "web_fetcher" and prepared.get("source_id"):
         from app.agent.source_context import resolve_source_record, resolve_source_snapshot
         from app.trace import store
         runtime = current_budget()
         if runtime is not None and not prepared.get("urls"):
             traces = store.list_tool_traces(runtime.db, runtime.run_id)
+            run = store.get_fresh_agent_run(runtime.db, runtime.run_id)
+            if run is not None and run.research_scope_id:
+                from app.research.scope import list_scope_traces
+                traces = list_scope_traces(runtime.db, run.research_scope_id)
             source_id = str(prepared["source_id"])
-            snapshot = resolve_source_snapshot(traces, source_id)
+            snapshot = resolve_source_snapshot(traces, source_id,
+                source_content_sha256=prepared.get("source_content_sha256"),
+                origin_trace_id=prepared.get("origin_trace_id"))
             source = resolve_source_record(traces, source_id)
             if snapshot is not None:
                 prepared["_source_snapshot"] = snapshot
-            elif source is not None and source.get("fetch_status") != "fetched":
+            elif source is not None and source.get("fetch_status") != "fetched" and not (
+                    prepared.get("source_content_sha256") or prepared.get("origin_trace_id")):
                 # The ID came from this run's discovery trace, so the recorded
                 # URL is authoritative and does not widen model permissions.
                 prepared.pop("source_id", None)

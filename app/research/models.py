@@ -236,6 +236,7 @@ class ResearchOperation(Base):
     result_revision: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -324,3 +325,32 @@ class NodeExecutionResult(Base):
     evidence_revision: Mapped[str | None] = mapped_column(String(128), nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ResearchEntity(Base):
+    """A source-attested entity, independent of a report's display label."""
+    __tablename__ = "research_entities"
+    entity_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    root_run_id: Mapped[str] = mapped_column(String, ForeignKey("agent_runs.run_id", ondelete="CASCADE"), index=True)
+    canonical_name: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    aliases_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    provenance_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class ResearchWorkItem(Base):
+    """Durable obligation × entity × facet; acquisition never implies completion."""
+    __tablename__ = "research_work_items"
+    work_item_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    root_run_id: Mapped[str] = mapped_column(String, ForeignKey("agent_runs.run_id", ondelete="CASCADE"), index=True)
+    requirement_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    entity_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("research_entities.entity_id"), nullable=True)
+    facet: Mapped[str] = mapped_column(String(64), nullable=False)
+    acquisition_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    answer_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unanswered")
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False, default="answer_content_missing")
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    evidence_refs_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    state_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)

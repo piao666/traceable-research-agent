@@ -173,6 +173,8 @@ def _persist_final_report_gate(
         })
     else:
         integrity_payload = integrity.to_plan_dict()
+    if validation_reports and getattr(validation_reports[-1], "answer_coverage", None):
+        plan["answer_coverage"] = validation_reports[-1].answer_coverage
     plan["report_integrity"] = integrity_payload
     plan["report_revision_id"] = bundle["report_revision"]["report_revision_id"]
     # Freeze the adopted revision and validator inputs in one public identity.
@@ -768,6 +770,7 @@ def run_plan(
         if (
             plan.get("research_mode") == "quick"
             and plan.get("quick_output_mode") != "discovery"
+            and not (plan.get("task_contract") or {}).get("obligation_version")
         ):
             # A substantive Quick run gets its bounded alternate-candidate
             # window before the broader operational outcome gate can finalize
@@ -783,9 +786,25 @@ def run_plan(
                 db, run, plan, settings_obj, observations, traces,
                 provenance_bundle, evidence_assessment,
             )
+            if evidence_assessment.passed:
+                from app.research.recovery import acquire_comparison_evidence
+                provenance_bundle = acquire_comparison_evidence(db, run_id, plan, settings_obj,
+                    provenance_bundle or {}, traces=traces)
+                observations[:] = load_observations(traces)
             plan["evidence_assessment"] = evidence_assessment.as_dict()
             store.replace_agent_run_plan(db, run_id, plan)
 
+        _llm = resolve_report_llm_client(settings_obj, report_llm_client)
+        from app.research.controller import run_work_loop
+        def reload_work_bundle():
+            traces[:] = store.list_tool_traces(db, run_id)
+            return materialize_execution_provenance(db, store.get_fresh_agent_run(db, run_id),
+                plan, load_observations(traces), traces, settings_obj)
+        if (plan.get("task_contract") or {}).get("obligation_version"):
+            provenance_bundle = reload_work_bundle() or {}
+            provenance_bundle = run_work_loop(db, run_id, plan, settings_obj,
+                provenance_bundle, _llm, loader=reload_work_bundle, traces=traces)
+            observations[:] = load_observations(traces)
         if not enforce_research_outcome(db, run, plan, observations, traces, settings_obj):
             return _summary(store.get_fresh_agent_run(db, run_id))
         provenance_bundle = materialize_execution_provenance(
@@ -820,6 +839,12 @@ def run_plan(
             finalize_terminal_decision(db, run, plan, traces=traces)
             return _summary(store.get_fresh_agent_run(db, run_id))
         _llm = resolve_report_llm_client(settings_obj, report_llm_client)
+        from app.research.recovery import refresh_comparison_contract
+        if refresh_comparison_contract(db, run_id, plan, provenance_bundle or {}, _llm):
+            from app.research.recovery import acquire_comparison_evidence
+            provenance_bundle = acquire_comparison_evidence(db, run_id, plan, settings_obj,
+                provenance_bundle or {}, traces=traces)
+            observations[:] = load_observations(traces)
         report_audit = ReportGenerationAudit(db, run_id, traces)
         report_llm_responses = report_audit.responses
         citation_validation_reports: list[Any] = []
@@ -827,6 +852,10 @@ def run_plan(
         def refresh_report_evidence(feedback: dict[str, Any]) -> dict[str, Any] | None:
             nonlocal traces, provenance_bundle
             from app.agent.budget import acquisition_budget, FinalizationRequired
+            if (plan.get("task_contract") or {}).get("obligation_version"):
+                provenance_bundle = run_work_loop(db, run_id, plan, settings_obj, provenance_bundle or {}, _llm,
+                    loader=reload_work_bundle, traces=traces, feedback=feedback)
+                return provenance_bundle
             if not (feedback.get("must_remove_or_rewrite_unsupported")
                     or feedback.get("weak_citations_to_improve_only_if_needed")):
                 return None
@@ -859,6 +888,7 @@ def run_plan(
                 citation_validation_callback=citation_validation_reports.append,
                 reference_verification_callback=reference_verification_reports.append,
                 revision_attempt_callback=report_audit.persist_attempt,
+            revision_decision_callback=report_audit.persist_validation,
                 cancellation_check=lambda: check_report_generation_not_cancelled(db, run_id),
                 evidence_refresh_callback=refresh_report_evidence,
             )

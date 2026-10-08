@@ -10,7 +10,7 @@ from typing import Any, Callable
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 
-from app.agent.budget import BudgetExceeded, BudgetRuntime, ensure_budget
+from app.agent.budget import BudgetExceeded, BudgetApprovalRequired, pause_for_budget_approval, BudgetRuntime, ensure_budget
 from app.agent.execution_policy import allowed_tool_names, bind_run_policy
 from app.agent.outcome import load_observations
 from app.agent.react_executor import run_react_task
@@ -81,7 +81,11 @@ class ResearchNodeExecutor:
         parent_plan = bind_run_policy(parent, _json_object(parent.plan_json))
         inherited_tools = allowed_tool_names(parent_plan)
         if child is None:
-            child_contract = _node_task_contract(parent_plan.get("task_contract"), node)
+            # Branch IDs belong to the immutable root obligation namespace.
+            # Recursive parents carry only a projection of that namespace;
+            # using it here rejects legitimate root gaps assigned downstream.
+            root_contract = _json_object(root.plan_json).get("task_contract")
+            child_contract = _node_task_contract(root_contract, node)
             # Check admission before allocating a child Run. Creating empty
             # branches after exhaustion breaks recovery and pollutes lineage.
             runtime = BudgetRuntime(db, scope.root_run_id, settings)
@@ -122,6 +126,7 @@ class ResearchNodeExecutor:
                 "source_constraints": parent_plan.get("source_constraints"),
                 "evidence_policy_version": parent_plan.get("evidence_policy_version"),
                 "task_contract": child_contract,
+                "acquisition_stage": _json_object(node.metadata_json).get("acquisition_stage"),
                 "research_goal": node.research_goal,
                 "research_scope_id": scope.scope_id,
                 "research_node_id": node.node_id,
@@ -160,9 +165,49 @@ class ResearchNodeExecutor:
             "started",
             details={"node_id": node.node_id, "node_type": node.node_type},
         )
+        from app.research.control_store import sync_work, ensure_work, project_work, begin_action, finish_action
+        from app.research.models import ResearchOperation
+        from app.research.state import identity, semantic_contract
+        root_plan = _json_object(store.get_fresh_agent_run(db, scope.root_run_id).plan_json)
+        metadata = _json_object(node.metadata_json)
+        operation = db.get(ResearchOperation, metadata["operation_id"]) if metadata.get("operation_id") else None
+        if root_plan.get("task_contract", {}).get("obligation_version") and operation is None:
+            sync_work(db, scope.root_run_id, root_plan)
+            work_identity = metadata.get("work_identity") or []
+            assigned = metadata.get("assigned_requirement_ids") or []
+            rid = work_identity[0] if len(work_identity) == 3 else assigned[0] if assigned else "req-original"
+            entity = work_identity[1] if len(work_identity) == 3 else ""
+            facet = work_identity[2] if len(work_identity) == 3 else "selection" if metadata.get("acquisition_stage") == "comparison_selection" else "answer"
+            work = ensure_work(db, scope.root_run_id, rid, entity, facet)
+            item = next(w for w in project_work(db, scope.root_run_id) if w["work_item_id"] == work.work_item_id)
+            operation = begin_action(db, scope.root_run_id, item, "execute_node", {"node_id": node.node_id, "query": node.query},
+                identity("", semantic_contract(root_plan["task_contract"])))
+            if operation is None:
+                raise RuntimeError("Research node has an unresolved operation intent; inspect its journal before replay")
+            operation.node_id = node.node_id
+            metadata["operation_id"] = operation.operation_id
+            metadata["work_item_id"] = work.work_item_id
+            node.metadata_json = json.dumps(metadata, ensure_ascii=False)
+            db.commit()
         try:
             result = self.runner(db, child.run_id, settings, llm_client)
+        except BudgetApprovalRequired as exc:
+            if operation is not None:
+                operation.status = "waiting_human"
+                db.commit()
+            pause_for_budget_approval(db, child.run_id, exc.reason)
+            node.status = "waiting_human"
+            node.updated_at = datetime.now(timezone.utc)
+            db.commit()
+            record_phase_event(
+                db, child.run_id, "node_execution", "waiting",
+                parent_trace_id=execution_trace.trace_id,
+                details={"node_id": node.node_id, "reason": exc.reason + "_budget_approval"},
+            )
+            raise
         except BudgetExceeded:
+            if operation is not None:
+                finish_action(db, operation, "failed", execution_trace.trace_id, {"child_run_id": child.run_id, "reason": "budget_exceeded"})
             stopped_child = store.update_agent_run_status(
                 db, child.run_id, "failed", "Research node exceeded its budget."
             )
@@ -178,7 +223,14 @@ class ResearchNodeExecutor:
             raise
         except Exception as exc:
             db.rollback()
-            error_details = {"error_type": type(exc).__name__}
+            import traceback
+            error_details = {"error_type": type(exc).__name__, "frames": [
+                {"file": frame.filename.replace("\\", "/").split("/app/")[-1], "line": frame.lineno, "function": frame.name}
+                for frame in traceback.extract_tb(exc.__traceback__)
+                if "/app/" in frame.filename.replace("\\", "/")
+            ]}
+            if getattr(getattr(exc, "orig", None), "sqlite_errorname", None):
+                error_details["sqlite_errorname"] = exc.orig.sqlite_errorname
             if isinstance(exc, OperationalError):
                 # Do not persist SQL, parameters, or provider secrets from the
                 # exception string. SQLite's symbolic code is enough to tell
@@ -222,6 +274,7 @@ class ResearchNodeExecutor:
             child.status
             if child and child.status in {
                 "completed",
+                "incomplete",
                 "failed",
                 "cancelled",
                 "waiting_human",
@@ -233,6 +286,9 @@ class ResearchNodeExecutor:
         )
         node.updated_at = datetime.now(timezone.utc)
         db.commit()
+        if operation is not None:
+            finish_action(db, operation, "succeeded" if node.status in {"completed", "incomplete"} else node.status,
+                execution_trace.trace_id, {"child_run_id": child.run_id, "node_id": node.node_id, "requires_rejudgment": True})
         record_phase_event(
             db,
             child.run_id,
@@ -282,6 +338,10 @@ def _node_task_contract(root_contract: Any, node: ResearchNode) -> dict[str, Any
     contract["original_task"] = node.research_goal or node.query
     metadata = _json_object(getattr(node, "metadata_json", None))
     assigned = metadata.get("assigned_requirement_ids")
+    if isinstance(assigned, list) and len(assigned) > 1:
+        # The root aggregate is checked by Scope. A focused child must not
+        # be required to independently answer the entire original request.
+        assigned = [rid for rid in assigned if rid != "req-original"]
     indexed = requirement_index(contract)
     if "assigned_requirement_ids" in metadata:
         if not isinstance(assigned, list) or any(not isinstance(value, str) for value in assigned):
@@ -341,4 +401,19 @@ def _node_task_contract(root_contract: Any, node: ResearchNode) -> dict[str, Any
             for item in contract.get(key, [])
             if isinstance(item, dict) and item.get(singular)
         ))
+    if metadata.get("acquisition_stage") == "comparison_selection":
+        contract["comparison_scope"] = {**contract.get("comparison_scope", {}), "dimensions": {}}
+        contract["requirement_focus"] = {rid: {"facet": "selection"} for rid in selected_ids}
+    members = metadata.get("comparison_entities")
+    if isinstance(members, list):
+        root_members = ((root_contract.get("comparison_scope") or {}).get("entities")
+                        or (root_contract.get("answer_scope") or {}).get("entities") or [])
+        if not members or any(member not in root_members for member in members):
+            raise ValueError("Branch comparison entities must belong to the frozen root cohort")
+        contract["comparison_scope"] = {**contract.get("comparison_scope", {}), "entities": members}
+        if contract.get("answer_scope"):
+            contract["answer_scope"] = {**contract["answer_scope"], "entities": members}
+        if len(members) == 1:
+            contract["requirement_focus"] = {**contract.get("requirement_focus", {}), **{
+                rid: {**contract.get("requirement_focus", {}).get(rid, {}), "entity": members[0]} for rid in selected_ids}}
     return contract

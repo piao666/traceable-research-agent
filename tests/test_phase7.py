@@ -349,7 +349,8 @@ class PlanApprovalTests(Phase7DatabaseTestCase):
             "memory_ids": [],
             "reason": "cold_start",
         }
-        with patch("app.api.tasks.plan_task_for_review", return_value=plan):
+        with patch("app.api.tasks.plan_task_for_review", return_value=plan), \
+                patch("app.agent.report_generation.resolve_report_llm_client", return_value=None):
             response = tasks.create_task(
                 TaskCreateRequest(task="research", require_plan_approval=True),
                 self.db,
@@ -358,7 +359,8 @@ class PlanApprovalTests(Phase7DatabaseTestCase):
         self.assertEqual(run.status, "waiting_human_plan")
         self.assertNotIn("memory_recall_trace", json.loads(run.plan_json))
         traces = store.list_tool_traces(self.db, response.run_id)
-        self.assertEqual([trace.tool_name for trace in traces], ["memory_recall"])
+        memory_traces = [trace for trace in traces if trace.tool_name == "memory_recall"]
+        self.assertEqual(len(memory_traces), 1)
 
     def test_rejected_plan_fails_with_audit_trace(self) -> None:
         from app.api import tasks

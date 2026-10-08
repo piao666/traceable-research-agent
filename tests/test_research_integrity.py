@@ -154,6 +154,31 @@ class ResearchIntegrityTests(unittest.TestCase):
         self.assertEqual(payload["citations"], [])
         self.assertEqual(payload["integrity"]["citation_coverage"], 0)
 
+    def test_materialization_deduplicates_equal_ids_within_one_batch(self):
+        from app.evidence.artifact_store import ArtifactStore
+        from app.evidence.service import materialize_provenance_bundle
+
+        trace = self.trace("web_fetcher", "success", {"pages": [{
+            "url": "https://example.org/reference",
+            "content": "Official reference text explains the operation and its condition in detail.",
+            "content_basis": "full_text",
+        }]}, 2)
+        bundle = build_evidence_bundle(self.run, self.plan, [], [trace])
+        self.assertEqual(len(bundle.evidence_items), 1)
+        # Two observations can resolve to one immutable passage, and two
+        # claim mappings can resolve to the same citation/edge identity.
+        bundle.evidence_items.append(bundle.evidence_items[0])
+        if bundle.claims:
+            bundle.claims.append(bundle.claims[0])
+        with tempfile.TemporaryDirectory() as directory:
+            payload = materialize_provenance_bundle(
+                self.db, self.run, bundle, [trace], ArtifactStore(Path(directory)),
+                extractor_version="duplicate-batch-regression",
+            )
+        self.assertEqual(len(payload["passages"]), 1)
+        self.assertEqual(len({row["passage_id"] for row in payload["passages"]}), 1)
+        self.assertTrue(payload["integrity"]["all_passages_resolve"])
+
     def test_canonical_empty_search_does_not_call_fetch(self):
         from app.agent.executor import run_plan
         with (patch("app.agent.executor.is_executable_tool", return_value=True),

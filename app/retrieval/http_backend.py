@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.retrieval.source_view import retain_source
+
 import hashlib
 import time
 from contextlib import nullcontext
@@ -440,6 +442,7 @@ class HttpBackend:
             "cache_status": cache_status,
             "cache_hit": cache_status in {"hit", "revalidated"},
             "raw_length": len(text),
+            "source_artifact": retain_source(source_content),
             "source_content_length": len(source_content),
             "source_truncated_at_cache_limit": source_truncated_at_cache_limit,
             "view_truncated": view_truncated,
@@ -575,6 +578,7 @@ class HttpBackend:
                 "cache_hit": True,
                 "cache_age_seconds": round(entry.age_seconds, 3),
                 "cache_fetched_at": entry.cached_at_epoch,
+                "source_artifact": retain_source(source_content),
                 "source_content_length": entry.source_content_length,
                 "source_truncated_at_cache_limit": entry.source_truncated_at_cache_limit,
                 "view_truncated": view_truncated,

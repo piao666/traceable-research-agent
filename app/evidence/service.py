@@ -136,8 +136,15 @@ def materialize_provenance_bundle(
 
         def add_new(rows, key):
             # Append-only revisions: never overwrite a previous source/claim/citation.
+            # ``db.get`` cannot find a duplicate row that has only been added
+            # to this batch; SQLite otherwise raises on the following flush.
+            seen: set[str] = set()
             for row in rows:
-                if db.get(type(row), getattr(row, key)) is None:
+                identity = str(getattr(row, key))
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                if db.get(type(row), identity) is None:
                     db.add(row)
 
         add_new(documents_by_id.values(), "document_id")
@@ -368,6 +375,12 @@ def _materialize_item(
             "file_approved_outside_allowed_roots": item.metadata.get("approved_outside_allowed_roots") is True,
         })
     evidence_role = "unknown"
+    from app.evidence.policy import user_declared_documentation
+    run_plan = _json_object(run.plan_json)
+    if user_declared_documentation(canonical_uri, run_plan.get("task_contract") or {}):
+        item.metadata["official"] = True
+        metadata_doc["official"] = True
+        metadata_doc["authority_basis"] = "user_declared_domain_documentation"
     current_channel_verified = False
     current_channel_policy_version = None
     try:
@@ -436,6 +449,7 @@ def _materialize_item(
                         "source_identity",
                         "redirect_chain",
                         "retrieval_attempts",
+                        "source_artifact",
                     )
                     if key in item.metadata
                 },
