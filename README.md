@@ -1,872 +1,419 @@
 # Traceable Research Agent
 
-## Research control checkpoint — 2026-10-08
+**English** | [简体中文](README_zh.md)
 
-The current research contract follows this completion chain:
+A self-hosted research workspace for following an answer from the original
+question to its sources, tool calls and final report.
 
-**Research obligations → objects and dimensions → specific gaps → targeted actions → completion proof.**
+Plan research, inspect evidence, review gaps and export reports through a React
+interface or API. FastAPI handles execution and SQLite stores the research history.
 
-| Stage | Persisted result and completion rule |
+[Background](#background) · [Highlights](#highlights) · [Quick start](#quick-start) ·
+[Deployment](#deployment-and-startup) · [Demo](#demo) · [Configuration](#configuration) ·
+[API](#api) · [Architecture](#architecture)
+
+## Background
+
+A research report is easier to assess when its sources and reasoning can be
+inspected. A citation alone does not show whether the source was fully read,
+whether an important condition was omitted, or whether every requested question
+was answered.
+
+Traceable Research Agent records the work behind the report: the plan, required
+answers, research branches, source snapshots, evidence passages, tool failures
+and validation decisions. It is intended for technical research, source comparison,
+literature investigation and local document/database review.
+
+The application runs as a single self-hosted instance. Sessions and optional
+memory belong to that deployment. Remote MCP tools are optional; the core
+research workflow runs without them.
+
+## Highlights
+
+| Capability | What it provides |
 | --- | --- |
-| Obligations | A question may have multiple required answers, each retaining its identity and search topic. Deleting an answer during revision reopens its gap. |
-| Objects and dimensions | Source-attested identities and a fixed object-by-dimension scope determine required work. A supported representative list need not include every name in its sources; explicit named, numeric and exhaustive requirements still apply. |
-| Gaps | Missing content, object identity, citation mapping, source quality and concrete application tasks have separate diagnostics. Coverage approval does not replace citation support. |
-| Actions | Reproject saved body passages, continue reading, search or dispatch Deep branches according to the gap. Each action records its work identity, input version, expected effect and actual Trace. |
-| Confirmation | Reassess the current answer and validate object identity, conditions, citations and required coverage against the final report bytes and immutable decisions. Fetch success alone cannot complete work. |
+| Quick and Deep research | Quick executes a sequential plan. Deep organizes research into a persistent Scope and tree of branches, sharing the root budget. |
+| Inspectable execution | Plans, tool inputs/outputs, timing, failures and recorded usage remain available as Traces. |
+| Evidence provenance | Follow a citation through its passage, source snapshot, acquisition Trace and originating Run. |
+| Required-answer coverage | Track required answers by object and dimension; missing content creates a specific gap and a targeted next action. |
+| Report validation | Check citation support, object identity, applicable conditions and required coverage against the current report. |
+| Governed tools | Registered tools include restricted file reads, read-only SQL, web search/fetch, PDF and academic tools, with optional MCP integration. |
+| Human control | Review plans, approve protected operations and approve budget increases for a specific Run. |
+| Research workspace | Browse tasks, evidence and reports; use sessions, optional memory, capability inspection and runtime diagnostics. |
+| Portable reports | Read Markdown in the UI and download Markdown, Word or PDF; export evidence as JSON. |
 
-Quick uses the sequential planned executor; Deep uses the persisted Scope
-controller. For new obligation contracts, Deep enters the shared work loop
-after root acquisition and dispatches concrete object/dimension nodes. Legacy
-recursive branching and keyword-only admission vetoes no longer control these
-contracts. Existing historical records remain readable and are not regraded.
+### How research reaches completion
 
-### Evidence projection and report repair
-
-Writing windows are allocated separately by obligation, object and dimension.
-Targeted acquisition Traces guide projection of the newly acquired body; generic
-multi-object directories no longer receive a global name-count bonus. Technical
-implementation claims require primary evidence or independent corroboration;
-ranking and distinct hosts do not themselves prove authority.
-
-Valid candidate cells retain exact passage/window hashes and coordinates.
-Further synthesis receives prior findings with stale citation labels removed;
-all final citations are validated against the current evidence view. Unchanged
-writing windows preserve their gaps and skip repeated model judgement. Aggregate
-requirements reuse their concrete cell recovery allowances, including when the
-wording of an application rejection changes.
-
-Compressed immutable body artifacts support continuation beyond short tool
-views. Quote checks preserve applicable conditions, negation, numbers and exact
-source spans, including multiple verbatim spans within one frozen window.
-Provider failures retain their own error and decision audit and stop the loop;
-they are not treated as missing evidence requiring repeated searches.
-
-Object lists undergo extraction and independent membership/category review.
-Same-name benchmarks, dependencies or other products cannot replace the fixed
-objects. A paragraph's explicit object label can bind its continuation sentences;
-blank lines or object switches prevent identity borrowing. Concrete application
-tasks undergo independent review of the complete current answer, its limitations
-and supported task quotes. Deployment, ease of use or general positioning alone
-does not satisfy an application-task obligation.
-
-Recovery and report revision retain precise rejection reasons and immutable
-decision inputs/outputs. Candidate evidence remains distinct from confirmed
-answers. The React work panel and `GET /api/tasks/{run_id}/plan` expose
-`research_work`, `work_controller`, actions and stop reasons.
-
-### Budget approval and continuation
-
-Deep defaults are `RESEARCH_MAX_TOKENS=400000` and
-`RESEARCH_MAX_LLM_CALLS=192`; explicit deployment overrides remain effective.
-Root and branches share the same counters and limits. Finalization reserves
-model calls inside the existing total: at most one third, capped at 64 calls
-when the total is at least 128, otherwise capped at 16. Previously spent report
-calls reduce the remaining reserve while retaining a minimum validation margin.
-
-Obligation runs reaching hard Token or model-call limits enter `waiting_human`,
-retaining candidates, evidence and cumulative usage. Confirm the specific Run
-with `POST /api/tasks/{run_id}/confirm`: `max_tokens` or
-`unlimited_tokens: true` approves Token capacity; `max_llm_calls` independently
-approves a larger finite call limit. Unlimited Token approval does not increase
-call, tool, time or cost allowances. Approval with `resume: false` keeps the
-budget clock paused until execution resumes. Approvals never transfer to a
-different Run or reset prior usage.
-
-### Deployment and acceptance boundary
-
-Migration `0019_research_work_state` persists research entities/work items and
-extends operation payloads. Back up persistent data before upgrading, then run
-`docker compose up --build -d`; a container restart alone does not rebuild code.
-Dynamic-page fallback requires `FETCH_BROWSER_ENABLED=true` and runnable
-Chromium; the example configuration disables it.
-
-The latest backend checkpoint passed 1,374 tests, with one expected failure
-and 86 passing subtests; the focused closed-loop suite passed 152 tests.
-Isolated API smoke used zero external API calls. Docker health and source-hash
-checks passed without rewriting historical reports. **Complete real-provider
-Quick/Deep content acceptance and human review remain pending.** Neither a
-healthy service nor offline tests establish research-answer completeness.
-
-[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](#quick-start)
-[![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](#quick-start)
-
-**Traceable Research Agent** is a self-hosted research application for teams
-that need to inspect how an answer was produced. It plans a multi-step task,
-runs only registered read-only tools, stores every call and failure as a trace,
-and produces an evidence-backed Markdown report.
-
-[中文说明](README_zh.md) | [Quick start](#quick-start) | [API](#api) | [Architecture](#architecture)
-
-## Why Traceable Research Agent
-
-### Deep Research Engine V2 (R12)
-
-Deep Profile now has one official execution path: a persisted Research Scope
-containing a Research Tree of root and branch Runs. `AgentRun` records explicit
-`parent_run_id`, `root_run_id`, `run_role`, `research_scope_id` and
-`engine_version` lineage; migration `0012_research_scope_and_lineage` backfills
-existing Runs without relying on `plan_json` as the authority.
-
-Each branch reuses the existing governed ReAct executor, read-only Tool
-Registry, recovery policy, Trace, Evidence Pipeline and the root Run's shared
-budget. Branch Evidence stays owned by the branch Run. A read-only Scope layer
-aggregates it logically for outcome checks and final synthesis, preserving the
-chain `Citation → Passage → Snapshot → Trace → origin_run_id`. The root writes
-one final report from the complete Scope; node completion no longer writes an
-intermediate report that omits sibling evidence. Standard and Offline profiles
-continue to use their existing executors.
-
-The legacy deepening round engine, its deprecated adapter, and the alternate
-parallel planned executor have been removed. New tasks enter the canonical
-dispatcher; historical Run readers and lineage migrations remain. Research intelligence,
-coverage/gap control now follows the dated research control checkpoint above.
-Hierarchical long-report composition remains future work.
-
-### Scope-first research result governance (R12.1)
-
-R12.1 closes the remaining Run-centric gaps without introducing R13 research
-intelligence. `ResearchResultContext` now resolves an ordinary Run or any
-member of a Deep Research Scope to one user-visible result boundary. The
-official result APIs, React evidence/report views and evidence exports therefore
-include root, child and grandchild Evidence while preserving every entity's
-`origin_run_id`, `origin_trace_id` and `research_node_id`.
-
-Scope identity projections retain raw provenance and expose deterministic
-source/passage aliases plus effective unique counts. Cross-run claim grouping,
-source independence and conflict resolution are materialized for final
-synthesis. Every deterministic claim candidate in the final-answer section is
-persisted as a report-claim occurrence, including claims with zero citations;
-citation occurrences are child links rather than a prerequisite for claim
-existence. Report Integrity persists claim citation-coverage metrics and maps
-scope conflicts by citation lineage before using normalized-text fallback, so
-an asserted deterministic claim in an unresolved group cannot evade the gate
-merely by omitting or paraphrasing its citation. Every citation marker is still
-validated under the existing support thresholds, and Deep Research V2 cannot
-be marked complete when the fixed report-integrity thresholds fail. Academic
-verification is limited to works actually cited in the final answer and shares
-the root budget. Its warnings and verification table are appended after the
-final-answer section, so they cannot become final-answer citation occurrences.
-Retries start with fresh Scope, Gate and engine state; V2 is assigned only when
-the dispatcher actually enters the Deep V2 orchestrator. Migration
-`0013_research_result_governance` adds the associated
-scope-reasoning, report-revision and occurrence records. Actor and Synthesizer
-model availability remain role-specific, and final synthesis uses a bounded,
-scope-balanced evidence context.
-
-### Adaptive retrieval and source reliability (R11)
-
-R11 keeps the public `web_fetcher` tool contract while replacing its internals
-with an adaptive retrieval router. Static HTTP remains the first and cheapest
-backend. A successful HTTP status is accepted only after extraction-quality
-checks; JavaScript shells, Cloudflare or bot challenges, CAPTCHA, cookie/login
-walls, soft 404/429 pages, paywalls, raw PDF data and low-quality boilerplate
-are classified rather than treated as research evidence. Eligible failures can
-fall back inside the same tool call to an isolated Playwright context and then
-to configured Firecrawl or Exa extraction. PDF URLs and detected PDF responses
-are delegated to the existing page-aware PDF reader.
-
-Every backend returns one `FetchResult` shape with requested/final/canonical
-URLs, stable status, provider, extraction method and confidence, redirect
-chain, content basis/hash and source identity. Resource identity (DOI/arXiv/
-PMID or canonical URL), snapshot content hash, passage identity and caller View
-are separate layers. HTTP, Browser, Remote Extract and PDF use a Source/View
-split: hashes, story identity and independence groups are derived from the
-resource-bearing Source, while `max_chars` changes only the returned View.
-The shared independence helper merges cross-backend views of one resource but
-does not collapse different paths on the same hostname; near-duplicate
-syndication is merged only when an explicit original/syndication signal exists.
-Remote providers expose any pre-SourceView truncation, which forces partial
-content basis, and a route with no permitted backend returns a structured
-tool-scoped `BACKEND_UNAVAILABLE` result rather than asserting or silently
-using a disabled backend.
-Cache keys normalize scheme/host case but preserve case-sensitive path/query
-components. The same metadata is retained in Trace,
-`SourceDocument` and `SourceSnapshot`; Agent recovery sees the final URL-level
-outcome instead of repeatedly retrying static HTTP.
-
-Advanced limits and provider order are documented only in `.env.example.full`.
-Docker installs the pinned Playwright Chromium runtime. Real static, Browser,
-PDF and configured remote-extractor checks are deliberately confirmation-gated:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls --r11-fetch-smoke
+```text
+Research obligations → objects and dimensions → specific gaps
+→ targeted actions → completion proof
 ```
 
-The offline suite uses injected HTTP/browser/provider fixtures and never makes
-these real calls. R11 itself remains the retrieval layer; R12 consumes its
-uniform Fetch results without coupling the Engine to an individual backend.
+A successfully fetched page supplies candidate evidence. It does not establish
+that the requested answer is complete. The controller first considers saved
+body passages, then continuation reads, targeted searches or Deep branches.
+Writing evidence is selected per object and dimension; unchanged evidence views
+avoid repeated model judgement. Final confirmation binds the current answer,
+citations and coverage decisions to the saved report.
 
-Metadata-only evidence roles (`official_metadata` and `discovery_index`) use a
-shared fail-closed policy in citation validation and scope reasoning. They may
-independently establish only explicit bibliographic identity (for example DOI,
-author, title, venue or publication year); ambiguous or mixed substantive
-claims only contextualize and cannot count as independent support/refutation.
+The workbench distinguishes acquired evidence, candidate answers and confirmed
+answers. Missing support can leave a Run `incomplete`, with a readable partial
+report. Model-provider failures remain visible. Validation results assist review;
+they do not guarantee factual accuracy. Complete real-provider Quick/Deep content
+acceptance and human review remain work in progress.
 
-### Real Runtime profiles and preflight (R10)
+## Quick start
 
-R10 makes a real research deployment explicit. `RESEARCH_PROFILE` supplies
-coherent defaults, and any explicitly set environment variable still overrides
-its Profile value:
+Requirements: Git and Docker Desktop, or Docker Engine with Docker Compose v2.
+The commands below use Bash; in PowerShell, use `Copy-Item` instead of `cp`.
 
-| Profile | Intended use | Default behavior |
-|---|---|---|
-| `deep` | real multi-source research | dynamic ReAct, LLM planning/reporting, deepening, broad safety ceilings, no mock fallback |
-| `standard` | lower-cost real research | planned/adaptive execution, real search/fetch and LLM reporting, no deepening by default |
-| `offline` | development, CI and demonstrations | deterministic planning/reporting and explicitly isolated fixture sources |
-
-The minimum real configuration is:
-
-```env
-RESEARCH_PROFILE=deep
-LLM_PROVIDER=openai_compatible
-LLM_BASE_URL=https://example.com/v1
-LLM_MODEL=your-model
-LLM_API_KEY=your-key
-SEARCH_PROVIDER=tavily
-TAVILY_API_KEY=your-key
-```
-
-The generic adapter uses OpenAI-compatible Chat Completions. The legacy `qwen`
-and `deepseek` names remain aliases with their existing endpoint/model defaults.
-Provider failures use stable categories such as `auth_error`,
-`permission_error`, `rate_limited`, `timeout`, `model_not_found`,
-`context_overflow`, `malformed_response` and `structured_output_invalid`.
-Non-retryable configuration errors stop retrying; transient failures use bounded
-backoff; ReAct records the category in Trace and can fall back without expanding
-tool permissions. Context overflow activates a smaller persisted observation
-window for one bounded retry.
-
-`GET /api/runtime/capabilities` is a non-network configuration projection.
-`POST /api/runtime/preflight` is an explicit, quota-consuming check of the real
-LLM completion/JSON response, Tavily result provenance and static page fetch. The
-new-research page shows only the concise readiness result and lets the user start
-this explicit verification; credentials, endpoints, prompts and response bodies
-are never returned. PDF, academic and remote MCP capabilities remain separate;
-optional capability absence does not make an otherwise usable real runtime fail.
-
-The research roles are logically separated even when one model serves all of
-them: Planner builds the task contract and plan, Actor selects and runs permitted
-tools, Critic evaluates coverage/evidence gaps, and Synthesizer writes only from
-the active traceable evidence revision. `.env.example.full` is the advanced
-configuration reference, while `.env.example.offline` keeps fixture mode out of
-the normal real-runtime setup.
-
-For an explicit command-line acceptance check, run preflight first and add
-`--run-task` to persist one real search → fetch → LLM-report Run. The confirmation
-flag is mandatory so tests and accidental invocations cannot consume quota:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls
-.\.venv\Scripts\python.exe scripts\validate_real_runtime.py --confirm-real-calls --run-task
-```
-
-The automated suite verifies Profiles, aliases, adapter usage normalization,
-error classification/retry behavior across Planner, Actor, Critic and
-Synthesizer, mock rejection, secret redaction, preflight contracts and the
-no-call confirmation guard. Live-provider acceptance still has to be run in the
-operator's configured deployment.
-
-### Goal integrity and bounded recovery (R9)
-
-Explicit inability, unavailable tools and exhausted ReAct steps cannot become
-successful research merely because some source text exists. Price-series requests
-get a creation-date-anchored task contract: unclear dates, sampling interval or
-adjustment basis block approval with a task-clarification message, not key advice.
-The contract is application-derived and inherited by deepening children. Completion
-requires actual reader-provided tabular data matching the requested metric, basis
-and basic date coverage; close prices are not a requested return series. These
-conservative checks are not a financial-data connector, name-to-symbol resolver,
-exchange-calendar audit, return calculator or general fact-checking oracle.
-
-Fetched text can be paged through the permitted `web_fetcher` using a current-Run
-`source_id`, `offset` and `max_chars`, without another HTTP request. Snapshot reads
-retain original Trace identity and create no duplicate evidence. Source IDs are
-not local filenames. Repeated unchanged fetches and unsupported HTML file reads
-are blocked before tool/HITL execution. Mixed URL requests fetch only novel,
-deduplicated pages; unread search candidates remain available
-within the source-policy tiers. Obvious loading/template shells are not full text.
-
-Pending or previously failed source IDs now resolve to the URL recorded by the
-same Run instead of being treated as readable snapshots. Equivalent fetch inputs
-share a recovery identity, and up to two rejected/non-executed decisions receive
-bounded replacement slots. Multi-URL fetches stop before the registry deadline,
-return completed pages, and mark deferred pages explicitly. Technical tasks infer
-the `technical_facts` profile unless the caller selects another profile; supported
-vendor documentation and verified repositories are classified as primary sources.
-Search-only and partial passages use medium rather than high evidence confidence.
-
-Budget exceptions keep their structured stop reason through synthesis and children.
-New ledgers reserve a bounded share of tokens and LLM calls for the final root
-report; a full retry has its own ledger. Reaching that reserve in root research
-hands off to the quality gate and report path. For new obligation contracts,
-reaching the token ceiling pauses for explicit spending approval; other total-cap,
-deadline, permission and cost breaches remain terminal. Optional
-deepening is skipped when headroom is low. Real/mock separation is unchanged.
-Planned-to-ReAct upgrades use their dynamic step allowance with monotonic Trace
-numbers. Legacy child `/plan` responses normalize missing steps read-only; child
-links persist before execution. Ordinary task lists hide deepening children while
-keeping direct audit access. Previous integrity versions require review, not rewrite.
-Deep-research ReAct allowances can grow from the configured base according to depth,
-breadth and comparison-contract complexity. Core discovery/fetch tools receive a
-broader task-aware per-tool allowance while the shared tool, LLM, token and time
-limits remain safety ceilings rather than the research strategy itself.
-Full tool bodies remain in Trace; persisted ReAct observations retain only bounded
-decision summaries and snapshot excerpts so `/plan` polling does not duplicate them.
-
-Requested overview/new-research copy and Capabilities/System navigation entries
-are removed; underlying routes/APIs remain. Citation sentence parsing preserves
-decimal values and URLs. See [latest verification and limits](RELEASE_VALIDATION.md).
-
-### Research integrity (R0–R3)
-
-Tool success is not research completion. Missing required configuration blocks
-execution without discarding a draft. `GET /api/runtime/capabilities` discloses
-configuration presence (never secrets); `GET /api/tasks/{run_id}/preflight`
-checks the actual plan. Neither endpoint verifies external connectivity; the
-explicit R10 `POST /api/runtime/preflight` does.
-
-- Local file/SQL plans need no search or model keys unless LLM mode is requested.
-- Empty upstream results skip dependent fetches. Zero usable evidence or a failed
-  required fetch/step fails the run before report generation. Partial results
-  retain explicit warnings; an explicitly selected LLM report cannot silently
-  become a rule-based report when synthesis fails.
-- Errors, approvals, memory-recall messages and model finish summaries remain in
-  Trace but are not sources. Search snippets and fetched page text are distinct.
-  Citation checks evaluate answer text, not the citation index; no citations means
-  not evaluated, never 100%. Citation IDs are never repaired by numeric proximity.
-- An explicit request for *current official documentation* uses the configured
-  current channel in `config/evidence_policy.v3.json`. Matching older,
-  localized, development, or release-page siblings are deferred when a current
-  candidate is available. A fetched source counts only when its actual final
-  URL and canonical URL both verify that channel; an official hostname, search
-  date, or canonical hint alone does not prove currentness. A missing verified
-  current body leaves an auditable incomplete result rather than a stale citation.
-- Failed/cancelled runs can be fully retried as a new Run with current configuration
-  and fresh approvals. Cancellation cannot be overwritten by late completion.
-- Old reports and traces are retained and labelled for review. Legacy quality
-  records are excluded from trusted trends/routing; active evidence revisions are
-  append-only. No automatic database purge or historical rewrite is performed.
-
-The **Deep Web template**, automatically selected execution mode, and deployment-level
-`DEEP_RESEARCH_ENABLED` switch are separate. New-research UI no longer submits a
-manual Planned/ReAct override; the backend records the deterministic routing reason.
-Its default retrieval strategy is also automatic, allowing technical-comparison
-tasks to infer `technical_facts`. The switch only adds rounds to ReAct. Follow-up
-learning notes are not supported conclusions: inspect their
-linked sub-runs. D01–D11 now have API-connected pages. R6 shared-state,
-responsive and keyboard/focus changes are implemented locally; browser visual
-and current Figma reconciliation checks remain unverified. R7 regression and
-deployment preparation is recorded in [release validation](RELEASE_VALIDATION.md);
-Docker/Streamlit runtime, full pytest and visual/provider acceptance remain open.
-
-### Execution constraints and recovery (R8.0–R8.2)
-
-Skill permissions include their required tools by default. Explicit restrictions,
-including an empty list, remain authoritative; a required capability filtered out
-of a deep Web plan blocks approval rather than silently weakening the plan.
-Real runs reject mock/offline/fallback arguments and demonstrative outputs in
-planned, parallel, ReAct and targeted-refetch execution. Demonstration runs
-remain explicitly separate. Deepening children inherit their parent's permissions.
-
-ReAct treats GitHub and remote MCP as optional sources for general deep Web
-research. Authentication failures disable the affected provider for that Run;
-rate limits/transient provider errors cool it down, while a failed page or bad
-input blocks that input rather than the entire reader. Available alternatives
-remain selectable after another tool reaches its call limit. Recovery is recorded
-in Trace and persisted for resume; a full retry starts with fresh recovery state.
-ReAct owns GitHub/Tavily retries to prevent nested transport retries exceeding
-the existing same-tool cap. Rejected selections still consume the bounded step
-budget. Completion still requires usable evidence; recovery never relaxes it.
-
-R8.0–R8.2 itself needs no new settings or migration. R8.3–R8.5 below adds a
-budget ledger. Synthetic tests do not demonstrate live-model autonomy or
-external-provider availability; see the [validation ledger](RELEASE_VALIDATION.md).
-
-### Source context, shared budgets and exact provenance (R8.3–R8.5)
-
-ReAct rebuilds a bounded source queue from persisted traces, not the last few
-summary strings. It retains URLs, titles, excerpts, source/Trace identities,
-fetch status, content basis and remaining fetch gaps. Up to 64 sources are kept;
-the prompt exposes a compact domain-diverse mix that always includes fetched
-evidence alongside priority pending sources. The full queue is not duplicated in
-persisted `plan_json`; it is rebuilt from Trace and only gap summaries are retained.
-Credential-bearing URLs and demonstration results are excluded. Source text is
-untrusted data, never permission to execute instructions. Deepening prompts also
-retain source URLs and originating Run/Trace identities.
-
-Migration `0011_run_budgets` adds an atomic ledger shared by a root Run and its
-deepening children. Defaults: 40 tool invocations, 40 LLM calls, 100,000 accounted
-tokens and 900 wall-clock seconds. Resume preserves counters; full retry gets a
-new ledger. Limits are checked before new operations, including parallel tool
-admission and report LLM calls. New obligation contracts pause at the token ceiling for explicit spending approval. Other budget exhaustion fails explicitly while keeping existing evidence/Trace; it cannot expose an intermediate report as final.
-`GET /api/tasks/{run_id}/plan` exposes the current shared `execution_budget`.
-The ledger counts one logical `llm_calls` admission while separately exposing
-bounded adapter retries as `provider_attempts`; migration
-`0014_budget_provider_attempts` adds that counter.
-
-The optional estimated-cost cap is in CNY and disabled by default. A nonzero cap
-requires deployment-provided conservative tool/token price estimates; unknown
-prices block external calls. Missing token usage retains a conservative language-
-aware prompt/output reservation (CJK characters are not counted as UTF-8 bytes),
-then reconciles to provider usage when available. This is not an exact tokenizer
-or billing cap.
-Time limits stop new work; in-flight calls retain transport timeouts. Tool counts
-are invocations, not every URL/HTTP request within a reader. Draft planning,
-independent tool API calls and separate post-run memory extraction are outside
-the execution ledger. See `.env.example.full` for advanced `RESEARCH_*` settings.
-
-New runs use `trace-source-v2`: plan goals are not treated as observed facts.
-Extractive claims cite their actual source passages; report rendering and the
-evidence API use the same authoritative Trace order. Identical repeated outputs
-retain distinct Trace snapshots. Child evidence cannot be relabelled as parent
-evidence; child learnings stay exploratory with linked sub-runs. Old reports and
-evidence revisions remain intact; susceptible legacy ReAct mappings are flagged
-for review and excluded from trusted quality trends.
-
-### Execution explanations and integration checks (R8.6)
-
-The workbench uses the typed, read-only `execution_insights` field only for the
-bounded candidate-source queue with exact Trace links. Internal shared-budget,
-tool-recovery and permission-list details remain available through the API and Trace
-but are intentionally not rendered in the user-facing workbench. Missing API data
-is not shown as zero sources.
-
-Plan review omits internal allowed-tool lists, planner notes and generic execution-
-boundary callouts. Source queues are candidates, not verified evidence;
-evidence/report pages identify source excerpts separately from verified conclusions
-and expose snapshot/Trace identities. Persisted English integrity warnings from
-older Runs are translated to Chinese in the UI. No browser-based budget/key editing
-is added.
-
-Offline integration covers GitHub 401 → non-GitHub source URL → fetch → actual
-saved Markdown with resolvable provenance → typed page contract. DOM tests cover
-page refresh, hidden internal execution details, Chinese integrity warnings,
-cancellation, and report → evidence → Trace navigation. External providers/model decisions remain fixtures. Full pytest,
-container/runtime, browser/390px and live-provider acceptance are still separate,
-unpassed gates; see [release validation](RELEASE_VALIDATION.md).
-
-### Shared UI states and accessibility (R6)
-
-Unknown/loading metrics show `—`, not zero. Task and health requests fail
-independently and offer retry. Plan review supports recovery, rejects approval
-without explicit ready preflight, synchronizes conflicting Run state, distinguishes
-pending approval/rejection and ignores late responses after leaving a Run.
-Denied browser storage no longer crashes draft creation or promises a saved draft.
-
-Shared native modals label their purpose, manage initial/return focus and guard
-busy operations. Navigation has a skip link, route titles and focus restoration;
-status tabs support arrows/Home/End. Evidence/Trace links focus the exact target
-without stealing focus on refresh. Tables and scrollable payloads are keyboard
-reachable; external links announce a new window. Long text, narrow-screen task
-cards, wrapping actions, reduced motion and text-token contrast are addressed.
-
-Run offline frontend checks under `web/`: `npm run typecheck`, `npm run lint`,
-`npm test`, `npm run build`. `node qa/smoke.mjs` checks the isolated fixture server;
-`npm run dev -- --config qa/vite.config.ts` exposes `/qa/viewport.html` for manual
-desktop/390px checks. This QA server disables the API proxy, forces a same-origin
-fixture API and rejects all writes; it is not shipped in the production build.
-See [QA instructions](web/qa/README.md) and [design mapping limits](web/README.md).
-Mock DOM tests do not verify rendered layout, native focus trapping, screen-reader
-behavior or complete accessibility conformance. These checks and real-provider
-acceptance remain separate gates; final user acceptance stays after R6–R7.
-
-### Local modules (R5 / D08–D11)
-
-- `/sessions`: create/rename sessions, inspect persisted turns and paginated
-  linked Runs. Follow-up research carries `session_id`, uses a separate browser
-  draft and still requires plan approval. Unknown sessions are rejected before
-  Run creation. Session grouping does not inject the entire conversation into
-  the planner: include needed background in the next research question.
-- `/memory`: pending/active/expired/superseded filters, provenance links and
-  explicit confirmation for activate/reject/delete. Rejection permanently deletes
-  a pending item; clearing all statuses requires typing the confirmation phrase.
-  Source sessions/Runs/reports remain intact. Effective expiry is interpreted
-  without rewriting historical rows; expired items are excluded from recall.
-- Migration `0010_memory_audit` adds a content-free audit table. Confirm/reject/
-  delete/clear and their audit event are transactional; failed audit writes roll
-  back the action. `GET /api/memory/audit` returns recent events, not research
-  evidence. There is no fabricated audit backfill for past deletions.
-- `/capabilities`: registered tools, risk/confirmation/schema details and Skill
-  definitions/dependencies. Configuration presence is distinct from runtime
-  success; remote MCP is optional. No tool-execute or browser key-edit controls.
-- `/system`: `GET /api/runtime/diagnostics` checks actual DB reads/module tables
-  and workspace directory permissions without external requests or write probes.
-  Quality windows, daily trends and per-Run details use existing integrity gates.
-  Empty quality is not evaluable; heuristic scores are not factual accuracy.
-
-R5 offline checks: `python -m unittest tests.test_r5_modules tests.test_memory`
-and `python scripts/smoke_research_integrity.py`. The smoke uses a disposable
-SQLite DB, verifies session/memory/audit persistence across API restart and
-never contacts providers. Startup applies the new migration to the deployment
-DB only when you deploy; back up persisted data before deploying migrations.
-Code and mocked tests do not replace browser, container or real-provider acceptance.
-
-### Research workspace (R4 / D05–D07)
-
-- `/runs/{id}` shows persisted status, plan, Trace payloads/failures, timing and
-  recorded cost estimates. Explicit confirmation controls start, cancellation,
-  human approval/rejection and full retry; retry creates a new Run without
-  automatically starting it. Reusing a plan preserves validated mandatory
-  obligations; legacy contracts are rebuilt from the original request under
-  the new Run's budget. Prior findings, coverage, candidate selection and spending
-  approvals are cleared. Deep retries retain the predecessor Run as provenance
-  while using a separate Scope and ledger. Plan approval opens the corresponding workspace.
-- `/runs/{id}/evidence` shows source snippets/content basis and the exact
-  citation → claim → passage → source/Trace association. Missing/ambiguous IDs
-  remain unresolved. Export downloads grouped sources/passages as JSON.
-- `/runs/{id}/report` reads/downloads Markdown, links exact citation IDs to the
-  evidence page and distinguishes not-generated, missing and blocked reports.
-  The bounded safe reader supports headings, lists, tables, code and HTTP(S)
-  links; it does not execute HTML or load remote images. Download the original
-  for unsupported Markdown formatting. A resolved link is not fact verification.
-- Live runs use resumable SSE plus 5-second HTTP reconciliation; waiting-human
-  runs poll without repeated SSE reconnects, terminal runs close the stream.
-  Nginx disables event buffering. List filtering/search/pagination is server-side
-  (`status=waiting` covers both approval states, `q` searches task text/Run ID).
-  SQLite timestamps without offsets are displayed as UTC converted to local time.
-- `POST /api/tasks/{id}/confirm?start_async=true` schedules confirmed execution;
-  the default synchronous contract remains compatible. Report JSON adds
-  `availability`: `available`, `not_generated`, `missing`, or `blocked`.
-
-Offline R4 checks: `python -m unittest tests.test_r4_workflow` and, under `web/`,
-`npm run typecheck`, `npm run lint`, `npm test`, `npm run build`. These are not
-real-provider or browser visual acceptance. Follow the remaining release gates
-before final user-side deployment/API-key acceptance; never infer completion from Markdown
-or a `completed` status alone.
-
-After editing `.env` in the actual deployment directory, recreate the API service
-with `docker compose up -d --force-recreate api`, then recheck the plan. No image
-rebuild is needed for key-only changes. Do not send keys through the browser UI.
-
-Offline regression commands (from the repository root):
+### 1. Get the project and choose a configuration
 
 ```bash
-python -m unittest tests.test_research_integrity -v
-python scripts/smoke_research_integrity.py
-python scripts/run_offline_tests.py --runner pytest
-```
-
-The smoke script copies code/bundled fixtures into a disposable repository and
-uses a temporary database and localhost API. It checks missing-key blocking,
-local file/SQL report generation and restart persistence of reports, Trace,
-sessions, memory and audit. External socket requests are blocked. Real provider
-connectivity, live research quality, and Docker startup require separate acceptance
-after deployment keys are configured.
-
-- **Inspectable execution**: persist the task plan, run state, progress, tool
-  inputs and outputs, errors, latency, and cost estimates in SQLite.
-- **Read-only by default**: local files, SQL, web, source-control, academic,
-  and MCP tools are registered explicitly and checked before they execute.
-- **Human control**: a plan can pause for review, and guarded operations pause
-  for confirmation instead of running silently.
-- **Evidence-first reports**: citations, provenance, source basis, conflicts,
-  and citation-validation metrics are available alongside the report.
-- **Governed research inputs**: retrieval profiles enforce source-tier quotas,
-  bounded discovery and fetch budgets, and auditable targeted refetches.
-- **Local extraction pipeline**: HTML fallback extraction, integrity-checked
-  fetch caching, page-level PDF evidence, and reference verification work
-  through the same traceable tool boundary.
-- **Works without remote services**: deterministic planning and local tools
-  support an offline-friendly audit flow; remote search and LLM synthesis are
-  optional enhancements.
-- **One-command deployment**: FastAPI and Streamlit start together with Docker
-  Compose and retain runtime data under the mounted `workspace/` directory.
-
-## Demo
-
-The shortest demonstration uses only local data. It creates a three-step plan,
-reads an allowlisted document, runs a read-only SQL query, and produces a
-traceable report.
-
-```powershell
-$body = @{
-  task = "Audit the local research note and document metadata"
-  report_type = "summary"
-  source_mode = "mock"
-  skill_name = "local_audit"
-  require_plan_approval = $true
-} | ConvertTo-Json
-
-$created = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/tasks `
-  -ContentType application/json -Body $body
-
-Invoke-RestMethod -Method Get `
-  -Uri "http://localhost:8000/api/tasks/$($created.run_id)/review"
-
-$approval = @{ approved = $true; comment = "approved after review" } | ConvertTo-Json
-Invoke-RestMethod -Method Post `
-  -Uri "http://localhost:8000/api/tasks/$($created.run_id)/approve-plan" `
-  -ContentType application/json -Body $approval
-
-Invoke-RestMethod -Method Get `
-  -Uri "http://localhost:8000/api/tasks/$($created.run_id)/trace"
-```
-
-The resulting run moves from `waiting_human_plan` to `completed`. Its trace
-contains `memory_recall`, `plan_approval`, the executed local tools, and
-`citation_validator`. Retrieve the report at
-`GET /api/reports/{run_id}`.
-
-For a real web-research demonstration, configure `TAVILY_API_KEY` and run:
-
-```powershell
-.\.venv\Scripts\python.exe scripts\demo_real_research.py --preset 1 --report-type detailed_report
-```
-
-This script performs search, fetch, evidence compression, and report creation.
-Generated output remains local under `docs/examples/` and is intentionally not
-published by default.
-
-## Quick Start
-
-Prerequisite: Docker Desktop or Docker Engine with Compose v2.
-
-```powershell
 git clone https://github.com/piao666/traceable-research-agent.git
-Set-Location traceable-research-agent
-Copy-Item .env.example .env
-# Edit .env and provide LLM_BASE_URL, LLM_MODEL, LLM_API_KEY and TAVILY_API_KEY.
-docker compose up --build -d
+cd traceable-research-agent
+cp .env.example .env
 ```
 
-For the React frontend only, use `docker compose up --build -d api web`.
-The `api` image installs only `requirements/api.txt`; it does not download
-Streamlit, PyArrow, Pandas, NumPy, PyDeck or pytest. The optional `streamlit`
-image adds `requirements/streamlit.txt`. The legacy `light` Docker target is
-still available with both runtimes. `pip install -r requirements.txt` remains
-the full local development setup, including `requirements/dev.txt`.
+For real research, edit `.env` and set:
 
-### Recovering from interrupted dependency downloads
+```dotenv
+LLM_BASE_URL=https://your-provider.example/v1
+LLM_MODEL=your-model
+REACT_LLM_MODEL=your-model
+LLM_API_KEY=your-api-key
+TAVILY_API_KEY=your-search-key
+```
 
-Docker bootstraps pip **26.2.1** before installing application dependencies,
-with 5 connection attempts, 10 incomplete-download recovery attempts and a
-120-second socket timeout. BuildKit caches pip downloads outside the final
-image; downloaded artifact hashes and TLS verification remain enabled.
-These settings follow the [pip download options](https://pip.pypa.io/en/stable/cli/pip/)
-and [Docker cache-mount guidance](https://docs.docker.com/build/cache/optimize/#use-cache-mounts).
-Direct dependencies are pinned; this split is not a complete transitive lockfile.
+The example uses an API compatible with the configured `openai_compatible`
+provider. Set a reachable endpoint and a model your provider serves. Deep uses
+the actor settings as well as the report/planner settings.
 
-After updating to the repair commit, rebuild only the failed API image from
-the repository/worktree root. Run each step only if the preceding one succeeds:
+For a **credential-free local demonstration**, copy `.env.example.offline` to
+`.env` instead, before the first startup. It selects deterministic planning and
+reports with mock external tools. It does not perform real web research.
 
-```powershell
-docker compose --progress plain build api
-if ($LASTEXITCODE -ne 0) { throw "API build failed; stop and inspect the download error." }
-docker compose up -d --no-build api web
-if ($LASTEXITCODE -ne 0) { throw "Startup failed; inspect docker compose logs api." }
+### 2. Check networking and start
+
+The current Compose file defaults to a host proxy at
+`http://host.docker.internal:7897` for external requests. Configure that proxy,
+or use the [direct-network override](#network-and-proxy-setup), before starting
+real research.
+
+```bash
+docker compose up --build -d api web
 docker compose ps
 ```
 
-This recovery command assumes the web image already built successfully in
-the same Compose project. For a fresh checkout, use
-`docker compose up --build -d api web`. Do not use `--no-cache`, clear all
-Docker caches, disable hash verification or replace an expected hash with the
-hash of a failed download. If it still fails, check Docker Desktop's proxy and
-package-download connectivity; longer timeouts cannot repair a broken proxy.
-Upgrading Windows-host pip does not upgrade pip inside the Docker image.
+Wait for the API to become healthy, then open:
 
-Docker applies schema migrations and seeds the local demo database only if it is
-absent when the API container starts. Existing demo files are preserved, including
-unknown/corrupt files that require manual inspection; they are never reset.
-Set `DOCKER_INIT_DEMO_DATA=false` to disable seeding. Back up the stopped
-deployment workspace before upgrading; see [release validation](RELEASE_VALIDATION.md).
-Wait until the API is healthy, then open:
+| Entry point | Default URL |
+| --- | --- |
+| React research workspace | http://localhost:5173 |
+| API documentation | http://localhost:8000/docs |
+| Health check | http://localhost:8000/health |
 
-- Streamlit: <http://localhost:8501>
-- React web (D01–D11): <http://localhost:5173>
-- FastAPI documentation: <http://localhost:8000/docs>
-- Health check: <http://localhost:8000/health>
+### 3. Start your first task
 
-To inspect the service lifecycle:
+Open **New research**, enter a question, select Quick or Deep, review the plan,
+and approve execution. Inspect the workbench, evidence and report tabs as the
+task runs. Use the [demo](#demo) below for a first walkthrough without remote keys.
 
-```powershell
-docker compose ps
+## Deployment and startup
+
+### Services and persistent data
+
+Compose contains three services:
+
+| Service | Role | Default host port |
+| --- | --- | --- |
+| `api` | FastAPI, tools, research controller and database access | 8000 |
+| `web` | React build served by Nginx, proxying API requests | 5173 |
+| `streamlit` | Optional alternative UI | 8501 |
+
+Start all three with `docker compose up --build -d`. The API image installs the
+API dependencies; the optional Streamlit image adds its own dependencies.
+The API entrypoint applies migrations and initializes the demo database only
+when absent. Set `DOCKER_INIT_DEMO_DATA=false` to disable demo initialization.
+
+| Storage | Location in a default Compose deployment |
+| --- | --- |
+| Run, Trace and research-state SQLite database | `traceable_db` named volume, mounted at `/app/data` |
+| Evidence artifacts, reports, local inputs and demo database | Host `workspace/`, mounted at `/app/workspace` |
+| Credentials and local settings | Host `.env` |
+
+Back up both the database volume and `workspace/` before upgrading, preferably
+while services are stopped. `docker compose down` stops services and preserves
+these data; `down -v` removes the named volume.
+
+```bash
 docker compose logs --tail 100 api
-docker compose logs --tail 100 streamlit
-```
-
-Runtime data, reports, evidence artifacts, and the SQLite database live under
-`workspace/`, which Compose mounts into both services. Stop the application
-without removing that data:
-
-```powershell
+docker compose logs --tail 100 web
 docker compose down
 ```
 
-For a local Windows virtual environment, the repository-root starter resolves
-the project path from its own location and launches FastAPI plus Streamlit:
+After pulling new code, run `docker compose up --build -d api web` to rebuild
+and start it. After editing `.env` only, use
+`docker compose up -d --force-recreate api` to apply settings. A simple restart
+does not rebuild the image or reload changed Compose environment values.
 
-```powershell
-.\start_traceable_demo.bat --check
-.\start_traceable_demo.bat
+### Network and proxy setup
+
+Use `.env` values `DOCKER_HTTP_PROXY`, `DOCKER_HTTPS_PROXY` and
+`DOCKER_SSRF_TRUSTED_PROXY_URL` to point to a reachable host proxy.
+`DOCKER_NO_PROXY` controls exclusions. An empty value does not disable the
+defaults because Compose uses `${VARIABLE:-default}` interpolation.
+
+If no proxy is needed, create a local `compose.direct.yml`:
+
+```yaml
+services:
+  api:
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      SSRF_TRUSTED_LOCAL_PROXY_URL: ""
 ```
 
-MCP is not required by the core application. To also launch the optional MCP
-Source Pack on port 9001, use `start_traceable_demo.bat --with-mcp`.
-When a default port is unavailable, set `TRACEABLE_API_PORT`,
-`TRACEABLE_STREAMLIT_PORT`, or `TRACEABLE_MCP_PORT` before running the script.
+Start with the override and include it in subsequent Compose commands:
+
+```bash
+docker compose -f docker-compose.yml -f compose.direct.yml up --build -d api web
+```
+
+Image builds use Docker's own download/proxy settings. If a build fails, inspect
+its output and Docker networking, then retry the affected build. The API's
+runtime proxy settings do not configure image downloads.
+
+### Run from source
+
+For development, use Python 3.11+ and Node.js 20+. From the repository root,
+choose and edit `.env` as above, then create a virtual environment:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python scripts/migrate_database.py
+python scripts/init_demo_db.py
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+On Windows PowerShell, activate with `.\.venv\Scripts\Activate.ps1`.
+Start the React UI in another terminal:
+
+```bash
+cd web
+npm ci
+npm run dev
+```
+
+Vite proxies `/api` and `/health` to port 8000. For the alternative UI, run
+`streamlit run frontend/streamlit_app.py` from the root with the environment
+activated. Windows also provides `start_traceable_demo.bat --check` and
+`start_traceable_demo.bat` for API/Streamlit startup; `--with-mcp` adds the
+optional local MCP Source Pack. These scripts do not start React.
+
+## Demo
+
+### Local documents and SQL, without remote keys
+
+Use the offline configuration on a fresh deployment and leave demo initialization
+enabled. The included `workspace/docs/demo_research_note.md` and `demo.sqlite`
+provide small local inputs. This PowerShell walkthrough creates a plan for
+registered file/SQL tools:
+
+```powershell
+$api = "http://localhost:8000"
+$body = @{
+  task = "Read local docs demo_research_note.md and query database: SELECT id, title, category FROM documents"
+  report_type = "summary"
+  research_mode = "quick"
+  source_mode = "mock"
+  skill_name = "none"
+  allowed_tools = @("file_reader", "sql_query", "report_writer")
+  require_plan_approval = $true
+} | ConvertTo-Json
+
+$created = Invoke-RestMethod -Method Post -Uri "$api/api/tasks" `
+  -ContentType "application/json" -Body $body
+$runId = $created.run_id
+Invoke-RestMethod "$api/api/tasks/$runId/review"
+```
+
+Inspect the returned plan, then approve and read the result:
+
+```powershell
+$approval = @{ approved = $true; comment = "Reviewed local demo plan" } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "$api/api/tasks/$runId/approve-plan" `
+  -ContentType "application/json" -Body $approval
+Invoke-RestMethod "$api/api/tasks/$runId"
+Invoke-RestMethod "$api/api/tasks/$runId/trace"
+Invoke-RestMethod "$api/api/reports/$runId"
+```
+
+The same Run is visible at `/runs/{run_id}` in React. Follow its file/SQL calls,
+evidence and report. This deterministic demo demonstrates execution and
+persistence; strict answer validation can leave it `incomplete` with a partial
+report. That is distinct from a fully validated online research result.
+
+### Real web research
+
+With model and search credentials configured, open **New research** and try:
+
+> Explain the conditions and tradeoffs of database write-ahead logging. Cover
+> concurrency, checkpoints, network filesystems and failure recovery. Cite primary sources.
+
+Use Quick for a scoped first pass and Deep for decomposed, multi-source work.
+Select **real** sources, inspect the plan, then approve it. Check each required
+dimension in the work panel and follow citations back to the original passages.
+Review any partial result or budget request before continuing. These operations
+use your configured providers and consume their quotas.
 
 ## Configuration
 
-Copy `.env.example` to `.env` for the minimum real setup. Advanced overrides are
-documented in `.env.example.full`; the isolated fixture setup is
-`.env.example.offline`. `.env` is local-only and must never be committed.
+`.env.example` contains the main real-research settings;
+`.env.example.full` lists advanced settings; `.env.example.offline` supplies
+the demonstration profile. Explicit environment settings override profile
+defaults. Keep `.env` and provider credentials local.
 
-| Setting | Default | Purpose |
-|---|---|---|
-| `AUTH_ENABLED` | `false` | Enable local API-key authentication. |
-| `DEMO_API_KEY` | empty | API key required when authentication is enabled. |
-| `RESEARCH_PROFILE` | `standard` in code; `deep` in `.env.example` | Select coherent real-deep, real-standard or offline defaults. |
-| `DEEP_RESEARCH_ENGINE_VERSION` | `v2` | Pin the only supported Deep Profile engine; legacy V1 is not a runtime option. |
-| `EXECUTION_MODE` | Profile-dependent | Advanced override for automatic routing defaults. |
-| `OFFLINE_MODE` | Profile-dependent | Advanced override; use the `offline` Profile for normal offline work. |
-| `REPORT_GENERATION_MODE` | Profile-dependent | Advanced override for deterministic or configured-LLM reporting. |
-| `TAVILY_API_KEY` | empty | Enable real web search. |
-| `QWEN_API_KEY` / `DEEPSEEK_API_KEY` | empty | Enable an optional configured LLM provider. |
-| `FILE_READER_ALLOWED_ROOTS` | `workspace/docs` | Allowlisted roots for local file reads. |
-| `CITATION_VALIDATION_LLM_ENABLED` | `false` | Enable optional second-pass LLM citation validation. |
+| Setting | Purpose / example |
+| --- | --- |
+| `RESEARCH_PROFILE` | `deep`, `standard` or `offline`; runtime defaults, separate from a task's Quick/Deep choice |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | Planner/report model connection; the real example uses `openai_compatible` |
+| `REACT_LLM_PROVIDER`, `REACT_LLM_MODEL` | Deep actor model settings |
+| `TAVILY_API_KEY` | Real web-search credentials |
+| `DEEP_RESEARCH_ENABLED`, `REACT_ENABLED` | Both must be enabled for Deep execution |
+| `RESEARCH_MAX_TOOL_CALLS` | Shared root/branch tool limit; Deep profile default 80 |
+| `RESEARCH_MAX_LLM_CALLS` | Shared logical model-call limit; Deep default 192 |
+| `RESEARCH_MAX_TOKENS` | Shared Token limit; Deep default 400000 |
+| `RESEARCH_MAX_SECONDS` | Shared elapsed-time allowance; Deep default 1800 seconds |
+| `FETCH_BROWSER_ENABLED` | Enable dynamic-page browser fallback; example default `false`, requires runnable Chromium |
+| `FETCH_REMOTE_EXTRACT_ENABLED` | Enable a configured remote extraction backend; example default `false` |
+| `FILE_READER_ALLOWED_ROOTS` | Allowed local inputs; default `workspace/docs` |
+| `DOCKER_INIT_DEMO_DATA` | Initialize a missing demo database; default `true` |
+| `AUTH_ENABLED`, `DEMO_API_KEY` | Optional API-key authentication; default disabled |
 
-Remote keys are optional. The local demo and deterministic report path do not
-need them. When `AUTH_ENABLED=true`, send the configured key in the
-`X-API-Key` header (or as a Bearer credential).
+New obligation runs reaching hard Token or model-call limits can pause at
+`waiting_human`. Approve a higher `max_tokens`, `unlimited_tokens: true`, or a
+higher finite `max_llm_calls` for that specific Run. Token approval does not
+increase tool, model-call, time or cost limits. Existing usage and evidence are
+retained; report finalization reserves capacity inside the same total budget.
+
+With API authentication enabled, send `X-API-Key` or a Bearer credential.
+The current React UI does not collect credentials and assumes the local default
+configuration; protected deployments must supply authenticated access separately.
 
 ## API
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /health` | Service and database readiness. |
-| `POST /api/tasks` | Create a planned research task. |
-| `GET /api/tasks` | List user tasks; `include_internal=true` also returns deepening child Runs. |
-| `GET /api/tasks/{run_id}` | Read status, progress, cost, and citation metrics. |
-| `POST /api/tasks/{run_id}/run` | Execute a created task. |
-| `GET /api/tasks/{run_id}/review` | Read a plan waiting for approval. |
-| `POST /api/tasks/{run_id}/approve-plan` | Approve, edit, or reject that plan. |
-| `POST /api/tasks/{run_id}/confirm` | Resume or reject a guarded operation. |
-| `GET /api/tasks/{run_id}/trace` | Read persisted tool traces. |
-| `GET /api/tasks/{run_id}/evidence/v2` | Read provenance and citations. |
-| `GET /api/tasks/{run_id}/result/context` | Resolve the user-visible Run/Scope result boundary. |
-| `GET /api/tasks/{run_id}/result/evidence` | Read complete result Evidence with origin lineage. |
-| `GET /api/tasks/{run_id}/result/trace` | Read complete result traces with origin Run/Node metadata. |
-| `GET /api/tasks/{run_id}/research-scope` | Read persisted Scope lineage and shared-budget statistics. |
-| `GET /api/tasks/{run_id}/research-tree` | Read the nested Research Tree for any Scope member Run. |
-| `GET /api/tasks/{run_id}/scope-evidence` | Read logical cross-run Evidence with origin Run/Trace links. |
-| `GET /api/reports/{run_id}` | Fetch the Markdown report. |
-| `GET /api/tools` | List registered tool metadata. |
-| `GET /api/skills` | List installed task skills. |
-| `GET /api/improvement/stats` | Read final-run quality statistics for a real date window. |
-| `GET /api/improvement/runs/{run_id}` | Read the five-dimensional final quality evaluation for one run. |
-| `GET /api/improvement/state` | Inspect local routing-weight and Few-shot cold-start state. |
+Interactive request/response schemas are available at `/docs` and
+`/openapi.json` on the API server.
 
-Plans and task status responses expose multi-skill composition and adaptive
-Planned-to-ReAct metadata. During an adaptive quality gate or deep-research
-round, realtime clients keep the run open and receive `report_ready` only when
-the final report is stable.
+| Method and path | Purpose |
+| --- | --- |
+| `GET /health` | Service health |
+| `GET /api/runtime/capabilities` | Configured capabilities; does not prove provider connectivity |
+| `GET /api/runtime/diagnostics` | Local runtime/database diagnostics |
+| `POST /api/runtime/preflight` | Explicit real provider probes; consumes provider quota |
+| `POST /api/tasks` | Create a task and persisted plan |
+| `GET /api/tasks` | List/filter tasks |
+| `GET /api/tasks/{run_id}` | Status, progress and recorded usage |
+| `GET /api/tasks/{run_id}/plan` | Plan, budget and research work state |
+| `GET /api/tasks/{run_id}/review` | Plan awaiting review |
+| `POST /api/tasks/{run_id}/approve-plan` | Approve/edit/reject a plan; approval starts execution |
+| `POST /api/tasks/{run_id}/run_async` | Start a pending task in the background |
+| `POST /api/tasks/{run_id}/confirm` | Approve/reject protected operations or budget changes |
+| `POST /api/tasks/{run_id}/cancel` | Cancel a task |
+| `POST /api/tasks/{run_id}/retry` | Create a new retry Run |
+| `GET /api/tasks/{run_id}/trace` | Persisted tool calls |
+| `GET /api/tasks/{run_id}/events` | Server-sent progress events |
+| `GET /api/tasks/{run_id}/result/evidence` | Evidence at the visible Run/Scope boundary |
+| `GET /api/tasks/{run_id}/result/trace` | Trace across the result's research branches |
+| `GET /api/tasks/{run_id}/research-tree` | Deep research tree |
+| `GET /api/tasks/{run_id}/evidence/export/download?format=json` | Download evidence |
+| `GET /api/reports/{run_id}` | Report content and availability |
+| `GET /api/reports/{run_id}/download?format=markdown` | Download; also accepts `docx` and `pdf` |
+| `GET /api/tools`, `GET /api/skills` | Registered tools and task definitions |
 
-The OpenAPI interface at `/docs` is the complete, versioned request and
-response reference.
+Creating a task does not execute it. If `require_plan_approval=true`, inspect
+and approve its plan; otherwise call the run endpoint. Session, memory and
+quality-statistics APIs are also described in OpenAPI.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    UI["Streamlit operator interface"] --> API["FastAPI API"]
-    API --> Planner["Planner and plan review"]
-    Planner --> Executor["Planned or ReAct executor"]
-    Executor --> Registry["Validated tool registry"]
-    Registry --> Tools["Read-only file, SQL, web, source-control, academic, MCP tools"]
-    Executor --> Trace["Tool traces and run state"]
-    Tools --> Trace
-    Trace --> Evidence["Evidence, provenance, citations, conflicts"]
-    Evidence --> Reporter["Markdown, Word, and PDF reports"]
-    Reporter --> Storage["SQLite and workspace artifacts"]
+    UI[React / optional Streamlit] --> API[FastAPI]
+    API --> Plan[Planning and human review]
+    Plan --> Quick[Quick sequential execution]
+    Plan --> Deep[Deep Scope and branch controller]
+    Quick --> Work[Obligations / objects / dimensions / gaps]
+    Deep --> Work
+    Work --> Tools[Tool Registry / Policy / shared budget]
+    Tools --> Inputs[Files / SQL / web / PDF / academic / optional MCP]
+    Inputs --> Evidence[Traces / snapshots / passages]
+    Evidence --> Work
+    Work --> Report[Report generation and validation]
+    Report --> Proof[Current answer and completion proof]
+    Evidence --> Store[SQLite and workspace artifacts]
+    Proof --> Store
 ```
 
 ```text
-app/api/       FastAPI endpoints and response contracts
-app/agent/     planning, execution, report generation, and guardrails
-app/tools/     registered read-only tool implementations
-app/trace/     run and tool-call persistence
-app/evidence/  provenance, citation, and conflict reasoning
-app/memory/    single-instance sessions and optional memory
-app/skills/    reusable task definitions and validation
-app/mcp/       optional read-only MCP integration
-frontend/      Legacy Streamlit interface
-web/           React, TypeScript, and Vite interface
-migrations/    Alembic schema history
-scripts/       migration, demo, smoke, and evaluation commands
-workspace/     local databases, reports, artifacts, and skills
+Citation → Passage → Source Snapshot → Trace → originating Run
 ```
 
-## Safety Model
+Source body artifacts, bounded writing windows and citation occurrences retain
+their identities and hashes. Deep aggregates branch evidence without changing
+its originating Run/Trace. Revisions reevaluate coverage; deleting required
+answers does not remove the underlying research obligation.
 
-- The executor can invoke only tools registered in the unified registry.
-- `file_reader` resolves paths, blocks traversal and escaping symlinks, limits
-  content length, and reads TXT/Markdown/CSV/JSON/Python/log/DOCX/XLSX only from
-  configured roots. PDF remains isolated in `pdf_reader`.
-- `sql_query` accepts one read-only `SELECT` or `WITH` statement and enforces a
-  row limit.
-- External source operations are read-only and time-bounded, and persisted
-  traces redact secrets. MCP `skill_runner` is explicitly not read-only or
-  side-effect-free because it creates local Runs, Traces, evidence, and reports.
-- Failed and rejected tool calls remain visible in run status and traces.
-- Plan approval and high-risk tool confirmation are explicit state transitions,
-  never hidden background actions.
+```text
+app/api/        HTTP endpoints and contracts
+app/agent/      Planning, dispatch, shared budgets and reporting
+app/research/   Scope/tree, work controller, gaps and coverage
+app/retrieval/  HTTP/browser/remote/PDF acquisition routing
+app/tools/      Registered tool implementations
+app/evidence/   Source artifacts, provenance and citation validation
+app/reporting/  Evidence projection, claim occurrences and revision pipeline
+app/trace/      Run and tool-call persistence
+app/memory/     Sessions and optional local memory
+app/skills/     Reusable task definitions
+app/mcp/        Optional MCP integration
+web/            React / TypeScript / Vite frontend
+frontend/       Alternative Streamlit frontend
+migrations/     Alembic database migrations
+scripts/        Startup, demonstrations and validation
+workspace/      Local inputs, evidence artifacts and reports
+```
 
-## Quality Checks
+Tools run through the registry and policy boundary. File reads are restricted
+to configured roots; SQL is read-only with row limits; network operations have
+timeouts and trace redaction. High-risk operations require confirmation.
+The project does not include tenant isolation, vector indexing or a RAG service.
 
-The 2026-10-08 backend checkpoint passed 1,374 tests, one expected failure
-and 86 subtests; its focused suite passed 152 tests. Isolated API smoke made
-zero external API calls. Frontend tests passed 100 cases; typecheck, lint
-(excluding an inaccessible local pytest cache) and production build passed.
-Complete real-provider content acceptance remains
-pending. See the dated checkpoint above and
-[release validation](RELEASE_VALIDATION.md) for acceptance boundaries.
+## Development and validation
 
-Run the same core checks locally:
+With the development dependencies installed:
 
-```powershell
-.\.venv\Scripts\python.exe -m compileall -q app scripts frontend migrations tests
-.\.venv\Scripts\python.exe scripts\run_offline_tests.py --runner pytest
-.\.venv\Scripts\python.exe scripts\smoke_research_integrity.py
+```bash
+python -m compileall -q app scripts frontend migrations tests
+python scripts/run_offline_tests.py --runner pytest
+python scripts/smoke_research_integrity.py
 docker compose config --quiet
+cd web
+npm run typecheck
+npm run lint
+npm test
+npm run build
 ```
 
-The offline runner automatically uses a disposable SQLite database and never
-opens the deployment workspace database.
-
-## Roadmap
-
-- [x] Traceable planned and optional ReAct execution
-- [x] Evidence provenance, citation validation, and human plan approval
-- [x] Source-tier governance, cached extraction, PDF evidence, and academic verification
-- [x] Docker deployment configuration and local runtime persistence implementation
-- [x] R10.0a research-to-finalization handoff and comparison coverage stabilization
-- [x] R11 adaptive HTTP/Browser/PDF/remote retrieval foundation and source identity
-- [x] R12 Deep Research Engine V2, Research Scope/Tree and cross-run Evidence
-- [x] R12.1 Scope-first result, evidence, reasoning, citation and report governance
-- [x] Docker rebuild/restart, health and deployed-source consistency checks
-- [x] Persistent obligation/object/dimension work and final report proof
-- [ ] Complete real-provider Quick/Deep content acceptance and human review
-- [ ] R11 confirmation-gated real static/Browser/PDF/remote fetch acceptance
-- [ ] Add a repository license before public redistribution
-- [ ] Expand operational observability for long-running self-hosted instances
-
-## Contributing
-
-Issues and focused pull requests are welcome. Keep changes within the project
-boundary, preserve read-only tool guarantees, add focused tests for behavior
-changes, and do not commit `.env`, local databases, generated reports, or
-other local runtime data. See [AGENTS.md](AGENTS.md) for engineering rules.
+The offline test runner and API smoke use disposable local data. They do not
+establish real-provider answer quality. See [release validation](RELEASE_VALIDATION.md)
+for acceptance boundaries and [engineering rules](AGENTS.md) for contribution
+constraints. Do not commit credentials, runtime databases or generated reports.
 
 ## License
 
-This repository currently has no root-level `LICENSE` file. Until a license is
-added, no permission to use, copy, modify, or redistribute the code is granted
-by this README. Add an explicit license before treating the project as a public
-open-source distribution.
-
-## References
-
-This is an independent implementation. External agent-system materials are
-used only as read-only design references; no external project source is copied
-into this repository.
+The repository currently has no root `LICENSE` file. Licensing remains to be
+specified; this README is not a license.
